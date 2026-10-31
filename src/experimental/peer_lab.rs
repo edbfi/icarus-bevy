@@ -613,7 +613,7 @@ pub struct PeerLabStats {
     pub reply_errors: u64,
     /// PlayerController opens sent after Join (opt-in, module docs).
     pub player_controller_opens_sent: u64,
-    /// PlayerController opens that could not be composed or framed.
+    /// PlayerController open attempts refused by composition, framing or temporary send pressure.
     pub player_controller_open_errors: u64,
     /// Actor bunches on unopened/closing channels or outside this peer's controller.
     pub actor_bunches_ignored: u64,
@@ -625,7 +625,7 @@ pub struct PeerLabStats {
     /// Unrecognized fields skipped by their declared payload length.
     pub controller_fields_ignored: u64,
     pub initialisation_slots_recorded: u64,
-    /// Slot -1, missing PlayerState or a repeated call; no failure wire is sent.
+    /// Slot -1, absent/failed PlayerState or a repeated call; pending opens retain Begin.
     pub initialisation_calls_ignored: u64,
     pub profile_user_requests_sent: u64,
     pub profile_character_requests_sent: u64,
@@ -703,11 +703,11 @@ pub struct PeerLabStats {
     pub player_history_errors: u64,
     /// Pawn opens sent after the PlayerController open (F-797).
     pub pawn_opens_sent: u64,
-    /// Pawn opens that could not be composed or framed.
+    /// Pawn open attempts refused by composition, framing or temporary send pressure.
     pub pawn_open_errors: u64,
     /// GameState opens sent after the PlayerController open (F-794).
     pub game_state_opens_sent: u64,
-    /// GameState opens that could not be composed or framed.
+    /// GameState open attempts refused by composition, framing or temporary send pressure.
     pub game_state_open_errors: u64,
     /// GameState property updates sent after its open was acked (F-805).
     pub game_state_updates_sent: u64,
@@ -729,15 +729,15 @@ pub struct PeerLabStats {
     pub game_state_updates_lost: u64,
     /// PlayerState opens sent after the PlayerController open (F-784).
     pub player_state_opens_sent: u64,
-    /// PlayerState opens that could not be composed or framed.
+    /// PlayerState open attempts refused by composition, framing or temporary send pressure.
     pub player_state_open_errors: u64,
     /// World manager opens sent after the PlayerState open (F-859).
     pub manager_opens_sent: u64,
-    /// World manager opens that could not be composed or framed.
+    /// World manager open attempts refused by composition, framing or temporary send pressure.
     pub manager_open_errors: u64,
     /// Saved quest actor opens sent with the world managers (`F-934`).
     pub quest_opens_sent: u64,
-    /// Saved quest actor opens that could not be composed or framed.
+    /// Saved quest actor open attempts refused by composition, framing or temporary send pressure.
     pub quest_open_errors: u64,
     /// `NMT_ActorChannelFailure` entries delivered in a valid login state.
     pub actor_channel_failures: u64,
@@ -5396,9 +5396,9 @@ impl PeerLab {
             retry_ready: false,
         });
         self.continue_initial_opens(address);
-        self.peers
-            .get(&address)
-            .is_some_and(|entry| entry.player_controller_channel.is_some())
+        self.peers.get(&address).is_some_and(|entry| {
+            entry.initial_opens.is_some() || entry.player_controller_channel.is_some()
+        })
     }
 
     /// Retry only after packet notifications release capacity. In particular,
@@ -5461,6 +5461,12 @@ impl PeerLab {
             let Some(pending) = &mut entry.initial_opens else {
                 return;
             };
+            if matches!(outcome, InitialOpenOutcome::Failed)
+                && matches!(stage, InitialOpenStage::PlayerState)
+                && pending.begin_slot.take().is_some()
+            {
+                bump(&mut self.stats.initialisation_calls_ignored);
+            }
             match outcome {
                 InitialOpenOutcome::Deferred => {
                     pending.retry_ready = false;
@@ -6932,6 +6938,38 @@ mod tests {
         assert!(entry.peer.actor_channel_settled(channel));
         assert!(entry.peer.sequencer().notify().sent_records().is_empty());
         (socket, address, client)
+    }
+
+    #[test]
+    fn deferred_controller_reports_live_sequence_and_failed_begin_counts_once() {
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let mut config = *entry.peer.config();
+        config.sent_capacity = 1;
+        entry.peer = LabPeer::from_cookie(&entry.cookie, config).unwrap();
+        entry.peer.ack_packet().unwrap();
+        assert!(lab.send_reply(address, &Reply::OpenPlayerController));
+        assert!(lab.peers[&address].player_controller_channel.is_none());
+        assert!(lab.peers[&address].initial_opens.is_some());
+        assert_eq!(lab.stats.player_controller_open_errors, 1);
+
+        // No PlayerState plan: the pending stage must terminate and count the
+        // retained request exactly once, without starting a profile exchange.
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.initial_opens = Some(PendingInitialOpens {
+            remaining: VecDeque::from([InitialOpenStage::PlayerState]),
+            controller_guids: Some((2, 4)),
+            player_state_is_host: true,
+            begin_slot: Some(3),
+            retry_ready: true,
+        });
+        lab.retry_initial_opens();
+        assert!(lab.peers[&address].initial_opens.is_none());
+        assert_eq!(lab.stats.initialisation_calls_ignored, 1);
+        assert_eq!(lab.stats.profile_user_requests_sent, 0);
+        lab.retry_initial_opens();
+        assert_eq!(lab.stats.initialisation_calls_ignored, 1);
     }
 
     /// Retry scheduling must not turn one pawn into several UID allocation

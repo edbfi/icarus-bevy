@@ -95,14 +95,13 @@ Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
 an unreadable one fails startup. Desired IDs count from 65,536 per world; the
 search uses an authored xorshift64 PRNG (seed 1), not MSVC `rand`. Claim,
 reservation and remap stores cap at 262,144 entries each. A failed claim skips
-the pawn open and counts `open_errors`; session removal frees the UID. When a
+the pawn open and counts `pawn_open_errors`; session removal frees the UID. When a
 joined client sends its character slot, `run` asks it for its user and
 character profiles through its backend proxy and replicates them on its
 `PlayerState`. Three failed responses close the session (the original kicks).
 Send pressure retains initial opens and profile phases; ACK/NAK progress retries
 them. Begin waits for PlayerState; pawn retries retain one UID claim (F-1011).
-It then asks
-for loadout and bestiary; once both have answered and the pawn is open, `run`
+`run` then asks for loadout and bestiary; once both have answered and the pawn is open, `run`
 replicates `PlayerCharacterID`, and a saved
 player character matching the login ID and the profile's slot gives the pawn its
 saved UID once every joined controller has sent `ServerFriendsListUpdated`, as the
