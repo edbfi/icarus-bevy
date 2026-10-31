@@ -57,6 +57,7 @@ MIN_CAPTURE_BYTES = 1024**2
 MAX_CAPTURE_BYTES = 2 * 1024**3
 CAPTURE_FILE = "game.pcap"
 CAPTURE_FILTER = f"udp port {GAME_PORT} or udp port {QUERY_PORT}"
+CAPTURE_START_SECONDS = 15
 ENGINE_INI = Path("Icarus/Saved/Config/WindowsServer/Engine.ini")
 DIRECT_ENGINE_INI = "[OnlineSubsystemSteam]\nbUseSteamNetworking=False\nbAllowP2PPacketRelay=False\n"
 SCENARIO_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
@@ -288,6 +289,8 @@ def capture_launch(approved: ApprovedRun, run: Path, name: str, token: str, serv
         raise ValueError("capture needs a bound image and the verified server ID")
     capture = run / "capture"
     capture.mkdir()
+    # tcpdump writes as the image's uid 1000, whichever host user launches.
+    capture.chmod(0o777)
     return ["docker", "run", "--detach", "--pull", "never", "--name", name,
             "--label", "icarus.research.run=" + name, "--label", "icarus.research.owner=" + token,
             "--cidfile", str(run / "capture-container.cid"), "--network", "container:" + server,
@@ -297,6 +300,12 @@ def capture_launch(approved: ApprovedRun, run: Path, name: str, token: str, serv
             "--mount", f"type=bind,src={capture},dst=/capture",
             approved.capture_image, "tcpdump", "-i", "eth0", "-p", "-n", "-U", "-s", "0",
             "-Z", "capture", "-w", "/capture/" + CAPTURE_FILE, CAPTURE_FILTER]
+
+
+def capture_running(budget: Budget, name: str, token: str, container: str) -> bool:
+    inspected = budget.run(["docker", "inspect", name])
+    _ = owned_container(inspected.stdout, name, token, container)
+    return parse_container_state(inspected.stdout).running
 
 
 def returned_to_lobby(log: str) -> bool:
@@ -343,6 +352,12 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
             if re.fullmatch(r"[0-9a-f]{64}", started) is None:
                 raise RuntimeError("unexpected capture container ID")
             capture_id = started
+            pcap = run / "capture" / CAPTURE_FILE
+            started_by = time.monotonic() + CAPTURE_START_SECONDS
+            while not pcap.is_file():
+                if not capture_running(observation, capture_name, token, capture_id) or time.monotonic() > started_by:
+                    raise RuntimeError("capture sidecar did not start writing its capture")
+                time.sleep(1)
         log = run / "home" / SERVER_LOG
         with (run / "resource-samples.jsonl").open("x") as samples:
             while time.monotonic() < observation.deadline:
@@ -351,6 +366,8 @@ def observe(approved: ApprovedRun, run: Path, name: str, token: str, argv: list[
                 inspected = observation.run(["docker", "inspect", container])
                 _ = owned_container(inspected.stdout, name, token, container)
                 pcap = run / "capture" / CAPTURE_FILE
+                if capture_id is not None and not capture_running(observation, capture_name, token, capture_id):
+                    raise RuntimeError("capture sidecar stopped during the run")
                 if (capture_id is not None and "truncated" not in capture and pcap.is_file()
                         and pcap.stat().st_size >= approved.capture_max_bytes):
                     capture.update(cleanup_container(run, capture_name, token, capture_id, observation,
