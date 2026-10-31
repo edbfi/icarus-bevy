@@ -403,7 +403,7 @@ pub enum Admission {
 
 /// Serve A2S on `socket` until `stop` is set; returns the datagrams answered.
 /// A request that cannot be answered or sent is dropped; only a failing
-/// socket read ends the service. The advert is copied only for verified
+/// socket read or a poisoned advert lock ends the service. The advert is copied only for verified
 /// requests.
 pub fn serve_queries(socket: &UdpSocket, advert: &Mutex<Advert>, stop: &AtomicBool) -> Result<u64> {
     socket.set_read_timeout(Some(Duration::from_millis(250)))?;
