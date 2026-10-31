@@ -105,7 +105,8 @@
 //! - Whole reliable actor bunches on this peer's opened PlayerController are
 //!   read as content blocks and fields. F-951 / controller net fields: field
 //!   124 (bound 183) receives `Server_BeginPlayerInitialisation(ChrSlot)` once
-//!   per session. Missing PlayerState, slot -1 and repeats count and do nothing;
+//!   per session. A pending PlayerState open retains the first valid Begin.
+//!   Absent/failed PlayerState, slot -1 and repeats count and do nothing;
 //!   the original failure wire is unknown. The controller's BackendProxy then
 //!   requests user and character profiles with independent three-failure limits.
 //!   Successful profiles replicate PlayerState handles 27..78; only then does
@@ -159,7 +160,7 @@
 //! values or numeric message fields.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt, io,
     net::{SocketAddr, SocketAddrV4, UdpSocket},
     time::{Duration, Instant},
@@ -612,7 +613,7 @@ pub struct PeerLabStats {
     pub reply_errors: u64,
     /// PlayerController opens sent after Join (opt-in, module docs).
     pub player_controller_opens_sent: u64,
-    /// PlayerController opens that could not be composed or framed.
+    /// PlayerController open attempts refused by composition, framing or temporary send pressure.
     pub player_controller_open_errors: u64,
     /// Actor bunches on unopened/closing channels or outside this peer's controller.
     pub actor_bunches_ignored: u64,
@@ -624,7 +625,7 @@ pub struct PeerLabStats {
     /// Unrecognized fields skipped by their declared payload length.
     pub controller_fields_ignored: u64,
     pub initialisation_slots_recorded: u64,
-    /// Slot -1, missing PlayerState or a repeated call; no failure wire is sent.
+    /// Slot -1, absent/failed PlayerState or a repeated call; pending opens retain Begin.
     pub initialisation_calls_ignored: u64,
     pub profile_user_requests_sent: u64,
     pub profile_character_requests_sent: u64,
@@ -702,11 +703,11 @@ pub struct PeerLabStats {
     pub player_history_errors: u64,
     /// Pawn opens sent after the PlayerController open (F-797).
     pub pawn_opens_sent: u64,
-    /// Pawn opens that could not be composed or framed.
+    /// Pawn open attempts refused by composition, framing or temporary send pressure.
     pub pawn_open_errors: u64,
     /// GameState opens sent after the PlayerController open (F-794).
     pub game_state_opens_sent: u64,
-    /// GameState opens that could not be composed or framed.
+    /// GameState open attempts refused by composition, framing or temporary send pressure.
     pub game_state_open_errors: u64,
     /// GameState property updates sent after its open was acked (F-805).
     pub game_state_updates_sent: u64,
@@ -728,15 +729,15 @@ pub struct PeerLabStats {
     pub game_state_updates_lost: u64,
     /// PlayerState opens sent after the PlayerController open (F-784).
     pub player_state_opens_sent: u64,
-    /// PlayerState opens that could not be composed or framed.
+    /// PlayerState open attempts refused by composition, framing or temporary send pressure.
     pub player_state_open_errors: u64,
     /// World manager opens sent after the PlayerState open (F-859).
     pub manager_opens_sent: u64,
-    /// World manager opens that could not be composed or framed.
+    /// World manager open attempts refused by composition, framing or temporary send pressure.
     pub manager_open_errors: u64,
     /// Saved quest actor opens sent with the world managers (`F-934`).
     pub quest_opens_sent: u64,
-    /// Saved quest actor opens that could not be composed or framed.
+    /// Saved quest actor open attempts refused by composition, framing or temporary send pressure.
     pub quest_open_errors: u64,
     /// `NMT_ActorChannelFailure` entries delivered in a valid login state.
     pub actor_channel_failures: u64,
@@ -1104,6 +1105,35 @@ enum PendingProfileExchange {
     Complete,
 }
 
+/// Only uncommitted initial opens remain here. The number of stages is bounded
+/// by the configured actor channels; committed opens stay in reliable transport.
+#[derive(Clone, Copy)]
+enum InitialOpenStage {
+    Controller,
+    Pawn,
+    GameState,
+    PlayerState,
+    Manager(usize),
+    Quest(usize),
+}
+
+struct PendingInitialOpens {
+    remaining: VecDeque<InitialOpenStage>,
+    /// Assigned once by the committed controller open, reused across deferrals.
+    controller_guids: Option<(u32, u32)>,
+    /// Preserve the Join-time host decision if a later peer joins while deferred.
+    player_state_is_host: bool,
+    /// First valid Begin received while the PlayerState stage is pending.
+    begin_slot: Option<i32>,
+    retry_ready: bool,
+}
+
+enum InitialOpenOutcome {
+    Committed,
+    Deferred,
+    Failed,
+}
+
 struct PeerEntry {
     peer: LabPeer,
     auth_request: Option<u64>,
@@ -1117,6 +1147,8 @@ struct PeerEntry {
     queued_pawn_temperature: Option<PawnTemperatureState>,
     /// Owned until this connection is removed, including idle/failure paths.
     pawn_uid: Option<i32>,
+    /// One UID claim retained while the initial pawn open waits for capacity.
+    pending_pawn_uid: Option<i32>,
     /// The saved character this pawn restored (F-950); its UID stays claimed
     /// for the saved record when the session ends.
     restored_character: Option<usize>,
@@ -1152,6 +1184,7 @@ struct PeerEntry {
     /// from a channel index another actor might occupy.
     player_controller_channel: Option<u32>,
     player_state_channel: Option<u32>,
+    initial_opens: Option<PendingInitialOpens>,
     /// Set only after this connection's tracker open was reliably queued.
     player_history_channel: Option<u32>,
     /// The latest published History has not yet been queued for this peer.
@@ -2209,8 +2242,9 @@ impl PeerLab {
 
     /// Assign each pawn a UID in a world-wide namespace. Configure and seed
     /// before admitting peers. Only handle 46 varies from the shared content.
-    /// The authored object counter starts at 65,536, advances once per attempt,
-    /// and fails closed at i32 exhaustion. It is not an engine object index.
+    /// The authored object counter starts at 65,536 and advances per allocation;
+    /// deferred opens retain their claim. Exhaustion fails closed. This is not
+    /// an engine object index.
     pub fn enable_actor_uids(&mut self, library: crate::actor_uids::ActorUidLibrary) -> Result<()> {
         ensure!(
             self.peers.is_empty(),
@@ -3156,6 +3190,9 @@ impl PeerLab {
             // The saved record keeps its UID, as its seed did before the join.
             self.restored_characters.retain(|held| *held != index);
         } else if let (Some(uid), Some(library)) = (entry.pawn_uid, &mut self.actor_uids) {
+            library.free(uid);
+        }
+        if let (Some(uid), Some(library)) = (entry.pending_pawn_uid, &mut self.actor_uids) {
             library.free(uid);
         }
         self.prune_incarnation_guids();
@@ -4125,6 +4162,7 @@ impl PeerLab {
                         queued_pawn_temperature: None,
                         peer,
                         pawn_uid: None,
+                        pending_pawn_uid: None,
                         restored_character: None,
                         restored_modifiers: Vec::new(),
                         restored_modifier_ticks: BTreeMap::new(),
@@ -4147,6 +4185,7 @@ impl PeerLab {
                         connection_id: None,
                         player_controller_channel: None,
                         player_state_channel: None,
+                        initial_opens: None,
                         player_history_channel: None,
                         player_history_pending: false,
                         player_history_retry_ready: false,
@@ -4207,6 +4246,9 @@ impl PeerLab {
                         entry.ack_pending = true;
                         if !summary.acked.is_empty() || !summary.naked.is_empty() {
                             entry.ack_capacity_blocked = false;
+                            if let Some(pending) = &mut entry.initial_opens {
+                                pending.retry_ready = true;
+                            }
                             if entry.pending_profile_exchange.is_some() {
                                 entry.profile_exchange_retry_ready = true;
                             }
@@ -4482,15 +4524,31 @@ impl PeerLab {
         };
         match call {
             ControllerCall::Begin(slot) => {
-                // Preserve the existing native policy for invalid/repeated Begin calls.
                 if slot == -1
                     || entry.character_slot.is_some()
                     || entry.player.is_none()
                     || entry
-                        .player_state_channel
-                        .is_none_or(|channel| !entry.peer.has_actor_channel(channel))
+                        .initial_opens
+                        .as_ref()
+                        .is_some_and(|pending| pending.begin_slot.is_some())
                 {
                     bump(&mut self.stats.initialisation_calls_ignored);
+                    return;
+                }
+                if entry
+                    .player_state_channel
+                    .is_none_or(|channel| !entry.peer.has_actor_channel(channel))
+                {
+                    if let Some(pending) = &mut entry.initial_opens
+                        && pending
+                            .remaining
+                            .iter()
+                            .any(|stage| matches!(stage, InitialOpenStage::PlayerState))
+                    {
+                        pending.begin_slot = Some(slot);
+                    } else {
+                        bump(&mut self.stats.initialisation_calls_ignored);
+                    }
                     return;
                 }
                 entry.character_slot = Some(slot);
@@ -5291,15 +5349,173 @@ impl PeerLab {
         true
     }
 
+    /// Start the bounded initial-open sequence once for this Join. Duplicate
+    /// Join is rejected by admission; a committed controller is never reopened.
+    fn send_player_controller_open(&mut self, address: SocketAddrV4) -> bool {
+        if self.player_controller_open.is_none() {
+            return false;
+        }
+        let player_state_is_host = !self.peers.iter().any(|(other, peer)| {
+            *other != address && peer.admission.state == ClientLoginState::Joined
+        });
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return false;
+        };
+        if entry.initial_opens.is_some() || entry.player_controller_channel.is_some() {
+            return false;
+        }
+        let mut remaining = VecDeque::from([InitialOpenStage::Controller]);
+        if self.pawn_open.is_some() {
+            remaining.push_back(InitialOpenStage::Pawn);
+        }
+        if self.game_state_open.is_some() {
+            remaining.push_back(InitialOpenStage::GameState);
+        }
+        if self.player_state_open.is_some() {
+            remaining.push_back(InitialOpenStage::PlayerState);
+        }
+        let mut extras: Vec<_> = self
+            .manager_opens
+            .iter()
+            .enumerate()
+            .map(|(index, (.., channel))| (*channel, InitialOpenStage::Manager(index)))
+            .chain(
+                self.quest_opens
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (_, channel))| (*channel, InitialOpenStage::Quest(index))),
+            )
+            .collect();
+        extras.sort_unstable_by_key(|&(channel, _)| channel);
+        remaining.extend(extras.into_iter().map(|(_, stage)| stage));
+        entry.initial_opens = Some(PendingInitialOpens {
+            remaining,
+            controller_guids: None,
+            player_state_is_host,
+            begin_slot: None,
+            retry_ready: false,
+        });
+        self.continue_initial_opens(address);
+        self.peers.get(&address).is_some_and(|entry| {
+            entry.initial_opens.is_some() || entry.player_controller_channel.is_some()
+        })
+    }
+
+    /// Retry only after packet notifications release capacity. In particular,
+    /// merely polling an unchanged full queue cannot spin or consume more IDs.
+    fn retry_initial_opens(&mut self) {
+        let ready: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                entry.initial_opens.as_mut().and_then(|pending| {
+                    std::mem::take(&mut pending.retry_ready).then_some(*address)
+                })
+            })
+            .collect();
+        for address in ready {
+            self.continue_initial_opens(address);
+        }
+    }
+
+    fn continue_initial_opens(&mut self, address: SocketAddrV4) {
+        loop {
+            let Some(pending) = self
+                .peers
+                .get(&address)
+                .and_then(|entry| entry.initial_opens.as_ref())
+            else {
+                return;
+            };
+            let Some(stage) = pending.remaining.front().copied() else {
+                if let Some(entry) = self.peers.get_mut(&address) {
+                    entry.initial_opens = None;
+                }
+                // Exhausted means no initial work remains, not that every open
+                // succeeded: permanent stage errors retain the existing policy.
+                self.refresh_members_after_join(address);
+                return;
+            };
+            let guids = pending.controller_guids;
+            let outcome = match stage {
+                InitialOpenStage::Controller => self.send_initial_controller_open(address),
+                InitialOpenStage::Pawn => match guids {
+                    Some((controller, player_state)) => {
+                        self.send_pawn_open(address, controller, player_state)
+                    }
+                    None => InitialOpenOutcome::Failed,
+                },
+                InitialOpenStage::GameState => self.send_game_state_open(address),
+                InitialOpenStage::PlayerState => match guids {
+                    Some((controller, player_state)) => {
+                        self.send_player_state_open(address, controller, player_state)
+                    }
+                    None => InitialOpenOutcome::Failed,
+                },
+                InitialOpenStage::Manager(index) => self.send_manager_open(address, index),
+                InitialOpenStage::Quest(index) => self.send_quest_open(address, index),
+            };
+            let Some(entry) = self.peers.get_mut(&address) else {
+                return;
+            };
+            let Some(pending) = &mut entry.initial_opens else {
+                return;
+            };
+            if matches!(outcome, InitialOpenOutcome::Failed)
+                && matches!(stage, InitialOpenStage::PlayerState)
+                && pending.begin_slot.take().is_some()
+            {
+                bump(&mut self.stats.initialisation_calls_ignored);
+            }
+            match outcome {
+                InitialOpenOutcome::Deferred => {
+                    pending.retry_ready = false;
+                    return;
+                }
+                InitialOpenOutcome::Failed if matches!(stage, InitialOpenStage::Controller) => {
+                    entry.initial_opens = None;
+                    return;
+                }
+                InitialOpenOutcome::Committed | InitialOpenOutcome::Failed => {
+                    // Preserve permanent-error behavior: later independent
+                    // stages are still attempted; only pressure retains a stage.
+                    let _ = pending.remaining.pop_front();
+                }
+            }
+        }
+    }
+
+    /// Queue pressure is recoverable only while existing traffic can drain.
+    /// A repeated refusal with an empty live queue consumes the failed stage
+    /// instead of retrying an impossible single-open size indefinitely.
+    fn initial_open_failure(
+        &mut self,
+        address: SocketAddrV4,
+        error: &anyhow::Error,
+        channel: u32,
+    ) -> InitialOpenOutcome {
+        let Some(entry) = self.peers.get(&address) else {
+            return InitialOpenOutcome::Failed;
+        };
+        if transport_capacity_can_drain(entry, error, channel) {
+            return InitialOpenOutcome::Deferred;
+        }
+        if entry.peer.is_failed() {
+            self.remove_peer(address);
+            bump(&mut self.stats.peers_failed);
+        }
+        InitialOpenOutcome::Failed
+    }
+
     /// Compose and send the joined peer's PlayerController open. GUIDs and
     /// export state are committed only once the datagram is built; a failure
     /// counts `player_controller_open_errors` and removes a failed peer.
-    fn send_player_controller_open(&mut self, address: SocketAddrV4) -> bool {
+    fn send_initial_controller_open(&mut self, address: SocketAddrV4) -> InitialOpenOutcome {
         let Some(plan) = &self.player_controller_open else {
-            return false;
+            return InitialOpenOutcome::Failed;
         };
         let Some(entry) = self.peers.get_mut(&address) else {
-            return false;
+            return InitialOpenOutcome::Failed;
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
@@ -5318,19 +5534,19 @@ impl PeerLab {
         });
         let (guids, sent) = match sent {
             Ok(sent) => sent,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.player_controller_open_errors);
-                if entry.peer.is_failed() {
-                    self.remove_peer(address);
-                    bump(&mut self.stats.peers_failed);
-                }
-                return false;
+                let channel = plan.channel_index;
+                return self.initial_open_failure(address, &error, channel);
             }
         };
         entry.player_controller_channel = Some(plan.channel_index);
         entry.backend_proxy = guids.components.first().copied();
         entry.player_data = guids.components.get(1).copied();
         entry.bestiary = guids.components.get(2).copied();
+        if let Some(pending) = &mut entry.initial_opens {
+            pending.controller_guids = Some((guids.actor, guids.player_state));
+        }
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
@@ -5338,72 +5554,50 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
-        if self.pawn_open.is_some() {
-            self.send_pawn_open(address, guids.actor, guids.player_state);
-        }
-        if self.game_state_open.is_some() {
-            self.send_game_state_open(address);
-        }
-        if self.player_state_open.is_some() {
-            self.send_player_state_open(address, guids.actor, guids.player_state);
-        }
-        let mut extra_opens: Vec<(u32, bool, usize)> = self
-            .manager_opens
-            .iter()
-            .enumerate()
-            .map(|(index, (.., channel))| (*channel, false, index))
-            .chain(
-                self.quest_opens
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (_, channel))| (*channel, true, index)),
-            )
-            .collect();
-        extra_opens.sort_unstable_by_key(|&(channel, ..)| channel);
-        for (_, is_quest, index) in extra_opens {
-            if is_quest {
-                self.send_quest_open(address, index);
-            } else {
-                self.send_manager_open(address, index);
-            }
-        }
-        self.refresh_members_after_join(address);
-        true
+        InitialOpenOutcome::Committed
     }
 
     /// Compose and send the player's pawn open (F-797) on its owner's
     /// connection, committing GUID and export state only once every datagram
     /// is built; a failure counts `pawn_open_errors`.
-    fn send_pawn_open(&mut self, address: SocketAddrV4, controller: u32, player_state: u32) {
+    fn send_pawn_open(
+        &mut self,
+        address: SocketAddrV4,
+        controller: u32,
+        player_state: u32,
+    ) -> InitialOpenOutcome {
         let (Some((plan, channel, content)), Some(controller_plan)) =
             (&self.pawn_open, &self.player_controller_open)
         else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let Some(entry) = self.peers.get_mut(&address) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let Some(connection) = entry.connection_id else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let mut content = content.clone();
-        let mut claimed = None;
+        let mut claimed = entry.pending_pawn_uid;
         if let Some(library) = &mut self.actor_uids {
-            let grant = self.next_pawn_object_id.and_then(|desired| {
-                self.next_pawn_object_id = desired.checked_add(1);
-                library.try_claim(desired, None).ok()
+            let grant = claimed.or_else(|| {
+                self.next_pawn_object_id.and_then(|desired| {
+                    self.next_pawn_object_id = desired.checked_add(1);
+                    library.try_claim(desired, None).ok()
+                })
             });
             match grant {
                 Some(uid) if uid > 0 => {
                     content.icarus_uid = Some(uid);
                     claimed = Some(uid);
+                    entry.pending_pawn_uid = Some(uid);
                 }
                 other => {
                     if let Some(uid) = other {
                         library.free(uid);
                     }
                     bump(&mut self.stats.pawn_open_errors);
-                    return;
+                    return InitialOpenOutcome::Failed;
                 }
             }
         }
@@ -5435,18 +5629,19 @@ impl PeerLab {
         );
         let (sent, temperature) = match sent {
             Ok(sent) => sent,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.pawn_open_errors);
-                if let (Some(uid), Some(library)) = (claimed, &mut self.actor_uids) {
+                if !transport_capacity_can_drain(entry, &error, *channel)
+                    && let Some(uid) = entry.pending_pawn_uid.take()
+                    && let Some(library) = &mut self.actor_uids
+                {
                     library.free(uid);
                 }
-                if entry.peer.is_failed() {
-                    self.remove_peer(address);
-                    bump(&mut self.stats.peers_failed);
-                }
-                return;
+                let channel = *channel;
+                return self.initial_open_failure(address, &error, channel);
             }
         };
+        entry.pending_pawn_uid = None;
         entry.pawn_uid = claimed;
         entry.pawn_temperature = Some(temperature);
         entry.queued_pawn_temperature = Some(temperature);
@@ -5459,17 +5654,18 @@ impl PeerLab {
             bump(&mut self.stats.pawn_opens_sent);
             self.complete_player_initialisation(address);
         }
+        InitialOpenOutcome::Committed
     }
 
     /// Compose and send the GameState open (F-794) over as many datagrams as
     /// it needs, committing GUID and export state only once every datagram
     /// is built; a failure counts `game_state_open_errors`.
-    fn send_game_state_open(&mut self, address: SocketAddrV4) {
+    fn send_game_state_open(&mut self, address: SocketAddrV4) -> InitialOpenOutcome {
         let Some(session) = &self.game_state_open else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let Some(entry) = self.peers.get_mut(&address) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
@@ -5478,7 +5674,7 @@ impl PeerLab {
             Ok(state) => state,
             Err(_) => {
                 bump(&mut self.stats.game_state_open_errors);
-                return;
+                return InitialOpenOutcome::Failed;
             }
         };
         let sent = compose_game_state_open(
@@ -5497,13 +5693,10 @@ impl PeerLab {
         });
         let sent = match sent {
             Ok(sent) => sent,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.game_state_open_errors);
-                if entry.peer.is_failed() {
-                    self.remove_peer(address);
-                    bump(&mut self.stats.peers_failed);
-                }
-                return;
+                let channel = session.channel_index;
+                return self.initial_open_failure(address, &error, channel);
             }
         };
         commit_exports(&mut exports, &sent);
@@ -5531,25 +5724,38 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.game_state_opens_sent);
         }
+        InitialOpenOutcome::Committed
     }
 
     /// Compose and send the PlayerState open the PlayerController references
     /// (F-784), committing GUID, export and host state only once the datagram
     /// is built; a failure counts `player_state_open_errors`.
-    fn send_player_state_open(&mut self, address: SocketAddrV4, owner: u32, player_state: u32) {
+    fn send_player_state_open(
+        &mut self,
+        address: SocketAddrV4,
+        owner: u32,
+        player_state: u32,
+    ) -> InitialOpenOutcome {
         let (Some(plan), Some(admission)) = (&self.player_state_open, &self.config.admission)
         else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         // The original sets bIsHost at the PlayerState's BeginPlay when the
         // first player controller's character is this PlayerState's pawn,
         // which does not exist yet (F-913). On the lab every joined player
         // has a pawn, so a player is host when no other player is joined.
-        let is_host = !self.peers.iter().any(|(other, peer)| {
-            *other != address && peer.admission.state == ClientLoginState::Joined
-        });
+        let is_host = self
+            .peers
+            .get(&address)
+            .and_then(|entry| entry.initial_opens.as_ref())
+            .map(|pending| pending.player_state_is_host)
+            .unwrap_or_else(|| {
+                !self.peers.iter().any(|(other, peer)| {
+                    *other != address && peer.admission.state == ClientLoginState::Joined
+                })
+            });
         let Some(entry) = self.peers.get_mut(&address) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
@@ -5584,13 +5790,10 @@ impl PeerLab {
         })();
         let sent = match sent {
             Ok(sent) => sent,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.player_state_open_errors);
-                if entry.peer.is_failed() {
-                    self.remove_peer(address);
-                    bump(&mut self.stats.peers_failed);
-                }
-                return;
+                let channel = plan.channel_index;
+                return self.initial_open_failure(address, &error, channel);
             }
         };
         entry.player_state_channel = Some(plan.channel_index);
@@ -5601,17 +5804,28 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_state_opens_sent);
         }
+        // The RPC carrying this open's capacity-releasing ACK was processed
+        // before retries. Begin exactly once now that its dependency exists.
+        let begin = self
+            .peers
+            .get_mut(&address)
+            .and_then(|entry| entry.initial_opens.as_mut())
+            .and_then(|pending| pending.begin_slot.take());
+        if let Some(slot) = begin {
+            self.controller_call(address, ControllerCall::Begin(slot));
+        }
+        InitialOpenOutcome::Committed
     }
 
     /// Compose and send world manager `index` (F-859), committing GUID and
     /// export state only once every datagram is built; a failure counts
     /// `manager_open_errors`.
-    fn send_manager_open(&mut self, address: SocketAddrV4, index: usize) {
+    fn send_manager_open(&mut self, address: SocketAddrV4, index: usize) -> InitialOpenOutcome {
         let Some((key, plan, channel)) = self.manager_opens.get(index) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let Some(entry) = self.peers.get_mut(&address) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
@@ -5631,13 +5845,10 @@ impl PeerLab {
         });
         let sent = match sent {
             Ok(sent) => sent,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.manager_open_errors);
-                if entry.peer.is_failed() {
-                    self.remove_peer(address);
-                    bump(&mut self.stats.peers_failed);
-                }
-                return;
+                let channel = *channel;
+                return self.initial_open_failure(address, &error, channel);
             }
         };
         commit_exports(&mut exports, &sent);
@@ -5652,17 +5863,18 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.manager_opens_sent);
         }
+        InitialOpenOutcome::Committed
     }
 
     /// Compose and send saved quest actor `index` (`C019`, `F-934`),
     /// committing GUID and export state only once every datagram is built; a
     /// failure counts `quest_open_errors`.
-    fn send_quest_open(&mut self, address: SocketAddrV4, index: usize) {
+    fn send_quest_open(&mut self, address: SocketAddrV4, index: usize) -> InitialOpenOutcome {
         let Some((plan, channel)) = self.quest_opens.get(index) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let Some(entry) = self.peers.get_mut(&address) else {
-            return;
+            return InitialOpenOutcome::Failed;
         };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
@@ -5681,13 +5893,10 @@ impl PeerLab {
         });
         let sent = match sent {
             Ok(sent) => sent,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.quest_open_errors);
-                if entry.peer.is_failed() {
-                    self.remove_peer(address);
-                    bump(&mut self.stats.peers_failed);
-                }
-                return;
+                let channel = *channel;
+                return self.initial_open_failure(address, &error, channel);
             }
         };
         commit_exports(&mut exports, &sent);
@@ -5697,6 +5906,7 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.quest_opens_sent);
         }
+        InitialOpenOutcome::Committed
     }
 
     fn send_acks(&mut self) {
@@ -5909,6 +6119,7 @@ impl PeerLab {
                 self.data(address, length, now);
             }
         }
+        self.retry_initial_opens();
         self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
@@ -6727,6 +6938,262 @@ mod tests {
         assert!(entry.peer.actor_channel_settled(channel));
         assert!(entry.peer.sequencer().notify().sent_records().is_empty());
         (socket, address, client)
+    }
+
+    #[test]
+    fn deferred_controller_reports_live_sequence_and_failed_begin_counts_once() {
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let mut config = *entry.peer.config();
+        config.sent_capacity = 1;
+        entry.peer = LabPeer::from_cookie(&entry.cookie, config).unwrap();
+        entry.peer.ack_packet().unwrap();
+        assert!(lab.send_reply(address, &Reply::OpenPlayerController));
+        assert!(lab.peers[&address].player_controller_channel.is_none());
+        assert!(lab.peers[&address].initial_opens.is_some());
+        assert_eq!(lab.stats.player_controller_open_errors, 1);
+
+        // No PlayerState plan: the pending stage must terminate and count the
+        // retained request exactly once, without starting a profile exchange.
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.initial_opens = Some(PendingInitialOpens {
+            remaining: VecDeque::from([InitialOpenStage::PlayerState]),
+            controller_guids: Some((2, 4)),
+            player_state_is_host: true,
+            begin_slot: Some(3),
+            retry_ready: true,
+        });
+        lab.retry_initial_opens();
+        assert!(lab.peers[&address].initial_opens.is_none());
+        assert_eq!(lab.stats.initialisation_calls_ignored, 1);
+        assert_eq!(lab.stats.profile_user_requests_sent, 0);
+        lab.retry_initial_opens();
+        assert_eq!(lab.stats.initialisation_calls_ignored, 1);
+    }
+
+    /// Retry scheduling must not turn one pawn into several UID allocation
+    /// attempts. The seeded collision also makes leaked historical remaps visible.
+    #[test]
+    fn pending_pawn_keeps_one_uid_and_releases_it_on_terminal_paths() {
+        use super::super::{
+            pawn_open::{PAWN_CHANNEL_INDEX, character_state_handle as h},
+            release::ReleaseProfile,
+        };
+        use crate::actor_uids::{ActorUidLibrary, FIRST_NATIVE_OBJECT_ID};
+
+        for terminal in ["commit", "disconnect", "permanent_failure"] {
+            let mut lab = prospect_refresh_lab();
+            lab.enable_pawn_open(
+                ReleaseProfile::release_3_0_32()
+                    .pawn_open_plan(PeerLabAdmission::default().map_url)
+                    .unwrap()
+                    .unwrap(),
+                PAWN_CHANNEL_INDEX,
+                PawnContent::default(),
+            )
+            .unwrap();
+            lab.enable_actor_uids(ActorUidLibrary::new(1)).unwrap();
+            lab.seed_actor_uids([FIRST_NATIVE_OBJECT_ID]).unwrap();
+            let (_socket, address, _) = acked_game_state_peer(&mut lab);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let cookie = entry.cookie;
+            let mut packet_config = *entry.peer.config();
+            packet_config.sent_capacity = 1;
+            // Replace only the authored transport fixture, leaving one live
+            // record so any otherwise valid pawn open encounters drainable pressure.
+            entry.peer = LabPeer::from_cookie(&cookie, packet_config).unwrap();
+            entry.game_state = None;
+            entry.connection_id = Some(1);
+            entry.peer.ack_packet().unwrap();
+            entry.initial_opens = Some(PendingInitialOpens {
+                remaining: VecDeque::from([InitialOpenStage::Pawn]),
+                controller_guids: Some((2, 4)),
+                player_state_is_host: false,
+                begin_slot: None,
+                retry_ready: true,
+            });
+            lab.retry_initial_opens();
+            let uid = FIRST_NATIVE_OBJECT_ID + 1;
+            assert_eq!(lab.peers[&address].pending_pawn_uid, Some(uid));
+            assert_eq!(lab.peers[&address].pawn_uid, None);
+            assert_eq!(lab.next_pawn_object_id, Some(FIRST_NATIVE_OBJECT_ID + 1));
+            assert_eq!(lab.claimed_actor_uids(), &[FIRST_NATIVE_OBJECT_ID, uid]);
+            let remaps = lab.actor_uids.as_ref().unwrap().remaps().to_vec();
+            assert_eq!(remaps, vec![(FIRST_NATIVE_OBJECT_ID, uid)]);
+            let first_errors = lab.stats.pawn_open_errors;
+            assert_eq!(first_errors, 1);
+
+            // Repeated scheduler passes without notifications do no work.
+            for _ in 0..4 {
+                lab.retry_initial_opens();
+            }
+            assert_eq!(lab.stats.pawn_open_errors, first_errors);
+            // Model bounded notification-driven attempts that still find the
+            // ring occupied. Each must reuse the original pending allocation.
+            for _ in 0..8 {
+                lab.peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .initial_opens
+                    .as_mut()
+                    .unwrap()
+                    .retry_ready = true;
+                lab.retry_initial_opens();
+                assert_eq!(lab.peers[&address].pending_pawn_uid, Some(uid));
+                assert_eq!(lab.peers[&address].pawn_uid, None);
+                assert_eq!(lab.next_pawn_object_id, Some(FIRST_NATIVE_OBJECT_ID + 1));
+                assert_eq!(lab.actor_uids.as_ref().unwrap().remaps(), remaps);
+                assert_eq!(lab.claimed_actor_uids(), &[FIRST_NATIVE_OBJECT_ID, uid]);
+            }
+            assert_eq!(lab.stats.pawn_open_errors, first_errors + 8);
+
+            match terminal {
+                "commit" => {
+                    // A roomy empty transport isolates the successful ownership
+                    // transfer from pending to published; no new allocation is needed.
+                    packet_config.sent_capacity = 256;
+                    lab.peers.get_mut(&address).unwrap().peer =
+                        LabPeer::from_cookie(&cookie, packet_config).unwrap();
+                    lab.peers
+                        .get_mut(&address)
+                        .unwrap()
+                        .initial_opens
+                        .as_mut()
+                        .unwrap()
+                        .retry_ready = true;
+                    lab.retry_initial_opens();
+                    assert_eq!(lab.stats.pawn_opens_sent, 1);
+                    assert_eq!(lab.peers[&address].pending_pawn_uid, None);
+                    assert_eq!(lab.peers[&address].pawn_uid, Some(uid));
+                    assert!(lab.peers[&address].initial_opens.is_none());
+                    assert_eq!(lab.claimed_actor_uids(), &[FIRST_NATIVE_OBJECT_ID, uid]);
+                    assert!(lab.remove_peer(address).is_some());
+                }
+                "disconnect" => {
+                    assert!(lab.remove_peer(address).is_some());
+                }
+                "permanent_failure" => {
+                    // A malformed authored temperature is a permanent composition
+                    // failure even while outstanding transport records remain.
+                    lab.pawn_open
+                        .as_mut()
+                        .unwrap()
+                        .2
+                        .character_state
+                        .insert(h::INTERNAL_TEMPERATURE, RepValue::Bool(true));
+                    lab.peers
+                        .get_mut(&address)
+                        .unwrap()
+                        .initial_opens
+                        .as_mut()
+                        .unwrap()
+                        .retry_ready = true;
+                    lab.retry_initial_opens();
+                    assert_eq!(lab.stats.pawn_opens_sent, 0);
+                    assert_eq!(lab.peers[&address].pending_pawn_uid, None);
+                    assert_eq!(lab.peers[&address].pawn_uid, None);
+                    assert!(lab.peers[&address].initial_opens.is_none());
+                    assert!(!lab.peers[&address].peer.is_failed());
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(lab.claimed_actor_uids(), &[FIRST_NATIVE_OBJECT_ID]);
+            assert_eq!(lab.next_pawn_object_id, Some(FIRST_NATIVE_OBJECT_ID + 1));
+            assert_eq!(lab.actor_uids.as_ref().unwrap().remaps(), remaps);
+        }
+    }
+
+    /// An initial open larger than the entire ring is not retryable once
+    /// that ring is empty. Existing traffic may defer its first attempt, but
+    /// unchanged polls cannot repeat it, and the real ACK path clears it.
+    #[test]
+    fn initial_open_oversize_stops_after_drain_and_unchanged_polls_do_not_retry() {
+        use super::super::{
+            game_state_open::handle,
+            packet::{Packet, Receiver, read_packet, write_packet},
+            packet_lab::client_cookie_seeds,
+            sequencing::PacketSequencer,
+        };
+
+        for initially_full in [false, true] {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, _) = acked_game_state_peer(&mut lab);
+            lab.game_state_open.as_mut().unwrap().state.values.insert(
+                handle::RICH_PRESENCE_GUID,
+                RepValue::Str(ArchiveText::text(&"G".repeat(1_500)).unwrap()),
+            );
+            // Reset only the authored transport fixture: one valid GameState
+            // open now needs more datagrams than this entire one-record ring.
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let cookie = entry.cookie;
+            let mut config = *entry.peer.config();
+            config.sent_capacity = 1;
+            entry.peer = LabPeer::from_cookie(&cookie, config).unwrap();
+            entry.game_state = None;
+            let outstanding = initially_full.then(|| entry.peer.ack_packet().unwrap());
+            entry.initial_opens = Some(PendingInitialOpens {
+                remaining: VecDeque::from([InitialOpenStage::GameState]),
+                controller_guids: None,
+                player_state_is_host: false,
+                begin_slot: None,
+                retry_ready: true,
+            });
+            let before = lab.stats.game_state_open_errors;
+            lab.retry_initial_opens();
+            assert_eq!(lab.stats.game_state_open_errors, before + 1);
+            assert_eq!(lab.peers[&address].initial_opens.is_some(), initially_full);
+            let packet_id = lab.peers[&address].peer.sequencer().out_packet_id();
+            for _ in 0..8 {
+                lab.poll();
+            }
+            assert_eq!(lab.stats.game_state_open_errors, before + 1);
+            assert_eq!(
+                lab.peers[&address].peer.sequencer().out_packet_id(),
+                packet_id
+            );
+
+            if let Some(outstanding) = outstanding {
+                assert!(
+                    !lab.peers[&address]
+                        .initial_opens
+                        .as_ref()
+                        .unwrap()
+                        .retry_ready,
+                    "the deferred stage waits for packet notification progress"
+                );
+                let (incoming, outgoing) = client_cookie_seeds(&cookie);
+                let mut client = PacketSequencer::new(incoming, outgoing, 8).unwrap();
+                let mut to_client = lab.config.packet.packet;
+                to_client.receiver = Receiver::Client;
+                let sent = read_packet(&outstanding, &to_client).unwrap();
+                let received = client.receive(&sent.header).unwrap().unwrap();
+                client.ack_seq(received.sequence, true).unwrap();
+                let ack = write_packet(
+                    &Packet {
+                        magic: 0,
+                        header: client.header().unwrap(),
+                        info: None,
+                        bunches: Vec::new(),
+                    },
+                    &lab.config.packet.packet,
+                )
+                .unwrap();
+                client.commit().unwrap();
+                socket.send(&ack).unwrap();
+                lab.poll();
+                assert_eq!(lab.stats.game_state_open_errors, before + 2);
+                assert!(lab.peers[&address].initial_opens.is_none());
+                assert!(lab.peers[&address].game_state.is_none());
+            }
+            let errors = lab.stats.game_state_open_errors;
+            for _ in 0..8 {
+                lab.poll();
+            }
+            assert_eq!(lab.stats.game_state_open_errors, errors);
+            assert!(lab.peers[&address].initial_opens.is_none());
+            assert!(!lab.peers[&address].peer.is_failed());
+        }
     }
 
     #[test]
