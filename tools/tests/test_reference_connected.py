@@ -147,6 +147,7 @@ class ConnectedTests(unittest.TestCase):
             run.mkdir()
             argv = capture_launch(approved, run, "icarus-connected-authored-capture", "token", server)
             self.assertTrue((run / "capture").is_dir())
+            self.assertEqual(stat.S_IMODE((run / "capture").stat().st_mode), 0o777)
             self.assertEqual(argv[argv.index("--network") + 1], "container:" + server)
             self.assertNotIn("--publish", argv)
             self.assertNotIn("--privileged", argv)

@@ -255,3 +255,57 @@ fn split_slices_reject_compression_and_bad_numbering() {
     assert!(split_response(&[0; 2_000], -1, 1_000).is_err());
     assert!(split_response(&[0; 2_000], 1, 0).is_err());
 }
+
+#[test]
+fn strictness_limits_hold_for_players_and_split_reassembly() {
+    // More than 255 players cannot be counted in one byte.
+    let crowd = Response::Players(
+        (0..256)
+            .map(|index| Player {
+                index: index as u8,
+                name: b"p".to_vec(),
+                score: 0,
+                duration: 0.0,
+            })
+            .collect(),
+    );
+    assert!(encode_response(&crowd).is_err());
+
+    // A player list that ends early is rejected.
+    let players = encode_response(&Response::Players(vec![Player {
+        index: 0,
+        name: b"authored".to_vec(),
+        score: 1,
+        duration: 2.0,
+    }]))
+    .unwrap();
+    assert!(parse_response(&players[..players.len() - 1]).is_err());
+
+    // A slice whose total differs from the first slice's is rejected.
+    let message = vec![0u8; 3_000];
+    let three = split_response(&message, 4, 1_000).unwrap();
+    let two = split_response(&message[..2_000], 4, 1_000).unwrap();
+    let mut assembler = SplitAssembler::default();
+    assert!(
+        assembler
+            .push(parse_split(&three[0]).unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert!(assembler.push(parse_split(&two[1]).unwrap()).is_err());
+
+    // Reassembly stops at its byte cap.
+    let mut assembler = SplitAssembler::default();
+    let mut capped = false;
+    for number in 0..64u8 {
+        let mut slice = SPLIT_HEADER.to_le_bytes().to_vec();
+        slice.extend_from_slice(&7i32.to_le_bytes());
+        slice.extend_from_slice(&[64, number, 0x78, 0x05]);
+        slice.extend_from_slice(&[0u8; 1_380]);
+        if assembler.push(parse_split(&slice).unwrap()).is_err() {
+            capped = true;
+            break;
+        }
+    }
+    assert!(capped);
+}
