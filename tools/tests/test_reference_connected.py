@@ -1,5 +1,6 @@
 """Connected launcher binding and launch-shape regressions; never invokes Docker."""
 
+import configparser
 import datetime
 import json
 import os
@@ -170,7 +171,7 @@ class ConnectedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _ = capture_launch(fixture.approve(), fixture.case / "other", "name", "token", server)
 
-    def test_direct_connection_method_writes_only_the_steam_networking_switches(self) -> None:
+    def test_direct_connection_method_selects_ip_driver_and_direct_advertisement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
             steam = fixture.root / "steamcmd"
@@ -189,6 +190,14 @@ class ConnectedTests(unittest.TestCase):
                     self.assertEqual(engine.is_file(), written)
                     if written:
                         self.assertEqual(engine.read_text(), DIRECT_ENGINE_INI)
+                        # Saved config consumes literal array keys; source-config
+                        # +/! directives left the packaged Steam driver selected.
+                        config = configparser.ConfigParser(interpolation=None)
+                        config.read_string(engine.read_text())
+                        for section in ("/Script/Engine.Engine", "/Script/Engine.GameEngine"):
+                            driver = config.get(section, "NetDriverDefinitions")
+                            self.assertIn('DefName="GameNetDriver"', driver)
+                            self.assertIn('DriverClassName="OnlineSubsystemUtils.IpNetDriver"', driver)
                     record = json_object(parse_json((run / "invocation.json").read_text()))
                     self.assertEqual(record["engine_ini_sha256"] is not None, written)
             fixture.write({"connection_method": "p2p"})

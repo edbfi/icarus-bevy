@@ -15,9 +15,9 @@ the game and query UDP ports with tcpdump as an unprivileged user, and is
 stopped before the server; a capture reaching its cap is stopped early.
 
 `connection_method: "direct"` writes an Engine.ini turning off
-`bUseSteamNetworking` and `bAllowP2PPacketRelay`, with which the server
-advertises `CONMETHOD=Direct` and clients join over the game UDP port instead
-of Steam P2P; without it the server keeps its packaged configuration.
+`bUseSteamNetworking` and `bAllowP2PPacketRelay` and selects `IpNetDriver`.
+The switches advertise `CONMETHOD=Direct`; the driver selection opens the
+game UDP listener. Without direct mode the packaged configuration is kept.
 """
 
 import argparse
@@ -60,7 +60,19 @@ CAPTURE_FILTER = f"udp port {GAME_PORT} or udp port {QUERY_PORT}"
 CAPTURE_START_SECONDS = 15
 CAPTURE_UID = 1000
 ENGINE_INI = Path("Icarus/Saved/Config/WindowsServer/Engine.ini")
-DIRECT_ENGINE_INI = "[OnlineSubsystemSteam]\nbUseSteamNetworking=False\nbAllowP2PPacketRelay=False\n"
+# Saved config requires literal array keys. The GameEngine section must
+# override its packaged Steam driver; the base Engine section alone does not.
+DIRECT_ENGINE_INI = (
+    "[OnlineSubsystemSteam]\nbUseSteamNetworking=False\nbAllowP2PPacketRelay=False\n"
+    "\n[/Script/Engine.Engine]\n"
+    'NetDriverDefinitions=(DefName="GameNetDriver",'
+    'DriverClassName="OnlineSubsystemUtils.IpNetDriver",'
+    'DriverClassNameFallback="OnlineSubsystemUtils.IpNetDriver")\n'
+    "\n[/Script/Engine.GameEngine]\n"
+    'NetDriverDefinitions=(DefName="GameNetDriver",'
+    'DriverClassName="OnlineSubsystemUtils.IpNetDriver",'
+    'DriverClassNameFallback="OnlineSubsystemUtils.IpNetDriver")\n'
+)
 SCENARIO_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,23}")
 SERVER_LOG = Path("Icarus/Saved/Logs/Icarus.log")
 PROSPECT_LOADED = "Prospect file loaded"
