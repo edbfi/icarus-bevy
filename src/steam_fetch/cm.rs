@@ -1,6 +1,7 @@
 //! Anonymous CM session over a TLS WebSocket (`wss://<endpoint>/cmsocket/`).
 //!
-//! ClientHello, then ClientLogon as an anonymous user; heartbeats follow the
+//! ClientHello, then ClientLogon as an anonymous user or an anonymous game
+//! server (which names the application it serves); heartbeats follow the
 //! interval in ClientLogOnResponse. Requests carry a source job id and match
 //! the response's target job id; unified service methods go through
 //! ServiceMethodCallFromClient with `target_job_name`. Steam's
@@ -23,8 +24,8 @@ use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
 use super::{
     frame::{self, Packet, emsg},
     proto::{
-        ClientHeartBeat, ClientHello, ClientLoggedOff, ClientLogon, ClientLogonResponse,
-        ProtoHeader,
+        ClientHeartBeat, ClientHello, ClientLoggedOff, ClientLogon, ClientLogonResponse, IpAddress,
+        PRIVATE_IP_MASK, ProtoHeader,
     },
 };
 
@@ -34,8 +35,18 @@ pub const PROTOCOL_VERSION: u32 = 65_581;
 const OS_TYPE_LINUX_UNKNOWN: u32 = (-203i32) as u32;
 /// Public universe, anonymous-user account type, account and instance 0.
 pub const ANONYMOUS_STEAM_ID: u64 = (1u64 << 56) | (10u64 << 52);
+/// Public universe, anonymous-game-server account type; Steam assigns the
+/// account in the logon response header.
+pub const ANONYMOUS_GAME_SERVER_STEAM_ID: u64 = (1u64 << 56) | (4u64 << 52);
 /// EResult values the fetcher distinguishes.
 pub const ERESULT_OK: i32 = 1;
+
+/// A private IPv4 address as Steam clients report it at logon.
+pub fn obfuscate_private_ip(ip: std::net::Ipv4Addr) -> IpAddress {
+    IpAddress {
+        v4: Some(u32::from(ip) ^ PRIVATE_IP_MASK),
+    }
+}
 
 /// Human name for an EResult, for diagnostics.
 pub fn eresult_name(value: i32) -> &'static str {
@@ -229,8 +240,18 @@ impl CmSession {
     }
 
     /// Wait until a packet satisfies `matches`, servicing heartbeats.
-    fn recv_matching(&mut self, mut matches: impl FnMut(&Packet) -> bool) -> Result<Packet> {
+    fn recv_matching(&mut self, matches: impl FnMut(&Packet) -> bool) -> Result<Packet> {
         let deadline = Instant::now() + self.timeouts.request;
+        self.recv_matching_until(matches, deadline)?
+            .context("CM request timed out")
+    }
+
+    /// As [`Self::recv_matching`], returning `None` at `deadline`.
+    fn recv_matching_until(
+        &mut self,
+        mut matches: impl FnMut(&Packet) -> bool,
+        deadline: Instant,
+    ) -> Result<Option<Packet>> {
         loop {
             while let Some(packet) = self.pending.pop_front() {
                 if packet.emsg == emsg::CLIENT_LOGGED_OFF {
@@ -244,10 +265,12 @@ impl CmSession {
                     );
                 }
                 if matches(&packet) {
-                    return Ok(packet);
+                    return Ok(Some(packet));
                 }
             }
-            ensure!(Instant::now() < deadline, "CM request timed out");
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
             self.heartbeat_if_due()?;
             match self.ws.read() {
                 Ok(Message::Binary(bytes)) => {
@@ -280,6 +303,38 @@ impl CmSession {
 
     /// Hello, anonymous logon and heartbeat setup.
     pub fn logon_anonymous(&mut self) -> Result<Logon> {
+        let logon = ClientLogon {
+            protocol_version: Some(PROTOCOL_VERSION),
+            cell_id: Some(0),
+            client_language: Some("english".to_owned()),
+            client_os_type: Some(OS_TYPE_LINUX_UNKNOWN),
+            ..ClientLogon::default()
+        };
+        self.logon(ANONYMOUS_STEAM_ID, &logon, "anonymous logon")
+    }
+
+    /// Hello and logon as an anonymous game server serving `app_id`, which
+    /// reports `private_ipv4` masked as Steam clients do.
+    pub fn logon_anonymous_game_server(
+        &mut self,
+        app_id: u32,
+        private_ipv4: std::net::Ipv4Addr,
+    ) -> Result<Logon> {
+        let logon = ClientLogon {
+            protocol_version: Some(PROTOCOL_VERSION),
+            client_os_type: Some(OS_TYPE_LINUX_UNKNOWN),
+            obfuscated_private_ip: Some(obfuscate_private_ip(private_ipv4)),
+            game_server_app_id: Some(i32::try_from(app_id).context("game server app id")?),
+            ..ClientLogon::default()
+        };
+        self.logon(
+            ANONYMOUS_GAME_SERVER_STEAM_ID,
+            &logon,
+            "anonymous game-server logon",
+        )
+    }
+
+    fn logon(&mut self, steam_id: u64, logon: &ClientLogon, what: &str) -> Result<Logon> {
         let hello = ClientHello {
             protocol_version: Some(PROTOCOL_VERSION),
         };
@@ -288,14 +343,8 @@ impl CmSession {
             &ProtoHeader::default(),
             &hello.encode_to_vec(),
         )?;
-        let logon = ClientLogon {
-            protocol_version: Some(PROTOCOL_VERSION),
-            cell_id: Some(0),
-            client_language: Some("english".to_owned()),
-            client_os_type: Some(OS_TYPE_LINUX_UNKNOWN),
-        };
         let header = ProtoHeader {
-            steamid: Some(ANONYMOUS_STEAM_ID),
+            steamid: Some(steam_id),
             client_sessionid: Some(0),
             ..ProtoHeader::default()
         };
@@ -306,13 +355,11 @@ impl CmSession {
         let eresult = response.eresult.unwrap_or(2);
         ensure!(
             eresult == ERESULT_OK,
-            "anonymous logon failed: eresult {eresult} ({}), extended {:?}",
+            "{what} failed: eresult {eresult} ({}), extended {:?}",
             eresult_name(eresult),
             response.eresult_extended
         );
-        if let Some(steam_id) = packet.header.steamid {
-            self.steam_id = steam_id;
-        }
+        self.steam_id = packet.header.steamid.unwrap_or(steam_id);
         if let Some(session_id) = packet.header.client_sessionid {
             self.session_id = session_id;
         }
@@ -332,6 +379,25 @@ impl CmSession {
             cell_id: response.cell_id.unwrap_or(0),
             heartbeat,
         })
+    }
+
+    /// Send a message without a job.
+    pub fn send(&mut self, emsg: u32, body: &[u8]) -> Result<()> {
+        let header = self.header();
+        self.send_raw(emsg, &header, body)
+    }
+
+    /// Service heartbeats and return the messages that arrive within `wait`
+    /// (at least one socket tick). A logoff from the CM is an error.
+    pub fn poll(&mut self, wait: Duration) -> Result<Vec<Packet>> {
+        let deadline = Instant::now() + wait;
+        let mut packets = Vec::new();
+        loop {
+            match self.recv_matching_until(|_| true, deadline)? {
+                Some(packet) => packets.push(packet),
+                None => return Ok(packets),
+            }
+        }
     }
 
     /// Send a job request and return the first response of `response_emsg`
@@ -417,6 +483,8 @@ mod tests {
     fn anonymous_identity_and_endpoints() {
         // Universe 1 (Public), account type 10 (AnonUser), account 0.
         assert_eq!(ANONYMOUS_STEAM_ID, 0x01A0_0000_0000_0000);
+        // Account type 4 (AnonGameServer).
+        assert_eq!(ANONYMOUS_GAME_SERVER_STEAM_ID, 0x0140_0000_0000_0000);
         assert_eq!(OS_TYPE_LINUX_UNKNOWN, 0xFFFF_FF35);
         assert_eq!(PROTOCOL_VERSION >> 16, 1);
         assert_eq!(
