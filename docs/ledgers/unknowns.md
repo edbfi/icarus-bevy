@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-10-30
+Last reconciled: 2026-10-31
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -84,3 +84,4 @@ Last reconciled: 2026-10-30
 | U-075 | When does the original send a loaded inventory's CurrentWeight? M-707 sends it for 2 of 63 item inventories (both Medicine_Bag), each weight x stack summed; RecalculateWeight runs on a dirty tick or an item's stack update | medium | resolved | C016 bInventoryWantsTick ticks dirty role-3 restore; stack-7 Weight + 0x16c fillable sum matches 98/98 M-707; gaps skip | F-866, F-933 |  |
 | U-076 | How should native C019 quest opens serialize the 270 CPF_Net-extending quest classes and evaluate ActiveQuests for the 365 Impure or true-valued 44 AllowChecksAfterCompletion Check() graphs that fail closed? | low | open | Derive Blueprint rep layouts for the 270 CPF_Net classes and runtime/world Check() evaluators as saves need them | F-864, F-934, F-935 |  |
 | U-077 | What do the survival controller's loadout preparation, AddAssociatedProspect and bestiary request/answer carry, and what sets the +0x5a0 and +0x860 conditions that gate completing a player's initialisation? | medium | resolved | The pawn reference and the loadout and bestiary answers gate completion; RPC indices and parameter trees read (F-958) | F-957, F-958 |  |
+| U-078 | Can the native server appear in a stock client's server browser (anonymous game-server logon with F-1002's listing fields, A2S answers) and advertise CONMETHOD Direct so clients connect over its game UDP port? | high | open | Native A2S responder and Steam registration; verify via GetServersAtAddress, then S2 direct join (F-1003) | F-1002, F-1003 |  |
