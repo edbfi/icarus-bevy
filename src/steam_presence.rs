@@ -13,6 +13,9 @@
 //! The query responder answers every request with a challenge first, as the
 //! original does, so an unverified source only ever receives a 9-byte reply.
 
+mod prospect;
+pub use prospect::encode_prospect_info;
+
 use std::{
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     sync::{

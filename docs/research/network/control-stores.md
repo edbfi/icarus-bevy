@@ -30,8 +30,9 @@ F-514 to F-539, F-579, F-712 to F-714, F-740, F-857; U-014, U-044 resolved).
 
 S2's original 3.0.34 direct join and Steam auth success are captured (F-1006),
 after selecting `IpNetDriver` (F-1005). Its pre-connection auth frames and
-Login identity are F-1007; release metadata is F-1008. Native replay and a
-no-client smoke pass (F-1009); stock-client acceptance remains open (U-038, U-078).
+Login identity are F-1007; release metadata is F-1008. Native Steam auth and
+control Join pass (F-1009); the authored prospect is selectable (F-1010),
+but geometry readiness blocks world entry (U-079; U-038 remains open).
 
 ## Open
 
@@ -39,4 +40,4 @@ no-client smoke pass (F-1009); stock-client acceptance remains open (U-038, U-07
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-780, M-791; M-1157..M-1168.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-780, M-791; M-1157..M-1175.

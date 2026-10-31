@@ -12,10 +12,9 @@ Last reconciled: 2026-10-31
 ## Summary
 
 This is an independent native server foundation, not an ICARUS-compatible
-server (F-487). One bounded stateless exchange has been observed against the
-original (F-253). Protocol interoperability, authentication, gameplay,
-world-data parity, official-save import and the release reliability and
-performance targets are not demonstrated.
+server (F-487). Native Steam authentication and control Join are observed,
+but world entry stalls (F-1009). Gameplay, world-data parity, official-save
+import and release reliability/performance targets remain unproven.
 
 Research continues offline and online under the user's standing instruction
 (F-968): original-server runs and connected stock-client scenarios need their
@@ -68,4 +67,4 @@ Offline work, in order; connected proof keeps its gates.
 4. Network sessions: opt-in loopback sessions pin the release and retry initialization under pressure (F-841, F-975). Returning-player restore requires profiles/friends lists and complete authored inputs (F-973, F-976 to F-993). Explicit modifier/temperature publication and caller-driven ticks: F-995 to F-1000; [actor replication](research/network/actor-replication.md). Next: qualify environmental inputs, initial timing and callback effects before automatic ticking (U-069); continue new-player initialization (F-947), refresh triggers (U-070), quest classes (U-076) and stock-client scenarios (U-038, U-052).
 5. Replication: capture replay/scheduling (F-762, F-761) and the opt-in schema-4/7/11 spatial bridge with dormant activation and replacement after close ACKs (F-938) are qualified with authored probes. Measured native costs: F-939, F-941, F-952. Next: further properties and saved-pose mappings (U-025); physics, rotation, velocity and stock-client behavior remain unqualified. See [actor channel](specs/network/actor-channel.md) and [configuration](runbooks/native-server.md#network-sessions-experimental).
 6. Reliability: compressed 72-hour schedules pass (F-872, F-873); 1,000 in-process/200 real-binary cycles show no session leaks (F-875). Paced hold history/limits: F-833, F-932. A 48 h attempt stopped at its disk guard 8.57 h after admission without a final probe summary; copied reload passes (M-1055). In 300 s sweeps of 8–64 sessions, tick p99 stays under 80 us and all 64 receive unreliable NetworkingStatus partials (F-877). Next: multi-day wall-clock holds with controller receipts and physical power loss (U-035); no ICARUS performance proof (F-871).
-7. Connected scenarios: S1 on 3.0.32 is F-701; S2 captures the stock client's direct join and Steam auth against original 3.0.34 (F-1005, F-1006). Native Steam listing: F-1004. S2 auth/Login framing and the two outstanding pawn checksums are resolved (F-1007, F-1008). Native offline replay and a no-client listener smoke are F-1009. Next: qualify fresh Steam ticket acceptance and the native join with a stock client; resolve remaining trait/RPC replay gaps (U-038, U-078).
+7. Connected scenarios: original 3.0.34 S2 is F-1005/F-1006; wire/release metadata is F-1007/F-1008. Native Steam auth and control Join pass (F-1009), with a selectable authored prospect (F-1010). Next: resolve the geometry readiness block (U-079) and trait/RPC replay gaps before another stock-client run (U-038).

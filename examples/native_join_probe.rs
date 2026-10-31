@@ -17,15 +17,22 @@ use bevy::prelude::{App, MinimalPlugins};
 use clap::Parser;
 use icarus_bevy::{
     config::NetworkConfig,
-    experimental::{peer_lab::PeerLab, release::ReleaseProfile},
+    experimental::{peer_lab::PeerLab, prospect_info::ProspectInfo, release::ReleaseProfile},
     network,
     steam_fetch::net::{self, HttpTimeouts, Tls},
     steam_presence::{
-        Advert, PresenceHandles, RegistrationTiming, logon_game_server, serve_queries, version_tag,
+        Advert, PresenceHandles, RegistrationTiming, encode_prospect_info, logon_game_server,
+        serve_queries, version_tag,
     },
     steam_service::{ServiceLimits, SteamService},
 };
 use serde_json::json;
+
+// Protocol identities observed in S2; the native world remains independently
+// authored and empty. These names do not import terrain or gameplay tables.
+const PROBE_MAP: &str = "/Game/Maps/Terrain_016_OLY/Terrain_016";
+const PROBE_PROSPECT_KEY: &str = "Outpost006_Olympus";
+const PROBE_PROSPECT_ID: &str = "native-auth-probe";
 
 #[derive(Parser)]
 #[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
@@ -55,6 +62,15 @@ fn main() -> Result<()> {
         "game and query ports must differ"
     );
     let profile = ReleaseProfile::load(&options.release)?;
+    let prospect = ProspectInfo {
+        prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
+        prospect_dt_key: PROBE_PROSPECT_KEY.encode_utf16().collect(),
+        lobby_name: options.name.encode_utf16().collect(),
+        expire_time: -1,
+        prospect_state: 2,
+        difficulty: 2,
+        ..ProspectInfo::default()
+    };
     let mut advert = Advert {
         server_steam_id: 0,
         name: options.name,
@@ -64,8 +80,8 @@ fn main() -> Result<()> {
         max_players: 1,
         players: Vec::new(),
         version_tag: version_tag(&profile.pin.project_version)?,
-        prospect: None,
-        prospect_info: None,
+        prospect: Some(PROBE_PROSPECT_ID.to_owned()),
+        prospect_info: Some(encode_prospect_info(&prospect)?),
     };
     advert.validate()?;
     let query = UdpSocket::bind(options.query_bind).context("bind query listener")?;
@@ -98,8 +114,20 @@ fn main() -> Result<()> {
         release_profile: Some(options.release),
         ..NetworkConfig::default()
     };
-    let mut bound = network::bind_authenticated(&config, options.game_bind, service.client())?
-        .context("network disabled")?;
+    let mut peer_config = network::peer_lab_config(&config);
+    peer_config
+        .admission
+        .as_mut()
+        .context("probe admission disabled")?
+        .map_url = PROBE_MAP;
+    let mut bound = network::bind_authenticated_with_parameters(
+        &config,
+        peer_config,
+        options.game_bind,
+        service.client(),
+    )?
+    .context("network disabled")?;
+    bound.lab.refresh_active_prospect(&prospect)?;
     network::apply_server_settings(&mut bound.lab, 60)?;
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);

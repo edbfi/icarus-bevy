@@ -24,8 +24,8 @@ outside this specification.
   as a hexadecimal FString and the Steam ID as u64; type 2 carries a
   four-byte Boolean. One outer terminator follows, with no connection
   sequence header or connection terminator. The captured Login uses type
-  index 3 and the same Steam identity. This observation does not validate
-  native Steam acceptance (U-038, U-078).
+  index 3 and the same Steam identity. Native auth success, Welcome and
+  control Join are captured (F-1009); world entry remains blocked (U-079).
 - Dispatch (F-284, F-757; M-170/E-011, M-170/E-013): a validity check precedes
   table dispatch, and a separate branch serves another operating mode.
 
@@ -132,7 +132,7 @@ outside this specification.
 
 ## Evidence
 
-- S2 handler and Login: M-1163, M-1164 (F-1007).
+- S2 handler/Login: M-1164, M-1173 (F-1007); native Join: M-1171 to M-1174.
 - Static: M-170 (`icarus-server-baseline`; M-170/E-011, M-170/E-013,
   M-170/E-021, M-170/E-022, M-170/E-024), M-146,
   [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),

@@ -56,8 +56,9 @@ using one native Steam CM session for presence and ticket authentication:
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
 Defaults: UDP 17777/27015, one player, authored empty-world inputs. It requires
 the [connected-run case](../gates.md#before-any-original-server-or-client-run).
-Auth tests, S2 replay and a no-client smoke pass (F-1009). Native acceptance
-and gameplay remain unproven. Wire/release evidence: F-1007, F-1008.
+The probe advertises an authored prospect (F-1010) and accepts authenticated
+control Join, but stalls before world entry (F-1009; U-079). Its password
+prompt has no validation; do not use a real password.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 

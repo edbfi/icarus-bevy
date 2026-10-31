@@ -1693,15 +1693,22 @@ pub fn bind_authenticated(
     address: SocketAddrV4,
     authenticator: crate::steam_service::AuthClient,
 ) -> Result<Option<BoundNetwork>> {
+    bind_authenticated_with_parameters(network, peer_lab_config(network), address, authenticator)
+}
+
+/// Connected research with explicit admission parameters, including the map
+/// shared by Welcome and every release-specific actor-open plan.
+pub fn bind_authenticated_with_parameters(
+    network: &NetworkConfig,
+    config: PeerLabConfig,
+    address: SocketAddrV4,
+    authenticator: crate::steam_service::AuthClient,
+) -> Result<Option<BoundNetwork>> {
     ensure!(
         network.release_profile.is_some(),
         "authenticated listener requires a release profile"
     );
-    bind_session(
-        network,
-        peer_lab_config(network),
-        Some((address, authenticator)),
-    )
+    bind_session(network, config, Some((address, authenticator)))
 }
 
 fn bind_session(
