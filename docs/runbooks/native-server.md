@@ -51,6 +51,14 @@ see each subcommand's `--help`.
 
 ## Network sessions (experimental)
 
+The unqualified `native_join_probe` example binds a public game listener,
+using one native Steam CM session for presence and ticket authentication:
+`cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
+Defaults: UDP 17777/27015, one player, authored empty-world inputs. It requires
+the [connected-run case](../gates.md#before-any-original-server-or-client-run).
+Auth tests, S2 replay and a no-client smoke pass (F-1009). Native acceptance
+and gameplay remain unproven. Wire/release evidence: F-1007, F-1008.
+
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
 ```toml

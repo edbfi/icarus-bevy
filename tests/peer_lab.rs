@@ -1568,6 +1568,7 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
         layout.push(icarus_bevy::experimental::rep_layout::RepCommand::Object);
     }
     let plan = PawnOpenPlan {
+        layout_version: icarus_bevy::experimental::rep_layout::PawnLayoutVersion::Legacy,
         archetype: vec![
             PathSegment::new("Default__TestPawn_C", 0x5151, false),
             PathSegment::new("/Game/Test/TestPawn", 0, false),

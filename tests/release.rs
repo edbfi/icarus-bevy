@@ -35,7 +35,47 @@ fn the_tracked_pin_is_consistent() {
     assert_eq!(pin.network_checksum, network_checksum(&pin.project_version));
 
     let profile = ReleaseProfile::load(&path).unwrap();
-    assert_eq!(profile, ReleaseProfile::release_3_0_32());
+    assert_eq!(profile, ReleaseProfile::release_3_0_34());
+}
+
+#[test]
+fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
+    use icarus_bevy::experimental::rep_layout::PawnLayoutVersion;
+    let profile = ReleaseProfile::release_3_0_34();
+    profile.validate().unwrap();
+    assert_eq!(profile.pin.build_id, 26_313_077);
+    assert_eq!(profile.pin.network_checksum, 4_087_436_304);
+    assert_eq!(profile.tags.data_table_tag_count, 130);
+    assert_eq!(profile.tags.ini_tag_count, 1_921);
+    assert_eq!(profile.tags.unique_node_count, 2_335);
+    assert_eq!(profile.tags.net_index_hash, 0x28cb_0f35);
+    assert_eq!(
+        (
+            profile.tags.total_bits,
+            profile.tags.effective_first_segment,
+            profile.tags.container_bits
+        ),
+        (12, 0, 6)
+    );
+    let pawn = profile.pawn.as_ref().unwrap();
+    assert_eq!(pawn.layout_version, PawnLayoutVersion::ReworkedCharacter);
+    assert_eq!(pawn.archetype[0].checksum, 537_502_963);
+    let previous = ReleaseProfile::release_3_0_32();
+    assert_eq!(pawn.components, previous.pawn.as_ref().unwrap().components);
+    assert_eq!(profile.player_controller, previous.player_controller);
+    assert_eq!(profile.player_state, previous.player_state);
+    assert_eq!(profile.game_state, previous.game_state);
+    assert_eq!(profile.managers, previous.managers);
+    let parsed = ReleaseProfile::parse(
+        "[release]\napp_id = 2089300\nbuild_id = 26313077\nproject_version = \"3.0.34.159385-rel-DangerousHorizons\"\nnetwork_checksum = 4087436304\n",
+    ).unwrap();
+    assert_eq!(parsed, profile);
+    assert!(
+        profile
+            .quest_open_base_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -905,6 +945,10 @@ fn pawn_sections_parse_and_fail_closed() {
     assert_ne!(parsed.pawn, ReleaseProfile::release_3_0_32().pawn);
     // The section round-trips through the plan.
     let pawn = parsed.pawn.as_ref().unwrap();
+    assert_eq!(
+        pawn.layout_version,
+        icarus_bevy::experimental::rep_layout::PawnLayoutVersion::Legacy
+    );
     assert_eq!(pawn.archetype[0].path, "Default__P_C");
     assert_eq!(pawn.components.len(), 3);
     let plan = parsed
@@ -925,6 +969,23 @@ fn pawn_sections_parse_and_fail_closed() {
     assert_eq!(plan.components[1].rep_bools, [(2, true)]);
     assert!(plan.components[0].rep_bools.is_empty());
     assert_eq!(plan.content.inventory_class[0].path, "Bag");
+    let versioned = section.replace(
+        "[pawn]\n",
+        "[pawn]\nlayout_version = \"reworked_character\"\n",
+    );
+    let versioned = ReleaseProfile::parse(&format!("{base}{versioned}")).unwrap();
+    let new_plan = versioned
+        .pawn_open_plan("/Game/Maps/Test/Test")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        new_plan.layout_version,
+        icarus_bevy::experimental::rep_layout::PawnLayoutVersion::ReworkedCharacter
+    );
+    assert_eq!(new_plan.layout.len(), 90);
+    assert_eq!(plan.layout.len(), 89);
+    let invalid = section.replace("[pawn]\n", "[pawn]\nlayout_version = \"future\"\n");
+    assert!(ReleaseProfile::parse(&format!("{base}{invalid}")).is_err());
     for bad in [
         section.replace("rep_bools = [[2, true]]", "rep_bools = [[3, true]]"),
         section.replace(

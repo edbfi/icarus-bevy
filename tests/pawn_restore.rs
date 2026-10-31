@@ -577,6 +577,88 @@ fn the_restored_update_decodes_through_the_readers() {
 }
 
 #[test]
+fn canonical_restored_actor_values_map_once_to_each_releases_wire_handles() {
+    let record = SavedPlayerState {
+        cosmetic_armour_overrides: vec![units("Armour_Head_A")],
+        ..saved()
+    };
+    let restored = restore_with_stomach(&record, &current_state(), 0);
+    let canonical = restored.pawn.clone();
+    for (profile, expected_handles) in [
+        (ReleaseProfile::release_3_0_31(), [58, 63, 64, 66]),
+        (ReleaseProfile::release_3_0_32(), [58, 63, 64, 66]),
+        (ReleaseProfile::release_3_0_34(), [58, 64, 65, 67]),
+    ] {
+        let plan = profile
+            .pawn_open_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .unwrap();
+        let stomach = plan
+            .components
+            .iter()
+            .position(|component| component.name == "Stomach")
+            .unwrap();
+        let key = ActorKey::Session(7);
+        let (mut cache, mut exports) = opened(&plan, key);
+        let update = compose_restored_pawn_update(
+            &mut cache,
+            &mut exports,
+            &plan,
+            key,
+            stomach,
+            &restored,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        let codec = ActorChannelCodec {
+            engine_net_version: profile.engine_network_version,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: ActorChannelLimits::default(),
+        };
+        let body = read_actor_bunch_body(&mut update.payload.reader(), false, &codec).unwrap();
+        let block = body
+            .blocks
+            .iter()
+            .find(|block| block.target == BlockTarget::Actor)
+            .unwrap();
+        let mut reader = block.payload.reader();
+        let decoded = read_rep_properties(
+            &mut reader,
+            &plan.layout,
+            &RepLayoutCodec {
+                actor: codec,
+                checksums: false,
+                limits: RepLayoutLimits::default(),
+            },
+        )
+        .unwrap();
+        assert!(reader.at_end());
+        assert_eq!(
+            decoded
+                .entries
+                .iter()
+                .map(|entry| entry.handle)
+                .collect::<Vec<_>>(),
+            expected_handles
+        );
+        assert_eq!(
+            decoded
+                .entries
+                .iter()
+                .map(|entry| &entry.value)
+                .collect::<Vec<_>>(),
+            canonical.values().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            restored.pawn, canonical,
+            "composition must not remap retained state"
+        );
+    }
+}
+
+#[test]
 fn restored_components_reexport_until_acknowledged_including_after_a_nak() {
     use icarus_bevy::experimental::{
         actor_channel::PackageMapState, rep_layout::StatPairRepState, stat_restore::StatDelta,

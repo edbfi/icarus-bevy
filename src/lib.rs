@@ -44,8 +44,10 @@ pub mod simulation;
 #[cfg(test)]
 #[path = "../tests/common/c001_inventory_source.rs"]
 pub(crate) mod source;
+pub mod steam_auth;
 pub mod steam_fetch;
 pub mod steam_presence;
+pub mod steam_service;
 
 /// Open without blocking so a FIFO or device cannot stall a read; callers then
 /// check the opened handle's file type.

@@ -6,18 +6,26 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688,
 F-689, F-712 to F-714, F-858). Scope: dedicated-server build 25621760 (M-168)
 unless a current-client (build 25793767) comparison is named.
-Last reconciled: 2026-10-22.
+Last reconciled: 2026-10-31.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
 
 Server control dispatch, notify tables, packet and bunch headers,
 `UControlChannel` byte order, queueing and fallback layouts, admission,
-`PreLogin` and join, across both binaries. Not covered: Steam packet-handler runtime
-initialization, compression or integrity protection.
+`PreLogin` and join, across both binaries, plus the bounded 3.0.34 S2
+Steam-handler exchange. Compression and complete runtime initialization remain
+outside this specification.
 
 ## Confirmed
 
+- S2 Steam authentication precedes Hello (F-1007). LSB-first outer bits are
+  stateless `0`, auth `1`, then an eight-bit type. Type 1 carries the ticket
+  as a hexadecimal FString and the Steam ID as u64; type 2 carries a
+  four-byte Boolean. One outer terminator follows, with no connection
+  sequence header or connection terminator. The captured Login uses type
+  index 3 and the same Steam identity. This observation does not validate
+  native Steam acceptance (U-038, U-078).
 - Dispatch (F-284, F-757; M-170/E-011, M-170/E-013): a validity check precedes
   table dispatch, and a separate branch serves another operating mode.
 
@@ -103,13 +111,8 @@ initialization, compression or integrity protection.
 
 ## Candidate
 
-- The `experimental` control, packet, sequencing, admission and lab modules
-  model the headers, the 20-entry fallback table, unique-net-id forms (F-543,
-  F-844), `clamp_client_netspeed`, `evaluate_pc_swap_target`,
-  `evaluate_actor_channel_failure` (F-740), and disconnected loopback
-  negotiation through `Hello`, `Challenge`, `Login`, `PreLogin`, `Welcome`,
-  `Netspeed`, `Swap`, `Debug` and `Join` / `SplitJoin` (F-874, F-689, F-712 to
-  F-714, F-858).
+- The `experimental` modules model the confirmed headers, fallback table and
+  disconnected loopback negotiation (F-874, F-689, F-712 to F-714, F-858).
 - `UWorld::NotifyControlMessage` (F-563, F-713, F-740) and `WelcomePlayer`
   (`0x1439fdeb0`, F-580): `IsClientMsgTypeValid` admits only
   `ExpectedClientLoginMsgType` (`0` Hello, `5` Login) in `ClientLoginState`
@@ -129,6 +132,7 @@ initialization, compression or integrity protection.
 
 ## Evidence
 
+- S2 handler and Login: M-1163, M-1164 (F-1007).
 - Static: M-170 (`icarus-server-baseline`; M-170/E-011, M-170/E-013,
   M-170/E-021, M-170/E-022, M-170/E-024), M-146,
   [research/archive](../../research/archive/2026-10-12-control-caller-limit.md),

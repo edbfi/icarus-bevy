@@ -1,0 +1,136 @@
+//! Bounded connected native qualification with Steam ticket verification.
+//! Uses authored empty-world defaults and release-specific initialization.
+//! No compatibility, gameplay, or official-save import claim.
+use std::{
+    net::{Ipv4Addr, SocketAddrV4, UdpSocket},
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result, ensure};
+use bevy::prelude::{App, MinimalPlugins};
+use clap::Parser;
+use icarus_bevy::{
+    config::NetworkConfig,
+    experimental::{peer_lab::PeerLab, release::ReleaseProfile},
+    network,
+    steam_fetch::net::{self, HttpTimeouts, Tls},
+    steam_presence::{
+        Advert, PresenceHandles, RegistrationTiming, logon_game_server, serve_queries, version_tag,
+    },
+    steam_service::{ServiceLimits, SteamService},
+};
+use serde_json::json;
+
+#[derive(Parser)]
+#[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
+struct Options {
+    #[arg(long)]
+    name: String,
+    #[arg(long, default_value = "0.0.0.0:17777")]
+    game_bind: SocketAddrV4,
+    #[arg(long, default_value = "0.0.0.0:27015")]
+    query_bind: SocketAddrV4,
+    #[arg(long, default_value = "127.0.0.1")]
+    private_ip: Ipv4Addr,
+    #[arg(long, default_value = "config/release.toml")]
+    release: PathBuf,
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(30..=1800))]
+    seconds: u64,
+}
+
+fn main() -> Result<()> {
+    let options = Options::parse();
+    ensure!(
+        options.game_bind.port() != 0 && options.query_bind.port() != 0,
+        "probe ports must be nonzero"
+    );
+    ensure!(
+        options.game_bind.port() != options.query_bind.port(),
+        "game and query ports must differ"
+    );
+    let profile = ReleaseProfile::load(&options.release)?;
+    let mut advert = Advert {
+        server_steam_id: 0,
+        name: options.name,
+        map: String::new(),
+        game_port: options.game_bind.port(),
+        query_port: options.query_bind.port(),
+        max_players: 1,
+        players: Vec::new(),
+        version_tag: version_tag(&profile.pin.project_version)?,
+        prospect: None,
+        prospect_info: None,
+    };
+    advert.validate()?;
+    let query = UdpSocket::bind(options.query_bind).context("bind query listener")?;
+    let tls = Tls::from_native_roots()?;
+    let http = net::http_agent(&tls, &HttpTimeouts::default());
+    let (session, logon, _) = logon_game_server(
+        &tls,
+        &http,
+        options.private_ip,
+        RegistrationTiming::default(),
+    )?;
+    advert.server_steam_id = logon.steam_id;
+    let presence = PresenceHandles {
+        advert: Arc::new(Mutex::new(advert)),
+        stop: Arc::new(AtomicBool::new(false)),
+    };
+    let stop = presence.stop.clone();
+    ctrlc::set_handler(move || stop.store(true, Ordering::Relaxed))?;
+    let deadline = Instant::now() + Duration::from_secs(options.seconds);
+    let service = SteamService::spawn(
+        session,
+        presence.clone(),
+        deadline,
+        ServiceLimits::default(),
+    )?;
+    let config = NetworkConfig {
+        enabled: true,
+        max_players: 1,
+        session_timeout_seconds: 30,
+        release_profile: Some(options.release),
+        ..NetworkConfig::default()
+    };
+    let mut bound = network::bind_authenticated(&config, options.game_bind, service.client())?
+        .context("network disabled")?;
+    network::apply_server_settings(&mut bound.lab, 60)?;
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    network::install_configured(&mut app, bound, &config)?;
+    let query_presence = presence.clone();
+    let responder =
+        thread::spawn(move || serve_queries(&query, &query_presence.advert, &query_presence.stop));
+    eprintln!(
+        "{}",
+        json!({"event":"native_join_ready","game_port":options.game_bind.port(),"query_port":options.query_bind.port(),"build":profile.pin.build_id,"seconds":options.seconds,"compatibility_proven":false})
+    );
+    while Instant::now() < deadline
+        && !presence.stop.load(Ordering::Relaxed)
+        && app.world().resource::<PeerLab>().is_admitting()
+    {
+        app.update();
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut lab = app.world_mut().resource_mut::<PeerLab>();
+    let counts = lab.session_counts();
+    let peak = lab.peak_peer_count();
+    lab.shutdown();
+    let service_result = service.stop_and_join();
+    let query_result = responder
+        .join()
+        .map_err(|_| anyhow::anyhow!("query worker panicked"))?;
+    service_result?;
+    let queries = query_result?;
+    println!(
+        "{}",
+        json!({"event":"native_join_stopped","sessions_before_shutdown":counts,"peak_peers":peak,"queries":queries,"compatibility_proven":false})
+    );
+    Ok(())
+}

@@ -105,6 +105,89 @@ pub struct GsStatusReply {
     pub is_secure: Option<bool>,
 }
 
+/// Auth protocol field numbers follow SteamDatabase/Protobufs, revision
+/// `1ad9f323b1ace1b76e5052fef141edccd11acb95`, steam/steammessages_base.proto
+/// and steam/steammessages_clientserver.proto.
+/// Ticket material is deliberately omitted by Debug.
+#[derive(Clone, PartialEq, prost::Message)]
+#[prost(skip_debug)]
+pub struct AuthTicket {
+    #[prost(uint32, optional, tag = "1")]
+    pub estate: Option<u32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub eresult: Option<u32>,
+    #[prost(fixed64, optional, tag = "3")]
+    pub steamid: Option<u64>,
+    #[prost(fixed64, optional, tag = "4")]
+    pub gameid: Option<u64>,
+    #[prost(uint32, optional, tag = "5")]
+    pub h_steam_pipe: Option<u32>,
+    #[prost(uint32, optional, tag = "6")]
+    pub ticket_crc: Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "7")]
+    pub ticket: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for AuthTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthTicket([REDACTED])")
+    }
+}
+
+/// Complete active authentication list; an ACK does not verify a peer.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientAuthList {
+    #[prost(uint32, optional, tag = "1")]
+    pub tokens_left: Option<u32>,
+    #[prost(uint32, optional, tag = "2")]
+    pub last_request_seq: Option<u32>,
+    #[prost(uint32, optional, tag = "3")]
+    pub last_request_seq_from_server: Option<u32>,
+    #[prost(message, repeated, tag = "4")]
+    pub tickets: Vec<AuthTicket>,
+    #[prost(uint32, repeated, packed = "false", tag = "5")]
+    pub app_ids: Vec<u32>,
+    #[prost(uint32, optional, tag = "6")]
+    pub message_sequence: Option<u32>,
+}
+
+/// List receipt only. Sequence/job echoing is not a reliable validation signal.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ClientAuthListAck {
+    #[prost(uint32, repeated, packed = "false", tag = "1")]
+    pub ticket_crc: Vec<u32>,
+    #[prost(uint32, repeated, packed = "false", tag = "2")]
+    pub app_ids: Vec<u32>,
+    #[prost(uint32, optional, tag = "3")]
+    pub message_sequence: Option<u32>,
+}
+
+/// Asynchronous validation/revocation; absent response must not default to OK.
+#[derive(Clone, PartialEq, prost::Message)]
+#[prost(skip_debug)]
+pub struct ClientTicketAuthComplete {
+    #[prost(fixed64, optional, tag = "1")]
+    pub steam_id: Option<u64>,
+    #[prost(fixed64, optional, tag = "2")]
+    pub game_id: Option<u64>,
+    #[prost(uint32, optional, tag = "3")]
+    pub estate: Option<u32>,
+    #[prost(uint32, optional, tag = "4")]
+    pub eauth_session_response: Option<u32>,
+    #[prost(uint32, optional, tag = "6")]
+    pub ticket_crc: Option<u32>,
+    #[prost(uint32, optional, tag = "7")]
+    pub ticket_sequence: Option<u32>,
+    #[prost(fixed64, optional, tag = "8")]
+    pub owner_steam_id: Option<u64>,
+}
+
+impl std::fmt::Debug for ClientTicketAuthComplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClientTicketAuthComplete([REDACTED])")
+    }
+}
+
 /// `CMsgGameServerData.Player`.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct GameServerPlayer {

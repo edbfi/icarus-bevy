@@ -29,9 +29,13 @@ pub mod emsg {
     pub const GS_STATUS_REPLY: u32 = 774;
     pub const GS_SERVER_TYPE: u32 = 908;
     pub const AM_GAME_SERVER_UPDATE: u32 = 4331;
+    pub const CLIENT_TICKET_AUTH_COMPLETE: u32 = 5429;
+    pub const CLIENT_REQUEST_AUTH_LIST: u32 = 5431;
+    pub const CLIENT_AUTH_LIST: u32 = 5432;
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY: u32 = 5438;
     pub const CLIENT_GET_DEPOT_DECRYPTION_KEY_RESPONSE: u32 = 5439;
     pub const CLIENT_LOGON: u32 = 5514;
+    pub const CLIENT_AUTH_LIST_ACK: u32 = 5575;
     pub const CLIENT_PICS_PRODUCT_INFO_REQUEST: u32 = 8903;
     pub const CLIENT_PICS_PRODUCT_INFO_RESPONSE: u32 = 8904;
     pub const CLIENT_PICS_ACCESS_TOKEN_REQUEST: u32 = 8905;
