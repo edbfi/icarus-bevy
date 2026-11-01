@@ -1869,6 +1869,37 @@ fn reliable_actor_sends_classify_live_ring_pressure_without_committing() {
 }
 
 #[test]
+fn reliable_control_sends_classify_channel_pressure_without_committing() {
+    let mut config = PacketLabConfig::new(LIMITS);
+    config.sent_capacity = MAX_PENDING_RELIABLE + 1;
+    let mut peer = LabPeer::from_cookie(&COOKIE, config).unwrap();
+    for _ in 0..MAX_PENDING_RELIABLE {
+        peer.reliable_control_packet(challenge("pending")).unwrap();
+    }
+    let before = format!("{peer:?}");
+    let next = peer.sequencer().out_packet_id();
+    for error in [
+        peer.reliable_control_packet(challenge("refused"))
+            .unwrap_err(),
+        peer.reliable_control_close(0).unwrap_err(),
+    ] {
+        assert_eq!(
+            error.downcast_ref::<SendCapacityError>(),
+            Some(&SendCapacityError::ReliableControlQueue {
+                capacity: MAX_PENDING_RELIABLE
+            })
+        );
+        assert_eq!(
+            error.to_string(),
+            "255 outgoing reliable control bunches are unacknowledged"
+        );
+    }
+    assert_eq!(format!("{peer:?}"), before);
+    assert_eq!(peer.sequencer().out_packet_id(), next);
+    assert!(!peer.is_failed());
+}
+
+#[test]
 fn reliable_actor_sends_classify_channel_pressure_without_committing() {
     let mut peer = update_peer(MAX_PENDING_RELIABLE + 2);
     for _ in 0..MAX_PENDING_RELIABLE {

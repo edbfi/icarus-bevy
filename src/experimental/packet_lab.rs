@@ -1596,7 +1596,9 @@ impl LabPeer {
                 );
                 ensure!(
                     self.control.out_bunches().len() < MAX_PENDING_RELIABLE,
-                    "{MAX_PENDING_RELIABLE} outgoing reliable control bunches are unacknowledged"
+                    SendCapacityError::ReliableControlQueue {
+                        capacity: MAX_PENDING_RELIABLE,
+                    }
                 );
                 let sequence = self
                     .control

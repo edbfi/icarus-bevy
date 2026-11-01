@@ -825,6 +825,188 @@ fn duplicate_handshake_echo_keeps_live_peer_state() {
 }
 
 #[test]
+fn control_challenge_retries_after_pressure_without_replaying_hello() {
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..Default::default()
+    };
+    config.packet.sent_capacity = 1;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+
+    // An invalid early Join produces an ACK and fills the only sent record.
+    client.exchange(&mut app, ControlMessage::Join, true);
+    let occupied = recv(&client.socket);
+    client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
+    assert!(try_recv(&client.socket).is_none());
+    assert_eq!(stats(&app).reply_errors, 1);
+    assert_eq!(stats(&app).control_challenges_sent, 0);
+    for _ in 0..8 {
+        app.update();
+    }
+    assert_eq!(stats(&app).reply_errors, 1, "unchanged polls do not retry");
+    // Another Hello cannot replace the first chosen Challenge or run policy.
+    client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
+    assert_eq!(stats(&app).reply_errors, 1);
+    assert!(try_recv(&client.socket).is_none());
+
+    client.receive_ack(&occupied);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Challenge { .. }]
+    ));
+    assert_eq!(stats(&app).control_challenges_sent, 1);
+    assert_eq!(stats(&app).reply_errors, 1);
+    for _ in 0..8 {
+        app.update();
+    }
+    assert!(try_recv(&client.socket).is_none());
+    client.exchange(&mut app, login(), false);
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Welcome { .. }]
+    ));
+    client.exchange(&mut app, ControlMessage::Join, false);
+    client.receive_ack(&recv(&client.socket));
+    assert_eq!(lab(&app).session_counts().joined, 1);
+    assert_eq!(stats(&app).peers_failed, 0);
+}
+
+#[test]
+fn control_welcome_retries_once_without_repeating_login() {
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission::default()),
+        ..Default::default()
+    };
+    config.packet.sent_capacity = 1;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
+    // Receiving bytes without advancing client sequencing withholds the ACK.
+    let challenge = recv(&client.socket);
+    client.exchange(&mut app, login(), false);
+    assert!(try_recv(&client.socket).is_none());
+    assert_eq!(stats(&app).logins_received, 1);
+    assert_eq!(stats(&app).welcomes_sent, 0);
+    assert_eq!(stats(&app).reply_errors, 1);
+    let mut duplicate = login();
+    if let ControlMessage::Login { url, .. } = &mut duplicate {
+        *url = ArchiveText::text("?Name=Replacement").unwrap();
+    }
+    client.exchange(&mut app, duplicate, false);
+    for _ in 0..8 {
+        app.update();
+    }
+    assert_eq!(stats(&app).logins_received, 1);
+    assert_eq!(stats(&app).reply_errors, 1);
+    assert!(try_recv(&client.socket).is_none());
+
+    client.receive_reply(&challenge);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Welcome { .. }]
+    ));
+    assert_eq!(stats(&app).welcomes_sent, 1);
+    assert_eq!(stats(&app).logins_received, 1);
+    for _ in 0..8 {
+        app.update();
+    }
+    assert!(try_recv(&client.socket).is_none());
+    client.exchange(&mut app, ControlMessage::Join, false);
+    client.receive_ack(&recv(&client.socket));
+    assert_eq!(lab(&app).session_counts().joined, 1);
+    assert_eq!(stats(&app).joins_succeeded, 1);
+    assert_eq!(stats(&app).peers_failed, 0);
+}
+
+#[test]
+fn closing_control_reply_waits_for_capacity_then_removes_peer_once() {
+    let mut config = PeerLabConfig::default();
+    config.packet.sent_capacity = 1;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
+    let challenge = recv(&client.socket);
+    // Admission is disabled, so this Login chooses a closing Failure.
+    client.exchange(&mut app, login(), false);
+    assert!(lab(&app).has_peer(client.address()));
+    assert_eq!(stats(&app).peers_closed, 0);
+    assert_eq!(stats(&app).reply_errors, 1);
+    client.exchange(&mut app, login(), false);
+    assert_eq!(stats(&app).logins_received, 1);
+    assert!(try_recv(&client.socket).is_none());
+    client.receive_reply(&challenge);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    let (_, messages) = client.receive_reply(&recv(&client.socket));
+    assert!(matches!(
+        messages.as_slice(),
+        [ControlMessage::Failure { .. }]
+    ));
+    assert!(!lab(&app).has_peer(client.address()));
+    assert_eq!(stats(&app).failures_sent, 1);
+    assert_eq!(stats(&app).peers_closed, 1);
+    assert_eq!(stats(&app).peers_failed, 0);
+    for _ in 0..8 {
+        app.update();
+    }
+    assert!(try_recv(&client.socket).is_none());
+    assert_eq!(stats(&app).peers_closed, 1);
+}
+
+#[test]
+fn oversized_control_reply_is_not_retried_after_drain() {
+    const LONG_URL: &str = concat!(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    );
+    let mut config = PeerLabConfig {
+        admission: Some(PeerLabAdmission {
+            redirect_url: LONG_URL,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    config.packet.packet.limits.max_packet_bytes = 256;
+    config.packet.sent_capacity = 1;
+    let (mut app, address) = lab_app(config);
+    let mut client = Client::connect(&mut app, address);
+    client.exchange(&mut app, short_hello("", LOCAL_VERSION), true);
+    client.receive_reply(&recv(&client.socket));
+    // Login ACKs the Challenge, leaving an empty ring. The authored Welcome
+    // exceeds the whole datagram cap, rather than encountering drainable pressure.
+    client.exchange(&mut app, login(), false);
+    client.receive_ack(&recv(&client.socket));
+    assert_eq!(stats(&app).reply_errors, 1);
+    assert_eq!(stats(&app).welcomes_sent, 0);
+    let (ack, _) = client.packet(Vec::new());
+    client.send(&ack);
+    app.update();
+    client.receive_ack(&recv(&client.socket));
+    for _ in 0..8 {
+        app.update();
+    }
+    assert_eq!(stats(&app).reply_errors, 1);
+    assert_eq!(stats(&app).welcomes_sent, 0);
+    assert_eq!(stats(&app).peers_failed, 0);
+    assert!(lab(&app).has_peer(client.address()));
+    assert!(try_recv(&client.socket).is_none());
+}
+
+#[test]
 fn admission_enforces_login_state_and_completes_welcome_and_join() {
     let admission = PeerLabAdmission {
         policy: AdmissionPolicy {
