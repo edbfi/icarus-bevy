@@ -19,13 +19,14 @@
 //! server's peer table, timeouts, ack cadence and limits were not observed.
 //! Nothing here demonstrates compatibility with any client.
 //!
+//! A drainable queue refusal retains one chosen reply until packet
+//! notifications permit a retry. Until it commits, later control dispatch is
+//! suppressed; admission checks and challenge generation are not replayed.
+//!
 //! Control replies follow the client and server builds' `NotifyControlMessage`
 //! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`) and are sent as
 //! reliable control bunches through [`LabPeer::reliable_control_packet`] (each
 //! also carries the ack state):
-//! A drainable queue refusal retains one chosen reply until packet
-//! notifications permit a retry. Until it commits, later control dispatch is
-//! suppressed; admission checks and challenge generation are not replayed.
 //! - When [`PeerLabConfig::admission`] is `Some`, any delivered control message
 //!   rejected by [`ConnectionLoginAdmission::is_client_msg_type_valid`] is
 //!   counted in [`PeerLabStats::invalid_state_messages`] and ignored without
