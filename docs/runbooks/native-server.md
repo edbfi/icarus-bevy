@@ -55,7 +55,7 @@ see each subcommand's `--help`.
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
 Defaults: UDP 17777/27015, one player, authored empty world;
 [connected-run case](../gates.md#before-any-original-server-or-client-run) required.
-Prospect listing (F-1010), auth and control Join pass; entry stalls (F-1009; U-079).
+Listing: F-1010. Auth/Join: one account, two runs; entry stalls (F-1009; U-079).
 Progress JSON flushes to stderr every 5 s (`--progress-interval-seconds`, 1–60);
 final stdout includes pre-shutdown counts. Readiness counts queues, channels and
 player phases; settled transport proves neither client spawn nor geometry
@@ -84,11 +84,10 @@ names/order; authored input supplies gameplay values (F-993).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
-Each supplied table must match its catalog's complete row count, names and order.
-Author values independently; never copy original
-gameplay tables. Missing tables cannot fall back to the pak. Omitted object fields
-use parser defaults; coverage and compatibility remain unproven. Without either
-input, authored lab defaults remain available.
+Schematic example, not a playable profile. Tables must match the catalog's row
+count, names and order. Author values independently; never copy gameplay tables.
+Missing tables have no pak fallback; omitted fields use parser defaults.
+Coverage and compatibility remain unproven. Without either input, lab defaults apply.
 
 Each pawn open carries a distinct positive `IcarusUID` (handle 46, F-948).
 Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
