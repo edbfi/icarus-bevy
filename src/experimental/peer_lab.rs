@@ -891,6 +891,35 @@ pub struct SessionCounts {
     pub invalid_state_messages: u64,
 }
 
+/// Bounded aggregate gauges for native join diagnostics. No payloads,
+/// identities, GUIDs, addresses or profile values are exposed. Player phases
+/// partition the primary joined players; queue/channel gauges are independent.
+/// Transport settlement is not client actor-spawn or geometry readiness proof.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ReadinessCounts {
+    pub pending_control_replies: usize,
+    pub pending_initial_opens: usize,
+    pub pending_initial_stages: usize,
+    pub pending_profile_exchanges: usize,
+    pub sent_packets_pending: usize,
+    pub control_reliable_pending: usize,
+    pub actor_reliable_pending: usize,
+    pub resend_bunches_pending: usize,
+    pub actor_channels_open: usize,
+    /// Open, non-closing channels with no unacknowledged reliable bunches.
+    pub actor_channels_reliable_settled: usize,
+    pub players_awaiting_begin: usize,
+    pub players_begin_waiting_for_player_state: usize,
+    pub players_awaiting_user_profile: usize,
+    pub players_awaiting_character_profile: usize,
+    /// Includes an unsent initialisation request and missing loadout/bestiary answers.
+    pub players_awaiting_initialisation: usize,
+    /// Both answers accepted, but completion has not yet committed.
+    pub players_awaiting_completion: usize,
+    pub players_awaiting_finalisation: usize,
+    pub players_finalised: usize,
+}
+
 /// The session key of connection `connection`'s pawn: session keys from
 /// `1 << 32` up (below that, the caller's, such as the GameState's).
 pub fn pawn_key(connection: u32) -> ActorKey {
@@ -4065,6 +4094,66 @@ impl PeerLab {
             .and_then(|entry| entry.character_slot)
     }
 
+    /// Count current transport queues and primary joined-player phases without
+    /// retaining per-peer detail or allocating output proportional to traffic.
+    pub fn readiness_counts(&self) -> ReadinessCounts {
+        let mut counts = ReadinessCounts::default();
+        for entry in self.peers.values() {
+            counts.pending_control_replies += usize::from(entry.pending_control_reply.is_some());
+            counts.pending_profile_exchanges +=
+                usize::from(entry.pending_profile_exchange.is_some());
+            if let Some(pending) = &entry.initial_opens {
+                counts.pending_initial_opens += 1;
+                counts.pending_initial_stages += pending.remaining.len();
+            }
+            counts.sent_packets_pending += entry.peer.sequencer().notify().sent_records().len();
+            counts.control_reliable_pending += entry.peer.pending_reliable();
+            counts.resend_bunches_pending += entry.peer.pending_resends();
+            let (open, settled, pending) = entry.peer.actor_queue_counts();
+            counts.actor_channels_open += open;
+            counts.actor_channels_reliable_settled += settled;
+            counts.actor_reliable_pending += pending;
+            if entry.player.is_none() {
+                continue;
+            }
+            if entry.profiles.finalised {
+                counts.players_finalised += 1;
+            } else if entry.profiles.completed {
+                counts.players_awaiting_finalisation += 1;
+            } else if entry.profiles.has_loadout && entry.profiles.has_bestiary {
+                counts.players_awaiting_completion += 1;
+            } else if entry.profiles.initialisation_requested
+                || matches!(
+                    entry.pending_profile_exchange,
+                    Some(PendingProfileExchange::Initialisation)
+                )
+            {
+                counts.players_awaiting_initialisation += 1;
+            } else if entry.profiles.outstanding == Some(ProfileKind::Character)
+                || matches!(
+                    entry.pending_profile_exchange,
+                    Some(
+                        PendingProfileExchange::Request(ProfileKind::Character)
+                            | PendingProfileExchange::Publish(ProfileKind::Character, _)
+                    )
+                )
+            {
+                counts.players_awaiting_character_profile += 1;
+            } else if entry.character_slot.is_some() {
+                counts.players_awaiting_user_profile += 1;
+            } else if entry
+                .initial_opens
+                .as_ref()
+                .is_some_and(|pending| pending.begin_slot.is_some())
+            {
+                counts.players_begin_waiting_for_player_state += 1;
+            } else {
+                counts.players_awaiting_begin += 1;
+            }
+        }
+        counts
+    }
+
     fn occupancy(&self, excluding: Option<SocketAddrV4>) -> Occupancy {
         let mut occupancy = Occupancy::default();
         for (address, entry) in &self.peers {
@@ -7005,6 +7094,180 @@ mod tests {
     }
 
     #[test]
+    fn readiness_snapshot_counts_real_transport_settlement_and_partitions_player_phases() {
+        use super::super::profile_exchange::ProfileExchange;
+
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        let settled = lab.readiness_counts();
+        assert_eq!(settled.actor_channels_open, 1);
+        assert_eq!(settled.actor_channels_reliable_settled, 1);
+        assert_eq!(settled.actor_reliable_pending, 0);
+        assert_eq!(settled.sent_packets_pending, 0);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.player = Some(RegisteredPlayer {
+            player_id: 1,
+            name_units: "PRIVATE-READINESS-NAME".encode_utf16().collect(),
+        });
+        assert_eq!(lab.readiness_counts().players_awaiting_begin, 1);
+
+        // A Begin retained behind PlayerState is distinct from no Begin.
+        lab.peers.get_mut(&address).unwrap().initial_opens = Some(PendingInitialOpens {
+            remaining: VecDeque::from([InitialOpenStage::PlayerState]),
+            controller_guids: Some((2, 4)),
+            player_state_is_host: false,
+            begin_slot: Some(17),
+            retry_ready: false,
+        });
+        let waiting = lab.readiness_counts();
+        assert_eq!(waiting.pending_initial_opens, 1);
+        assert_eq!(waiting.pending_initial_stages, 1);
+        assert_eq!(waiting.players_awaiting_begin, 0);
+        assert_eq!(waiting.players_begin_waiting_for_player_state, 1);
+        lab.peers.get_mut(&address).unwrap().initial_opens = None;
+
+        let cases = [
+            (
+                ProfileExchange::default(),
+                Some(PendingProfileExchange::Request(ProfileKind::User)),
+                "players_awaiting_user_profile",
+            ),
+            (
+                ProfileExchange {
+                    outstanding: Some(ProfileKind::User),
+                    ..Default::default()
+                },
+                None,
+                "players_awaiting_user_profile",
+            ),
+            (
+                ProfileExchange::default(),
+                Some(PendingProfileExchange::Publish(ProfileKind::User, vec![])),
+                "players_awaiting_user_profile",
+            ),
+            (
+                ProfileExchange {
+                    outstanding: Some(ProfileKind::Character),
+                    ..Default::default()
+                },
+                None,
+                "players_awaiting_character_profile",
+            ),
+            (
+                ProfileExchange::default(),
+                Some(PendingProfileExchange::Publish(
+                    ProfileKind::Character,
+                    vec![],
+                )),
+                "players_awaiting_character_profile",
+            ),
+            (
+                ProfileExchange::default(),
+                Some(PendingProfileExchange::Initialisation),
+                "players_awaiting_initialisation",
+            ),
+            (
+                ProfileExchange {
+                    initialisation_requested: true,
+                    has_loadout: true,
+                    ..Default::default()
+                },
+                None,
+                "players_awaiting_initialisation",
+            ),
+            (
+                ProfileExchange {
+                    initialisation_requested: true,
+                    has_loadout: true,
+                    has_bestiary: true,
+                    ..Default::default()
+                },
+                Some(PendingProfileExchange::Complete),
+                "players_awaiting_completion",
+            ),
+            (
+                ProfileExchange {
+                    completed: true,
+                    ..Default::default()
+                },
+                None,
+                "players_awaiting_finalisation",
+            ),
+            (
+                ProfileExchange {
+                    completed: true,
+                    finalised: true,
+                    ..Default::default()
+                },
+                None,
+                "players_finalised",
+            ),
+        ];
+        for (profiles, pending, expected_phase) in cases {
+            let entry = lab.peers.get_mut(&address).unwrap();
+            entry.character_slot = Some(17);
+            entry.profiles = profiles;
+            let pending_count = usize::from(pending.is_some());
+            entry.pending_profile_exchange = pending;
+            let snapshot = lab.readiness_counts();
+            assert_eq!(
+                snapshot,
+                lab.readiness_counts(),
+                "snapshot must not consume phases"
+            );
+            assert_eq!(snapshot.pending_profile_exchanges, pending_count);
+            let value = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(value[expected_phase], 1, "{expected_phase}");
+            let phase_sum: u64 = value
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with("players_"))
+                .map(|(_, count)| count.as_u64().unwrap())
+                .sum();
+            assert_eq!(phase_sum, 1, "primary player occupies exactly one phase");
+            let text = serde_json::to_string(&snapshot).unwrap();
+            assert!(!text.contains("PRIVATE-READINESS-NAME"));
+            assert!(!text.contains(&address.to_string()));
+        }
+        assert_eq!(
+            lab.stats.profile_user_requests_sent, 0,
+            "diagnostics never drives exchange"
+        );
+        let channel = lab.game_state_open.as_ref().unwrap().channel_index;
+        lab.peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .reliable_actor_bunch(
+                channel,
+                Payload::from_writer(super::super::packet::BitWriter::new()),
+            )
+            .unwrap();
+        let outstanding = lab.readiness_counts();
+        assert_eq!(outstanding.actor_channels_open, 1);
+        assert_eq!(outstanding.actor_channels_reliable_settled, 0);
+        assert_eq!(outstanding.actor_reliable_pending, 1);
+        assert_eq!(outstanding.sent_packets_pending, 1);
+        lab.remove_peer(address).unwrap();
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    #[test]
+    fn readiness_snapshot_aggregates_multiple_peers_and_clears_on_shutdown() {
+        let mut lab = prospect_refresh_lab();
+        let (_first, _, _) = acked_game_state_peer(&mut lab);
+        let (_second, _, _) = acked_game_state_peer(&mut lab);
+        let counts = lab.readiness_counts();
+        assert_eq!(counts.actor_channels_open, 2);
+        assert_eq!(counts.actor_channels_reliable_settled, 2);
+        assert_eq!(counts.actor_reliable_pending, 0);
+        assert_eq!(counts.sent_packets_pending, 0);
+        assert_eq!(lab.shutdown(), 2);
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    #[test]
     fn deferred_controller_reports_live_sequence_and_failed_begin_counts_once() {
         let mut lab = prospect_refresh_lab();
         let (_socket, address, _) = acked_game_state_peer(&mut lab);
@@ -7016,6 +7279,8 @@ mod tests {
         assert!(lab.send_reply(address, &Reply::OpenPlayerController));
         assert!(lab.peers[&address].player_controller_channel.is_none());
         assert!(lab.peers[&address].initial_opens.is_some());
+        assert_eq!(lab.readiness_counts().pending_initial_opens, 1);
+        assert_eq!(lab.readiness_counts().sent_packets_pending, 1);
         assert_eq!(lab.stats.player_controller_open_errors, 1);
 
         // No PlayerState plan: the pending stage must terminate and count the

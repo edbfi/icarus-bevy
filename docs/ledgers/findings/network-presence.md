@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-01
+Last reconciled: 2026-11-02
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -19,3 +19,4 @@ Last reconciled: 2026-11-01
 | F-1009 | Native S2 replay frames 441 game packets; a stock client authenticates and reaches control Join and initial actor opens, but stays at Preparing geometry without player initialization | measured | runtime-capture, authored-test; M-1166, M-1171 to M-1175 | high; one account, two runs; trait/RPC replay gaps; no world entry or gameplay proof | U-038, U-079 | active |
 | F-1010 | ProspectInfo_s is a base64 LE archive: scalar fields then associated members; enums are u8 and Booleans u32. SelectedDropPoint/custom settings are absent. Native encoding reproduces 595 B and makes an authored prospect selectable | observed | runtime-capture, authored-test; M-1170, M-1171 | high; 3.0.34, one advert and native configuration | U-038 | active |
 | F-1011 | Send pressure retains one control reply without repeating admission, initial opens and profile phases; Begin waits for PlayerState; pawn retries keep one UID claim, freed on disconnect/permanent failure | measured | authored-test; M-1176, M-1178, M-1180 | high; bounded authored queues, duplicates and teardown; no geometry-cause or stock-client proof | U-079 | active |
+| F-1012 | Readiness exposes aggregate queue/channel counts and partitions joined-player phases; probe progress flushes periodically and final output keeps pre-shutdown counts | measured | authored-test; M-1181 | high; authored transport/phase/cadence tests; reliable settlement is not client spawn or geometry proof; no stock-client qualification | U-079, U-038 | active |

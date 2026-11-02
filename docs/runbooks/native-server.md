@@ -51,14 +51,15 @@ see each subcommand's `--help`.
 
 ## Network sessions (experimental)
 
-The unqualified `native_join_probe` example binds a public game listener,
-using one native Steam CM session for presence and ticket authentication:
+`native_join_probe` uses a public listener and one native Steam CM session:
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
-Defaults: UDP 17777/27015, one player, authored empty-world inputs. It requires
-the [connected-run case](../gates.md#before-any-original-server-or-client-run).
-The probe advertises an authored prospect (F-1010) and accepts authenticated
-control Join, but stalls before world entry (F-1009; U-079). Its password
-prompt has no validation; do not use a real password.
+Defaults: UDP 17777/27015, one player, authored empty world;
+[connected-run case](../gates.md#before-any-original-server-or-client-run) required.
+Listing: F-1010. Auth/Join: one account, two runs; entry stalls (F-1009; U-079).
+Progress JSON flushes to stderr every 5 s (`--progress-interval-seconds`, 1–60);
+final stdout includes pre-shutdown counts. Readiness counts queues, channels and
+player phases; settled transport proves neither client spawn nor geometry
+readiness (F-1012). Password is unvalidated; use no real password.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
@@ -83,12 +84,10 @@ names/order; authored input supplies gameplay values (F-993).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
-Each supplied table must match its catalog's complete row count, names and order.
-The example is schematic, not a playable profile. Author values independently;
-never export or copy original gameplay tables. Missing tables cannot fall back
-to the pak. Omitted object fields retain the native parser's defaults; this
-does not establish complete gameplay coverage or compatibility. Without either
-input, the existing authored lab defaults remain available.
+Schematic example, not a playable profile. Tables must match the catalog's row
+count, names and order. Author values independently; never copy gameplay tables.
+Missing tables have no pak fallback; omitted fields use parser defaults.
+Coverage and compatibility remain unproven. Without either input, lab defaults apply.
 
 Each pawn open carries a distinct positive `IcarusUID` (handle 46, F-948).
 Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
