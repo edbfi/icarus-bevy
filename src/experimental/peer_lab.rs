@@ -19,6 +19,10 @@
 //! server's peer table, timeouts, ack cadence and limits were not observed.
 //! Nothing here demonstrates compatibility with any client.
 //!
+//! A drainable queue refusal retains one chosen reply until packet
+//! notifications permit a retry. Until it commits, later control dispatch is
+//! suppressed; admission checks and challenge generation are not replayed.
+//!
 //! Control replies follow the client and server builds' `NotifyControlMessage`
 //! (`F-530`, `F-531`, `F-579`, `F-712`, `F-713`, `F-740`) and are sent as
 //! reliable control bunches through [`LabPeer::reliable_control_packet`] (each
@@ -35,7 +39,7 @@
 //!   included, below two, as the server and client compare it, F-563): Challenge
 //!   (ID 3) carrying 32 lowercase hex digits of fresh OS randomness, advancing
 //!   [`ConnectionLoginAdmission::on_challenge_sent`]. The original challenge is
-//!   counter-derived (F-531); this string is a lab choice, is not retained and
+//!   counter-derived (F-531); this string is a lab choice, is never reported and
 //!   is never claimed to match.
 //! - A Hello with a nonempty token (the encryption path) is counted in
 //!   `hello_unanswered` and not answered: unsupported.
@@ -907,6 +911,7 @@ fn bump(counter: &mut u64) {
 }
 
 /// A control reply chosen for one delivered message.
+#[derive(Clone, Copy)]
 enum Reply {
     Challenge,
     Upgrade(u32),
@@ -1166,6 +1171,9 @@ struct PeerEntry {
     last_seen: Instant,
     ack_pending: bool,
     ack_capacity_blocked: bool,
+    /// One chosen control reply, without replaying admission or challenge entropy.
+    pending_control_reply: Option<(Reply, ControlMessage)>,
+    control_reply_retry_ready: bool,
     admission: ConnectionLoginAdmission,
     login_url_units: Vec<u16>,
     spectator: bool,
@@ -1233,6 +1241,7 @@ fn transport_capacity_can_drain(entry: &PeerEntry, error: &anyhow::Error, channe
             .peer
             .pending_actor_reliable(channel)
             .is_some_and(|pending| pending > 0),
+        Some(SendCapacityError::ReliableControlQueue { .. }) => entry.peer.pending_reliable() > 0,
         Some(SendCapacityError::ReliableActorWindow {
             pending,
             additional,
@@ -4174,6 +4183,8 @@ impl PeerLab {
                         last_seen: now,
                         ack_pending: false,
                         ack_capacity_blocked: false,
+                        pending_control_reply: None,
+                        control_reply_retry_ready: false,
                         admission: ConnectionLoginAdmission::new(),
                         login_url_units: Vec::new(),
                         spectator: false,
@@ -4246,6 +4257,9 @@ impl PeerLab {
                         entry.ack_pending = true;
                         if !summary.acked.is_empty() || !summary.naked.is_empty() {
                             entry.ack_capacity_blocked = false;
+                            if entry.pending_control_reply.is_some() {
+                                entry.control_reply_retry_ready = true;
+                            }
                             if let Some(pending) = &mut entry.initial_opens {
                                 pending.retry_ready = true;
                             }
@@ -5001,6 +5015,16 @@ impl PeerLab {
     /// Apply the reply policy (module docs) to delivered messages in order,
     /// stopping after a reply that closes the peer.
     fn answer(&mut self, address: SocketAddrV4, messages: &[Decoded]) {
+        // The admission transition has not committed while its reply waits.
+        // Suppress additional dispatch rather than retaining arbitrary client
+        // payloads or repeating PreLogin. Packet notifications still run above.
+        if self
+            .peers
+            .get(&address)
+            .is_some_and(|entry| entry.pending_control_reply.is_some())
+        {
+            return;
+        }
         for decoded in messages {
             let message = match decoded {
                 Decoded::Message(message) => message,
@@ -5308,14 +5332,53 @@ impl PeerLab {
                 ArchiveText::text(reason).map(|message| ControlMessage::Failure { message })
             }
         };
+        let message = match message {
+            Ok(message) => message,
+            Err(_) => {
+                bump(&mut self.stats.reply_errors);
+                return false;
+            }
+        };
+        self.send_control_reply(address, *reply, message)
+    }
+
+    fn retry_control_replies(&mut self) {
+        let ready: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                if !std::mem::take(&mut entry.control_reply_retry_ready) {
+                    return None;
+                }
+                entry
+                    .pending_control_reply
+                    .take()
+                    .map(|(reply, message)| (*address, reply, message))
+            })
+            .collect();
+        for (address, reply, message) in ready {
+            self.send_control_reply(address, reply, message);
+        }
+    }
+
+    fn send_control_reply(
+        &mut self,
+        address: SocketAddrV4,
+        reply: Reply,
+        message: ControlMessage,
+    ) -> bool {
         let Some(entry) = self.peers.get_mut(&address) else {
             return false;
         };
-        let datagram = match message.and_then(|message| entry.peer.reliable_control_packet(message))
-        {
+        let datagram = match entry.peer.reliable_control_packet(message.clone()) {
             Ok(datagram) => datagram,
-            Err(_) => {
+            Err(error) => {
                 bump(&mut self.stats.reply_errors);
+                if transport_capacity_can_drain(entry, &error, 0) {
+                    entry.pending_control_reply = Some((reply, message));
+                    entry.control_reply_retry_ready = false;
+                    return false;
+                }
                 if entry.peer.is_failed() {
                     self.remove_peer(address);
                     bump(&mut self.stats.peers_failed);
@@ -5328,7 +5391,7 @@ impl PeerLab {
         match reply {
             Reply::Challenge => entry.admission.on_challenge_sent(),
             Reply::Welcome { spectator } => {
-                entry.spectator = *spectator;
+                entry.spectator = spectator;
                 entry.admission.on_welcome_sent();
             }
             Reply::Upgrade(_) | Reply::Failure(_) => {
@@ -6119,6 +6182,7 @@ impl PeerLab {
                 self.data(address, length, now);
             }
         }
+        self.retry_control_replies();
         self.retry_initial_opens();
         self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();

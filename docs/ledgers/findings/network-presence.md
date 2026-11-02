@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-10-31
+Last reconciled: 2026-11-01
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -18,4 +18,4 @@ Last reconciled: 2026-10-31
 | F-1008 | 3.0.34 pawn checksum is 537502963; placement remains 1301726856. Retained server metadata adds bIsReworkedCharacter at pawn handle 60; later handles shift +1; tag hash 28cb0f35 | observed | runtime-capture, static-metadata; M-1173/ev_ba4f4af60fc6, M-1164 | medium; bounded wire and retained metadata comparison; no quest or full replication proof | U-038, U-078 | active |
 | F-1009 | Native S2 replay frames 441 game packets; a stock client authenticates and reaches control Join and initial actor opens, but stays at Preparing geometry without player initialization | measured | runtime-capture, authored-test; M-1166, M-1171 to M-1175 | high; one account, two runs; trait/RPC replay gaps; no world entry or gameplay proof | U-038, U-079 | active |
 | F-1010 | ProspectInfo_s is a base64 LE archive: scalar fields then associated members; enums are u8 and Booleans u32. SelectedDropPoint/custom settings are absent. Native encoding reproduces 595 B and makes an authored prospect selectable | observed | runtime-capture, authored-test; M-1170, M-1171 | high; 3.0.34, one advert and native configuration | U-038 | active |
-| F-1011 | Initial opens resume after send pressure: seven managers open, Begin waits for PlayerState, and pawn retries retain one UID claim; disconnect/permanent failure frees it | measured | authored-test; M-1176, M-1178 | high; bounded authored queues, duplicates and teardown; no geometry-cause or stock-client proof | U-079 | active |
+| F-1011 | Send pressure retains one control reply without repeating admission, initial opens and profile phases; Begin waits for PlayerState; pawn retries keep one UID claim, freed on disconnect/permanent failure | measured | authored-test; M-1176, M-1178, M-1180 | high; bounded authored queues, duplicates and teardown; no geometry-cause or stock-client proof | U-079 | active |

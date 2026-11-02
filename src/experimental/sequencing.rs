@@ -52,6 +52,8 @@ pub enum SendCapacityError {
     SentRecordRing { capacity: usize },
     /// A single reliable actor bunch would exceed its channel's window.
     ReliableBunchQueue { capacity: usize },
+    /// A single reliable control bunch would exceed the control window.
+    ReliableControlQueue { capacity: usize },
     /// A reliable actor update's parts would exceed its channel's window.
     ReliableActorWindow {
         pending: usize,
@@ -70,6 +72,12 @@ impl std::fmt::Display for SendCapacityError {
                 write!(
                     formatter,
                     "{capacity} outgoing reliable bunches are unacknowledged"
+                )
+            }
+            Self::ReliableControlQueue { capacity } => {
+                write!(
+                    formatter,
+                    "{capacity} outgoing reliable control bunches are unacknowledged"
                 )
             }
             Self::ReliableActorWindow { .. } => {

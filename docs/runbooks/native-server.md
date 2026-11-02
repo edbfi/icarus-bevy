@@ -99,8 +99,9 @@ the pawn open and counts `pawn_open_errors`; session removal frees the UID. When
 joined client sends its character slot, `run` asks it for its user and
 character profiles through its backend proxy and replicates them on its
 `PlayerState`. Three failed responses close the session (the original kicks).
-Send pressure retains initial opens and profile phases; ACK/NAK progress retries
-them. Begin waits for PlayerState; pawn retries retain one UID claim (F-1011).
+ACK/NAK retries opens, profiles and one pending control reply per peer;
+admission commits when queued. Begin waits for PlayerState; pawn retries keep
+one UID claim (F-1011).
 `run` then asks for loadout and bestiary; once both have answered and the pawn is open, `run`
 replicates `PlayerCharacterID`, and a saved
 player character matching the login ID and the profile's slot gives the pawn its
