@@ -210,7 +210,8 @@ def file_lock(info: Identity, path: Path, mode: int, timeout: float) -> Generato
         entry = os.fstat(fd)
         if not stat.S_ISREG(entry.st_mode) or entry.st_uid != os.getuid() or entry.st_nlink != 1:
             raise GuardError("guard lock must be an owned regular file without aliases")
-        acquire(fd, mode, timeout, path.name)
+        label = f"target lease ({info.target})" if path == info.lease else "build lock"
+        acquire(fd, mode, timeout, label)
         yield fd
     finally:
         # Do NOT LOCK_UN: an inherited descriptor shares this open description.
@@ -693,9 +694,9 @@ def group_memory(group: int) -> int:
             fields = (entry / "stat").read_text().rpartition(") ")[2].split()
             if len(fields) >= 3 and int(fields[2]) == group:
                 pages += int((entry / "statm").read_text().split()[1])
-        except FileNotFoundError:
-            continue
-        except PermissionError:
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            # procfs may return ESRCH after opening a process file when its
+            # task exits before the read; it is the same race as ENOENT.
             continue
     return pages * int(os.sysconf("SC_PAGE_SIZE"))
 

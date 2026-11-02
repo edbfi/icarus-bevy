@@ -12,8 +12,8 @@
 //! operation to give it the full case allowance; deadlines are never reset.
 //!
 //! Validation commands:
-//! cargo check --locked --example native_lifecycle_bench
-//! cargo test --locked --example native_lifecycle_bench
+//! python3 tools/cargo_guard.py check --locked --example native_lifecycle_bench
+//! python3 tools/cargo_guard.py test --locked --example native_lifecycle_bench
 //! cargo run --release --locked --example native_lifecycle_bench -- \
 //!   --data-dir work/<case>/absent-store --slots 3 --repeats 1 --warmups 0 --samples 1
 

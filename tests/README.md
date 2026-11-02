@@ -34,12 +34,12 @@ file-lock/reopen checks remain in their original modules. Grouped loopback tests
 bind ephemeral ports. No grouped suite installs environment/current-directory,
 signal, logger or panic-hook globals. Bevy apps retain the existing shared task
 pool initialization. Per-test resources and thread-local decode scopes remain
-unchanged; grouping still needs the lead's runtime validation for contention.
+unchanged. Validate new groupings with the full runtime suite to detect contention.
 
 `common/*`, `pak_writer/*` and `network.rs` stay in place. Library and example
 fixture includes keep their original paths. The native/save harness roots supply
 the crate-root `scalar`/`source` names expected by common inventory fixtures;
-grouped callers use those same types. Other fixture aliases stay module-local.
+grouped callers use those same types. Shared fixture modules are declared once per harness; callers import aliases.
 
 ## Fast layout gate
 
@@ -53,18 +53,18 @@ a new isolated target needs its source and a `subprocess` row. No test count is
 frozen. Run `node --test tests/harness-tools.test.cjs` for the gate's negative
 cases and inventory comparison tests; they use injected listings, never binaries.
 
-## Lead validation and measurement
+## Validation and measurement
 
-The recovered baseline JSON is already available at
-`work/build-storage-20261102/baseline-inventory.json` in the root checkout.
-It records 118 old targets, 236 agreeing executable variants, 1,466 tests and one
-ignored test. Preserve that receipt; do not rebuild the old target layout.
-These numbers describe this migration checkpoint, not future test-count limits.
+For a layout change, preserve a baseline inventory before migration. M-1184
+records this migration's baseline: 118 old targets, 236 agreeing executable
+variants, 1,466 test names and one ignored test. Its fixity manifest includes
+`baseline-inventory.json`. Do not rebuild that historical layout; retrieve the
+preserved receipt when available. It is local-private evidence, not a fixture
+shipped with a fresh checkout. These counts are not limits on future additions.
 
-Only the validating lead builds and enumerates the candidate, after normal guard
-admission/ownership review. Use the same profile as the recorded baseline. From
-the candidate checkout, set `BASELINE_INVENTORY` to that root-checkout receipt
-(or its preserved copy). The commands below require the guard's `--hold-target` mode:
+Use the same profile for baseline and candidate. Set `BASELINE_INVENTORY` to the
+preserved baseline JSON for the change being qualified. The validating lead
+builds and enumerates under normal guard admission and a runtime lease:
 
 ```bash
 HARNESS_CASE="$PWD/work/test-harness-layout-YYYYMMDD"

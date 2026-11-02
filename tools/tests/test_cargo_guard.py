@@ -798,5 +798,31 @@ def disk_usage(free: int) -> DiskUsage:
     return DiskUsage(100 * guard.GIB, 100 * guard.GIB - free, free)
 
 
+class GroupMemoryTests(unittest.TestCase):
+    def test_process_exit_during_stat_or_statm_keeps_other_group_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid in (123, 124):
+                entry = proc / str(pid)
+                entry.mkdir()
+                _ = (entry / "stat").write_text(f"{pid} (worker) S 1 77")
+                _ = (entry / "statm").write_text("10 3")
+            original = Path.read_text
+            for filename in ("stat", "statm"):
+                vanished = proc / "123" / filename
+
+                def read(path: Path) -> str:
+                    if path == vanished:
+                        raise ProcessLookupError(3, "No such process")
+                    return original(path)
+
+                with self.subTest(filename=filename), patch.object(guard, "PROC", proc), patch.object(Path, "read_text", new=read):
+                    self.assertEqual(guard.group_memory(77), 3 * os.sysconf("SC_PAGE_SIZE"))
+
+            with patch.object(guard, "PROC", proc), patch.object(Path, "read_text", side_effect=OSError(5, "I/O error")):
+                with self.assertRaises(OSError):
+                    _ = guard.group_memory(77)
+
+
 if __name__ == "__main__":
     _ = unittest.main()

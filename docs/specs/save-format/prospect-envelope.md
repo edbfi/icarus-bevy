@@ -127,6 +127,6 @@ unavailable.
   source and creates no state directory.
 
 ```bash
-cargo test --locked --test prospect --test cli
+python3 tools/cargo_guard.py test --locked --test prospect --test cli
 target/release/icarus-server inspect-save --source PATH [--inner-tags | --recorders | --stage-check [--expect-prospect-name NAME] | --preserve-check]
 ```
