@@ -68,6 +68,10 @@ IDs are permanent. Run the milestone checklist in `docs.md` at milestones.
 
 ## Validate and deliver
 
+Storage: follow [storage rules](.agents/rules/storage.md) and the
+[reporting runbook](docs/runbooks/storage.md). Keep full client/server inputs
+local; report cleanup candidates for approval before removing research data.
+
 ```bash
 prek run --all-files --hook-stage manual   # full suite
 python3 tools/docs_lint.py                  # documentation only
