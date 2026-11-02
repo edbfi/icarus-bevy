@@ -7,7 +7,7 @@ the existing project and scratch rules. Missing references, file extensions,
 case age and closed state alone never establish disposability.
 
 Before substantial downloads, builds or experiments, run the
-[storage report](../../docs/runbooks/storage.md). Account for expected peak
+[storage report](#reporting-procedure). Account for expected peak
 growth across active cases, copied binaries, official installations and all
 worktree targets. Existing per-case limits and the 30 GiB floor still apply;
 reporting does not reserve space or authorize an experiment.
