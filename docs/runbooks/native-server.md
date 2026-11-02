@@ -5,10 +5,10 @@ Headless foundation: [constraints](../architecture.md),
 
 ## Run
 
-Native Linux, pinned Rust 1.99.1 with Rustfmt/Clippy and headless
-Bevy 0.20.1; no GPU, display or Proton. Protocol row identities are fetched
-unattended/anonymously from the free official dedicated server (Steam app
-2089300), without steamcmd or the game client (F-828, F-831). With
+Native Linux: Rust 1.99.1 (Rustfmt/Clippy), headless Bevy 0.20.1; no GPU,
+display or Proton. Protocol row identities fetch anonymously/unattended from
+the free official server (Steam app 2089300), without steamcmd or game client
+(F-828, F-831). With
 `network.data_pak` unset, `run` discovers installed data. Either source requires
 `network.authored_gameplay` (F-993); `network_listening` reports
 `data_pak` and `data_pak_source` (`configured` or `installed`):
@@ -18,9 +18,9 @@ target/release/icarus-server install-official-data --data-dir /var/lib/icarus-na
 # -> /var/lib/icarus-native/official/Icarus/Content/Data/data.pak and install.json
 ```
 
-It prints and saves `official/install.json` (build, depot, manifest, size, SHA-1,
-SHA-256); rerun after an official update. `icarus-fetch --app 2089300 --file PATH --out DIR`
-fetches any official server file, and `--list` lists them.
+`official/install.json` records build, depot, manifest, size, SHA-1/SHA-256;
+rerun after updates. `icarus-fetch --app 2089300 --file PATH --out DIR`
+fetches official server files; `--list` lists them.
 
 ```bash
 python3 tools/cargo_guard.py build --release --locked
@@ -57,10 +57,17 @@ Builds: [guard](cargo-builds.md).
 Defaults: UDP 17777/27015, one player, authored empty world;
 [connected-run case](../gates.md#before-any-original-server-or-client-run) required.
 Listing: F-1010. Auth/Join: one account, two runs; entry stalls (F-1009; U-079).
+Ready reports the configured `authored_world`: `seed: 1`,
+`seed_initialised: true`, `flod_tile_count: 0`; stock-client entry is unqualified.
 Progress JSON flushes to stderr every 5 s (`--progress-interval-seconds`, 1–60);
-final stdout includes pre-shutdown counts. Readiness counts queues, channels and
-player phases; settled transport proves neither client spawn nor geometry
-readiness (F-1012). Password is unvalidated; use no real password.
+final stdout retains pre-shutdown counts. Readiness covers queues, channels and
+player phases (F-1012). Password is unvalidated; use no real password.
+`readiness.initial_open_outcomes` counts live peers by `controller`, `pawn`,
+`game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
+(queued), `failed` (terminal), `skipped` (unattempted after controller abort),
+`pending`, `deferred` (pending under drainable pressure). Completed outcomes
+remain until peer removal; `sequences_succeeded` requires no failure,
+otherwise `sequences_failed` increments. Neither proves ACK, spawn or geometry readiness.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
@@ -91,33 +98,29 @@ count, names and order. Author values independently; never copy gameplay tables.
 Missing tables have no pak fallback; omitted fields use parser defaults.
 Coverage and compatibility remain unproven. Without either input, lab defaults apply.
 
-Each pawn open carries a distinct positive `IcarusUID` (handle 46, F-948).
-Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
-an unreadable one fails startup. UID allocation: F-948. Claim/reservation/remap
-stores cap at 262,144 entries each. A failed claim skips
-the pawn open and counts `pawn_open_errors`; session removal frees the UID. When a
-joined client sends its character slot, `run` asks it for its user and
-character profiles through its backend proxy and replicates them on its
-`PlayerState`. Three failed responses close the session (the original kicks).
+Pawn opens carry distinct positive `IcarusUID`s (handle 46, F-948).
+Saved actor-recorder `IcarusActorGUID`s reserve positive IDs first; unreadable
+IDs fail startup. Claim/reservation/remap stores cap at 262,144 entries each.
+Failed claims skip the pawn open and count `pawn_open_errors`; peer removal
+frees the UID. A joined client's character slot triggers backend-proxy requests
+for user/character profiles, replicated on `PlayerState`. Three failed responses
+close the session (the original kicks).
 ACK/NAK retries opens, profiles and one pending control reply per peer;
 admission commits when queued. Begin waits for PlayerState; pawn retries keep
 one UID claim (F-1011).
-`run` then asks for loadout and bestiary; once both have answered and the pawn is open, `run`
-replicates `PlayerCharacterID`, and a saved
-player character matching the login ID and the profile's slot gives the pawn its
-saved UID once every joined controller has sent `ServerFriendsListUpdated`, as the
-original finalises (F-973, F-975); `run` then sends the record's saved pawn state, with levels
-and health clamped as the original does (F-964), and its saved inventories as
-the original restores them, unless a default it cannot compute is missing
-(F-979) with their weights (F-982), its saved modifiers (F-981) and its stats with the bounds they set (F-989).
+After loadout/bestiary responses and pawn open, `run` replicates
+`PlayerCharacterID`. Matching login ID/profile slot restores the saved UID once
+all joined controllers send `ServerFriendsListUpdated` (F-973, F-975), then
+saved pawn state with level/health clamps (F-964), inventories unless required
+defaults are unavailable (F-979), weights (F-982), modifiers (F-981) and bounded
+stats (F-989).
 Incomplete inventory/modifier/stat inputs withhold derived stats and saved
 health, oxygen, food and water (F-989); independent fields still restore. A new player, whom no saved
 controller matches, is added to the replicated History (F-967). That UID stays
-claimed after the session ends. A client that
-never answers never completes; the original's timeout only logs (F-959). A save
-the strict staging refuses supplies no saved characters, controllers or
-History: returning-player restore is off, and every joiner counts as new and is
-added to the History the tracker starts empty with.
+claimed after disconnect. Unanswered clients never complete; the original's
+timeout only logs (F-959). Rejected staging disables returning-player restore:
+no saved characters/controllers/History; all joiners enter an initially empty
+History as new players.
 
 Explicit library APIs (F-995, F-998, F-1000) share reliable ACK gating,
 coalescing, pressure retries and loss repair. `refresh_restored_modifier_times`
@@ -132,10 +135,9 @@ reference/cache flags, interval, elapsed time and fractional remainder.
 explicit owner role, interval enablement, elapsed time and interval.
 `tick_pawn_temperature` / `tick_restored_modifier` accept elapsed time and
 caller-owned effects, read current values and retain final values/timing.
-Polling and retries never replay callbacks. No automatic climate, expiry,
-destruction or persistence is inferred. Disconnect drops timing; reconnect
-requires configuration again. Getters return copies.
-Counts are exposed by `PeerLabStats` and `SessionCounts`.
+Polling/retries never replay callbacks or infer climate, expiry, destruction or
+persistence. Disconnect drops timing; reconnect needs configuration. Getters
+return copies; counts use `PeerLabStats`/`SessionCounts`.
 
 Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
 `run --authored-replication replication.json`. Disabled networking ignores it;
@@ -175,19 +177,16 @@ cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 
 
 `--seconds` accepts up to 72 h 2 min (259,320 s): each session's clock starts
 at its own Join, so 72 hours after full admission needs the margin.
-For long holds, `--progress-interval-seconds 60` flushes aggregate
-`incomplete: true` JSON lines to stderr; stdout holds only the final summary.
-Progress combines latest per-session receive windows, including ongoing gaps;
-it is not synchronized and cannot certify interrupted runs. Write failures
-stop probes after bounded work; single/concurrent holds report only error kinds
-for setup/close errors.
+Long holds: `--progress-interval-seconds 60` flushes aggregate `incomplete: true`
+JSON to stderr; stdout holds the final summary. Progress merges unsynchronized
+receive windows with ongoing gaps; it cannot certify interrupted runs. Write
+failures stop probes after bounded work. Setup/close errors report kinds only.
 
-Use a terminal-independent supervisor; retain both child exit receipts and the
-service manager's final exit status. Verify namespaces, affinity and cgroup
-limits: accepted user-service settings failed to enforce network isolation/CPU
-affinity here (M-1042). Explicit bubblewrap network namespace and `CPUAffinity`
-passed a loopback probe/supervisor tests (M-1043). Each run needs a fresh scope,
-frozen inputs and bounded owned unit; ongoing runs prove no duration.
+Use a terminal-independent supervisor; retain child and service-manager exit
+receipts. Verify namespaces, affinity and cgroup limits: accepted user-service
+settings failed isolation/affinity (M-1042); explicit bubblewrap namespace and
+`CPUAffinity` passed a loopback probe/supervisor tests (M-1043). Each run needs fresh scope, frozen
+inputs and a bounded owned unit; ongoing runs prove no duration.
 
 ## Replication scheduling (experimental)
 
