@@ -180,12 +180,12 @@ at its own Join, so 72 hours after full admission needs the margin.
 Long holds: `--progress-interval-seconds 60` flushes aggregate `incomplete: true`
 JSON to stderr; stdout holds the final summary. Progress merges unsynchronized
 receive windows with ongoing gaps; it cannot certify interrupted runs. Write
-failures stop bounded probes. Setup/close errors report kinds only.
+failures stop probes after bounded work. Setup/close errors report kinds only.
 
 Use a terminal-independent supervisor; retain child and service-manager exit
 receipts. Verify namespaces, affinity and cgroup limits: accepted user-service
 settings failed isolation/affinity (M-1042); explicit bubblewrap namespace and
-`CPUAffinity` passed authored tests (M-1043). Each run needs fresh scope, frozen
+`CPUAffinity` passed a loopback probe/supervisor tests (M-1043). Each run needs fresh scope, frozen
 inputs and a bounded owned unit; ongoing runs prove no duration.
 
 ## Replication scheduling (experimental)
