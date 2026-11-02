@@ -38,6 +38,9 @@ use serde_json::json;
 const PROBE_MAP: &str = "/Game/Maps/Terrain_016_OLY/Terrain_016";
 const PROBE_PROSPECT_KEY: &str = "Outpost006_Olympus";
 const PROBE_PROSPECT_ID: &str = "native-auth-probe";
+const PROBE_SEED: i32 = 1;
+const PROBE_SEED_INITIALISED: bool = true;
+const PROBE_FLOD_TILE_COUNT: i32 = 0;
 
 #[derive(Parser)]
 #[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
@@ -147,13 +150,16 @@ fn main() -> Result<()> {
     // Independently authored empty-world initialization, supplied before any
     // connection is polled. Connected world entry remains unqualified.
     bound.lab.extend_game_state_values(BTreeMap::from([
-        (handle::SEED, RepValue::Int(1)),
-        (handle::SEED_INITIALISED, RepValue::Bool(true)),
+        (handle::SEED, RepValue::Int(PROBE_SEED)),
+        (
+            handle::SEED_INITIALISED,
+            RepValue::Bool(PROBE_SEED_INITIALISED),
+        ),
     ]))?;
     let flod = profile
         .manager_open_plan(ManagerSlot::Flod, PROBE_MAP)?
         .context("probe release has no FLOD manager plan")?
-        .with_flod_tiles(0)?;
+        .with_flod_tiles(PROBE_FLOD_TILE_COUNT)?;
     bound.lab.add_manager_open(ManagerSlot::Flod, flod)?;
     network::apply_server_settings(&mut bound.lab, 60)?;
     let mut app = App::new();
@@ -164,7 +170,21 @@ fn main() -> Result<()> {
         thread::spawn(move || serve_queries(&query, &query_presence.advert, &query_presence.stop));
     let progress_interval = Duration::from_secs(options.progress_interval_seconds);
     let mut next_progress = Instant::now() + progress_interval;
-    let mut output_error = emit_progress(&json!({"event":"native_join_ready","game_port":options.game_bind.port(),"query_port":options.query_bind.port(),"build":profile.pin.build_id,"seconds":options.seconds,"progress_interval_seconds":options.progress_interval_seconds,"compatibility_proven":false})).err();
+    let mut output_error = emit_progress(&json!({
+        "event": "native_join_ready",
+        "game_port": options.game_bind.port(),
+        "query_port": options.query_bind.port(),
+        "build": profile.pin.build_id,
+        "seconds": options.seconds,
+        "progress_interval_seconds": options.progress_interval_seconds,
+        "authored_world": {
+            "seed": PROBE_SEED,
+            "seed_initialised": PROBE_SEED_INITIALISED,
+            "flod_tile_count": PROBE_FLOD_TILE_COUNT,
+        },
+        "compatibility_proven": false,
+    }))
+    .err();
     while Instant::now() < deadline
         && !presence.stop.load(Ordering::Relaxed)
         && app.world().resource::<PeerLab>().is_admitting()

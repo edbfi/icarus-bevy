@@ -909,6 +909,7 @@ pub struct SessionCounts {
 /// Transport settlement is not client actor-spawn or geometry readiness proof.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ReadinessCounts {
+    pub initial_open_outcomes: InitialOpenReadiness,
     pub pending_control_replies: usize,
     pub pending_initial_opens: usize,
     pub pending_initial_stages: usize,
@@ -930,6 +931,67 @@ pub struct ReadinessCounts {
     pub players_awaiting_completion: usize,
     pub players_awaiting_finalisation: usize,
     pub players_finalised: usize,
+}
+
+/// Fixed categories of configured initial opens, without actor identities.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct InitialOpenStageCounts {
+    pub controller: usize,
+    pub pawn: usize,
+    pub game_state: usize,
+    pub player_state: usize,
+    pub managers: usize,
+    pub quests: usize,
+}
+
+impl InitialOpenStageCounts {
+    fn record(&mut self, stage: InitialOpenStage) {
+        match stage {
+            InitialOpenStage::Controller => self.controller += 1,
+            InitialOpenStage::Pawn => self.pawn += 1,
+            InitialOpenStage::GameState => self.game_state += 1,
+            InitialOpenStage::PlayerState => self.player_state += 1,
+            InitialOpenStage::Manager(_) => self.managers += 1,
+            InitialOpenStage::Quest(_) => self.quests += 1,
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.controller += other.controller;
+        self.pawn += other.pawn;
+        self.game_state += other.game_state;
+        self.player_state += other.player_state;
+        self.managers += other.managers;
+        self.quests += other.quests;
+    }
+
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// Live-peer initial-open outcomes. Committed means reliably queued, not
+/// acknowledged or spawned by the client. Deferred is a subset of pending;
+/// skipped stages were never attempted after a controller failure.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct InitialOpenReadiness {
+    pub configured: InitialOpenStageCounts,
+    pub committed: InitialOpenStageCounts,
+    pub failed: InitialOpenStageCounts,
+    pub skipped: InitialOpenStageCounts,
+    pub pending: InitialOpenStageCounts,
+    pub deferred: InitialOpenStageCounts,
+    pub sequences_succeeded: usize,
+    pub sequences_failed: usize,
+}
+
+#[derive(Default)]
+struct InitialOpenOutcomes {
+    configured: InitialOpenStageCounts,
+    committed: InitialOpenStageCounts,
+    failed: InitialOpenStageCounts,
+    skipped: InitialOpenStageCounts,
+    deferred: bool,
 }
 
 /// The session key of connection `connection`'s pawn: session keys from
@@ -1236,6 +1298,7 @@ struct PeerEntry {
     player_controller_channel: Option<u32>,
     player_state_channel: Option<u32>,
     initial_opens: Option<PendingInitialOpens>,
+    initial_open_outcomes: InitialOpenOutcomes,
     /// Set only after this connection's tracker open was reliably queued.
     player_history_channel: Option<u32>,
     /// The latest published History has not yet been queued for this peer.
@@ -4114,6 +4177,28 @@ impl PeerLab {
     pub fn readiness_counts(&self) -> ReadinessCounts {
         let mut counts = ReadinessCounts::default();
         for entry in self.peers.values() {
+            let outcomes = &entry.initial_open_outcomes;
+            let initial = &mut counts.initial_open_outcomes;
+            initial.configured.add(&outcomes.configured);
+            initial.committed.add(&outcomes.committed);
+            initial.failed.add(&outcomes.failed);
+            initial.skipped.add(&outcomes.skipped);
+            if let Some(pending) = &entry.initial_opens {
+                for &stage in &pending.remaining {
+                    initial.pending.record(stage);
+                }
+                if outcomes.deferred
+                    && let Some(&stage) = pending.remaining.front()
+                {
+                    initial.deferred.record(stage);
+                }
+            } else if !outcomes.configured.is_empty() {
+                if outcomes.failed.is_empty() {
+                    initial.sequences_succeeded += 1;
+                } else {
+                    initial.sequences_failed += 1;
+                }
+            }
             counts.pending_control_replies += usize::from(entry.pending_control_reply.is_some());
             counts.pending_profile_exchanges +=
                 usize::from(entry.pending_profile_exchange.is_some());
@@ -4323,6 +4408,7 @@ impl PeerLab {
                         player_controller_channel: None,
                         player_state_channel: None,
                         initial_opens: None,
+                        initial_open_outcomes: InitialOpenOutcomes::default(),
                         player_history_channel: None,
                         player_history_pending: false,
                         player_history_retry_ready: false,
@@ -5578,6 +5664,10 @@ impl PeerLab {
             .collect();
         extras.sort_unstable_by_key(|&(channel, _)| channel);
         remaining.extend(extras.into_iter().map(|(_, stage)| stage));
+        entry.initial_open_outcomes = InitialOpenOutcomes::default();
+        for &stage in &remaining {
+            entry.initial_open_outcomes.configured.record(stage);
+        }
         entry.initial_opens = Some(PendingInitialOpens {
             remaining,
             controller_guids: None,
@@ -5651,6 +5741,14 @@ impl PeerLab {
             let Some(pending) = &mut entry.initial_opens else {
                 return;
             };
+            entry.initial_open_outcomes.deferred = matches!(outcome, InitialOpenOutcome::Deferred);
+            match outcome {
+                InitialOpenOutcome::Committed => {
+                    entry.initial_open_outcomes.committed.record(stage)
+                }
+                InitialOpenOutcome::Failed => entry.initial_open_outcomes.failed.record(stage),
+                InitialOpenOutcome::Deferred => {}
+            }
             if matches!(outcome, InitialOpenOutcome::Failed)
                 && matches!(stage, InitialOpenStage::PlayerState)
                 && pending.begin_slot.take().is_some()
@@ -5663,6 +5761,9 @@ impl PeerLab {
                     return;
                 }
                 InitialOpenOutcome::Failed if matches!(stage, InitialOpenStage::Controller) => {
+                    for &stage in pending.remaining.iter().skip(1) {
+                        entry.initial_open_outcomes.skipped.record(stage);
+                    }
                     entry.initial_opens = None;
                     return;
                 }
@@ -7560,6 +7661,112 @@ mod tests {
     }
 
     #[test]
+    fn initial_open_outcomes_preserve_failures_and_controller_skips_until_teardown() {
+        let mut lab = prospect_refresh_lab();
+        let (_first, first, _) = acked_game_state_peer(&mut lab);
+        let (_second, second, _) = acked_game_state_peer(&mut lab);
+        for (address, stages) in [
+            (
+                first,
+                VecDeque::from([
+                    InitialOpenStage::Pawn,
+                    InitialOpenStage::Manager(usize::MAX),
+                    InitialOpenStage::Quest(usize::MAX),
+                    InitialOpenStage::GameState,
+                ]),
+            ),
+            (
+                second,
+                VecDeque::from([
+                    InitialOpenStage::Controller,
+                    InitialOpenStage::GameState,
+                    InitialOpenStage::PlayerState,
+                ]),
+            ),
+        ] {
+            let entry = lab.peers.get_mut(&address).unwrap();
+            entry.peer = LabPeer::from_cookie(&entry.cookie, *entry.peer.config()).unwrap();
+            entry.game_state = None;
+            for &stage in &stages {
+                entry.initial_open_outcomes.configured.record(stage);
+            }
+            entry.initial_opens = Some(PendingInitialOpens {
+                remaining: stages,
+                controller_guids: Some((2, 4)),
+                player_state_is_host: false,
+                begin_slot: None,
+                retry_ready: true,
+            });
+        }
+        // Missing configured plans model permanent failures, without changing
+        // the existing policy of attempting independent stages after a failure.
+        lab.player_controller_open = None;
+        lab.retry_initial_opens();
+        let snapshot = lab.readiness_counts();
+        let outcomes = &snapshot.initial_open_outcomes;
+        assert_eq!(outcomes.failed.controller, 1);
+        assert_eq!(outcomes.failed.pawn, 1);
+        assert_eq!(outcomes.failed.managers, 1);
+        assert_eq!(outcomes.failed.quests, 1);
+        assert_eq!(outcomes.skipped.game_state, 1);
+        assert_eq!(outcomes.skipped.player_state, 1);
+        assert!(outcomes.pending.is_empty());
+        assert!(outcomes.deferred.is_empty());
+        assert_eq!(outcomes.committed.game_state, 1);
+        assert_eq!(outcomes.configured.game_state, 2);
+        let mut partition = outcomes.committed.clone();
+        partition.add(&outcomes.failed);
+        partition.add(&outcomes.skipped);
+        partition.add(&outcomes.pending);
+        assert_eq!(partition, outcomes.configured);
+        assert_eq!(outcomes.sequences_failed, 2);
+        assert_eq!(outcomes.sequences_succeeded, 0);
+        assert_eq!(snapshot.pending_initial_opens, 0);
+        lab.retry_initial_opens();
+        assert_eq!(lab.readiness_counts(), snapshot);
+        let encoded = serde_json::to_string(outcomes).unwrap();
+        assert!(!encoded.contains(&first.to_string()));
+        assert!(!encoded.contains(&second.to_string()));
+        lab.remove_peer(first).unwrap();
+        assert_eq!(
+            lab.readiness_counts()
+                .initial_open_outcomes
+                .sequences_failed,
+            1
+        );
+        lab.shutdown();
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    #[test]
+    fn initial_open_success_counts_configured_stages_once_and_reconnect_starts_clean() {
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.peer = LabPeer::from_cookie(&entry.cookie, *entry.peer.config()).unwrap();
+        entry.game_state = None;
+        assert!(lab.send_player_controller_open(address));
+        let snapshot = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(snapshot.configured.controller, 1);
+        assert_eq!(snapshot.configured.game_state, 1);
+        assert_eq!(snapshot.configured.pawn, 0);
+        assert_eq!(snapshot.configured.player_state, 0);
+        assert_eq!(snapshot.committed, snapshot.configured);
+        assert!(snapshot.failed.is_empty());
+        assert!(snapshot.skipped.is_empty());
+        assert_eq!(snapshot.sequences_succeeded, 1);
+        assert!(!lab.send_player_controller_open(address));
+        lab.retry_initial_opens();
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, snapshot);
+        lab.remove_peer(address).unwrap();
+        let (_replacement, _, _) = acked_game_state_peer(&mut lab);
+        assert_eq!(
+            lab.readiness_counts().initial_open_outcomes,
+            InitialOpenReadiness::default()
+        );
+    }
+
+    #[test]
     fn deferred_controller_reports_live_sequence_and_failed_begin_counts_once() {
         let mut lab = prospect_refresh_lab();
         let (_socket, address, _) = acked_game_state_peer(&mut lab);
@@ -7574,6 +7781,17 @@ mod tests {
         assert_eq!(lab.readiness_counts().pending_initial_opens, 1);
         assert_eq!(lab.readiness_counts().sent_packets_pending, 1);
         assert_eq!(lab.stats.player_controller_open_errors, 1);
+        let outcomes = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(outcomes.configured.controller, 1);
+        assert_eq!(outcomes.pending.controller, 1);
+        assert_eq!(outcomes.pending.game_state, 1);
+        assert_eq!(outcomes.deferred.controller, 1);
+        assert_eq!(outcomes.deferred.game_state, 0);
+        assert!(outcomes.failed.is_empty());
+        for _ in 0..4 {
+            lab.retry_initial_opens();
+        }
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, outcomes);
 
         // No PlayerState plan: the pending stage must terminate and count the
         // retained request exactly once, without starting a profile exchange.
@@ -7636,6 +7854,11 @@ mod tests {
             });
             lab.retry_initial_opens();
             let uid = FIRST_NATIVE_OBJECT_ID + 1;
+            assert_eq!(
+                lab.readiness_counts().initial_open_outcomes.deferred.pawn,
+                1
+            );
+            assert_eq!(lab.readiness_counts().initial_open_outcomes.failed.pawn, 0);
             assert_eq!(lab.peers[&address].pending_pawn_uid, Some(uid));
             assert_eq!(lab.peers[&address].pawn_uid, None);
             assert_eq!(lab.next_pawn_object_id, Some(FIRST_NATIVE_OBJECT_ID + 1));
@@ -7688,6 +7911,14 @@ mod tests {
                     assert_eq!(lab.peers[&address].pending_pawn_uid, None);
                     assert_eq!(lab.peers[&address].pawn_uid, Some(uid));
                     assert!(lab.peers[&address].initial_opens.is_none());
+                    assert_eq!(
+                        lab.readiness_counts().initial_open_outcomes.committed.pawn,
+                        1
+                    );
+                    assert_eq!(
+                        lab.readiness_counts().initial_open_outcomes.deferred.pawn,
+                        0
+                    );
                     assert_eq!(lab.claimed_actor_uids(), &[FIRST_NATIVE_OBJECT_ID, uid]);
                     assert!(lab.remove_peer(address).is_some());
                 }
@@ -7716,6 +7947,11 @@ mod tests {
                     assert_eq!(lab.peers[&address].pawn_uid, None);
                     assert!(lab.peers[&address].initial_opens.is_none());
                     assert!(!lab.peers[&address].peer.is_failed());
+                    assert_eq!(lab.readiness_counts().initial_open_outcomes.failed.pawn, 1);
+                    assert_eq!(
+                        lab.readiness_counts().initial_open_outcomes.deferred.pawn,
+                        0
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -7814,6 +8050,11 @@ mod tests {
             assert_eq!(lab.stats.game_state_open_errors, errors);
             assert!(lab.peers[&address].initial_opens.is_none());
             assert!(!lab.peers[&address].peer.is_failed());
+            let outcomes = lab.readiness_counts().initial_open_outcomes;
+            assert_eq!(outcomes.failed.game_state, 1);
+            assert_eq!(outcomes.committed.game_state, 0);
+            assert!(outcomes.pending.is_empty());
+            assert!(outcomes.deferred.is_empty());
         }
     }
 
