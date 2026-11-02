@@ -3,6 +3,7 @@
 //! No compatibility, gameplay, or official-save import claim.
 use std::{
     collections::BTreeMap,
+    io::{self, Write},
     net::{Ipv4Addr, SocketAddrV4, UdpSocket},
     path::PathBuf,
     sync::{
@@ -53,6 +54,17 @@ struct Options {
     release: PathBuf,
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(30..=1800))]
     seconds: u64,
+    /// Flush aggregate progress to stderr at this cadence; never includes player values.
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=60))]
+    progress_interval_seconds: u64,
+}
+
+fn emit_progress(value: &serde_json::Value) -> Result<()> {
+    let mut stderr = io::stderr().lock();
+    serde_json::to_writer(&mut stderr, value)?;
+    writeln!(&mut stderr)?;
+    stderr.flush()?;
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -150,30 +162,96 @@ fn main() -> Result<()> {
     let query_presence = presence.clone();
     let responder =
         thread::spawn(move || serve_queries(&query, &query_presence.advert, &query_presence.stop));
-    eprintln!(
-        "{}",
-        json!({"event":"native_join_ready","game_port":options.game_bind.port(),"query_port":options.query_bind.port(),"build":profile.pin.build_id,"seconds":options.seconds,"compatibility_proven":false})
-    );
+    let progress_interval = Duration::from_secs(options.progress_interval_seconds);
+    let mut next_progress = Instant::now() + progress_interval;
+    let mut output_error = emit_progress(&json!({"event":"native_join_ready","game_port":options.game_bind.port(),"query_port":options.query_bind.port(),"build":profile.pin.build_id,"seconds":options.seconds,"progress_interval_seconds":options.progress_interval_seconds,"compatibility_proven":false})).err();
     while Instant::now() < deadline
         && !presence.stop.load(Ordering::Relaxed)
         && app.world().resource::<PeerLab>().is_admitting()
+        && output_error.is_none()
     {
         app.update();
+        let now = Instant::now();
+        if now >= next_progress {
+            let lab = app.world().resource::<PeerLab>();
+            output_error = emit_progress(&json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"stats":lab.stats(),"compatibility_proven":false})).err();
+            // Schedule from now: slow updates never create a catch-up burst.
+            next_progress = now + progress_interval;
+        }
         thread::sleep(Duration::from_millis(5));
     }
+    let reason = if output_error.is_some() {
+        "output_error"
+    } else if Instant::now() >= deadline {
+        "deadline"
+    } else if !app.world().resource::<PeerLab>().is_admitting() {
+        "admission_closed"
+    } else {
+        "stop_requested"
+    };
     let mut lab = app.world_mut().resource_mut::<PeerLab>();
     let counts = lab.session_counts();
+    let readiness = lab.readiness_counts();
+    let stats = lab.stats().clone();
     let peak = lab.peak_peer_count();
     lab.shutdown();
     let service_result = service.stop_and_join();
     let query_result = responder
         .join()
-        .map_err(|_| anyhow::anyhow!("query worker panicked"))?;
+        .map_err(|_| anyhow::anyhow!("query worker panicked"))
+        .and_then(|result| result);
+    let reason = if service_result.is_err() {
+        "service_error"
+    } else if query_result.is_err() {
+        "query_error"
+    } else {
+        reason
+    };
+    let summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer(&mut stdout, &summary)?;
+    writeln!(&mut stdout)?;
+    stdout.flush()?;
     service_result?;
-    let queries = query_result?;
-    println!(
-        "{}",
-        json!({"event":"native_join_stopped","sessions_before_shutdown":counts,"peak_peers":peak,"queries":queries,"compatibility_proven":false})
-    );
+    query_result?;
+    if let Some(error) = output_error {
+        return Err(error.context("write native join progress"));
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_cadence_is_bounded_and_has_a_useful_default() {
+        let defaults =
+            Options::try_parse_from(["native_join_probe", "--name", "Authored"]).unwrap();
+        assert_eq!(defaults.progress_interval_seconds, 5);
+        for seconds in ["0", "61"] {
+            assert!(
+                Options::try_parse_from([
+                    "native_join_probe",
+                    "--name",
+                    "Authored",
+                    "--progress-interval-seconds",
+                    seconds
+                ])
+                .is_err()
+            );
+        }
+        for seconds in ["1", "60"] {
+            assert!(
+                Options::try_parse_from([
+                    "native_join_probe",
+                    "--name",
+                    "Authored",
+                    "--progress-interval-seconds",
+                    seconds
+                ])
+                .is_ok()
+            );
+        }
+    }
 }

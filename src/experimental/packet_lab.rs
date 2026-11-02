@@ -524,6 +524,24 @@ impl LabPeer {
             .map(|channel| channel.out_bunches().len())
     }
 
+    /// Aggregate transport gauges only; settled means every current reliable
+    /// bunch is acknowledged, not that the client has spawned an actor.
+    pub(crate) fn actor_queue_counts(&self) -> (usize, usize, usize) {
+        self.actors
+            .iter()
+            .fold((0, 0, 0), |(open, settled, pending), (index, channel)| {
+                (
+                    open + 1,
+                    settled
+                        + usize::from(
+                            !self.closing_actors.contains(index)
+                                && channel.out_bunches().is_empty(),
+                        ),
+                    pending + channel.out_bunches().len(),
+                )
+            })
+    }
+
     pub fn is_failed(&self) -> bool {
         self.failed
     }

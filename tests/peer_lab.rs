@@ -841,6 +841,7 @@ fn control_challenge_retries_after_pressure_without_replaying_hello() {
     assert!(try_recv(&client.socket).is_none());
     assert_eq!(stats(&app).reply_errors, 1);
     assert_eq!(stats(&app).control_challenges_sent, 0);
+    assert_eq!(lab(&app).readiness_counts().pending_control_replies, 1);
     for _ in 0..8 {
         app.update();
     }
@@ -860,6 +861,7 @@ fn control_challenge_retries_after_pressure_without_replaying_hello() {
         [ControlMessage::Challenge { .. }]
     ));
     assert_eq!(stats(&app).control_challenges_sent, 1);
+    assert_eq!(lab(&app).readiness_counts().pending_control_replies, 0);
     assert_eq!(stats(&app).reply_errors, 1);
     for _ in 0..8 {
         app.update();
@@ -893,6 +895,7 @@ fn control_welcome_retries_once_without_repeating_login() {
     assert!(try_recv(&client.socket).is_none());
     assert_eq!(stats(&app).logins_received, 1);
     assert_eq!(stats(&app).welcomes_sent, 0);
+    assert_eq!(lab(&app).readiness_counts().pending_control_replies, 1);
     assert_eq!(stats(&app).reply_errors, 1);
     let mut duplicate = login();
     if let ControlMessage::Login { url, .. } = &mut duplicate {
@@ -916,6 +919,7 @@ fn control_welcome_retries_once_without_repeating_login() {
         [ControlMessage::Welcome { .. }]
     ));
     assert_eq!(stats(&app).welcomes_sent, 1);
+    assert_eq!(lab(&app).readiness_counts().pending_control_replies, 0);
     assert_eq!(stats(&app).logins_received, 1);
     for _ in 0..8 {
         app.update();
