@@ -7145,6 +7145,27 @@ mod tests {
     }
 
     #[test]
+    fn poll_removes_stalled_delivery_and_reports_session_counter() {
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        let timeout = lab.config.idle_timeout;
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.peer.ack_packet().unwrap();
+        entry.delivery_progress_at = Some(Instant::now() - timeout - Duration::from_secs(1));
+        entry.last_seen = Instant::now();
+
+        lab.poll();
+
+        assert!(!lab.has_peer(address));
+        assert_eq!(lab.stats.peers_expired, 0);
+        assert_eq!(lab.stats.peers_delivery_stalled, 1);
+        let status = serde_json::to_value(lab.session_counts()).unwrap();
+        assert_eq!(status["closed_by_delivery_stall"], 1);
+        lab.poll();
+        assert_eq!(lab.stats.peers_delivery_stalled, 1);
+    }
+
+    #[test]
     fn dropped_challenge_expires_delivery_despite_live_reliable_retransmissions() {
         use super::super::{
             control_messages::{ControlCodec, encode_control_message},

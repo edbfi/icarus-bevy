@@ -76,10 +76,10 @@ authored_gameplay = "/path/to/authored-gameplay.json"  # required with configure
 ```
 
 Profile/socket checks precede `--data-dir`; mismatched Hello gets Upgrade.
-Updates poll ≤32 datagrams before ticks. SIGINT/SIGTERM closes sessions before
-saving. `network_listening` reports address/`version_check`; `status`/`stopped`
-report session counts. Prospect/mode: F-804. Row identities/authored values: F-993.
-The timeout also removes peers with sent records but no ACK/NAK progress despite
+Updates poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes sessions before
+draining/saving. `network_listening`: address/`version_check`; `status`/`stopped`:
+session counts. Prospect/mode: F-804. Row identities/authored values: F-993.
+Monotonic timeout removes peers with sent records but no ACK/NAK progress despite
 inbound traffic: `closed_by_delivery_stall`/`peers_delivery_stalled` count these
 apart from idle expiry. This is native policy, not original timing (F-1013).
 
