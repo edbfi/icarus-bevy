@@ -72,7 +72,8 @@ fn near_budget_modifiers() -> ModifierWorldSnapshot {
 
 fn near_budget_snapshot() -> WorldSnapshot {
     let example =
-        CompiledNativeCatalog::parse(include_str!("../config/native-world.example.toml")).unwrap();
+        CompiledNativeCatalog::parse(include_str!("../../config/native-world.example.toml"))
+            .unwrap();
     let mut definition = example.definition().clone();
     let placement = definition.maps[0].placements[0].clone();
     definition.maps[0].placements = (0..OWNER_COUNT)

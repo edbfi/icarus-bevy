@@ -1,10 +1,5 @@
 //! Authored inventory activation, whole-world transactions and persistence.
-#[path = "common/c001_inventory_owners.rs"]
-mod fixture;
-#[path = "common/c001_scalar_owners.rs"]
-mod scalar;
-#[path = "common/c001_inventory_source.rs"]
-mod source;
+use crate::inventory_fixture as fixture;
 
 use std::time::{Duration, Instant};
 

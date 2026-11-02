@@ -9,10 +9,9 @@ Full text: d5b0ae6:docs/specs/save-format/archive-string.md.
 
 ## Scope
 
-The FString archive reader/writer, the strict native subset that models it, and
-the property adapters shown to reach the same reader. Not covered: archive byte
-order and framing (the caller establishes them), UDP packets, game admission,
-and the meaning of any decoded value.
+FString reader/writer, its strict native subset and property adapters reaching
+the same reader. Excludes caller-established byte order/framing, UDP, admission
+and decoded-value meanings.
 
 ## Confirmed
 
@@ -68,10 +67,9 @@ and the meaning of any decoded value.
   invalid surrogates to a Rust `String`; following fields are untouched; empty
   output uses count zero; ASCII is preferred for writing; forced-wide output is
   not implemented (F-142).
-- Research cap: 65,536 units including the terminator, checked before
-  allocation or multiplication. The decoder checks the full declared range
-  before output and rejects non-ASCII narrow bytes, missing terminators,
-  embedded NUL and `U+FFFF`. Error precedence: count/limit/payload, narrow
+- Research cap: 65,536 units including terminator, checked before allocation/
+  multiplication. Full-range checks precede output; non-ASCII narrow bytes,
+  missing terminators, embedded NUL and `U+FFFF` reject. Error precedence: count/limit/payload, narrow
   ASCII, final terminator, embedded NUL, then `U+FFFF`. These are documented
   strict-reader differences from the original's lossy `?`/zeroing normalization
   (F-893; U-026 resolved).
@@ -87,12 +85,10 @@ and the meaning of any decoded value.
   M-169/E-087, M-759, M-760. Adapter traces: M-091, M-107, M-104, M-105. Borrowed-frame
   migration snapshot and corpus oracle (10,752 cases agree with the prior
   decoder): M-056.
-- Authored tests pack ASCII and supplementary-character fixtures in both byte
-  orders, check every truncation boundary, preserve raw surrogates, leave a
-  following field untouched, and exercise minimum/maximum counts, `FName`
-  suffix splitting and the allocation boundary. No original serialized string is
-  copied into tests.
+- Tests cover ASCII/supplementary fixtures in both byte orders, every truncation,
+  raw surrogates, untouched following fields, count/allocation boundaries and
+  `FName` suffixes. Fixtures contain no original serialized strings.
 
 ```bash
-cargo test --locked --test archive --test archive_frame
+python3 tools/cargo_guard.py test --locked --test save_format archive
 ```

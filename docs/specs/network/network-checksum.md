@@ -10,10 +10,9 @@ Full text: d5b0ae6:docs/specs/network/network-checksum.md.
 
 ## Scope
 
-The default construction path of the network version checksum and its cache,
-setter and delegate structure. Not covered: datagram framing, identity
-validation, or any stock-client negotiation. The native server does not use
-this module for admission.
+Default version-checksum construction, cache, setter and delegates. Excludes
+datagram framing, identity validation and stock-client negotiation. Native
+admission does not use this module.
 
 ## Confirmed
 
@@ -24,8 +23,7 @@ this module for admission.
   before processing and complements the result afterward. All 256 table entries
   at `0x145eed270` equal independently generated reflected CRC-32 entries for
   polynomial `0xedb88320` (F-281).
-- The independent primitive and a Python `zlib.crc32` oracle over each UTF-16
-  unit expanded to four little-endian bytes reproduce the offline log's early
+- The primitive and independent Python `zlib.crc32` oracle reproduce the early
   checksum **1447163286** for project `Icarus`, version `1.0.0`, NetCL 0,
   EngineNetVer 17, GameNetVer 0. Supplementary characters contribute two
   separately expanded surrogate units, so UTF-32 encoding is not equivalent
@@ -64,9 +62,7 @@ this module for admission.
 
 ## Candidate
 
-- The getter's `1.0.0` fallback is superseded by `GeneralProjectSettings` at
-  startup, and with 0 override callbacks bound in either binary, both builds
-  compare their computed CRC-32 values by exact equality (F-689, F-713).
+No additional candidates.
 
 ## Open questions
 
@@ -77,9 +73,9 @@ this module for admission.
 - Private cases: M-146 (`work/control-version-20261012/`, E-001 to E-003, strict
   review with zero issues), M-169 (`decompile-01/`, selected disassemblies and
   `checksum-table-verification.json`), M-751 and M-752 (`join-spawn-and-admission-20261017/`).
-- Authored tests cover ASCII case conversion, embedded NUL, nonzero seeds and
+- Tests compare ASCII case conversion, embedded NUL, nonzero seeds and
   incremental processing against the independent oracle:
 
 ```bash
-cargo test --locked --test checksum
+python3 tools/cargo_guard.py test --locked --test protocol checksum::
 ```

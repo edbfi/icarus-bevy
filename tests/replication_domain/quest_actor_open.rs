@@ -2,7 +2,7 @@
 //! and `AQuest` open composition (`F-934`, `F-935`, `U-074`, `U-076`), using authored
 //! records and captured `M-707` bit-length / SHA-256 vectors (no supplied save
 //! files).
-mod pak_writer;
+use crate::pak_writer;
 
 use std::collections::BTreeMap;
 

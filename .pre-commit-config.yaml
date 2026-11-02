@@ -98,6 +98,18 @@ repos:
         language: system
         pass_filenames: false
         files: ^tools/(pak_protocol_metadata\.cjs|tests/pak_protocol_metadata\.test\.cjs)$
+      - id: test-harness-map
+        name: Validate integration harness source map
+        entry: node tools/check_test_harnesses.cjs
+        language: system
+        pass_filenames: false
+        files: ^(tests/.*|Cargo\.(toml|lock)|tools/check_test_harnesses\.cjs)$
+      - id: test-harness-tools
+        name: Test integration harness tooling
+        entry: node --test tests/harness-tools.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^(tests/.*|tools/check_test_harnesses\.cjs)$
       - id: python-typing-config
         name: Check Python typing policy
         entry: python3 tools/typing_gate.py
@@ -130,14 +142,14 @@ repos:
         files: (\.rs$|(^|/)Cargo\.toml$|(^|/)(\.rustfmt|rustfmt)\.toml$)
       - id: cargo-clippy
         name: Lint Rust targets
-        entry: cargo clippy --workspace --all-targets --locked -- -D warnings
+        entry: python3 tools/cargo_guard.py clippy --workspace --all-targets --locked -- -D warnings
         language: system
         pass_filenames: false
-        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.cargo/.*\.toml$)
+        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.cargo/.*\.toml$|^tools/cargo_guard\.py$)
       - id: cargo-test
         name: Test Rust targets
-        entry: cargo test --workspace --all-targets --locked
+        entry: python3 tools/cargo_guard.py test --workspace --all-targets --locked
         language: system
         pass_filenames: false
-        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.cargo/.*\.toml$)
+        files: (\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.cargo/.*\.toml$|^tools/cargo_guard\.py$)
         stages: [pre-push, manual]

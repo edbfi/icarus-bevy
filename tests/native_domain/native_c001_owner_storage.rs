@@ -19,8 +19,7 @@ use icarus_bevy::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-#[path = "common/c001_owners.rs"]
-mod fixture;
+use crate::owner_fixture as fixture;
 
 const SECRET: &str = "OwnerStorageSecret";
 

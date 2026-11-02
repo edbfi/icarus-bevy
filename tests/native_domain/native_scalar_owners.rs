@@ -1,5 +1,4 @@
-#[path = "common/c001_scalar_owners.rs"]
-mod authored;
+use crate::scalar as authored;
 use authored::{fixture, scalar_pair};
 use icarus_bevy::{
     native_scalar_owners::{

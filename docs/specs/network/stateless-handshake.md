@@ -9,10 +9,9 @@ Full text: d5b0ae6:docs/specs/network/stateless-handshake.md.
 
 ## Scope
 
-The stateless connection handshake: initial request, challenge, cookie echo,
-acknowledgement, optional `MagicHeader` prefix, 1-byte restart request and
-49-byte extended restart response. Not covered: platform authentication, the
-version/control channel, replicated state and gameplay admission.
+Initial request, challenge, cookie echo/ack, optional `MagicHeader`, 1-byte
+restart request and 49-byte extended response. Excludes platform authentication,
+version/control negotiation, replication and gameplay admission.
 
 ## Confirmed
 
@@ -50,7 +49,7 @@ version/control channel, replicated state and gameplay admission.
   bit counts call `Packet.SetError()` (`0x141f62140`), and `IncomingConnectionless`
   (`0x14373f0f0`) rejects `NaN` or `ChallengeAge` outside `[0.0, 40.0)`
   (`_DAT_1453edbc8 = 40.0`) (F-729; U-051 resolved).
-- Address-backed routines (preferred virtual addresses in the inspected file):
+- Routines (preferred virtual addresses):
 
   | Address | Observation |
   | --- | --- |
@@ -58,10 +57,8 @@ version/control channel, replicated state and gameplay admission.
   | `0x1437405e0` | Initial request writer: prefix, three bits, 28 zero bytes, terminator |
   | `0x143745810` | Client response writer: flags, eight-byte timestamp, 20-byte cookie, optional previous cookie |
   | `0x1437455c0` | Acknowledgement writer |
-  | `0x143745ee0` | Restart-handshake request writer (`3` bits: `0x07`) |
   | `0x141f637b0` | Single-bit writer |
   | `0x141f5ff10` | Byte serialization into the bit writer |
-  | `0x1437419a0` | Parser: accepts 226 or 386 remaining bits after the marker, plus a restart-request form |
   | `0x14373f0f0` | Connectionless handler; zero timestamp reaches the challenge sender |
   | `0x14373ec60` | Connected branch; positive timestamp prompts a response, negative enters acknowledgement handling |
 
@@ -89,12 +86,13 @@ version/control channel, replicated state and gameplay admission.
 
 - Original exchange and static verification: M-169 (`run-02-handshake`,
   `run-03-stateless-ack`, `decompile-05/`, `decompile-06/`), M-770, M-771.
-- Authored tests: `tests/handshake.rs` covers 29-byte, 1-byte (`0x07`) and
+- Authored tests: `tests/protocol/handshake.rs` covers 29-byte, 1-byte (`0x07`) and
   49-byte (`OrigCookie`) frames, `MagicHeader` validation and malformed-frame
-  rejection; `tests/handshake_lab.rs` covers UDP loopback exchanges.
+  rejection; `tests/protocol/handshake_lab.rs` covers UDP loopback exchanges.
 
 ```bash
-cargo test --locked --test handshake
-cargo test --locked --test handshake_lab
-cargo run --locked --example handshake_lab -- --seconds 30
+python3 tools/cargo_guard.py test --locked --test protocol handshake::
+python3 tools/cargo_guard.py test --locked --test protocol handshake_lab::
+python3 tools/cargo_guard.py build --locked --example handshake_lab
+python3 tools/cargo_guard.py --hold-target -- target/debug/examples/handshake_lab --seconds 30
 ```

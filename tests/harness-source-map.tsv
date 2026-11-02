@@ -1,0 +1,119 @@
+old_target	old_source	new_target	new_source	module_prefix	isolation
+actor_channel	tests/actor_channel.rs	replication_domain	tests/replication_domain/actor_channel.rs	actor_channel::	in-process
+actor_open	tests/actor_open.rs	replication_domain	tests/replication_domain/actor_open.rs	actor_open::	in-process
+admission	tests/admission.rs	protocol	tests/protocol/admission.rs	admission::	in-process
+archive	tests/archive.rs	save_format	tests/save_format/archive.rs	archive::	in-process
+archive_frame	tests/archive_frame.rs	save_format	tests/save_format/archive_frame.rs	archive_frame::	in-process
+c001_inventory_source	tests/c001_inventory_source.rs	save_format	tests/save_format/c001_inventory_source.rs	c001_inventory_source::	in-process
+c001_variables	tests/c001_variables.rs	save_format	tests/save_format/c001_variables.rs	c001_variables::	in-process
+capture_decode	tests/capture_decode.rs	replication_domain	tests/replication_domain/capture_decode.rs	capture_decode::	in-process
+checksum	tests/checksum.rs	protocol	tests/protocol/checksum.rs	checksum::	in-process
+class_checksum	tests/class_checksum.rs	replication_domain	tests/replication_domain/class_checksum.rs	class_checksum::	in-process
+cli	tests/cli.rs	cli	tests/cli.rs		subprocess
+codec_fuzz	tests/codec_fuzz.rs	replication_domain	tests/replication_domain/codec_fuzz.rs	codec_fuzz::	in-process
+component	tests/component.rs	save_format	tests/save_format/component.rs	component::	in-process
+control	tests/control.rs	protocol	tests/protocol/control.rs	control::	in-process
+control_messages	tests/control_messages.rs	protocol	tests/protocol/control_messages.rs	control_messages::	in-process
+control_receive	tests/control_receive.rs	protocol	tests/protocol/control_receive.rs	control_receive::	in-process
+controller_initialisation	tests/controller_initialisation.rs	replication_domain	tests/replication_domain/controller_initialisation.rs	controller_initialisation::	in-process
+data_pak	tests/data_pak.rs	data_pak	tests/data_pak.rs		subprocess
+foundation	tests/foundation.rs	native_domain	tests/native_domain/foundation.rs	foundation::	in-process
+game_state_open	tests/game_state_open.rs	replication_domain	tests/replication_domain/game_state_open.rs	game_state_open::	in-process
+handshake	tests/handshake.rs	protocol	tests/protocol/handshake.rs	handshake::	in-process
+handshake_lab	tests/handshake_lab.rs	protocol	tests/protocol/handshake_lab.rs	handshake_lab::	in-process
+import_plan	tests/import_plan.rs	import_plan	tests/import_plan.rs		subprocess
+inspect_source	tests/inspect_source.rs	inspect_source	tests/inspect_source.rs		subprocess
+int_array	tests/int_array.rs	save_format	tests/save_format/int_array.rs	int_array::	in-process
+inventory_restore	tests/inventory_restore.rs	replication_domain	tests/replication_domain/inventory_restore.rs	inventory_restore::	in-process
+inventory_weight	tests/inventory_weight.rs	replication_domain	tests/replication_domain/inventory_weight.rs	inventory_weight::	in-process
+json_diagnostics	tests/json_diagnostics.rs	json_diagnostics	tests/json_diagnostics.rs		subprocess
+manager_open	tests/manager_open.rs	replication_domain	tests/replication_domain/manager_open.rs	manager_open::	in-process
+modifier_lifecycle	tests/modifier_lifecycle.rs	save_format	tests/save_format/modifier_lifecycle.rs	modifier_lifecycle::	in-process
+modifier_restore	tests/modifier_restore.rs	save_format	tests/save_format/modifier_restore.rs	modifier_restore::	in-process
+modifier_timing	tests/modifier_timing.rs	save_format	tests/save_format/modifier_timing.rs	modifier_timing::	in-process
+native_c001_inventory_owner_storage	tests/native_c001_inventory_owner_storage.rs	native_domain	tests/native_domain/native_c001_inventory_owner_storage.rs	native_c001_inventory_owner_storage::	in-process
+native_c001_inventory_owners	tests/native_c001_inventory_owners.rs	native_domain	tests/native_domain/native_c001_inventory_owners.rs	native_c001_inventory_owners::	in-process
+native_c001_owner_cli	tests/native_c001_owner_cli.rs	native_c001_owner_cli	tests/native_c001_owner_cli.rs		subprocess
+native_c001_owner_runtime	tests/native_c001_owner_runtime.rs	native_domain	tests/native_domain/native_c001_owner_runtime.rs	native_c001_owner_runtime::	in-process
+native_c001_owner_storage	tests/native_c001_owner_storage.rs	native_domain	tests/native_domain/native_c001_owner_storage.rs	native_c001_owner_storage::	in-process
+native_c001_owners	tests/native_c001_owners.rs	native_domain	tests/native_domain/native_c001_owners.rs	native_c001_owners::	in-process
+native_c001_scalar_owner_cli	tests/native_c001_scalar_owner_cli.rs	native_c001_scalar_owner_cli	tests/native_c001_scalar_owner_cli.rs		subprocess
+native_c001_scalar_owner_storage	tests/native_c001_scalar_owner_storage.rs	native_domain	tests/native_domain/native_c001_scalar_owner_storage.rs	native_c001_scalar_owner_storage::	in-process
+native_c001_scalar_owners	tests/native_c001_scalar_owners.rs	native_domain	tests/native_domain/native_c001_scalar_owners.rs	native_c001_scalar_owners::	in-process
+native_import	tests/native_import.rs	native_import	tests/native_import.rs		subprocess
+native_import_runtime	tests/native_import_runtime.rs	native_import_runtime	tests/native_import_runtime.rs		subprocess
+native_import_storage	tests/native_import_storage.rs	native_domain	tests/native_domain/native_import_storage.rs	native_import_storage::	in-process
+native_inventory	tests/native_inventory.rs	native_domain	tests/native_domain/native_inventory.rs	native_inventory::	in-process
+native_inventory_cli	tests/native_inventory_cli.rs	native_inventory_cli	tests/native_inventory_cli.rs		subprocess
+native_inventory_restore	tests/native_inventory_restore.rs	native_domain	tests/native_domain/native_inventory_restore.rs	native_inventory_restore::	in-process
+native_inventory_runtime	tests/native_inventory_runtime.rs	native_domain	tests/native_domain/native_inventory_runtime.rs	native_inventory_runtime::	in-process
+native_lifecycle	tests/native_lifecycle.rs	native_domain	tests/native_domain/native_lifecycle.rs	native_lifecycle::	in-process
+native_lifecycle_cli	tests/native_lifecycle_cli.rs	native_lifecycle_cli	tests/native_lifecycle_cli.rs		subprocess
+native_lifecycle_runtime	tests/native_lifecycle_runtime.rs	native_domain	tests/native_domain/native_lifecycle_runtime.rs	native_lifecycle_runtime::	in-process
+native_lifecycle_storage	tests/native_lifecycle_storage.rs	native_domain	tests/native_domain/native_lifecycle_storage.rs	native_lifecycle_storage::	in-process
+native_modifier_runtime	tests/native_modifier_runtime.rs	native_domain	tests/native_domain/native_modifier_runtime.rs	native_modifier_runtime::	in-process
+native_modifier_storage	tests/native_modifier_storage.rs	native_domain	tests/native_domain/native_modifier_storage.rs	native_modifier_storage::	in-process
+native_modifiers	tests/native_modifiers.rs	native_domain	tests/native_domain/native_modifiers.rs	native_modifiers::	in-process
+native_modifiers_cli	tests/native_modifiers_cli.rs	native_modifiers_cli	tests/native_modifiers_cli.rs		subprocess
+native_object_admission	tests/native_object_admission.rs	native_object_admission	tests/native_object_admission.rs		subprocess
+native_relationship_cli	tests/native_relationship_cli.rs	native_relationship_cli	tests/native_relationship_cli.rs		subprocess
+native_relationship_runtime	tests/native_relationship_runtime.rs	native_domain	tests/native_domain/native_relationship_runtime.rs	native_relationship_runtime::	in-process
+native_relationship_storage	tests/native_relationship_storage.rs	native_domain	tests/native_domain/native_relationship_storage.rs	native_relationship_storage::	in-process
+native_relationships	tests/native_relationships.rs	native_domain	tests/native_domain/native_relationships.rs	native_relationships::	in-process
+native_replication	tests/native_replication.rs	native_replication	tests/native_replication.rs		subprocess
+native_scalar_owner_runtime	tests/native_scalar_owner_runtime.rs	native_domain	tests/native_domain/native_scalar_owner_runtime.rs	native_scalar_owner_runtime::	in-process
+native_scalar_owners	tests/native_scalar_owners.rs	native_domain	tests/native_domain/native_scalar_owners.rs	native_scalar_owners::	in-process
+native_world	tests/native_world.rs	native_domain	tests/native_domain/native_world.rs	native_world::	in-process
+native_world_runtime	tests/native_world_runtime.rs	native_world_runtime	tests/native_world_runtime.rs		subprocess
+native_world_storage	tests/native_world_storage.rs	native_domain	tests/native_domain/native_world_storage.rs	native_world_storage::	in-process
+network	tests/network.rs	network	tests/network.rs		subprocess
+network_fuzz	tests/network_fuzz.rs	protocol	tests/protocol/network_fuzz.rs	network_fuzz::	in-process
+packet	tests/packet.rs	protocol	tests/protocol/packet.rs	packet::	in-process
+packet_lab	tests/packet_lab.rs	protocol	tests/protocol/packet_lab.rs	packet_lab::	in-process
+pawn_open	tests/pawn_open.rs	replication_domain	tests/replication_domain/pawn_open.rs	pawn_open::	in-process
+pawn_restore	tests/pawn_restore.rs	replication_domain	tests/replication_domain/pawn_restore.rs	pawn_restore::	in-process
+pawn_stats	tests/pawn_stats.rs	replication_domain	tests/replication_domain/pawn_stats.rs	pawn_stats::	in-process
+peer_lab	tests/peer_lab.rs	protocol	tests/protocol/peer_lab.rs	peer_lab::	in-process
+peer_lab_fuzz	tests/peer_lab_fuzz.rs	protocol	tests/protocol/peer_lab_fuzz.rs	peer_lab_fuzz::	in-process
+persistence_fuzz	tests/persistence_fuzz.rs	native_domain	tests/native_domain/persistence_fuzz.rs	persistence_fuzz::	in-process
+ping	tests/ping.rs	protocol	tests/protocol/ping.rs	ping::	in-process
+preservation	tests/preservation.rs	save_format	tests/save_format/preservation.rs	preservation::	in-process
+preservation_containers	tests/preservation_containers.rs	save_format	tests/save_format/preservation_containers.rs	preservation_containers::	in-process
+preservation_fuzz	tests/preservation_fuzz.rs	save_format	tests/save_format/preservation_fuzz.rs	preservation_fuzz::	in-process
+preservation_streaming	tests/preservation_streaming.rs	save_format	tests/save_format/preservation_streaming.rs	preservation_streaming::	in-process
+probe_client	tests/probe_client.rs	protocol	tests/protocol/probe_client.rs	probe_client::	in-process
+property_tree	tests/property_tree.rs	save_format	tests/save_format/property_tree.rs	property_tree::	in-process
+prospect	tests/prospect.rs	prospect	tests/prospect.rs		subprocess
+prospect_advert	tests/prospect_advert.rs	protocol	tests/protocol/prospect_advert.rs	prospect_advert::	in-process
+prospect_components	tests/prospect_components.rs	save_format	tests/save_format/prospect_components.rs	prospect_components::	in-process
+prospect_info	tests/prospect_info.rs	prospect_info	tests/prospect_info.rs		subprocess
+quest_actor_open	tests/quest_actor_open.rs	replication_domain	tests/replication_domain/quest_actor_open.rs	quest_actor_open::	in-process
+recorders	tests/recorders.rs	save_format	tests/save_format/recorders.rs	recorders::	in-process
+release	tests/release.rs	protocol	tests/protocol/release.rs	release::	in-process
+rep_hit_result	tests/rep_hit_result.rs	replication_domain	tests/replication_domain/rep_hit_result.rs	rep_hit_result::	in-process
+rep_layout	tests/rep_layout.rs	replication_domain	tests/replication_domain/rep_layout.rs	rep_layout::	in-process
+rep_movement	tests/rep_movement.rs	replication_domain	tests/replication_domain/rep_movement.rs	rep_movement::	in-process
+rep_rpc	tests/rep_rpc.rs	replication_domain	tests/replication_domain/rep_rpc.rs	rep_rpc::	in-process
+rep_strings	tests/rep_strings.rs	replication_domain	tests/replication_domain/rep_strings.rs	rep_strings::	in-process
+rep_tags	tests/rep_tags.rs	replication_domain	tests/replication_domain/rep_tags.rs	rep_tags::	in-process
+rep_text	tests/rep_text.rs	replication_domain	tests/replication_domain/rep_text.rs	rep_text::	in-process
+replication	tests/replication.rs	replication_domain	tests/replication_domain/replication.rs	replication::	in-process
+restore_rules	tests/restore_rules.rs	save_format	tests/save_format/restore_rules.rs	restore_rules::	in-process
+sequencing	tests/sequencing.rs	protocol	tests/protocol/sequencing.rs	sequencing::	in-process
+server_fps	tests/server_fps.rs	replication_domain	tests/replication_domain/server_fps.rs	server_fps::	in-process
+server_query	tests/server_query.rs	protocol	tests/protocol/server_query.rs	server_query::	in-process
+session_open	tests/session_open.rs	replication_domain	tests/replication_domain/session_open.rs	session_open::	in-process
+stat_restore	tests/stat_restore.rs	replication_domain	tests/replication_domain/stat_restore.rs	stat_restore::	in-process
+steam_auth	tests/steam_auth.rs	protocol	tests/protocol/steam_auth.rs	steam_auth::	in-process
+steam_fetch	tests/steam_fetch.rs	protocol	tests/protocol/steam_fetch.rs	steam_fetch::	in-process
+steam_presence	tests/steam_presence.rs	protocol	tests/protocol/steam_presence.rs	steam_presence::	in-process
+steam_service	tests/steam_service.rs	protocol	tests/protocol/steam_service.rs	steam_service::	in-process
+steam_session_auth	tests/steam_session_auth.rs	protocol	tests/protocol/steam_session_auth.rs	steam_session_auth::	in-process
+struct_array	tests/struct_array.rs	save_format	tests/save_format/struct_array.rs	struct_array::	in-process
+tag_dictionary	tests/tag_dictionary.rs	protocol	tests/protocol/tag_dictionary.rs	tag_dictionary::	in-process
+tagged	tests/tagged.rs	save_format	tests/save_format/tagged.rs	tagged::	in-process
+temperature	tests/temperature.rs	replication_domain	tests/replication_domain/temperature.rs	temperature::	in-process
+temperature_tick	tests/temperature_tick.rs	replication_domain	tests/replication_domain/temperature_tick.rs	temperature_tick::	in-process
+time_of_day	tests/time_of_day.rs	replication_domain	tests/replication_domain/time_of_day.rs	time_of_day::	in-process
+typed_check	tests/typed_check.rs	typed_check	tests/typed_check.rs		subprocess
+typed_value	tests/typed_value.rs	save_format	tests/save_format/typed_value.rs	typed_value::	in-process

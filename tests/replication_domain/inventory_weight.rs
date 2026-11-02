@@ -1,5 +1,4 @@
-#[path = "pak_writer/mod.rs"]
-mod pak_writer;
+use crate::pak_writer;
 
 use icarus_bevy::{
     data_pak::DataTables,

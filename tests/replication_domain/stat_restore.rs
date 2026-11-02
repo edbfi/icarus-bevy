@@ -1,6 +1,5 @@
 //! A returning pawn's restored stats (F-983 to F-987) on authored tables.
-#[path = "pak_writer/mod.rs"]
-mod pak_writer;
+use crate::pak_writer;
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,6 +1,5 @@
 //! Authored scalar persistence, recovery and terminal upgrade boundaries.
-#[path = "common/c001_scalar_owners.rs"]
-mod fixture;
+use crate::scalar as fixture;
 
 use icarus_bevy::{
     config::ServerConfig,

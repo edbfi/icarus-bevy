@@ -23,9 +23,9 @@ SHA-256); rerun after an official update. `icarus-fetch --app 2089300 --file PAT
 fetches any official server file, and `--list` lists them.
 
 ```bash
-cargo build --release --locked
-cargo run --locked --bin icarus-server -- check-config --config config/server.example.toml
-cargo run --release --locked --bin icarus-server -- run --config config/server.example.toml
+python3 tools/cargo_guard.py build --release --locked
+target/release/icarus-server check-config --config config/server.example.toml
+target/release/icarus-server run --config config/server.example.toml
 ```
 
 For a bounded smoke run:
@@ -48,6 +48,8 @@ relative paths use CWD. Config must open as a regular file ≤64 KiB (regular
 symlinks allowed; FIFOs/oversized files fail before state opens, F-671).
 `check-config` prints effective settings without creating `--data-dir`;
 see each subcommand's `--help`.
+
+Builds: [guard](cargo-builds.md).
 
 ## Network sessions (experimental)
 

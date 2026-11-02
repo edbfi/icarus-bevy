@@ -1,6 +1,5 @@
 //! Authored fixtures only. These tests establish no official-save compatibility.
-#[path = "common/c001_scalar_owners.rs"]
-mod wire;
+use crate::scalar as wire;
 use icarus_bevy::{
     import_candidate::{CandidateLimits, DecodedImportCandidate},
     native_import::c001_variables::*,

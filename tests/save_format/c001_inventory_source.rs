@@ -1,7 +1,6 @@
-#[path = "common/c001_inventory_source.rs"]
+#[path = "../common/c001_inventory_source.rs"]
 mod authored;
-#[path = "common/c001_scalar_owners.rs"]
-mod scalar;
+use crate::scalar;
 
 use authored::*;
 use icarus_bevy::{

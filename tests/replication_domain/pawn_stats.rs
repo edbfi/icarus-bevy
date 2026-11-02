@@ -1,7 +1,6 @@
 //! A fresh player's replicated pawn stats from authored data tables
 //! (F-838, F-839).
-#[path = "pak_writer/mod.rs"]
-mod pak_writer;
+use crate::pak_writer;
 
 use std::collections::BTreeMap;
 

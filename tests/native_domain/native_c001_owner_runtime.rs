@@ -1,6 +1,5 @@
 //! Authored source fixtures only; no original files or runtime.
-#[path = "common/c001_owners.rs"]
-mod fixture;
+use crate::owner_fixture as fixture;
 
 use bevy::{ecs::entity_disabling::Disabled, prelude::*};
 use icarus_bevy::{

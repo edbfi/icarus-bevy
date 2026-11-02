@@ -123,6 +123,20 @@ be demonstrated rather than assumed.
   batch disk growth at 20 GiB, then reassess. Targeted Ghidra runs use a 4 GiB
   heap, two CPUs, at most 24 selected functions, 30 seconds per decompilation and
   15 minutes overall. Bound every experiment and clean it up on timeout.
+- Route local Cargo builds, Clippy and tests through `tools/cargo_guard.py`;
+  [build-cache operations](../../docs/runbooks/cargo-builds.md)
+  define reviewed adoption and full generation retirement. Its external build
+  lock serializes cooperating worktrees; private targets remain checkout-local.
+  Use `--hold-target -- command` only for bounded short-lived target commands
+  (30 minutes maximum), so cleanup waits for their shared lease. Inherited
+  descriptors retain leases if a supervisor dies. Long-running servers, soaks
+  and `cargo run` need a separately scoped, bounded operating procedure; they
+  do not cooperate with leases. Process detection is best effort only, not
+  cleanup protection. Privileged/noncooperating writers also remain outside
+  the advisory protocol. CI
+  explicitly sets `ICARUS_CARGO_GUARD_POLICY=ci`; `CI=true` grants no exception.
+  The provisional own-target cap is 10 GiB; retain the local 30 GiB disk floor
+  and two jobs. Preserve profile/debug/incremental settings.
 - Shared Cargo targets can reuse another checkout's executable despite a fresh
   event naming the current manifest (M-1069). Force the library and selected
   test to compile on checkout transitions, verify embedded manifest identity

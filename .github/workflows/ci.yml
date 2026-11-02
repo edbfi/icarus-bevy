@@ -14,6 +14,8 @@ jobs:
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      ICARUS_CARGO_GUARD_POLICY: ci
     permissions: { contents: read }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,11 +32,11 @@ jobs:
       - uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
         with: { extra-args: "--all-files --hook-stage manual" }
       - name: Build native release
-        run: cargo build --release --locked
+        run: python3 tools/cargo_guard.py build --release --locked
       - name: Smoke test without game files
         run: |
-          target/release/icarus-server check-config --config config/server.example.toml
-          target/release/icarus-server run --data-dir work/ci-smoke --max-ticks 3
+          python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server check-config --config config/server.example.toml
+          python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run --data-dir work/ci-smoke --max-ticks 3
   ci-ok:
     if: always()
     needs: [checks]
