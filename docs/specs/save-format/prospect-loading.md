@@ -7,9 +7,8 @@ Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
 
-Original prospect-load entry paths, inner `ProspectSaveState` version fixups
-and dispatch, recorder and base-component framing, and C013, C028, C034 and
-C009/D01 framing in the two supplied copies. Envelope: [envelope inspection](prospect-envelope.md); tags:
+Prospect-load entry paths, `ProspectSaveState` version fixups/dispatch,
+recorder/base-component and C013/C028/C034/C009/D01 framing in both copies. Envelope: [envelope inspection](prospect-envelope.md); tags:
 [tagged properties](tagged-properties.md); strings: [archive strings](archive-string.md);
 restoration: [restore rules](restore-rules.md). Not covered: gameplay data-table
 row meanings, reference resolution and world import.
@@ -51,10 +50,8 @@ Inner state, version and archive mode
   `StateRecorderBlobs` (`0xe8`, array of a derived state type).
 - `StateRecorderBlob` layout: F-884; descriptor order is not serialized order
   (F-889, F-884).
-- Dispatch and tagged traversal (F-257, F-890, F-718; U-062 resolved):
-  `UStruct::SerializeVersionedTaggedProperties` reads `FPropertyTag` headers
-  until `None`, wraps to the head on out-of-order tags and keeps defaults for
-  omitted tags.
+- Dispatch uses tagged traversal (F-257, F-890, F-718; U-062 resolved):
+  out-of-order tags wrap the property search; omissions keep defaults.
 - Version (F-885, F-715; U-059, U-060 resolved; `migrate_prospect_save_state`):
   `Version = 2` is the schema version, unrelated to game build.
   `PostLoadSerialize` (`0x1418e4250` / `0x1418e44f0`) at `Version == 0` also sets
@@ -63,9 +60,8 @@ Inner state, version and archive mode
 
 Recorders and base component
 
-- Each recorder is a `None`-terminated tagged sequence after the array's shared
-  inner tag; `BinaryData` is a signed 32-bit count and raw bytes (F-883, F-257,
-  F-884).
+- Recorder array and `BinaryData` framing: [tagged properties](tagged-properties.md)
+  (F-883, F-257, F-884).
 - Restore (F-890, F-891, F-909): the class string resolves, the component is
   constructed, and `+0x4a0` (`0x1418a9c80` -> `+0xa0` = `0x1418aaf70` -> `0x14200ea70`) reads
   tagged `CPF_SaveGame` properties, a 4-byte GUID-trailer boolean and the
@@ -135,12 +131,9 @@ Acceptance conditions for any importer
   rocket-spawn), and count `C033` `bIsPhysicsDynamic` across
   all 15 saves (`dddd.json`: F-680, F-747; `world_imported: false`; F-736, F-738,
   F-746).
-- All 65 `RecorderComponent` `FClassParams`, ctor defaults and vtable overrides
-  ([restore rules](restore-rules.md)), and `C001` provenance
-  ([C001 digest](../../research/save-format/c001-constructor.md)) match across
-  builds (F-469..F-747, F-902, F-905..F-910; U-003..U-006, U-020..U-024, U-032,
-  U-041, U-042, U-046,
-  U-048, U-050 resolved).
+- Cross-build classes/defaults/overrides: [restore rules](restore-rules.md)
+  (F-902); constructor provenance: [C001 digest](../../research/save-format/c001-constructor.md)
+  (F-905..F-910).
 
 ## Open questions
 
@@ -152,6 +145,5 @@ Acceptance conditions for any importer
 
 - Static: M-079..M-170, M-755..M-800; runtime: M-154, M-155, M-160; framing:
   M-049..M-118, M-172; C001: M-007..M-013, M-173, M-179..M-181, M-761, M-762.
-- Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
-  `tests/struct_array.rs`, `tests/int_array.rs`, `tests/archive_frame.rs`,
-  `tests/restore_rules.rs`, `tests/prospect.rs`, `tests/cli.rs`.
+- Tests: the [tagged-property suites](tagged-properties.md#evidence),
+  `tests/save_format/restore_rules.rs`, `tests/cli.rs`.

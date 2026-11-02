@@ -21,7 +21,8 @@ use std::{sync::Arc, time::Duration};
 
 fn fixture() -> WorldSnapshot {
     let catalog = Arc::new(
-        CompiledNativeCatalog::parse(include_str!("../config/native-world.example.toml")).unwrap(),
+        CompiledNativeCatalog::parse(include_str!("../../config/native-world.example.toml"))
+            .unwrap(),
     );
     let definition = LifecycleDefinition {
         lifecycle_format: 1,

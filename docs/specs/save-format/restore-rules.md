@@ -3,9 +3,9 @@
 ## Status
 
 Experimental: pure rules in `experimental::restore_rules` and
-`experimental::modifier_lifecycle` (`tests/restore_rules.rs`,
-`tests/modifier_lifecycle.rs`, U-045; U-020..U-022, U-032, U-046, U-048, U-050
-resolved).
+`experimental::modifier_lifecycle` (`tests/save_format/restore_rules.rs`,
+`tests/save_format/modifier_lifecycle.rs`, U-045; U-020..U-022, U-032, U-046,
+U-048, U-050 resolved).
 Last reconciled: 2026-10-26.
 
 ## Scope
@@ -13,8 +13,8 @@ Last reconciled: 2026-10-26.
 Recorder validate, stitch and restore rules across all 65 `/Script/Icarus.*RecorderComponent`
 classes (`C001..C038`, `N001..N027`); save decoding, class lookup, object
 construction, script owners and data-table rows are out of scope (F-660).
-The doc comments of `experimental::restore_rules` carry most addresses below;
-addresses with no native function here keep their helper name or stand alone.
+`experimental::restore_rules` doc comments carry most addresses; unmatched
+addresses retain helper names or stand alone.
 
 ## Confirmed
 

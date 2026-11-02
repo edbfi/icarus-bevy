@@ -20,7 +20,7 @@
 //! No RSS, allocation, throughput, or improvement claim is produced.
 //!
 //! Build with the project's pinned toolchain. Suggested commands:
-//! cargo check --locked --example native_modifier_bench
+//! python3 tools/cargo_guard.py check --locked --example native_modifier_bench
 //! cargo run --release --locked --example native_modifier_bench -- \
 //!   --sizes 1,32,256,1024 --samples 3 --steps 10 --seed 1 --seconds 120
 //! Apply a hard process timeout to the built example separately from compilation.

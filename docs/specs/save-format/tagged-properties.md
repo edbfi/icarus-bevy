@@ -7,11 +7,10 @@ Full text: d5b0ae6:docs/specs/save-format/tagged-properties.md
 
 ## Scope
 
-Outer framing of an already verified prospect payload: root tagged properties,
-the `StateRecorderBlobs` recorder array, and four caller-selected library framers
-(base component, Int array, tagged struct array, nested struct streams via
-`read_root`). The `MemoryArchive522` profile is based on build 25621760 and does
-not identify a save's producing build, user-reported as 25793767 (F-323).
+Verified prospect framing: root tags, `StateRecorderBlobs`, and caller-selected
+base-component, Int-array, tagged-struct-array and nested-struct (`read_root`)
+framers. `MemoryArchive522` models build 25621760; it cannot identify the save's
+producing build, user-reported as 25793767 (F-323).
 Envelope: [prospect envelope](prospect-envelope.md); strings:
 [archive string](archive-string.md); class results: [prospect loading](prospect-loading.md).
 Not covered: gameplay data-table row meanings, reference integrity and world
@@ -22,11 +21,8 @@ import. Every reader reports `world_imported: false`.
 Recovered tag layout (older server):
 
 - Reader chain and archive reset to version 522, no byte swapping: F-286, F-257.
-- Names use the archive string: little-endian signed 32-bit count; positive =
-  narrow bytes, negative = UTF-16 code units; nonzero counts include a
-  terminating zero. The native strict subset rejects malformed terminators and
-  unsupported normalizations instead of reproducing the original's lossy `?` /
-  zeroing corrections (F-287, F-893; U-026, U-033 resolved).
+- Names use little-endian [archive strings](archive-string.md), including that
+  codec's strict-reader differences (F-287, F-893; U-026, U-033 resolved).
 - Tag record, in order (F-287):
 
   | Component | Encoding |
@@ -102,13 +98,12 @@ Supplied-data measurements (two private copies):
   `SignTextRecord` `TextProperty` bodies (`0x142182820` -> `0x141eb4390`, history
   `-1`) and all 163 Maps per copy (`C015`, `C022`, `C032`, F-900, F-725, F-726;
   U-053, U-055 resolved) frame to exact EOF.
-- Base-component layout and all 65 `RecorderComponent` `FClassParams` (including all
-  38 `StateRecorderBlobs` classes' `+0xa0`/`+0x488`/`+0x4a0`/`+0x4b0` overrides) match
-  across builds; `ConstructFProperty` (`0x14216e730`) sets `PropertyFlags` (`+0x40`)
+- Base-component layout, class parameters and overrides match across builds
+  ([restore rules](restore-rules.md); F-902). `ConstructFProperty` (`0x14216e730`)
+  sets `PropertyFlags` (`+0x40`)
   from static `Descriptor->PropertyFlags` and `LinkInternal` (`0x1408ad190`) never
   mutates `+0x40` (`CPF_SaveGame` `0x01000000`, F-258, F-305, F-716, F-720, F-902,
-  F-728, F-734 to F-736; U-020 to U-022, U-024, U-032, U-039, U-046, U-048, U-050,
-  U-054, U-061 resolved).
+  F-728, F-734 to F-736; U-054 resolved; class resolutions in the restore rules).
 - Every opaque Struct leaf is one of four fixed-width engine math types (F-900,
   F-602; U-027 resolved), and client 25793767 matches server 25621760 on tag,
   Array, `FFloatProperty`, `FVector`, and `CppStructOps` serializers (F-892,
@@ -125,6 +120,7 @@ Supplied-data measurements (two private copies):
   M-086; Map/Set/Int64 and all-class framing M-387 to M-390, M-392 to M-396,
   M-401 to M-404; server migration, entry, correspondence and 65-class / restore
   audits M-755 to M-760, M-766 to M-769, M-772 to M-775.
-- Tests: `tests/tagged.rs`, `tests/recorders.rs`, `tests/component.rs`,
-  `tests/int_array.rs`, `tests/struct_array.rs`, `tests/archive_frame.rs`,
+- Tests: `tests/save_format/tagged.rs`, `tests/save_format/recorders.rs`,
+  `tests/save_format/component.rs`, `tests/save_format/int_array.rs`,
+  `tests/save_format/struct_array.rs`, `tests/save_format/archive_frame.rs`,
   `tests/prospect.rs`.

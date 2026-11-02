@@ -1,8 +1,6 @@
 //! Independently authored scalar source, provenance, and transaction tests.
-#[path = "common/c001_scalar_owners.rs"]
-mod authored;
-#[path = "common/c001_owners.rs"]
-mod old;
+use crate::owner_fixture as old;
+use crate::scalar as authored;
 use authored::{Fixture, Tag, fixture, scalar_array, scalar_pair, stream, string, units};
 use icarus_bevy::{
     import_candidate::DecodedImportCandidate,

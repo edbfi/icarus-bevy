@@ -1,6 +1,5 @@
 //! Independently authored scalar consumers; no original inputs or runtime.
-#[path = "common/c001_scalar_owners.rs"]
-mod fixture;
+use crate::scalar as fixture;
 
 use bevy::{ecs::entity_disabling::Disabled, prelude::*};
 use icarus_bevy::{

@@ -14,8 +14,7 @@ Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 Server control dispatch, notify tables, packet and bunch headers,
 `UControlChannel` byte order, queueing and fallback layouts, admission,
 `PreLogin` and join, across both binaries, plus the bounded 3.0.34 S2
-Steam-handler exchange. Compression and complete runtime initialization remain
-outside this specification.
+Steam-handler exchange. Excludes compression and complete runtime initialization.
 
 ## Confirmed
 
@@ -139,5 +138,5 @@ outside this specification.
   M-023 to M-045 ([control-store digest](../../research/network/control-stores.md)),
   M-589 to M-596, M-749 to M-754, M-763 to M-765, M-770, M-771, M-776, M-777,
   M-780, M-791.
-- Tests: `cargo test --test control_negotiation --locked` and
-  `cargo test --test peer_lab --locked`.
+- Tests: `python3 tools/cargo_guard.py test --locked --test protocol control::` and
+  `python3 tools/cargo_guard.py test --locked --test protocol peer_lab::`.

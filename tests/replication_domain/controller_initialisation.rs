@@ -26,10 +26,10 @@ use icarus_bevy::{
     simulation::{WorldSnapshot, build_app},
 };
 
-#[path = "common/loopback_client.rs"]
+#[path = "../common/loopback_client.rs"]
 mod loopback_client;
 use loopback_client::{Client, drain};
-#[path = "common/profiles.rs"]
+#[path = "../common/profiles.rs"]
 mod profiles;
 
 fn codec(order: ByteOrder) -> ActorChannelCodec {

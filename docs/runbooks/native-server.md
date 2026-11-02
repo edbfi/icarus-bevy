@@ -1,11 +1,11 @@
 # Native server: run, persistence and inspection
 
-Headless foundation guide: [design constraints](../architecture.md) and
-[proven behavior](../implementation-status.md).
+Headless foundation: [constraints](../architecture.md),
+[status](../implementation-status.md).
 
 ## Run
 
-Requires native Linux, pinned Rust 1.99.1 with Rustfmt/Clippy and headless
+Native Linux, pinned Rust 1.99.1 with Rustfmt/Clippy and headless
 Bevy 0.20.1; no GPU, display or Proton. Protocol row identities are fetched
 unattended/anonymously from the free official dedicated server (Steam app
 2089300), without steamcmd or the game client (F-828, F-831). With
@@ -23,31 +23,32 @@ SHA-256); rerun after an official update. `icarus-fetch --app 2089300 --file PAT
 fetches any official server file, and `--list` lists them.
 
 ```bash
-cargo build --release --locked
-cargo run --locked --bin icarus-server -- check-config --config config/server.example.toml
-cargo run --release --locked --bin icarus-server -- run --config config/server.example.toml
+python3 tools/cargo_guard.py build --release --locked
+python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server check-config --config config/server.example.toml
+target/release/icarus-server run --config config/server.example.toml
 ```
 
-For a bounded smoke run:
+Bounded smoke run:
 
 ```bash
-target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
+python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
 ```
 
-For qualification, `--compressed` (requires `--max-ticks`) runs simulated time
-without pacing: autosave and status intervals count simulated seconds and await
-in-flight autosaves ([synthetic workload](synthetic-workload.md)).
+`--compressed` requires `--max-ticks` and runs unpaced simulated time. Autosave
+and status intervals use simulated seconds and await in-flight autosaves
+([synthetic workload](synthetic-workload.md)).
 
-Development default: provisional 30 Hz, ≤4 catch-up ticks/update, not a
-discovered ICARUS rate. Sockets require enabled `[network]`.
+Default: provisional 30 Hz, ≤4 catch-up ticks/update, unqualified.
+Sockets require enabled `[network]`.
 Lifecycle/status/save JSON goes to stderr with `gameplay_ready: false`;
 tick timings cover foundation systems only, not gameplay performance.
 
-Configuration: CLI → TOML → defaults; unknown fields/invalid limits reject;
+Config: CLI → TOML → defaults; unknown fields/invalid limits reject;
 relative paths use CWD. Config must open as a regular file ≤64 KiB (regular
 symlinks allowed; FIFOs/oversized files fail before state opens, F-671).
-`check-config` prints effective settings without creating `--data-dir`;
-see each subcommand's `--help`.
+`check-config` prints settings without creating `--data-dir`; see `--help`.
+
+Builds: [guard](cargo-builds.md).
 
 ## Network sessions (experimental)
 
@@ -162,7 +163,7 @@ gameplay and stock-client behavior remain unqualified. Costs: schema 4 only
 (F-939, F-941); lifecycle cost is unmeasured. Tests use authored probes:
 
 ```bash
-cargo test --locked --test network
+python3 tools/cargo_guard.py test --locked --test network
 target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
 cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
   --cycles 200 --concurrency 1 --release-profile config/release.toml

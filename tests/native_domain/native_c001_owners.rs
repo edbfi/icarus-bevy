@@ -1,6 +1,5 @@
 //! Independent authored adapter contract; no original or private inputs.
-#[path = "common/c001_owners.rs"]
-mod c001_owners;
+use crate::owner_fixture as c001_owners;
 use c001_owners::{Fixture, Tag, fixture, floats, stream, string, units};
 use icarus_bevy::{
     import_candidate::DecodedImportCandidate,

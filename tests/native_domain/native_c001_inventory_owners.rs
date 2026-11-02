@@ -1,10 +1,7 @@
 //! Authored source -> parts and immutable provenance only. No runtime/store claim.
-#[path = "common/c001_inventory_owners.rs"]
-mod authored;
-#[path = "common/c001_scalar_owners.rs"]
-mod scalar;
-#[path = "common/c001_inventory_source.rs"]
-mod source;
+use crate::inventory_fixture as authored;
+use crate::{scalar, source};
+
 use authored::{Fixture, fixture};
 use icarus_bevy::{
     import_candidate::DecodedImportCandidate,

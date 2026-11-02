@@ -48,8 +48,8 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2
 unsafe_code = "forbid"
 
 [profile.dev]
-# Line tables keep backtrace locations; full debug info made each of the ~40
-# test binaries about 130 MiB.
+# Line tables keep backtrace locations while limiting debug data in each
+# integration-test harness.
 debug = "line-tables-only"
 
 [profile.release]

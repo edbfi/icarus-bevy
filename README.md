@@ -8,13 +8,13 @@ official-save import remain unimplemented and unvalidated. Offline research has 
 
 ## Quick start
 
-Requires native Linux and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy
+Requires native Linux, Git, Python 3.15 and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy
 0.20.1 runs headless; no GPU, display, original game files or Proton are needed.
 
 ```bash
-cargo build --release --locked
-target/release/icarus-server check-config --config config/server.example.toml
-target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
+python3 tools/cargo_guard.py build --release --locked
+python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server check-config --config config/server.example.toml
+python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
 ```
 
 The [native server runbook](docs/runbooks/native-server.md) covers configuration,

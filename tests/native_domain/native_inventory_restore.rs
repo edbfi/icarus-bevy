@@ -1,10 +1,6 @@
 //! Complete request identity/bounds tests; no runtime or storage claims.
-#[path = "common/c001_inventory_owners.rs"]
-mod authored;
-#[path = "common/c001_scalar_owners.rs"]
-mod scalar;
-#[path = "common/c001_inventory_source.rs"]
-mod source;
+use crate::inventory_fixture as authored;
+
 use icarus_bevy::{
     native_inventory::{InventoryStateV1, MAX_INVENTORY_GRAPH_BYTES},
     native_inventory_restore::*,
