@@ -59,7 +59,8 @@ pub struct NetworkConfig {
     pub port: u16,
     /// Admission occupancy limit; the official documented player limit is 8.
     pub max_players: u32,
-    /// Sessions without an accepted packet for this long are removed.
+    /// Native timeout for no accepted incoming packet, or outstanding sent
+    /// packets with no ACK/NAK progress. Removal is local; reconnect may be needed.
     pub session_timeout_seconds: u64,
     /// Optional release TOML (such as `config/release.toml`; relative paths use
     /// the working directory). When set, it is loaded and validated before the

@@ -69,18 +69,19 @@ enabled = true
 bind = "127.0.0.1"          # IPv4 loopback only
 port = 17777                # 0 selects an ephemeral port; CLI: --network-port
 max_players = 8             # admission occupancy limit, 1..=64
-session_timeout_seconds = 30  # idle eviction, 1..=600, monotonic real time
+session_timeout_seconds = 30  # idle/delivery timeout, 1..=600 s
 release_profile = "config/release.toml"  # optional Hello version pin
 data_pak = "/path/to/IcarusServer/Icarus/Content/Data/data.pak"  # protocol row identities
 authored_gameplay = "/path/to/authored-gameplay.json"  # required with configured/installed pak
 ```
 
-Release profile/socket checks precede opening `--data-dir`; mismatched Hello
-gets Upgrade. Updates poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM
-closes sessions before draining/saving. `network_listening` reports
-address/`version_check`; `status`/`stopped` report session counts. Preserved
-prospects replicate active prospect/mode state (F-804). The pak supplies row
-names/order; authored input supplies gameplay values (F-993).
+Profile/socket checks precede `--data-dir`; mismatched Hello gets Upgrade.
+Updates poll ≤32 datagrams before ticks. SIGINT/SIGTERM closes sessions before
+saving. `network_listening` reports address/`version_check`; `status`/`stopped`
+report session counts. Prospect/mode: F-804. Row identities/authored values: F-993.
+The timeout also removes peers with sent records but no ACK/NAK progress despite
+inbound traffic: `closed_by_delivery_stall`/`peers_delivery_stalled` count these
+apart from idle expiry. This is native policy, not original timing (F-1013).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
@@ -91,9 +92,8 @@ Coverage and compatibility remain unproven. Without either input, lab defaults a
 
 Each pawn open carries a distinct positive `IcarusUID` (handle 46, F-948).
 Positive saved actor-recorder `IcarusActorGUID`s occupy the namespace first;
-an unreadable one fails startup. Desired IDs count from 65,536 per world; the
-search uses an authored xorshift64 PRNG (seed 1), not MSVC `rand`. Claim,
-reservation and remap stores cap at 262,144 entries each. A failed claim skips
+an unreadable one fails startup. UID allocation: F-948. Claim/reservation/remap
+stores cap at 262,144 entries each. A failed claim skips
 the pawn open and counts `pawn_open_errors`; session removal frees the UID. When a
 joined client sends its character slot, `run` asks it for its user and
 character profiles through its backend proxy and replicates them on its
