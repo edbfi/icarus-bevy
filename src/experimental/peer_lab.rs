@@ -142,6 +142,13 @@
 //!   an update; deadlines use monotonic real time ([`Instant`]), never
 //!   simulation time. Failed peers ([`LabPeer::is_failed`]) and peers whose
 //!   ack packet cannot be built are removed at once.
+//! - Native bounded-delivery policy: outstanding sent packets without ACK/NAK
+//!   progress for [`PeerLabConfig::idle_timeout`] also remove the peer, even
+//!   when incoming packets keep it active. The clock starts when outstanding
+//!   traffic is first observed and clears with an empty sent ring. This is
+//!   not an inference about the original server's timeout or retransmit timing.
+//!   Removal is local: a full ring cannot carry a close, so the client may
+//!   need to reconnect after its own connection timeout.
 //! - After [`PeerLab::stop_admission`] no exact handshake form is answered
 //!   (`refused_draining`), so no peer is created or replaced; live peers keep
 //!   their packet state until [`PeerLab::shutdown`] notifies and removes them
@@ -447,7 +454,8 @@ pub struct PeerLabConfig {
     pub packet: PacketLabConfig,
     /// Peer-table capacity, `1..=MAX_PEERS_LIMIT`.
     pub max_peers: usize,
-    /// Nonzero idle interval after which a peer is removed.
+    /// Nonzero interval for inbound-idle and stalled-delivery local removal.
+    /// Delivery progress uses ACK/NAK notifications, not incoming traffic alone.
     pub idle_timeout: Duration,
     /// Caller-supplied local network version compared with each Hello version
     /// (plain equality); a mismatch is answered with Upgrade. `None` skips the
@@ -549,6 +557,8 @@ pub struct PeerLabStats {
     /// Valid challenge echoes refused because the table was full.
     pub peers_rejected: u64,
     pub peers_expired: u64,
+    /// Outstanding delivery made no ACK/NAK progress within the native timeout.
+    pub peers_delivery_stalled: u64,
     /// Peers removed after a failed receive or ack.
     pub peers_failed: u64,
     /// Peers removed by ticket verification or a negative Steam auth outcome.
@@ -816,6 +826,8 @@ pub struct SessionCounts {
     pub refused_draining: u64,
     /// Sessions removed by the idle timeout.
     pub closed_by_timeout: u64,
+    /// Native delivery timeout, independent of incoming-packet activity.
+    pub closed_by_delivery_stall: u64,
     /// Sessions closed by a client control close bunch.
     pub closed_by_client: u64,
     /// Sessions closed after an Upgrade or Failure reply.
@@ -1198,6 +1210,8 @@ struct PeerEntry {
     /// The cookie that created this peer; compared only, never reported.
     cookie: [u8; 20],
     last_seen: Instant,
+    /// Native policy only: accepted inbound traffic does not reset delivery progress.
+    delivery_progress_at: Option<Instant>,
     ack_pending: bool,
     ack_capacity_blocked: bool,
     /// One chosen control reply, without replaying admission or challenge entropy.
@@ -3996,6 +4010,7 @@ impl PeerLab {
             peers_rejected: self.stats.peers_rejected,
             refused_draining: self.stats.refused_draining,
             closed_by_timeout: self.stats.peers_expired,
+            closed_by_delivery_stall: self.stats.peers_delivery_stalled,
             closed_by_client: self.stats.peers_closed_by_client,
             closed_by_reply: self.stats.peers_closed,
             upgrades_sent: self.stats.upgrades_sent,
@@ -4193,6 +4208,27 @@ impl PeerLab {
         self.stats.peers_expired = self.stats.peers_expired.saturating_add(expired);
     }
 
+    fn expire_stalled_delivery(&mut self, now: Instant) {
+        let timeout = self.config.idle_timeout;
+        let stalled: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                if entry.peer.sequencer().notify().sent_records().is_empty() {
+                    entry.delivery_progress_at = None;
+                    return None;
+                }
+                let progress = entry.delivery_progress_at.get_or_insert(now);
+                (now.saturating_duration_since(*progress) > timeout).then_some(*address)
+            })
+            .collect();
+        for address in stalled {
+            if self.remove_peer(address).is_some() {
+                bump(&mut self.stats.peers_delivery_stalled);
+            }
+        }
+    }
+
     /// Answer a handshake form; returns `false` when `bytes` is not one the
     /// authority answers.
     fn handshake(&mut self, address: SocketAddrV4, length: usize, now: Instant) -> bool {
@@ -4270,6 +4306,7 @@ impl PeerLab {
                         pawn_restore_retry_ready: false,
                         cookie,
                         last_seen: now,
+                        delivery_progress_at: None,
                         ack_pending: false,
                         ack_capacity_blocked: false,
                         pending_control_reply: None,
@@ -4345,6 +4382,7 @@ impl PeerLab {
                         entry.last_seen = now;
                         entry.ack_pending = true;
                         if !summary.acked.is_empty() || !summary.naked.is_empty() {
+                            entry.delivery_progress_at = Some(now);
                             entry.ack_capacity_blocked = false;
                             if entry.pending_control_reply.is_some() {
                                 entry.control_reply_retry_ready = true;
@@ -6229,7 +6267,9 @@ impl PeerLab {
     /// [`PeerLabPlugin`] runs this once per app update.
     pub fn poll(&mut self) {
         self.poll_authentication();
-        self.expire_idle(Instant::now());
+        let now = Instant::now();
+        self.expire_idle(now);
+        self.expire_stalled_delivery(now);
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
             let (length, source) = match self.socket.recv_from(&mut self.buffer) {
@@ -7091,6 +7131,258 @@ mod tests {
         assert!(entry.peer.actor_channel_settled(channel));
         assert!(entry.peer.sequencer().notify().sent_records().is_empty());
         (socket, address, client)
+    }
+
+    /// Authored wire inputs with a caller-controlled receive clock. The
+    /// socket and normal data handler are real; only elapsed time is injected.
+    fn receive_authored_at(lab: &mut PeerLab, socket: &UdpSocket, bytes: &[u8], now: Instant) {
+        socket.send(bytes).unwrap();
+        let (length, source) = lab.socket.recv_from(&mut lab.buffer).unwrap();
+        let SocketAddr::V4(address) = source else {
+            unreachable!()
+        };
+        lab.data(address, length, now);
+    }
+
+    #[test]
+    fn poll_removes_stalled_delivery_and_reports_session_counter() {
+        let mut lab = prospect_refresh_lab();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        let timeout = lab.config.idle_timeout;
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.peer.ack_packet().unwrap();
+        entry.delivery_progress_at = Some(Instant::now() - timeout - Duration::from_secs(1));
+        entry.last_seen = Instant::now();
+
+        lab.poll();
+
+        assert!(!lab.has_peer(address));
+        assert_eq!(lab.stats.peers_expired, 0);
+        assert_eq!(lab.stats.peers_delivery_stalled, 1);
+        let status = serde_json::to_value(lab.session_counts()).unwrap();
+        assert_eq!(status["closed_by_delivery_stall"], 1);
+        lab.poll();
+        assert_eq!(lab.stats.peers_delivery_stalled, 1);
+    }
+
+    #[test]
+    fn dropped_challenge_expires_delivery_despite_live_reliable_retransmissions() {
+        use super::super::{
+            control_messages::{ControlCodec, encode_control_message},
+            handshake::initial_request,
+            packet::{BitWriter, Bunch, BunchHeader, Name, Packet, write_packet},
+            packet_lab::client_cookie_seeds,
+            sequencing::{PacketSequencer, wire_reliable_sequence},
+        };
+
+        let timeout = Duration::from_secs(60);
+        let mut config = PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            idle_timeout: timeout,
+            ..Default::default()
+        };
+        config.packet.sent_capacity = 1;
+        let mut lab = PeerLab::bind(0, config).unwrap();
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(lab.local_addr().unwrap()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        socket.send(&initial_request()).unwrap();
+        lab.poll();
+        let mut bytes = [0; 2048];
+        let length = socket.recv(&mut bytes).unwrap();
+        let cookie = decode(&bytes[..length]).unwrap().cookie;
+        socket.send(&bytes[..length]).unwrap();
+        lab.poll();
+        socket.recv(&mut bytes).unwrap();
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let (incoming, outgoing) = client_cookie_seeds(&cookie);
+        let mut client = PacketSequencer::new(incoming, outgoing, 8).unwrap();
+        let mut control = client.new_channel();
+        let hello = ControlMessage::Hello {
+            first_field: 1,
+            version: 1,
+            token: ArchiveText::text("").unwrap(),
+        };
+        let sequence = control
+            .send_reliable(client.out_packet_id(), hello.clone())
+            .unwrap();
+        let mut payload = BitWriter::new();
+        payload.write_bytes(&encode_control_message(&hello, &ControlCodec::default()).unwrap());
+        let hello_bunch = Bunch {
+            header: BunchHeader {
+                control: true,
+                open: true,
+                close: false,
+                close_reason: None,
+                paused: false,
+                reliable: true,
+                channel_index: 0,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(sequence)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(255)),
+            },
+            payload: Payload::from_writer(payload),
+        };
+        let start = Instant::now();
+        for elapsed in [Duration::ZERO, timeout, timeout + Duration::from_millis(1)] {
+            let packet = write_packet(
+                &Packet {
+                    magic: 0,
+                    header: client.header().unwrap(),
+                    info: None,
+                    bunches: vec![hello_bunch.clone()],
+                },
+                &lab.config.packet.packet,
+            )
+            .unwrap();
+            client.commit().unwrap();
+            let now = start + elapsed;
+            receive_authored_at(&mut lab, &socket, &packet, now);
+            lab.send_acks();
+            if elapsed.is_zero() {
+                // The Challenge is deliberately lost to the client sequencing
+                // model. No later server sequence can fit this one-record ring.
+                socket.recv(&mut bytes).unwrap();
+            }
+            assert_eq!(lab.peers[&address].last_seen, now);
+            lab.expire_idle(now);
+            assert!(
+                lab.has_peer(address),
+                "fresh client traffic prevents idle expiry"
+            );
+            lab.expire_stalled_delivery(now);
+            assert_eq!(lab.has_peer(address), elapsed <= timeout);
+        }
+        assert_eq!(lab.stats.control_challenges_sent, 1);
+        assert_eq!(lab.stats.data_accepted, 3);
+        assert_eq!(lab.stats.peers_expired, 0);
+        assert_eq!(lab.stats.peers_failed, 0);
+        assert_eq!(lab.stats.peers_delivery_stalled, 1);
+        assert_eq!(lab.session_counts().closed_by_delivery_stall, 1);
+        lab.expire_stalled_delivery(start + timeout * 2);
+        assert_eq!(lab.stats.peers_delivery_stalled, 1);
+    }
+
+    #[test]
+    fn delivery_notifications_reset_deadline_and_empty_queues_clear_it() {
+        use super::super::packet::{Packet, Receiver, read_packet, write_packet};
+
+        for delivered in [true, false] {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+            let timeout = lab.config.idle_timeout;
+            let start = Instant::now();
+            // A real reliable control packet and a newer ACK packet allow the
+            // client to acknowledge the first, or skip it and report its NAK.
+            let first = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .reliable_control_packet(ControlMessage::Challenge {
+                    token: ArchiveText::text("authored").unwrap(),
+                })
+                .unwrap();
+            let newer = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            lab.expire_stalled_delivery(start);
+            let mut to_client = lab.config.packet.packet;
+            to_client.receiver = Receiver::Client;
+            if delivered {
+                let packet = read_packet(&first, &to_client).unwrap();
+                let received = client.receive(&packet.header).unwrap().unwrap();
+                client.ack_seq(received.sequence, true).unwrap();
+            }
+            let packet = read_packet(&newer, &to_client).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+            let ack = write_packet(
+                &Packet {
+                    magic: 0,
+                    header: client.header().unwrap(),
+                    info: None,
+                    bunches: Vec::new(),
+                },
+                &lab.config.packet.packet,
+            )
+            .unwrap();
+            client.commit().unwrap();
+            let progress = start + timeout;
+            receive_authored_at(&mut lab, &socket, &ack, progress);
+            assert_eq!(lab.peers[&address].delivery_progress_at, Some(progress));
+            assert!(
+                lab.peers[&address]
+                    .peer
+                    .sequencer()
+                    .notify()
+                    .sent_records()
+                    .is_empty()
+            );
+            assert_eq!(
+                lab.peers[&address].peer.pending_resends(),
+                usize::from(!delivered)
+            );
+
+            // Send a fresh tracked ACK/repair, so the new progress deadline is
+            // exercised rather than merely observing an empty ring.
+            lab.send_acks();
+            lab.expire_stalled_delivery(start + timeout + Duration::from_millis(1));
+            assert!(
+                lab.has_peer(address),
+                "ACK and NAK both extend a live delivery deadline"
+            );
+            let mut buffer = [0; 2048];
+            let length = socket.recv(&mut buffer).unwrap();
+            let packet = read_packet(&buffer[..length], &to_client).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+            let ack = write_packet(
+                &Packet {
+                    magic: 0,
+                    header: client.header().unwrap(),
+                    info: None,
+                    bunches: Vec::new(),
+                },
+                &lab.config.packet.packet,
+            )
+            .unwrap();
+            client.commit().unwrap();
+            receive_authored_at(&mut lab, &socket, &ack, progress + Duration::from_millis(2));
+            lab.expire_stalled_delivery(progress + timeout * 100);
+            assert!(
+                lab.has_peer(address),
+                "no outstanding delivery means no delivery timeout"
+            );
+            assert_eq!(lab.peers[&address].delivery_progress_at, None);
+            assert_eq!(lab.stats.peers_delivery_stalled, 0);
+            // A new nonempty epoch does not inherit the old deadline.
+            lab.peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            let fresh = progress + timeout * 101;
+            lab.expire_stalled_delivery(fresh);
+            lab.expire_stalled_delivery(fresh + timeout);
+            assert!(lab.has_peer(address), "new traffic gets the full timeout");
+            lab.expire_stalled_delivery(fresh + timeout + Duration::from_millis(1));
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.stats.peers_delivery_stalled, 1);
+        }
     }
 
     #[test]

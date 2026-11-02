@@ -15,4 +15,5 @@ enabled = false
 bind = "127.0.0.1"
 port = 17777
 max_players = 8
+# Native inbound-idle / outstanding-delivery-progress timeout; removal is local.
 session_timeout_seconds = 30
