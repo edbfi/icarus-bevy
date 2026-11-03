@@ -53,6 +53,24 @@ pub struct AssociatedMember {
     pub is_currently_playing: bool,
 }
 
+/// Caller-owned character/account values for an explicitly completed spawn
+/// (F-946). No account identity or character values are inferred by this type.
+/// Debug deliberately omits private values.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SpawnedProspectMember {
+    pub account_name: Vec<u16>,
+    pub character_name: Vec<u16>,
+    pub user_id: Vec<u16>,
+    pub chr_slot: i32,
+    pub experience: i32,
+}
+
+impl std::fmt::Debug for SpawnedProspectMember {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SpawnedProspectMember")
+    }
+}
+
 /// One `FCustomGameSetting`; `Debug` shows no values.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct CustomGameSetting {
@@ -280,6 +298,33 @@ impl AssociatedMember {
 }
 
 impl ProspectInfo {
+    /// Build the F-946 addition without changing existing members or other
+    /// prospect fields. Native identity policy matches ASCII case-insensitively
+    /// plus exact slot, as member refresh does; the original's case rule remains
+    /// unqualified. A duplicate leaves even its cached names/experience intact.
+    /// The candidate still requires release codec/resource validation before
+    /// publication. This helper grants no spawn, persistence or timing authority.
+    pub(crate) fn with_spawned_member(&self, member: SpawnedProspectMember) -> (Self, bool) {
+        let mut candidate = self.clone();
+        if candidate.associated_members.iter().any(|existing| {
+            existing.chr_slot == member.chr_slot
+                && super::restore_rules::names_match(&existing.user_id, &member.user_id)
+        }) {
+            return (candidate, false);
+        }
+        candidate.associated_members.push(AssociatedMember {
+            account_name: member.account_name,
+            character_name: member.character_name,
+            user_id: member.user_id,
+            chr_slot: member.chr_slot,
+            experience: member.experience,
+            status: 2,
+            settled: false,
+            is_currently_playing: false,
+        });
+        (candidate, true)
+    }
+
     /// Check caller-authored enum values against the qualified descriptors.
     /// Integer field types already retain their declared signed widths.
     pub fn validate_enumerators(&self) -> Result<()> {

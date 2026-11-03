@@ -93,10 +93,10 @@ apart from idle expiry. This is native policy, not original timing (F-1013).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
-Schematic example, not a playable profile. Tables must match the catalog's row
-count, names and order. Author values independently; never copy gameplay tables.
-Missing tables have no pak fallback; omitted fields use parser defaults.
-Coverage and compatibility remain unproven. Without either input, lab defaults apply.
+Schematic, not playable. Match catalog row counts/names/order; author values
+independently, never copy gameplay tables. Missing tables have no pak fallback;
+omitted fields use parser defaults. Coverage/compatibility unproven. Without
+either input, lab defaults apply.
 
 Pawn opens carry distinct positive `IcarusUID`s (handle 46, F-948).
 Saved actor-recorder `IcarusActorGUID`s reserve positive IDs first; unreadable
@@ -122,47 +122,53 @@ timeout only logs (F-959). Rejected staging disables returning-player restore:
 no saved characters/controllers/History; all joiners enter an initially empty
 History as new players.
 
-Explicit library APIs (F-995, F-998, F-1000) share reliable ACK gating,
-coalescing, pressure retries and loss repair. `refresh_restored_modifier_times`
-validates UID/raw/wire batches; `refresh_pawn_temperature` merges known fields
-(`None` unchanged, zero explicit). `set_restored_modifier_time` and
-`set_pawn_internal_temperature` run qualified setter order with caller-owned
-effects before publication; temperature requires a known value and stat reads.
+`PeerLab::complete_prospect_member_spawn(SpawnedProspectMember)` (F-1014) needs
+`enable_member_refresh`: caller UTF-16 account/character names/user ID, i32 slot/XP.
+Duplicate ID/slot returns false unchanged; IDs ASCII-fold (original rule unknown).
+New flags: status 2, unsettled/not playing; other members/time unchanged.
+Full refresh preflight and ACK-gated retries apply. Join refreshes existing
+members' playing flags by login ID; unassociated Join adds nothing. No automatic
+spawn trigger, save or advert update.
 
-`configure_pawn_temperature_tick` requires all four temperatures and explicit
-reference/cache flags, interval, elapsed time and fractional remainder.
-`configure_restored_modifier_tick` requires an existing restored UID and
-explicit owner role, interval enablement, elapsed time and interval.
-`tick_pawn_temperature` / `tick_restored_modifier` accept elapsed time and
-caller-owned effects, read current values and retain final values/timing.
+Explicit APIs (F-995, F-998, F-1000) share ACK gating, coalescing, pressure
+retries and loss repair. `refresh_restored_modifier_times` validates UID/raw/wire
+batches; `refresh_pawn_temperature` merges fields (`None` unchanged, zero
+explicit). `set_restored_modifier_time`/`set_pawn_internal_temperature` preserve
+setter order and caller-owned effects before publication; temperature needs a
+known value and stat reads.
+
+`configure_pawn_temperature_tick`: all four temperatures, reference/cache flags,
+interval, elapsed time and fractional remainder. `configure_restored_modifier_tick`:
+existing restored UID, owner role, interval enablement, elapsed time/interval.
+`tick_pawn_temperature`/`tick_restored_modifier` take elapsed time/caller-owned
+effects and retain final values/timing from current state.
 Polling/retries never replay callbacks or infer climate, expiry, destruction or
 persistence. Disconnect drops timing; reconnect needs configuration. Getters
 return copies; counts use `PeerLabStats`/`SessionCounts`.
 
-Authored schema-4/7/11 hosts opt in with `[network].authored_replication` or
-`run --authored-replication replication.json`. Disabled networking ignores it;
-enabled networking needs a release session plan. Strict JSON (regular file
-≤1 MiB, 1–1,024 bindings): `AuthoredReplication` in `src/native_replication.rs`.
-Declare catalog/map, signed-axis/unit frame, archetype paths/checksums/`no_load`,
-parameters and schedule. Only translation maps; quaternion must be `[0,0,0,1]`
-and scale `[1,1,1]`. Proxies never enter persistence (F-938).
+Schema-4/7/11 hosts opt in via `[network].authored_replication` or
+`run --authored-replication replication.json`; disabled networking ignores it,
+enabled needs a release session plan. `AuthoredReplication`
+(`src/native_replication.rs`): strict regular JSON ≤1 MiB, 1–1,024 bindings,
+catalog/map, signed-axis/unit frame, archetype paths/checksums/`no_load`,
+parameters/schedule. Translation only: quaternion `[0,0,0,1]`, scale `[1,1,1]`.
+Proxies never persist (F-938).
 
-Format 1 accepts schema 4; format 2 pins `lifecycle_id` from a schema-7/11 snapshot.
-Dormant slots activate when spawned, with any pending authored flag edits.
-Format 2 defaults to `"owner_replacement": "retire_bridge"`: replacing a bound
-owner retires the bridge. Opt into `"after_close_ack"` to replace owners while
-unrelated actors continue. Each peer must ACK its old reliable close before the
-latest incarnation opens with a fresh GUID; blocked replacements coalesce.
-Old identities remain only while desired, open or awaiting ACK; GUID numbers
-never recycle, and exhausted allocation refuses new opens.
+Format 1 accepts schema 4; format 2 pins schema-7/11 `lifecycle_id`.
+Dormant slots activate on spawn with pending flag edits. Format 2 defaults to
+`"owner_replacement": "retire_bridge"`; replacement retires the bridge.
+`"after_close_ack"` keeps unrelated actors running: each peer ACKs its old
+reliable close before the latest incarnation opens with a fresh GUID; blocked
+replacements coalesce. Old identities remain while desired/open/awaiting ACK.
+GUIDs never recycle; exhaustion refuses opens.
 
-Every tick validates the full source and proxy bindings, including with no peers.
-Corruption retires the bridge and stops admission without editing native state.
-`activated` counts live bindings exposed since installation. Modifier timers stay
-native; this bridge sends no modifier containers. Generic lab reconfiguration,
-original replacement semantics, saved-pose mappings (U-025), import, physics,
-gameplay and stock-client behavior remain unqualified. Costs: schema 4 only
-(F-939, F-941); lifecycle cost is unmeasured. Tests use authored probes:
+Every tick validates all source/proxy bindings, even without peers. Corruption
+retires the bridge/stops admission without native-state edits. `activated` counts
+live bindings exposed since installation. Modifier timers stay native; no
+modifier containers are sent. Generic reconfiguration, original replacement,
+saved-pose mapping (U-025), import, physics, gameplay and stock clients remain
+unqualified. Costs cover schema 4 only (F-939, F-941); lifecycle is unmeasured.
+Authored probes:
 
 ```bash
 python3 tools/cargo_guard.py test --locked --test network

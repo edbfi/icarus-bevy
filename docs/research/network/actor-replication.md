@@ -1,9 +1,7 @@
 # Actor replication after login
 
-Static and recorded-wire evidence for how the client and server exchange
-replicated actor state once the control channel has admitted a connection; the
-normative wire and scheduling rules live in
-[actor channel bunches](../../specs/network/actor-channel.md).
+Static/recorded-wire actor exchange after control admission; wire/scheduling
+rules: [actor channel bunches](../../specs/network/actor-channel.md).
 
 ## Question cluster
 
@@ -56,10 +54,10 @@ New-player `History` appends coalesce across temporary per-peer send pressure
 
 Native prospect refresh: F-936. Profile phases retry send pressure (F-975).
 Initial opens retain pending stages, Begin and pawn UID ownership (F-1011).
-A saved member's Join refreshes who is playing by login ID, as the original's
-spawn completion does (F-822, F-945); unassociated joins, which the original adds
-from character records, change nothing (F-946). These are authored loopback
-tests; original trigger timing remains U-070. Each pawn open claims a distinct
+A saved member's Join refreshes who is playing by login ID (F-822, F-945);
+unassociated joins change nothing. Explicit membership publication: F-1014.
+Original trigger timing remains U-070; native coverage
+uses authored peers. Each pawn open claims a distinct
 IcarusUID by the original's search order around saved actor UIDs (F-943, F-944,
 F-948); a returning player's controller and pawn recorders match by PlayerCharacterID,
 and the pawn then retakes its saved UID (F-947, F-949, F-950); the client

@@ -3471,6 +3471,34 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Explicitly add a member after a caller-qualified completed spawn
+    /// (F-946), then publish through the bounded reliable prospect-refresh path.
+    /// Requires enabled member refresh as the retained authoritative prospect.
+    /// Names, XP and identity are caller-owned; no spawn timing, automatic
+    /// finalisation or persistence is inferred. Existing user/slot pairs are
+    /// unchanged and return false. Native matching ignores ASCII case as Join
+    /// refresh does; the original's case rule is not qualified.
+    ///
+    /// A new member starts at status 2, not settled and not currently playing.
+    /// All other fields remain unchanged. Validation of the complete update
+    /// and future open precedes publication; failed calls change no state.
+    /// Pressure/loss repair coalesces the latest prospect without adding again.
+    pub fn complete_prospect_member_spawn(
+        &mut self,
+        member: super::prospect_info::SpawnedProspectMember,
+    ) -> Result<bool> {
+        let base = self
+            .game_state_open
+            .as_ref()
+            .and_then(|session| session.member_refresh.as_ref())
+            .context("spawn membership requires enabled member refresh")?;
+        let (candidate, added) = base.with_spawned_member(member);
+        if added {
+            self.refresh_active_prospect(&candidate)?;
+        }
+        Ok(added)
+    }
+
     /// Refresh `info` as the active prospect whenever a Join's login ID
     /// names one of its associated members, as the original's spawn
     /// completion refreshes an associated player's prospect (F-822).
@@ -8560,11 +8588,110 @@ mod tests {
     }
 
     #[test]
+    fn explicit_spawn_membership_preserves_members_and_latest_prospect_atomically() {
+        use super::super::prospect_info::{AssociatedMember, ProspectInfo, SpawnedProspectMember};
+        let member = SpawnedProspectMember {
+            user_id: "USER".encode_utf16().collect(),
+            account_name: "ACCOUNT".encode_utf16().collect(),
+            character_name: "CHARACTER".encode_utf16().collect(),
+            chr_slot: i32::MIN,
+            experience: i32::MAX,
+        };
+        assert_eq!(format!("{member:?}"), "SpawnedProspectMember");
+        let mut lab = prospect_refresh_lab();
+        assert!(lab.complete_prospect_member_spawn(member.clone()).is_err());
+        let existing = AssociatedMember {
+            user_id: "OTHER".encode_utf16().collect(),
+            status: 7,
+            settled: true,
+            is_currently_playing: true,
+            experience: -42,
+            ..Default::default()
+        };
+        lab.enable_member_refresh(ProspectInfo {
+            associated_members: vec![existing.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+        let latest = ProspectInfo {
+            lobby_name: "LATEST".encode_utf16().collect(),
+            elapsed_time: 123,
+            insurance: true,
+            associated_members: vec![existing.clone()],
+            ..Default::default()
+        };
+        lab.refresh_active_prospect(&latest).unwrap();
+        assert!(lab.complete_prospect_member_spawn(member.clone()).unwrap());
+        let current = lab
+            .game_state_open
+            .as_ref()
+            .unwrap()
+            .member_refresh
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(current.associated_members[0], existing);
+        let added = &current.associated_members[1];
+        assert_eq!(added.status, 2);
+        assert!(!added.settled);
+        assert!(!added.is_currently_playing);
+        assert_eq!(added.user_id, member.user_id);
+        assert_eq!(added.account_name, member.account_name);
+        assert_eq!(added.character_name, member.character_name);
+        assert_eq!(added.chr_slot, i32::MIN);
+        assert_eq!(added.experience, i32::MAX);
+        let mut without_addition = current.clone();
+        without_addition.associated_members.pop();
+        assert_eq!(without_addition, latest);
+        let mut duplicate = member.clone();
+        duplicate.user_id = "user".encode_utf16().collect();
+        duplicate.character_name = "CHANGED".encode_utf16().collect();
+        duplicate.experience = 0;
+        assert!(!lab.complete_prospect_member_spawn(duplicate).unwrap());
+        assert_eq!(
+            lab.game_state_open
+                .as_ref()
+                .unwrap()
+                .member_refresh
+                .as_ref()
+                .unwrap(),
+            &current
+        );
+        let mut other_slot = member.clone();
+        other_slot.chr_slot = i32::MAX;
+        assert!(lab.complete_prospect_member_spawn(other_slot).unwrap());
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        let guids = format!("{:?}", lab.guid_cache);
+        for bad_name in [vec![0], vec![65; 65_536], vec![65; 8_190]] {
+            let mut invalid = member.clone();
+            invalid.user_id = "UNIQUE".encode_utf16().collect();
+            invalid.account_name = bad_name;
+            assert!(lab.complete_prospect_member_spawn(invalid).is_err());
+            let after = lab.game_state_open.as_ref().unwrap();
+            assert_eq!(after.member_refresh, before.member_refresh);
+            assert_eq!(after.active_prospect, before.active_prospect);
+            assert_eq!(after.state.values, before.state.values);
+            assert_eq!(format!("{:?}", lab.guid_cache), guids);
+        }
+        assert_eq!(
+            lab.game_state_open
+                .as_ref()
+                .unwrap()
+                .member_refresh
+                .as_ref()
+                .unwrap()
+                .associated_members
+                .len(),
+            3
+        );
+    }
+
+    #[test]
     fn prospect_send_pressure_leaves_clocks_running_and_same_refresh_due() {
         use super::super::{
             game_state_open::handle,
             packet::{Packet, PacketConfig, Receiver, read_packet, write_packet},
-            prospect_info::ProspectInfo,
+            prospect_info::{ProspectInfo, SpawnedProspectMember},
             time_of_day::RateCurve,
         };
         let mut lab = prospect_refresh_lab();
@@ -8599,7 +8726,17 @@ mod tests {
             elapsed_time: 10,
             ..Default::default()
         };
+        lab.enable_member_refresh(large.clone()).unwrap();
         lab.refresh_active_prospect(&large).unwrap();
+        let member = SpawnedProspectMember {
+            user_id: vec![85],
+            character_name: vec![67],
+            ..Default::default()
+        };
+        assert!(lab.complete_prospect_member_spawn(member.clone()).unwrap());
+        let mut second = member.clone();
+        second.chr_slot = 1;
+        assert!(lab.complete_prospect_member_spawn(second).unwrap());
         let mut previous_world = 0.0;
         let mut previous_clock = 600.0;
         let mut previous_level = 1_000;
@@ -8642,6 +8779,18 @@ mod tests {
             10
         );
         assert_eq!(lab.stats.peers_failed, 0);
+        assert!(!lab.complete_prospect_member_spawn(member).unwrap());
+        assert_eq!(
+            lab.game_state_open
+                .as_ref()
+                .unwrap()
+                .member_refresh
+                .as_ref()
+                .unwrap()
+                .associated_members
+                .len(),
+            2
+        );
         // Release every outstanding packet through the normal ACK path,
         // then deliver the same refresh with no replacement or new call.
         let ack = write_packet(
@@ -8669,6 +8818,7 @@ mod tests {
         lab.update_game_state();
         let update = receive_game_state_update(&socket, &lab, Some(&mut client));
         assert_eq!(update.get(&65), Some(&RepValue::Int(10)));
+        assert!(matches!(update.get(&59), Some(RepValue::DynamicArray(array)) if array.count == 2));
         assert!(
             matches!(update.get(&56), Some(RepValue::Str(text)) if text.units() == large.lobby_name)
         );
