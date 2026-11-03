@@ -54,8 +54,10 @@ New-player `History` appends coalesce across temporary per-peer send pressure
 
 Native prospect refresh: F-936. Profile phases retry send pressure (F-975).
 Initial opens retain pending stages, Begin and pawn UID ownership (F-1011).
-A saved member's Join refreshes who is playing by login ID (F-822, F-945);
-unassociated joins change nothing. Explicit membership publication: F-1014.
+A saved member's Join refreshes who is playing by login ID, as original spawn
+completion does (F-822, F-945). Native unassociated joins change nothing;
+the original adds them from character records (F-946).
+Explicit membership publication: F-1014.
 Original trigger timing remains U-070; native coverage
 uses authored peers. Each pawn open claims a distinct
 IcarusUID by the original's search order around saved actor UIDs (F-943, F-944,
