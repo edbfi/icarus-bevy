@@ -3550,8 +3550,9 @@ impl PeerLab {
     /// each joined connection, after its PlayerState, on consecutive
     /// channels from `first_channel`, and reference them from the GameState
     /// open by their slots' keys. Fails without a GameState open, on a level
-    /// other than the GameState's, or on a taken channel. Once any manager
-    /// opens are configured, this method rejects replacement; use the additive
+    /// other than the GameState's, on a taken channel, or on duplicate manager
+    /// or quest keys. Once any manager opens are configured, this method rejects
+    /// replacement; use the additive
     /// APIs to register further managers and quests.
     pub fn enable_manager_opens(
         &mut self,
