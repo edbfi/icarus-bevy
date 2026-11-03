@@ -121,13 +121,13 @@ timeout only logs (F-959). Rejected staging disables returning-player restore:
 no saved characters/controllers/History; all joiners enter an initially empty
 History as new players.
 
-`PeerLab::complete_prospect_member_spawn(SpawnedProspectMember)` (F-1014) needs
-`enable_member_refresh`: caller UTF-16 account/character names/user ID, i32 slot/XP.
-Duplicate ID/slot returns false unchanged; IDs ASCII-fold (original rule unknown).
-New flags: status 2, unsettled/not playing; other members/time unchanged.
-Full refresh preflight and ACK-gated retries apply. Join refreshes existing
-members' playing flags by login ID; unassociated Join adds nothing. No automatic
-spawn trigger, save or advert update.
+Caller-owned `PeerLab` APIs need `enable_member_refresh`:
+`complete_prospect_member_spawn` adds status-2, unsettled/not-playing members
+(F-1014); `edit_prospect_member` retains ID spelling; `remove_prospect_member`
+removes matches. IDs ASCII-fold; slots exact (original rule unknown).
+Duplicate adds, missing removals and missing/ambiguous/unchanged edits return false.
+Other members/time unchanged; atomic checks, ACK/loss retries.
+Join refreshes playing flags. No automatic spawn/departure, save or advert update.
 
 Explicit APIs (F-995, F-998, F-1000) share ACK gating, coalescing, pressure
 retries and loss repair. `refresh_restored_modifier_times` validates UID/raw/wire

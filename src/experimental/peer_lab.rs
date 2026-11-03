@@ -3499,6 +3499,69 @@ impl PeerLab {
         Ok(added)
     }
 
+    /// Explicit caller-driven departure; no disconnect or dropship timing is inferred.
+    /// Identity is ASCII-insensitive user ID plus exact slot, as spawn addition.
+    /// Missing identities return false. All matching entries are removed, leaving
+    /// other members and time unchanged. Whole-prospect preflight is atomic.
+    pub fn remove_prospect_member(&mut self, user_id: &[u16], chr_slot: i32) -> Result<bool> {
+        let mut candidate = self
+            .game_state_open
+            .as_ref()
+            .and_then(|session| session.member_refresh.as_ref())
+            .context("departure requires enabled member refresh")?
+            .clone();
+        let before = candidate.associated_members.len();
+        candidate.associated_members.retain(|member| {
+            member.chr_slot != chr_slot
+                || !super::restore_rules::names_match(&member.user_id, user_id)
+        });
+        if candidate.associated_members.len() == before {
+            return Ok(false);
+        }
+        self.refresh_active_prospect(&candidate)?;
+        Ok(true)
+    }
+
+    /// Replace caller-owned member values, retaining the stored identity spelling.
+    /// User ID (ASCII-insensitive) and exact slot select an existing member;
+    /// identity changes require departure and addition. Missing, ambiguous
+    /// duplicate identities and unchanged values return false. No other member
+    /// or clock is changed; publication uses the whole-prospect atomic preflight
+    /// and existing ACK, coalescing, pressure and loss-repair mechanisms.
+    pub fn edit_prospect_member(
+        &mut self,
+        mut member: super::prospect_info::AssociatedMember,
+    ) -> Result<bool> {
+        let mut candidate = self
+            .game_state_open
+            .as_ref()
+            .and_then(|session| session.member_refresh.as_ref())
+            .context("member edit requires enabled member refresh")?
+            .clone();
+        let mut matches =
+            candidate
+                .associated_members
+                .iter()
+                .enumerate()
+                .filter(|(_, existing)| {
+                    existing.chr_slot == member.chr_slot
+                        && super::restore_rules::names_match(&existing.user_id, &member.user_id)
+                });
+        let Some((index, existing)) = matches.next() else {
+            return Ok(false);
+        };
+        if matches.next().is_some() {
+            return Ok(false);
+        }
+        member.user_id.clone_from(&existing.user_id);
+        if *existing == member {
+            return Ok(false);
+        }
+        candidate.associated_members[index] = member;
+        self.refresh_active_prospect(&candidate)?;
+        Ok(true)
+    }
+
     /// Refresh `info` as the active prospect whenever a Join's login ID
     /// names one of its associated members, as the original's spawn
     /// completion refreshes an associated player's prospect (F-822).
@@ -8588,6 +8651,209 @@ mod tests {
     }
 
     #[test]
+    fn explicit_member_edits_and_departures_are_atomic() {
+        use super::super::prospect_info::{AssociatedMember, ProspectInfo};
+        let member = AssociatedMember {
+            user_id: "USER".encode_utf16().collect(),
+            ..Default::default()
+        };
+        let other = AssociatedMember {
+            chr_slot: 1,
+            ..member.clone()
+        };
+        let initial = ProspectInfo {
+            elapsed_time: 123,
+            associated_members: vec![member.clone(), other.clone()],
+            ..Default::default()
+        };
+        let mut lab = prospect_refresh_lab();
+        lab.enable_member_refresh(initial.clone()).unwrap();
+        let mut edited = member.clone();
+        edited.user_id = "user".encode_utf16().collect();
+        edited.experience = 42;
+        edited.settled = true;
+        assert!(lab.edit_prospect_member(edited.clone()).unwrap());
+        assert!(!lab.edit_prospect_member(edited.clone()).unwrap());
+        // Selection folds ASCII case; publication preserves stored spelling.
+        edited.user_id.clone_from(&member.user_id);
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        let mut invalid = edited.clone();
+        invalid.status = u8::MAX;
+        assert!(lab.edit_prospect_member(invalid).is_err());
+        let after = lab.game_state_open.as_ref().unwrap();
+        assert_eq!(after.member_refresh, before.member_refresh);
+        assert_eq!(after.active_prospect, before.active_prospect);
+        assert_eq!(after.state.values, before.state.values);
+        let current = after.member_refresh.as_ref().unwrap();
+        assert_eq!(current.elapsed_time, initial.elapsed_time);
+        assert_eq!(
+            current.associated_members,
+            vec![edited.clone(), other.clone()]
+        );
+        let folded: Vec<u16> = "user".encode_utf16().collect();
+        assert!(lab.remove_prospect_member(&folded, 0).unwrap());
+        assert!(!lab.remove_prospect_member(&folded, 0).unwrap());
+        assert!(!lab.edit_prospect_member(edited).unwrap());
+        let current = lab
+            .game_state_open
+            .as_ref()
+            .unwrap()
+            .member_refresh
+            .as_ref()
+            .unwrap();
+        assert_eq!(current.elapsed_time, initial.elapsed_time);
+        assert_eq!(current.associated_members, vec![other]);
+    }
+
+    #[test]
+    fn ambiguous_member_edits_reject_and_departure_removes_all_matching_duplicates() {
+        use super::super::prospect_info::{AssociatedMember, ProspectInfo};
+        let member = AssociatedMember {
+            user_id: "USER".encode_utf16().collect(),
+            ..Default::default()
+        };
+        let mut duplicate = member.clone();
+        duplicate.user_id = "user".encode_utf16().collect();
+        let other_slot = AssociatedMember {
+            chr_slot: 1,
+            ..member.clone()
+        };
+        let mut lab = prospect_refresh_lab();
+        lab.enable_member_refresh(ProspectInfo {
+            elapsed_time: 73,
+            associated_members: vec![member.clone(), duplicate, other_slot.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+        let before = lab.game_state_open.as_ref().unwrap().clone();
+        let mut edit = member.clone();
+        edit.experience = 999;
+        assert!(!lab.edit_prospect_member(edit).unwrap());
+        let after = lab.game_state_open.as_ref().unwrap();
+        assert_eq!(after.member_refresh, before.member_refresh);
+        assert_eq!(after.active_prospect, before.active_prospect);
+        assert_eq!(after.state.values, before.state.values);
+        assert!(lab.remove_prospect_member(&member.user_id, 0).unwrap());
+        let current = lab
+            .game_state_open
+            .as_ref()
+            .unwrap()
+            .member_refresh
+            .as_ref()
+            .unwrap();
+        assert_eq!(current.elapsed_time, 73);
+        assert_eq!(current.associated_members, vec![other_slot]);
+    }
+
+    #[test]
+    fn edited_membership_repairs_latest_array_and_new_peers_open_current_members() {
+        use super::super::{
+            archive::ByteOrder,
+            prospect_info::{AssociatedMember, ProspectInfo},
+            rep_layout::{
+                PropertyStream, RepEntry, RepLayoutCodec, encode_rep_properties,
+                read_rep_properties,
+            },
+        };
+        let member = AssociatedMember {
+            user_id: "USER".encode_utf16().collect(),
+            ..Default::default()
+        };
+        let mut lab = prospect_refresh_lab();
+        lab.enable_member_refresh(ProspectInfo {
+            associated_members: vec![member.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+        let (_old_socket, old_address, _) = acked_game_state_peer(&mut lab);
+        let mut edited = member.clone();
+        edited.experience = 42;
+        assert!(lab.edit_prospect_member(edited).unwrap());
+        let edited_values = lab
+            .game_state_open
+            .as_ref()
+            .unwrap()
+            .active_prospect
+            .clone()
+            .unwrap();
+        let changed = lab
+            .peers
+            .get_mut(&old_address)
+            .unwrap()
+            .game_state
+            .as_mut()
+            .unwrap();
+        let changing = edited_values
+            .iter()
+            .map(|(&h, v)| (h, Some(v.clone())))
+            .collect::<Vec<_>>();
+        let due = changed.due(0.0, &changing);
+        assert!(due.contains_key(&59));
+        changed.sent(&[10, 11], due, 0.0);
+        changed.acked(10);
+        assert!(changed.naked(11));
+        assert_eq!(changed.due(0.0, &changing).get(&59), edited_values.get(&59));
+        // A departure supersedes the lost edit; repair must clear the array.
+        assert!(lab.remove_prospect_member(&member.user_id, 0).unwrap());
+        let session = lab.game_state_open.as_ref().unwrap();
+        let current = session.active_prospect.clone().unwrap();
+        let layout = session.plan.layout.clone();
+        let version = session.plan.engine_net_version;
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let codec = RepLayoutCodec {
+                actor: actor_codec(version, order),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let stream = PropertyStream {
+                entries: current
+                    .iter()
+                    .map(|(&handle, value)| RepEntry {
+                        handle,
+                        checksum: None,
+                        value: value.clone(),
+                    })
+                    .collect(),
+                terminator_checksum: None,
+            };
+            let wire = encode_rep_properties(&stream, &layout, &codec).unwrap();
+            assert_eq!(
+                read_rep_properties(&mut wire.reader(), &layout, &codec).unwrap(),
+                stream
+            );
+        }
+        let changing = current
+            .iter()
+            .map(|(&h, v)| (h, Some(v.clone())))
+            .collect::<Vec<_>>();
+        let replica = lab
+            .peers
+            .get_mut(&old_address)
+            .unwrap()
+            .game_state
+            .as_mut()
+            .unwrap();
+        let repair = replica.due(0.0, &changing);
+        assert_eq!(repair.get(&59), current.get(&59));
+        replica.sent(&[12], repair, 0.0);
+        replica.acked(12);
+        assert!(replica.due(0.0, &changing).is_empty());
+        // A fresh connection's ACKed open reconstructs the current membership,
+        // even while the prior connection retains its independent baseline.
+        let (_new_socket, new_address, _) = acked_game_state_peer(&mut lab);
+        assert_ne!(new_address, old_address);
+        assert_eq!(
+            lab.peers[&new_address]
+                .game_state
+                .as_ref()
+                .unwrap()
+                .sent
+                .get(&59),
+            current.get(&59)
+        );
+    }
+
+    #[test]
     fn explicit_spawn_membership_preserves_members_and_latest_prospect_atomically() {
         use super::super::prospect_info::{AssociatedMember, ProspectInfo, SpawnedProspectMember};
         let member = SpawnedProspectMember {
@@ -8737,6 +9003,19 @@ mod tests {
         let mut second = member.clone();
         second.chr_slot = 1;
         assert!(lab.complete_prospect_member_spawn(second).unwrap());
+        let mut edited = lab
+            .game_state_open
+            .as_ref()
+            .unwrap()
+            .member_refresh
+            .as_ref()
+            .unwrap()
+            .associated_members[0]
+            .clone();
+        edited.experience = 42;
+        edited.settled = true;
+        assert!(lab.edit_prospect_member(edited.clone()).unwrap());
+        assert!(lab.remove_prospect_member(&member.user_id, 1).unwrap());
         let mut previous_world = 0.0;
         let mut previous_clock = 600.0;
         let mut previous_level = 1_000;
@@ -8789,7 +9068,7 @@ mod tests {
                 .unwrap()
                 .associated_members
                 .len(),
-            2
+            1
         );
         // Release every outstanding packet through the normal ACK path,
         // then deliver the same refresh with no replacement or new call.
@@ -8818,7 +9097,20 @@ mod tests {
         lab.update_game_state();
         let update = receive_game_state_update(&socket, &lab, Some(&mut client));
         assert_eq!(update.get(&65), Some(&RepValue::Int(10)));
-        assert!(matches!(update.get(&59), Some(RepValue::DynamicArray(array)) if array.count == 2));
+        assert_eq!(
+            update.get(&59),
+            active_prospect_update_values(
+                lab.game_state_open
+                    .as_ref()
+                    .unwrap()
+                    .member_refresh
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap()
+            .get(&59)
+        );
+        assert!(matches!(update.get(&59), Some(RepValue::DynamicArray(array)) if array.count == 1));
         assert!(
             matches!(update.get(&56), Some(RepValue::Str(text)) if text.units() == large.lobby_name)
         );
