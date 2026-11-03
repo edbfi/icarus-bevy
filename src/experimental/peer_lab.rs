@@ -3550,12 +3550,19 @@ impl PeerLab {
     /// each joined connection, after its PlayerState, on consecutive
     /// channels from `first_channel`, and reference them from the GameState
     /// open by their slots' keys. Fails without a GameState open, on a level
-    /// other than the GameState's, or on a taken channel.
+    /// other than the GameState's, on a taken channel, or on duplicate manager
+    /// or quest keys. Once any manager opens are configured, this method rejects
+    /// replacement; use the additive
+    /// APIs to register further managers and quests.
     pub fn enable_manager_opens(
         &mut self,
         plans: Vec<(ManagerSlot, ManagerOpenPlan)>,
         first_channel: u32,
     ) -> Result<()> {
+        ensure!(
+            self.manager_opens.is_empty(),
+            "manager opens are already configured"
+        );
         let Some(session) = &self.game_state_open else {
             bail!("the manager opens follow the GameState open");
         };
@@ -3570,6 +3577,14 @@ impl PeerLab {
             ensure!(
                 self.free_session_channel(channel),
                 "a manager channel collides with another channel or is out of range"
+            );
+            ensure!(
+                opens.iter().all(|(key, _, _)| *key != slot.key())
+                    && self
+                        .quest_opens
+                        .iter()
+                        .all(|(quest, _)| quest.key != slot.key()),
+                "the manager key is already opened"
             );
             slot.reference_from(&mut managers);
             opens.push((slot.key(), plan, channel));
@@ -3949,16 +3964,20 @@ impl PeerLab {
 
     /// Open each joined peer's PlayerController with `plan` (module docs):
     /// registers the plan's level chain in the driver-wide GUID cache first,
-    /// as the original does at world start. Requires admission.
+    /// as the original does at world start. Requires admission. Configuration
+    /// is accepted once; replacement is rejected without modifying GUIDs.
     pub fn enable_player_controller_open(&mut self, plan: PlayerControllerOpenPlan) -> Result<()> {
         ensure!(
             self.config.admission.is_some(),
             "the PlayerController open needs game admission"
         );
         ensure!(
-            plan.channel_index != self.config.packet.control_channel_index
-                && plan.channel_index < self.config.packet.packet.limits.max_channels,
-            "the PlayerController channel is the control channel or out of range"
+            self.player_controller_open.is_none(),
+            "the PlayerController open is already configured"
+        );
+        ensure!(
+            self.free_session_channel(plan.channel_index),
+            "the PlayerController channel collides with another channel or is out of range"
         );
         self.guid_cache.register_level(&plan.profile.level);
         self.player_controller_open = Some(plan);
@@ -7086,6 +7105,97 @@ mod tests {
         let replacement = lab.guid_cache.incarnation_guid(0, 2).unwrap();
         assert_ne!(first, replacement);
         assert_eq!(lab.retiring_incarnation_count(), 0);
+    }
+
+    #[test]
+    fn controller_configuration_rejects_reserved_channel_before_guid_registration() {
+        let mut lab = prospect_refresh_lab();
+        // Retain an independently reserved GameState channel while removing
+        // only the controller fixture, so the configure-once guard cannot
+        // mask channel validation.
+        let original = lab.player_controller_open.take().unwrap();
+        let reserved = lab.game_state_open.as_ref().unwrap().channel_index;
+        let mut colliding = original.clone();
+        colliding.channel_index = reserved;
+        colliding.profile.level[0].path.push_str("Collision");
+        let before = format!("{:?}", lab.guid_cache);
+        let game_state = lab.game_state_open.as_ref().unwrap().plan.clone();
+        assert!(lab.enable_player_controller_open(colliding).is_err());
+        assert!(lab.player_controller_open.is_none());
+        assert_eq!(format!("{:?}", lab.guid_cache), before);
+        assert_eq!(
+            format!("{:?}", lab.game_state_open.as_ref().unwrap().plan),
+            format!("{:?}", game_state)
+        );
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().channel_index,
+            reserved
+        );
+        lab.enable_player_controller_open(original.clone()).unwrap();
+        assert_eq!(
+            format!("{:?}", lab.player_controller_open.as_ref().unwrap()),
+            format!("{:?}", original)
+        );
+        assert_eq!(format!("{:?}", lab.guid_cache), before);
+    }
+
+    #[test]
+    fn controller_configuration_rejects_replacement_without_guid_mutation() {
+        let mut lab = prospect_refresh_lab();
+        let mut replacement = lab.player_controller_open.clone().unwrap();
+        replacement.profile.level[0].path.push_str("Replacement");
+        let before = format!("{:?}", lab.guid_cache);
+        let original = lab.player_controller_open.clone().unwrap();
+        assert!(lab.enable_player_controller_open(replacement).is_err());
+        assert_eq!(format!("{:?}", lab.guid_cache), before);
+        assert_eq!(
+            format!("{:?}", lab.player_controller_open.as_ref().unwrap()),
+            format!("{:?}", original)
+        );
+    }
+
+    #[test]
+    fn manager_configuration_rejects_duplicates_and_replacement_atomically() {
+        use super::super::release::ReleaseProfile;
+        let mut lab = prospect_refresh_lab();
+        let plans = ReleaseProfile::release_3_0_32()
+            .manager_open_plans(PeerLabAdmission::default().map_url)
+            .unwrap();
+        let before = lab.game_state_open.as_ref().unwrap().state.managers.clone();
+        let quest = QuestOpenPlan {
+            key: plans[0].0.key(),
+            archetype: Vec::new(),
+            level: Vec::new(),
+            location: None,
+            layout: Vec::new(),
+            actor_state_layout: Vec::new(),
+            stat_container_checksum: 0,
+            actor_state_checksum: 0,
+            values: BTreeMap::new(),
+            references: BTreeMap::new(),
+            engine_net_version: 0,
+        };
+        lab.quest_opens.push((quest, 50));
+        assert!(lab.enable_manager_opens(plans.clone(), 20).is_err());
+        assert!(lab.manager_opens.is_empty());
+        assert_eq!(lab.quest_opens.len(), 1);
+        assert_eq!(lab.game_state_open.as_ref().unwrap().state.managers, before);
+        lab.quest_opens.clear();
+        assert!(
+            lab.enable_manager_opens(vec![plans[0].clone(), plans[0].clone()], 20)
+                .is_err()
+        );
+        assert!(lab.manager_opens.is_empty());
+        assert_eq!(lab.game_state_open.as_ref().unwrap().state.managers, before);
+        lab.enable_manager_opens(plans.clone(), 20).unwrap();
+        assert_eq!(lab.manager_opens.len(), plans.len());
+        let configured = lab.game_state_open.as_ref().unwrap().state.managers.clone();
+        assert!(lab.enable_manager_opens(Vec::new(), 40).is_err());
+        assert_eq!(lab.manager_opens.len(), plans.len());
+        assert_eq!(
+            lab.game_state_open.as_ref().unwrap().state.managers,
+            configured
+        );
     }
 
     fn prospect_refresh_lab() -> PeerLab {
