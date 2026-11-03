@@ -62,7 +62,9 @@ impl AuthoredWorld {
             .context("probe release has no FLOD manager plan")?
             .with_flod_tiles(self.flod_tile_count)?;
         // The array's u16 count alone does not establish that the manager open
-        // fits the entry and payload budgets. Reject before sockets or Steam.
+        // fits the entry and payload budgets. This early rejection uses fresh
+        // GUID/export state; it is not a guarantee for every live-cache encoding.
+        // Runtime composition remains authoritative for the assigned GUIDs/channel.
         for order in [ByteOrder::Little, ByteOrder::Big] {
             compose_manager_open(
                 &mut NetGuidCache::new(),
