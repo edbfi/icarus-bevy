@@ -20,8 +20,14 @@ use clap::Parser;
 use icarus_bevy::{
     config::NetworkConfig,
     experimental::{
-        game_state_open::handle, manager_open::ManagerSlot, peer_lab::PeerLab,
-        prospect_info::ProspectInfo, release::ReleaseProfile, rep_layout::RepValue,
+        archive::ByteOrder,
+        game_state_open::handle,
+        manager_open::{ManagerOpenPlan, ManagerSlot, compose_manager_open},
+        peer_lab::PeerLab,
+        prospect_info::ProspectInfo,
+        release::ReleaseProfile,
+        rep_layout::RepValue,
+        session_open::{ConnectionExports, NetGuidCache},
     },
     network,
     steam_fetch::net::{self, HttpTimeouts, Tls},
@@ -38,13 +44,61 @@ use serde_json::json;
 const PROBE_MAP: &str = "/Game/Maps/Terrain_016_OLY/Terrain_016";
 const PROBE_PROSPECT_KEY: &str = "Outpost006_Olympus";
 const PROBE_PROSPECT_ID: &str = "native-auth-probe";
-const PROBE_SEED: i32 = 1;
-const PROBE_SEED_INITIALISED: bool = true;
-const PROBE_FLOD_TILE_COUNT: i32 = 0;
+#[derive(clap::Args)]
+struct AuthoredWorld {
+    #[arg(long, default_value_t = 1, allow_hyphen_values = true)]
+    seed: i32,
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    seed_initialised: bool,
+    /// Authored tile references; startup also checks the actual wire codec limits.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(i32).range(0..=65535))]
+    flod_tile_count: i32,
+}
+
+impl AuthoredWorld {
+    fn plan(&self, profile: &ReleaseProfile) -> Result<(BTreeMap<u32, RepValue>, ManagerOpenPlan)> {
+        let flod = profile
+            .manager_open_plan(ManagerSlot::Flod, PROBE_MAP)?
+            .context("probe release has no FLOD manager plan")?
+            .with_flod_tiles(self.flod_tile_count)?;
+        // The array's u16 count alone does not establish that the manager open
+        // fits the entry and payload budgets. This early rejection uses fresh
+        // GUID/export state; it is not a guarantee for every live-cache encoding.
+        // Runtime composition remains authoritative for the assigned GUIDs/channel.
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            compose_manager_open(
+                &mut NetGuidCache::new(),
+                &mut ConnectionExports::new(),
+                &flod,
+                ManagerSlot::Flod.key(),
+                6,
+                order,
+            )
+            .context("authored FLOD manager exceeds the wire codec limits")?;
+        }
+        Ok((
+            BTreeMap::from([
+                (handle::SEED, RepValue::Int(self.seed)),
+                (
+                    handle::SEED_INITIALISED,
+                    RepValue::Bool(self.seed_initialised),
+                ),
+            ]),
+            flod,
+        ))
+    }
+
+    fn report(&self) -> serde_json::Value {
+        json!({"seed": self.seed, "seed_initialised": self.seed_initialised,
+            "flod_tile_count": self.flod_tile_count})
+    }
+}
 
 #[derive(Parser)]
 #[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
 struct Options {
+    #[command(flatten)]
+    authored_world: AuthoredWorld,
     #[arg(long)]
     name: String,
     #[arg(long, default_value = "0.0.0.0:17777")]
@@ -81,6 +135,7 @@ fn main() -> Result<()> {
         "game and query ports must differ"
     );
     let profile = ReleaseProfile::load(&options.release)?;
+    let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
         prospect_dt_key: PROBE_PROSPECT_KEY.encode_utf16().collect(),
@@ -149,17 +204,7 @@ fn main() -> Result<()> {
     bound.lab.refresh_active_prospect(&prospect)?;
     // Independently authored empty-world initialization, supplied before any
     // connection is polled. Connected world entry remains unqualified.
-    bound.lab.extend_game_state_values(BTreeMap::from([
-        (handle::SEED, RepValue::Int(PROBE_SEED)),
-        (
-            handle::SEED_INITIALISED,
-            RepValue::Bool(PROBE_SEED_INITIALISED),
-        ),
-    ]))?;
-    let flod = profile
-        .manager_open_plan(ManagerSlot::Flod, PROBE_MAP)?
-        .context("probe release has no FLOD manager plan")?
-        .with_flod_tiles(PROBE_FLOD_TILE_COUNT)?;
+    bound.lab.extend_game_state_values(game_state)?;
     bound.lab.add_manager_open(ManagerSlot::Flod, flod)?;
     network::apply_server_settings(&mut bound.lab, 60)?;
     let mut app = App::new();
@@ -177,11 +222,7 @@ fn main() -> Result<()> {
         "build": profile.pin.build_id,
         "seconds": options.seconds,
         "progress_interval_seconds": options.progress_interval_seconds,
-        "authored_world": {
-            "seed": PROBE_SEED,
-            "seed_initialised": PROBE_SEED_INITIALISED,
-            "flod_tile_count": PROBE_FLOD_TILE_COUNT,
-        },
+        "authored_world": options.authored_world.report(),
         "compatibility_proven": false,
     }))
     .err();
@@ -243,6 +284,89 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_world_defaults_and_wire_budget_are_checked_before_startup() {
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let options = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert_eq!(
+            options.authored_world.report(),
+            json!({"seed": 1, "seed_initialised": true, "flod_tile_count": 0})
+        );
+        // Nonempty experiments remain usable; the u16 boundary and the codec's
+        // array boundary must reject before an external service is contacted.
+        for (count, accepted) in [
+            (0, true),
+            (1, true),
+            (3, true),
+            (4096, false),
+            (65535, false),
+        ] {
+            let world = AuthoredWorld {
+                seed: i32::MIN,
+                seed_initialised: false,
+                flod_tile_count: count,
+            };
+            assert_eq!(world.plan(&profile).is_ok(), accepted, "count={count}");
+        }
+    }
+
+    #[test]
+    fn authored_options_plan_and_report_agree() {
+        use icarus_bevy::experimental::manager_open::FLOD_TILES_HANDLE;
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        for args in [
+            vec![],
+            vec![
+                "--seed",
+                "-7",
+                "--seed-initialised",
+                "false",
+                "--flod-tile-count",
+                "3",
+            ],
+        ] {
+            let options = Options::try_parse_from(
+                ["native_join_probe", "--name", "Authored"]
+                    .into_iter()
+                    .chain(args),
+            )
+            .unwrap();
+            let world = &options.authored_world;
+            let (values, flod) = world.plan(&profile).unwrap();
+            let report = world.report();
+            assert_eq!(
+                values[&handle::SEED],
+                RepValue::Int(report["seed"].as_i64().unwrap() as i32)
+            );
+            assert_eq!(
+                values[&handle::SEED_INITIALISED],
+                RepValue::Bool(report["seed_initialised"].as_bool().unwrap())
+            );
+            assert_eq!(
+                flod.actor_arrays
+                    .get(&FLOD_TILES_HANDLE)
+                    .map_or(0, Vec::len),
+                report["flod_tile_count"].as_u64().unwrap() as usize
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_flod_counts_fail_argument_parsing() {
+        for count in ["-1", "65536", "2147483648"] {
+            assert!(
+                Options::try_parse_from([
+                    "probe",
+                    "--name",
+                    "Authored",
+                    "--flod-tile-count",
+                    count
+                ])
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn progress_cadence_is_bounded_and_has_a_useful_default() {
