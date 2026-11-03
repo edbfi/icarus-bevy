@@ -340,6 +340,383 @@ fn pose_json(translation: [f32; 3]) -> Value {
     json!({"translation": translation, "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]})
 }
 
+fn orientation_fixture() -> Fixture {
+    let mut fixture = Fixture::new();
+    fixture.declaration["frame"]["orientation"] = json!("right_handed_zyx_degrees_v1");
+    fixture
+}
+
+#[test]
+fn authored_orientation_legacy_mode_round_trips_without_changing_declarations() {
+    let fixture = Fixture::new();
+    for explicit in [false, true] {
+        let mut declaration = fixture.declaration.clone();
+        if explicit {
+            declaration["frame"]["orientation"] = json!("identity_only");
+        }
+        let parsed = AuthoredReplication::parse(&declaration.to_string()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed.frame).unwrap(),
+            fixture.declaration["frame"]
+        );
+        let mut app = build_app(&fixture.config, &fixture.snapshot).unwrap();
+        orient(
+            &mut app,
+            fixture.id("a"),
+            Quat::from_rotation_z(0.7).to_array(),
+        );
+        assert!(prepare(&mut app, declaration).is_err());
+        assert!(!app.is_plugin_added::<ReplicationPlugin>());
+    }
+}
+
+fn orient(app: &mut App, id: DomainId, rotation: [f32; 4]) {
+    let entity = native_entity(app, id);
+    let translation = app.world().get::<Position>(entity).unwrap().0;
+    update_native_actor(
+        app.world_mut(),
+        id,
+        NativeTransform {
+            translation,
+            rotation,
+            ..Default::default()
+        },
+        Vec::new(),
+    )
+    .unwrap();
+}
+
+/// Independent oracle: rotate basis vectors with glam quaternions, then change
+/// signed coordinates. This does not reuse the bridge's matrix/Euler extraction.
+fn assert_orientation_basis(rotation: [f32; 4], axes: [i8; 3], motion: &NetMotion) {
+    let native = Quat::from_array(rotation).normalize();
+    let [pitch, yaw, roll] = motion.rotation_degrees.map(f32::to_radians);
+    let projected = Quat::from_euler(EulerRot::ZYX, yaw, pitch, roll);
+    for output_axis in 0..3 {
+        let mut input = [0.0; 3];
+        input[usize::from(axes[output_axis].unsigned_abs() - 1)] =
+            f32::from(axes[output_axis].signum());
+        let rotated = (native * Vec3::from_array(input)).to_array();
+        let expected = axes
+            .map(|axis| rotated[usize::from(axis.unsigned_abs() - 1)] * f32::from(axis.signum()));
+        let mut basis = [0.0; 3];
+        basis[output_axis] = 1.0;
+        let actual = (projected * Vec3::from_array(basis)).to_array();
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 2e-5,
+                "axes={axes:?}, expected={expected}, actual={actual}"
+            );
+        }
+    }
+    assert_eq!(motion.linear_velocity, [0.0; 3]);
+}
+
+#[test]
+fn authored_orientation_projects_all_signed_frames_against_an_independent_basis_oracle() {
+    let rotation = Quat::from_euler(EulerRot::ZYX, 0.73, -0.41, 1.12).to_array();
+    for permutation in [
+        [1_i8, 2, 3],
+        [1, 3, 2],
+        [2, 1, 3],
+        [2, 3, 1],
+        [3, 1, 2],
+        [3, 2, 1],
+    ] {
+        for signs in 0..8 {
+            let axes = std::array::from_fn(|index| {
+                permutation[index] * if signs & (1 << index) == 0 { 1 } else { -1 }
+            });
+            let mut fixture = orientation_fixture();
+            fixture.declaration["frame"]["axes"] = json!(axes);
+            let (mut app, _) = fixture.app();
+            orient(&mut app, fixture.id("a"), rotation);
+            app.update();
+            app.update();
+            let proxy = proxy_entity(&app, fixture.id("a"));
+            let first = *app.world().get::<NetMotion>(proxy).unwrap();
+            assert_orientation_basis(rotation, axes, &first);
+            orient(&mut app, fixture.id("a"), rotation.map(|value| -value));
+            app.update();
+            assert_eq!(
+                app.world().get::<NetMotion>(proxy),
+                Some(&first),
+                "q and -q must project identically"
+            );
+            network::teardown(app.world_mut());
+        }
+    }
+}
+
+#[test]
+fn authored_orientation_handles_principal_turns_poles_and_near_unit_inputs() {
+    let mut fixture = orientation_fixture();
+    fixture.declaration["frame"]["axes"] = json!([1, 2, 3]);
+    let (mut app, _) = fixture.app();
+    let axes = [1, 2, 3];
+    let proxy = proxy_entity(&app, fixture.id("a"));
+    for (yaw, pitch, roll) in [
+        (0.0_f32, 0.0_f32, 0.0_f32),
+        (90.0, 0.0, 0.0),
+        (0.0, 90.0, 0.0),
+        (0.0, 0.0, 90.0),
+        (37.0, 90.0, -19.0),
+        (37.0, -90.0, -19.0),
+        (37.0, 89.99, -19.0),
+        (37.0, -89.99, -19.0),
+    ] {
+        let rotation = Quat::from_euler(
+            EulerRot::ZYX,
+            yaw.to_radians(),
+            pitch.to_radians(),
+            roll.to_radians(),
+        )
+        .to_array();
+        orient(&mut app, fixture.id("a"), rotation);
+        app.update();
+        app.update();
+        assert_orientation_basis(rotation, axes, app.world().get::<NetMotion>(proxy).unwrap());
+    }
+    let rotation = Quat::from_euler(EulerRot::ZYX, 0.3, 0.2, -0.6).to_array();
+    orient(&mut app, fixture.id("a"), rotation);
+    app.update();
+    app.update();
+    let expected = *app.world().get::<NetMotion>(proxy).unwrap();
+    let near_unit = rotation.map(|value| value * 1.000004);
+    orient(&mut app, fixture.id("a"), near_unit);
+    app.update();
+    let actual = app.world().get::<NetMotion>(proxy).unwrap();
+    assert_orientation_basis(near_unit, axes, actual);
+    for (actual, expected) in actual
+        .rotation_degrees
+        .into_iter()
+        .zip(expected.rotation_degrees)
+    {
+        assert!((actual - expected).abs() < 1e-4);
+    }
+    network::teardown(app.world_mut());
+    for rotation in [
+        [0.0; 4],
+        [0.0, 0.0, 0.0, 1.001],
+        [f32::NAN, 0.0, 0.0, 1.0],
+        [0.0, f32::INFINITY, 0.0, 1.0],
+    ] {
+        let mut app = build_app(&fixture.config, &fixture.snapshot).unwrap();
+        let entity = native_entity(&app, fixture.id("a"));
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(NativeRotation(rotation));
+        assert!(prepare(&mut app, fixture.declaration.clone()).is_err());
+        assert!(!app.is_plugin_added::<ReplicationPlugin>());
+    }
+    let mut invalid = fixture.declaration.clone();
+    invalid["frame"]["orientation"] = json!("unqualified_original_rotation");
+    assert!(AuthoredReplication::parse(&invalid.to_string()).is_err());
+}
+
+#[test]
+fn authored_orientation_reaches_spawn_and_rotation_only_updates_in_both_orders() {
+    use icarus_bevy::experimental::actor_channel::CompressedRotator;
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let fixture = orientation_fixture();
+        let (mut app, address) = fixture.app();
+        let rotation = Quat::from_euler(EulerRot::ZYX, 0.73, -0.41, 1.12).to_array();
+        orient(&mut app, fixture.id("a"), rotation);
+        app.update();
+        app.update();
+        let proxy = proxy_entity(&app, fixture.id("a"));
+        let first = *app.world().get::<NetMotion>(proxy).unwrap();
+        let mut client = Client::connect(&mut app, address, order);
+        let opened = client.join(&mut app);
+        let body = actor_bodies(&opened, &client)
+            .into_iter()
+            .find(|(open, _)| *open)
+            .unwrap()
+            .1;
+        let spawn = body.spawn.unwrap().dynamic.unwrap();
+        let [pitch, yaw, roll] = first.rotation_degrees;
+        assert_eq!(
+            spawn.rotation,
+            Some(CompressedRotator::from_degrees(pitch, yaw, roll).unwrap())
+        );
+        let expected = RepValue::Movement(
+            authored_movement([20.0, -10.0, 30.0], first.rotation_degrees, [0.0; 3]).unwrap(),
+        );
+        assert_eq!(fields(&opened, &client, true)[0].get(&6), Some(&expected));
+        client.settle(&mut app, &opened);
+        let before = capture(app.world_mut()).unwrap();
+        orient(
+            &mut app,
+            fixture.id("a"),
+            Quat::from_rotation_z(1.9).to_array(),
+        );
+        let changed = tick_bytes(&mut app, &client);
+        let current = app.world().get::<NetMotion>(proxy).unwrap();
+        let expected = RepValue::Movement(
+            authored_movement([20.0, -10.0, 30.0], current.rotation_degrees, [0.0; 3]).unwrap(),
+        );
+        assert!(
+            fields(&changed, &client, false)
+                .iter()
+                .any(|fields| fields.get(&6) == Some(&expected))
+        );
+        // Drop the rotation update, then acknowledge a later independent flag
+        // update. Its reported gap must repair the current projected rotation.
+        native_replication::update_flags(app.world_mut(), fixture.id("a"), None).unwrap();
+        let newer = tick_bytes(&mut app, &client);
+        client.accept(&newer);
+        let mut repaired = Vec::new();
+        for _ in 0..3 {
+            let bytes = client.step(&mut app);
+            client.accept(&bytes);
+            repaired.extend(bytes);
+        }
+        assert!(
+            fields(&repaired, &client, false)
+                .iter()
+                .any(|fields| fields.get(&6) == Some(&expected))
+        );
+        assert!(app.world().resource::<PeerLab>().stats().actor_updates_lost >= 1);
+        let snapshot = capture(app.world_mut()).unwrap();
+        assert!(snapshot.native_world != before.native_world);
+        network::teardown(app.world_mut());
+        // Reload keeps native quaternion state; activation reconstructs motion.
+        let mut reloaded = build_app(&fixture.config, &snapshot).unwrap();
+        let plan = prepare(&mut reloaded, fixture.declaration.clone()).unwrap();
+        native_replication::install(&mut reloaded, plan).unwrap();
+        let proxy = proxy_entity(&reloaded, fixture.id("a"));
+        assert_orientation_basis(
+            Quat::from_rotation_z(1.9).to_array(),
+            [2, -1, 3],
+            reloaded.world().get::<NetMotion>(proxy).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn authored_orientation_without_movement_publishes_spawn_rotation_only() {
+    use icarus_bevy::experimental::actor_channel::CompressedRotator;
+    let mut fixture = orientation_fixture();
+    fixture.declaration["bindings"][0]["replicate_movement"] = json!(false);
+    let (mut app, address) = fixture.app();
+    orient(
+        &mut app,
+        fixture.id("a"),
+        Quat::from_rotation_z(0.7).to_array(),
+    );
+    app.update();
+    app.update();
+    let proxy = proxy_entity(&app, fixture.id("a"));
+    let first = *app.world().get::<NetMotion>(proxy).unwrap();
+    let mut client = Client::connect(&mut app, address, ByteOrder::Little);
+    let opened = client.join(&mut app);
+    let body = actor_bodies(&opened, &client)
+        .into_iter()
+        .find(|(open, _)| *open)
+        .unwrap()
+        .1;
+    let [pitch, yaw, roll] = first.rotation_degrees;
+    assert_eq!(
+        body.spawn.unwrap().dynamic.unwrap().rotation,
+        Some(CompressedRotator::from_degrees(pitch, yaw, roll).unwrap())
+    );
+    assert!(
+        fields(&opened, &client, true)
+            .iter()
+            .all(|fields| !fields.contains_key(&6))
+    );
+    client.settle(&mut app, &opened);
+    orient(
+        &mut app,
+        fixture.id("a"),
+        Quat::from_rotation_z(1.3).to_array(),
+    );
+    let changed = tick_bytes(&mut app, &client);
+    assert_ne!(app.world().get::<NetMotion>(proxy), Some(&first));
+    assert!(
+        fields(&changed, &client, false)
+            .iter()
+            .all(|fields| !fields.contains_key(&6))
+    );
+    assert!(app.world().resource::<NativeReplicationCounts>().active);
+    network::teardown(app.world_mut());
+}
+
+#[test]
+fn authored_orientation_late_corruption_cannot_partially_publish_earlier_rotation() {
+    for corrupt_motion in [false, true] {
+        let mut fixture = orientation_fixture();
+        fixture.declaration["bindings"]
+            .as_array_mut()
+            .unwrap()
+            .push(binding_json("b"));
+        let (mut app, _) = fixture.app();
+        app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        app.update(); // Prime Bevy's initial zero-delta frame.
+        let early = proxy_entity(&app, fixture.id("a"));
+        let later = proxy_entity(&app, fixture.id("b"));
+        let old = *app.world().get::<NetMotion>(early).unwrap();
+        orient(
+            &mut app,
+            fixture.id("a"),
+            Quat::from_rotation_x(0.7).to_array(),
+        );
+        if corrupt_motion {
+            app.world_mut()
+                .get_mut::<NetMotion>(later)
+                .unwrap()
+                .rotation_degrees[0] = 42.0;
+        } else {
+            let source = native_entity(&app, fixture.id("b"));
+            app.world_mut()
+                .entity_mut(source)
+                .insert(NativeRotation([0.0; 4]));
+        }
+        assert!(native_replication::update_flags(app.world_mut(), fixture.id("a"), None).is_err());
+        assert_eq!(app.world().get::<NetMotion>(early), Some(&old));
+        app.update();
+        assert_zero_peer_retired(&app, 2);
+        network::teardown(app.world_mut());
+    }
+}
+
+#[test]
+fn authored_orientation_lifecycle_dormancy_and_replacement_keep_projected_motion() {
+    let mut fixture = replacement_fixture(false);
+    fixture.declaration["frame"]["orientation"] = json!("right_handed_zyx_degrees_v1");
+    let (mut app, _) = fixture.app();
+    app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    app.update(); // Prime Bevy's initial zero-delta frame.
+    assert_eq!(
+        app.world().resource::<NativeReplicationCounts>().activated,
+        1
+    );
+    restore_lifecycle_slot(&mut app, fixture.id("b"));
+    let owner = native_owner_handle(app.world(), fixture.id("b")).unwrap();
+    let rotation = Quat::from_euler(EulerRot::ZYX, 0.4, 0.2, -0.3).to_array();
+    update_lifecycle_actor(
+        app.world_mut(),
+        owner,
+        NativeTransform {
+            translation: [4.0, 5.0, 6.0],
+            rotation,
+            ..Default::default()
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    app.update();
+    let proxy = proxy_entity(&app, fixture.id("b"));
+    let expected = *app.world().get::<NetMotion>(proxy).unwrap();
+    assert_orientation_basis(rotation, [2, -1, 3], &expected);
+    restore_lifecycle_slot(&mut app, fixture.id("b"));
+    app.update();
+    let proxy = proxy_entity(&app, fixture.id("b"));
+    assert_eq!(app.world().get::<NetMotion>(proxy), Some(&expected));
+    assert!(app.world().resource::<NativeReplicationCounts>().active);
+    network::teardown(app.world_mut());
+}
+
 fn binding_json(placement: &str) -> Value {
     json!({
         "placement": placement, "archetype": [

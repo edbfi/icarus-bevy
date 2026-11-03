@@ -17,9 +17,7 @@ persistence/recovery/stale/failed workers: F-869, F-771; incomplete-state
 rejection: F-482. [Operations](../../runbooks/native-server.md).
 
 Authored persistence/lifecycle: schemas 4–10 (F-919, F-922, F-923, F-927),
-exclusions (F-928), opt-in schema-11 modifier timers/cache/authority,
-rational tick time with persisted phase, near-budget reload, replacement/retry
-and atomicity (F-931).
+exclusions (F-928), schema-11 timers/cache/authority (F-931).
 [Procedures/limits](../../runbooks/authored-worlds.md).
 
 Bool/I32 limits/exclusions: F-929, runbook. Schema-7/8/9 preflight/schema-11
@@ -36,14 +34,20 @@ schema-3 lossless sidecars: F-567; readers: F-886 to F-888; randomized
 preservation/codecs/readers/bounded peers: F-604 to F-607; corrupt stores:
 F-611.
 
-Schema-4/7/11 spatial bridge with dormant activation and opt-in owner replacement: F-938 ([installation/limits](../../runbooks/native-server.md)).
-Saved-pose/physics: U-025; stock client unqualified.
+Spatial bridge/lifecycle: F-938 ([configuration](../../runbooks/native-server.md)).
+`frame.orientation: right_handed_zyx_degrees_v1` temporarily
+normalizes a validated `[x,y,z,w]` without changing native state, applies
+signed-axis `A R A^T`, then right-handed active
+`Rz(yaw) Ry(pitch) Rx(roll)`; output is `[pitch,yaw,roll]` degrees.
+At `|cos(pitch)| <= 1e-10`, roll is zero and yaw `atan2(-M01,M11)`.
+Signed zero is canonicalized; units affect translation only.
+This is an authored convention; qualification is pending. No official rotation or saved-pose mapping
+(U-025), physics or stock-client qualification.
 
-Loopback admission/cleanup/pins: F-875; session limits: F-833; metrics:
-F-932; concurrency/partial-bunch sweeps: F-877; no ICARUS client. Missing reruns:
-M-898. The 48 h attempt hit its disk guard; no final summary; copied reload
-passes (M-1055). Anonymous byte-matched server data.pak fetch:
-F-828, F-829, F-831. Runtime gameplay values are separate authored input (F-993).
+Loopback admission/cleanup/pins: F-875; holds/limits: F-833; metrics: F-932;
+concurrency/partial-bunch sweeps: F-877. Missing reruns: M-898.
+Anonymous byte-matched server data.pak fetch: F-828, F-829, F-831;
+authored gameplay input: F-993.
 
 Toolchain/headless/typing/CI: F-879, F-484, F-497; client identity:
 F-878/F-731 (U-034 resolved). Original fixity/export/entry-map/exchange:

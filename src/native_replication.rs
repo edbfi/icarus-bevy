@@ -110,6 +110,23 @@ object_dto! {
         /// Output axes select signed native axes: 1=x, 2=y, 3=z.
         pub axes: [i8; 3],
         pub units: f32,
+        #[serde(default, skip_serializing_if = "AuthoredOrientation::is_identity_only")]
+        pub orientation: AuthoredOrientation,
+    }
+}
+
+/// Independently authored coordinate conventions, never official pose mappings.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoredOrientation {
+    #[default]
+    IdentityOnly,
+    RightHandedZyxDegreesV1,
+}
+
+impl AuthoredOrientation {
+    fn is_identity_only(&self) -> bool {
+        *self == Self::IdentityOnly
     }
 }
 object_dto! {
@@ -331,8 +348,10 @@ impl AuthoredFrame {
         accepted: Option<[f32; 3]>,
     ) -> Result<[f32; 3]> {
         ensure!(
-            pose.rotation == [0.0, 0.0, 0.0, 1.0] && pose.scale == [1.0; 3],
-            "native replication v1 requires identity rotation and unit native scale"
+            pose.scale == [1.0; 3]
+                && (self.orientation != AuthoredOrientation::IdentityOnly
+                    || pose.rotation == [0.0, 0.0, 0.0, 1.0]),
+            "native replication frame rejects rotation or nonunit scale"
         );
         let position = self.axes.map(|axis| {
             let value = f64::from(pose.translation[usize::from(axis.unsigned_abs() - 1)])
@@ -351,6 +370,64 @@ impl AuthoredFrame {
                 .map_err(|_| anyhow::anyhow!("native replication position outside codec limits"))?;
         }
         Ok(position)
+    }
+
+    /// Normalize only a temporary quaternion: native state is never rewritten.
+    /// Right-handed active rotations use M=A R A^T for signed axis matrix A,
+    /// then M=Rz(yaw)Ry(pitch)Rx(roll). For |cos(pitch)| <= 1e-10 choose
+    /// roll=0 and yaw=atan2(-M01,M11). Canonicalize signed zero in degrees.
+    fn motion(&self, pose: &NativeTransform) -> Result<Option<NetMotion>> {
+        if self.orientation == AuthoredOrientation::IdentityOnly {
+            return Ok(None);
+        }
+        pose.validate()?;
+        ensure!(
+            pose.scale == [1.0; 3],
+            "native replication scale unsupported"
+        );
+        let q = pose.rotation.map(f64::from);
+        let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let [x, y, z, w] = q.map(|v| v / norm);
+        let r = [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+            ],
+            [
+                2.0 * (x * y + z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - x * w),
+            ],
+            [
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ];
+        let m: [[f64; 3]; 3] = std::array::from_fn(|i| {
+            std::array::from_fn(|j| {
+                r[usize::from(self.axes[i].unsigned_abs() - 1)]
+                    [usize::from(self.axes[j].unsigned_abs() - 1)]
+                    * f64::from(self.axes[i].signum())
+                    * f64::from(self.axes[j].signum())
+            })
+        });
+        let cosine_pitch = m[0][0].hypot(m[1][0]);
+        let pitch = (-m[2][0]).atan2(cosine_pitch);
+        let (yaw, roll) = if cosine_pitch <= 1e-10 {
+            ((-m[0][1]).atan2(m[1][1]), 0.0)
+        } else {
+            (m[1][0].atan2(m[0][0]), m[2][1].atan2(m[2][2]))
+        };
+        let rotation_degrees = [pitch, yaw, roll].map(|angle| {
+            let degrees = angle.to_degrees() as f32;
+            if degrees == 0.0 { 0.0 } else { degrees }
+        });
+        Ok(Some(NetMotion {
+            rotation_degrees,
+            linear_velocity: [0.0; 3],
+        }))
     }
 }
 
@@ -486,6 +563,7 @@ struct Binding {
     tile: String,
     pose: NativeTransform,
     position: [f32; 3],
+    motion: Option<NetMotion>,
     actor: NetActor,
     archetype: NetArchetype,
     flags: Option<NetActorFlags>,
@@ -655,6 +733,7 @@ pub fn prepare(
             .get(authored.placement.as_str())
             .context("native replication placement missing")?;
         let position = declaration.frame.position(&native.transform)?;
+        let motion = declaration.frame.motion(&native.transform)?;
         let archetype = NetArchetype {
             archetype: authored
                 .archetype
@@ -664,7 +743,7 @@ pub fn prepare(
             replicate_movement: authored.replicate_movement,
         };
         let flags = authored.flags.as_ref().map(AuthoredFlags::flags);
-        validate_open(native.id, position, &archetype, flags, &session)?;
+        validate_open(native.id, position, motion, &archetype, flags, &session)?;
         bindings.push(Binding {
             id: native.id,
             source: native.live,
@@ -673,6 +752,7 @@ pub fn prepare(
             tile: native.tile.to_string(),
             pose: native.transform.clone(),
             position,
+            motion,
             actor: NetActor {
                 id: native.id,
                 params: authored.parameters.parameters(),
@@ -698,13 +778,20 @@ pub fn prepare(
 fn validate_open(
     id: DomainId,
     position: [f32; 3],
+    motion: Option<NetMotion>,
     archetype: &NetArchetype,
     flags: Option<NetActorFlags>,
     session: &SessionReplication,
 ) -> Result<()> {
     let movement = archetype
         .replicate_movement
-        .then(|| authored_movement(position, [0.0; 3], [0.0; 3]))
+        .then(|| {
+            authored_movement(
+                position,
+                motion.map_or([0.0; 3], |m| m.rotation_degrees),
+                [0.0; 3],
+            )
+        })
         .transpose()
         .map_err(|_| anyhow::anyhow!("native replication movement invalid"))?;
     let block = world_actor_state_block(session.engine_net_version, movement, flags)
@@ -717,8 +804,8 @@ fn validate_open(
             archetype: archetype.archetype.clone(),
             level: session.level.clone(),
             location: Some(position),
-            rotation: None,
-            velocity: None,
+            rotation: motion.map(|m| m.rotation_degrees),
+            velocity: motion.map(|m| m.linear_velocity),
             blocks: vec![block.clone()],
         };
         compose_actor_open(
@@ -736,6 +823,7 @@ fn validate_open(
 
 struct Projection {
     position: [f32; 3],
+    motion: Option<NetMotion>,
     stale: bool,
     source: Option<(Entity, u64)>,
 }
@@ -781,10 +869,12 @@ fn current_positions(
             .declaration
             .frame
             .position_after(&actor.transform, Some(binding.position))?;
-        if startup || position != binding.position {
+        let motion = plan.declaration.frame.motion(&actor.transform)?;
+        if startup || position != binding.position || motion != binding.motion {
             validate_open(
                 binding.id,
                 position,
+                motion,
                 &binding.archetype,
                 binding.flags,
                 &plan.session,
@@ -804,14 +894,15 @@ fn current_positions(
                         && proxy.contains::<NetSchedule>()
                         && current == Some(&Position(binding.position))
                         && proxy.get::<NetActorFlags>().copied() == binding.flags
-                        && !proxy.contains::<NetMotion>()
+                        && proxy.get::<NetMotion>().copied() == binding.motion
                         && proxy.get::<NetIncarnation>().copied()
                             == net_incarnation(plan.declaration.owner_replacement, binding.source)
                         && !proxy.contains::<bevy::ecs::entity_disabling::Disabled>()
                 }),
                 "native replication proxy lost or changed"
             );
-            stale = current.is_none_or(|current| !same_bits(current.0, position));
+            stale = current.is_none_or(|current| !same_bits(current.0, position))
+                || motion != binding.motion;
         }
         ensure!(
             actor
@@ -824,6 +915,7 @@ fn current_positions(
         );
         positions.push(Projection {
             position,
+            motion,
             stale,
             source: actor.live,
         });
@@ -933,6 +1025,9 @@ fn spawn_proxy(world: &mut World, binding: &mut Binding, policy: OwnerReplacemen
     if let Some(flags) = binding.flags {
         proxy.insert(flags);
     }
+    if let Some(motion) = binding.motion {
+        proxy.insert(motion);
+    }
     if let Some(incarnation) = net_incarnation(policy, binding.source) {
         proxy.insert(incarnation);
     }
@@ -1029,8 +1124,12 @@ fn extract(world: &mut World) {
                         world
                             .entity_mut(proxy)
                             .insert(Position(projection.position));
+                        if let Some(motion) = projection.motion {
+                            world.entity_mut(proxy).insert(motion);
+                        }
                     }
                     binding.position = projection.position;
+                    binding.motion = projection.motion;
                     let was_dormant = binding.source.is_none();
                     let replaced = binding.source != projection.source;
                     binding.source = projection.source;
@@ -1090,5 +1189,68 @@ pub fn teardown(world: &mut World) {
     crate::session_replication::clear_viewers(world);
     if let Some(mut counts) = world.get_resource_mut::<NativeReplicationCounts>() {
         counts.active = false;
+    }
+}
+
+#[cfg(test)]
+mod orientation_tests {
+    use super::*;
+
+    fn frame(axes: [i8; 3]) -> AuthoredFrame {
+        AuthoredFrame {
+            axes,
+            units: 1.0,
+            orientation: AuthoredOrientation::RightHandedZyxDegreesV1,
+        }
+    }
+
+    fn pose(rotation: [f32; 4]) -> NativeTransform {
+        NativeTransform {
+            translation: [0.0; 3],
+            rotation,
+            scale: [1.0; 3],
+        }
+    }
+
+    #[test]
+    fn authored_orientation_normalizes_temporarily_and_preserves_double_cover() {
+        let half = 0.5_f64.sqrt() as f32;
+        let native = pose([0.0, 0.0, half * 1.000004, half * 1.000004]);
+        let before = native.clone();
+        let motion = frame([1, 2, 3]).motion(&native).unwrap().unwrap();
+        assert_eq!(native, before);
+        assert_eq!(motion.linear_velocity, [0.0; 3]);
+        assert!((motion.rotation_degrees[1] - 90.0).abs() < 1e-4);
+        let negative = pose(native.rotation.map(|v| -v));
+        assert_eq!(frame([1, 2, 3]).motion(&negative).unwrap(), Some(motion));
+        // Reflection reverses this active rotation's direction, independent
+        // of the units used to scale positions.
+        let reflected = frame([-1, 2, 3]).motion(&native).unwrap().unwrap();
+        assert!((reflected.rotation_degrees[1] + 90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn authored_orientation_gimbal_lock_sets_roll_zero_for_both_poles() {
+        let half = 0.5_f64.sqrt() as f32;
+        for sign in [-1.0, 1.0] {
+            let motion = frame([1, 2, 3])
+                .motion(&pose([0.0, sign * half, 0.0, half]))
+                .unwrap()
+                .unwrap();
+            assert!((motion.rotation_degrees[0] - sign * 90.0).abs() < 1e-4);
+            assert_eq!(motion.rotation_degrees[1].to_bits(), 0);
+            assert_eq!(motion.rotation_degrees[2].to_bits(), 0);
+        }
+    }
+
+    #[test]
+    fn authored_orientation_rejects_invalid_norm_and_nonunit_scale() {
+        let frame = frame([1, 2, 3]);
+        for rotation in [[0.0; 4], [0.0, 0.0, 0.0, 1.001], [f32::NAN, 0.0, 0.0, 1.0]] {
+            assert!(frame.motion(&pose(rotation)).is_err());
+        }
+        let mut scaled = pose([0.0, 0.0, 0.0, 1.0]);
+        scaled.scale[0] = 2.0;
+        assert!(frame.motion(&scaled).is_err());
     }
 }

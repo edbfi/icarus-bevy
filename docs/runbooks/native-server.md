@@ -5,8 +5,7 @@ Headless foundation: [constraints](../architecture.md),
 
 ## Run
 
-Native Linux: Rust 1.99.1 (Rustfmt/Clippy), headless Bevy 0.20.1; no GPU,
-display or Proton. Protocol row identities fetch anonymously/unattended from
+Headless toolchain: F-879. Protocol row identities fetch anonymously from
 the free official server (Steam app 2089300), without steamcmd or game client
 (F-828, F-831). With
 `network.data_pak` unset, `run` discovers installed data. Either source requires
@@ -28,7 +27,7 @@ python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server check
 target/release/icarus-server run --config config/server.example.toml
 ```
 
-Bounded smoke run:
+Smoke run:
 
 ```bash
 python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
@@ -46,7 +45,7 @@ tick timings cover foundation systems only, not gameplay performance.
 Config: CLI → TOML → defaults; unknown fields/invalid limits reject;
 relative paths use CWD. Config must open as a regular file ≤64 KiB (regular
 symlinks allowed; FIFOs/oversized files fail before state opens, F-671).
-`check-config` prints settings without creating `--data-dir`; see `--help`.
+`check-config` prints settings without creating `--data-dir`.
 
 Builds: [guard](cargo-builds.md).
 
@@ -146,36 +145,38 @@ Polling/retries never replay callbacks or infer climate, expiry, destruction or
 persistence. Disconnect drops timing; reconnect needs configuration. Getters
 return copies; counts use `PeerLabStats`/`SessionCounts`.
 
-Schema-4/7/11 hosts opt in via `[network].authored_replication` or
-`run --authored-replication replication.json`; disabled networking ignores it,
-enabled needs a release session plan. `AuthoredReplication`
-(`src/native_replication.rs`): strict regular JSON ≤1 MiB, 1–1,024 bindings,
+Schema-4/7/11 hosts: `[network].authored_replication` or
+`run --authored-replication replication.json`; ignored without networking,
+otherwise requires a release session plan. `src/native_replication.rs`:
+strict regular JSON ≤1 MiB, 1–1,024 bindings,
 catalog/map, signed-axis/unit frame, archetype paths/checksums/`no_load`,
-parameters/schedule. Translation only: quaternion `[0,0,0,1]`, scale `[1,1,1]`.
+parameters/schedule. `frame.orientation` selects
+`right_handed_zyx_degrees_v1`; omitted/`identity_only` requires `[0,0,0,1]`.
+Scale stays `[1,1,1]`, velocity zero. [Rotation contract](../research/foundation/foundation.md#current-answer).
 Proxies never persist (F-938).
 
 Format 1 accepts schema 4; format 2 pins schema-7/11 `lifecycle_id`.
-Dormant slots activate on spawn with pending flag edits. Format 2 defaults to
-`"owner_replacement": "retire_bridge"`; replacement retires the bridge.
-`"after_close_ack"` keeps unrelated actors running: each peer ACKs its old
-reliable close before the latest incarnation opens with a fresh GUID; blocked
-replacements coalesce. Old identities remain while desired/open/awaiting ACK.
-GUIDs never recycle; exhaustion refuses opens.
+Dormant slots activate on spawn with pending flags. Format 2 defaults to
+`"owner_replacement": "retire_bridge"`: owner replacement retires the bridge.
+`"after_close_ack"` preserves unrelated
+actors: each peer ACKs its old reliable close before the latest incarnation
+opens with a fresh GUID; blocked replacements coalesce. Identities remain while
+desired/open/awaiting ACK. GUIDs never recycle; exhaustion refuses opens.
 
 Every tick validates all source/proxy bindings, even without peers. Corruption
-retires the bridge/stops admission without native-state edits. `activated` counts
-live bindings exposed since installation. Modifier timers stay native; no
-modifier containers are sent. Generic reconfiguration, original replacement,
+retires the bridge/stops admission without native edits. `activated` counts
+live bindings exposed since installation. Timers stay native; no modifier
+containers are sent. Generic reconfiguration, original replacement,
 saved-pose mapping (U-025), import, physics, gameplay and stock clients remain
 unqualified. Costs cover schema 4 only (F-939, F-941); lifecycle is unmeasured.
-Authored probes:
+Probes:
 
 ```bash
 python3 tools/cargo_guard.py test --locked --test network
 target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
 cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
   --cycles 200 --concurrency 1 --release-profile config/release.toml
-# Hold joined sessions and check their GameState updates (F-833);
+# Hold sessions and check GameState (F-833);
 # --sessions N (default 1) holds N at once and prints the aggregate summary.
 cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 \
   --release-profile config/release.toml --seconds 3600 --sessions 8
