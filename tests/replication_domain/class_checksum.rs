@@ -404,7 +404,7 @@ fn fast_array(name: &str, struct_name: &str, offset: i32, item: P) -> P {
 fn bestiary_manager_component_matches_the_controller_subobject_checksum() {
     // M-1092: `UBestiaryManagerComponent`'s two replicated fast arrays fold
     // over `UActorComponent` to the checksum of the controller's
-    // `BestiaryManagerComponent` subobject, so its net cache (bound 7) indexes
+    // `BestiaryManagerComponent` subobject, whose serialization bound is 8, indexes
     // `Client_RequestBestiaryData` and `Server_ReceiveBestiaryData`.
     let actor_component = class_checksum(
         0,

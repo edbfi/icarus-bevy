@@ -12,12 +12,10 @@ rules: [actor channel bunches](../../specs/network/actor-channel.md).
 
 ## Current answer
 
-Open actor bunches frame the actor NetGUID and, for dynamic actors, the
-archetype, level and optional spawn vectors, then the actor-channel open hook
-(F-751, F-845, F-849). Outgoing bunches carry export-only prefixes and
-split into partial slices; incoming ones reassemble and keep dormant actors
-(F-709 to F-711); content blocks frame per-object replicator input (F-846,
-F-849). Addresses and limits are in the [spec](../../specs/network/actor-channel.md).
+Actor opens, content blocks and partial reassembly: F-709 to F-711, F-751,
+F-845, F-846, F-849; addresses and limits are in the
+[spec](../../specs/network/actor-channel.md).
+Component serialization bounds correct F-958's counts (F-1015).
 
 Offline schema derivation is authorized ([gates](../../gates.md)). The
 gameplay-tag net-index dictionary derives from the client's tag table and

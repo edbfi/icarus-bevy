@@ -100,6 +100,70 @@ fn field_headers_carry_a_bounded_index_a_packed_bit_count_and_the_payload() {
     assert!(read_field_header(&mut truncated.reader(), 5, 64).is_err());
 }
 
+#[test]
+fn component_serialization_bounds_preserve_exact_field_alignment() {
+    use icarus_bevy::experimental::rep_rpc::{
+        BESTIARY_MANAGER_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
+    };
+    // Explicit LSB-first index bits, independent of the header writer. The
+    // highest encoded slots are framing cases, not assertions of valid RPCs.
+    for (bound, expected_bound, cases) in [
+        (
+            PLAYER_DATA_FIELD_INDEX_BOUND,
+            27,
+            vec![
+                (10, vec![false, true, false, true, false]),
+                (26, vec![false, true, false, true, true]),
+            ],
+        ),
+        (
+            BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+            8,
+            vec![(3, vec![true, true, false]), (7, vec![true, true, true])],
+        ),
+    ] {
+        assert_eq!(bound, expected_bound);
+        for (index, index_bits) in cases {
+            let body = payload(|writer| writer.write_bits(0b101, 3));
+            let stream = payload(|writer| {
+                for bit in &index_bits {
+                    writer.write_bit(*bit);
+                }
+                writer.write_bits(3 << 1, 8); // Packed three-bit payload length.
+                writer.write_bits(0b101, 3);
+                // A following index-zero field with an empty payload.
+                for _ in &index_bits {
+                    writer.write_bit(false);
+                }
+                writer.write_bits(0, 8);
+            });
+            let mut reader = stream.reader();
+            let header = read_field_header(&mut reader, bound, 64).unwrap();
+            assert_eq!(header.index, index);
+            assert_eq!(header.payload, body);
+            let next = read_field_header(&mut reader, bound, 64).unwrap();
+            assert_eq!(next.index, 0);
+            assert_eq!(next.payload.bit_len(), 0);
+            assert!(reader.at_end());
+            let mut writer = BitWriter::new();
+            write_field_header(&mut writer, &header, bound).unwrap();
+            write_field_header(&mut writer, &next, bound).unwrap();
+            assert_eq!(Payload::from_writer(writer), stream);
+        }
+        assert!(
+            write_field_header(
+                &mut BitWriter::new(),
+                &FieldHeader {
+                    index: expected_bound,
+                    payload: payload(|_| {}),
+                },
+                bound,
+            )
+            .is_err()
+        );
+    }
+}
+
 fn parameters() -> Vec<RpcParameter> {
     vec![
         RpcParameter::Bool,

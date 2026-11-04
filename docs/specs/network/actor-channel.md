@@ -4,7 +4,7 @@
 
 Experimental: static observations of client build 25793767 and server build
 25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-761,
-F-845). Last reconciled: 2026-10-30.
+F-845). Last reconciled: 2026-11-04.
 
 ## Scope
 
@@ -15,6 +15,8 @@ Address pairs are server / client.
 
 ## Confirmed
 
+- 3.0.32 component field serialization bounds are 27/8 for PlayerData/Bestiary,
+  including the extra encoded slot; registered field counts are 26/7 (F-1015).
 - NetGUID references, export flags and checksum placement: F-850. Object exports
   carry the F-853 class network checksum (`experimental::class_checksum`);
   package and level exports carry `0` (F-852, F-853). `experimental::session_open`

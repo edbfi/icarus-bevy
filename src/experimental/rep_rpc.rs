@@ -51,7 +51,7 @@ pub struct FieldHeader {
 }
 
 /// Read one field header and its payload. `index_bound` is the class cache's
-/// maximum index plus one; the index is below it.
+/// exclusive `SerializeInt` bound; it need not identify a registered RPC.
 pub fn read_field_header(
     reader: &mut BitReader<'_>,
     index_bound: u32,
@@ -397,9 +397,11 @@ pub const CLIENT_REQUEST_GET_CHARACTER_PROFILE: u32 = 23;
 pub const RESPONSE_GET_USER_PROFILE: u32 = 110;
 pub const RESPONSE_GET_CHARACTER_PROFILE: u32 = 108;
 
-/// Pinned controller subobjects (F-958).
-pub const PLAYER_DATA_FIELD_INDEX_BOUND: u32 = 26;
-pub const BESTIARY_MANAGER_FIELD_INDEX_BOUND: u32 = 7;
+/// Pinned 3.0.32 controller subobject serialization bounds: inherited and local
+/// cache field counts plus the extra slot passed to `SerializeInt`. The extra
+/// encoded index does not establish a registered RPC (F-1015).
+pub const PLAYER_DATA_FIELD_INDEX_BOUND: u32 = 27;
+pub const BESTIARY_MANAGER_FIELD_INDEX_BOUND: u32 = 8;
 pub const CLIENT_PREPARE_LOADOUT: u32 = 16;
 pub const SERVER_RECEIVE_LOADOUT: u32 = 24;
 pub const CLIENT_REQUEST_BESTIARY_DATA: u32 = 4;
