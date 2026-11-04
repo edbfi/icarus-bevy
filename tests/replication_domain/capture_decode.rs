@@ -693,10 +693,10 @@ fn inbound_controller_and_bound_components_emit_only_framing_metadata() -> Resul
                 Some(10),
                 field_payload(148, BACKEND_PROXY_FIELD_INDEX_BOUND)?,
             ),
-            inbound_block(Some(12), field_payload(25, PLAYER_DATA_FIELD_INDEX_BOUND)?),
+            inbound_block(Some(12), field_payload(26, PLAYER_DATA_FIELD_INDEX_BOUND)?),
             inbound_block(
                 Some(14),
-                field_payload(6, BESTIARY_MANAGER_FIELD_INDEX_BOUND)?,
+                field_payload(7, BESTIARY_MANAGER_FIELD_INDEX_BOUND)?,
             ),
         ],
     )?;
@@ -708,8 +708,8 @@ fn inbound_controller_and_bound_components_emit_only_framing_metadata() -> Resul
         ("BP_IcarusPlayerControllerSurvival_C", Some(182)),
         ("unknown_component", None),
         ("UBackendProxyComponent", Some(148)),
-        ("UPlayerDataComponent", Some(25)),
-        ("UBestiaryManagerComponent", Some(6)),
+        ("UPlayerDataComponent", Some(26)),
+        ("UBestiaryManagerComponent", Some(7)),
     ]) {
         let object = row.as_object().unwrap();
         assert_eq!(object.len(), 6);
