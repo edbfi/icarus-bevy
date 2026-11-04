@@ -69,12 +69,13 @@ stdout keeps pre-shutdown counts. Readiness: queues/channels/player phases
 remain until peer removal; `sequences_succeeded` requires no failure,
 otherwise `sequences_failed` increments. Neither proves ACK, spawn or geometry readiness.
 
-`PeerLab::enable_controller_startup(&ReleaseProfile, Vec<ControllerStartupAction>)`:
-configure once before peers, after controller and (for `RestartPawn`) pawn.
-`FlushLevelStreaming`/`RestartPawn` start after successful initial-open queuing,
-waiting for controller reliable settlement; sequences with restart also wait
-for pawn settlement and use its peer-specific GUID. No automatic trigger or
-possession/geometry proof.
+`network.controller_startup` lists `flush-level-streaming`/`restart-pawn`;
+CLI `--controller-startup` flags replace it in order. TOML `[]` disables startup.
+Requires release/controller plans; restart needs a pawn.
+Actions follow initial opens and controller settlement; restart waits for pawn
+settlement and uses its GUID. `network_listening` lists actions; `status`/`stopped`
+readiness counts pending/queued actions and failed sequences; no client readiness
+proof.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 

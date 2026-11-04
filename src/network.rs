@@ -1752,6 +1752,28 @@ fn bind_session(
     } else {
         None
     };
+    let startup_pawn = if !network.controller_startup.is_empty() {
+        let profile = profile
+            .as_ref()
+            .context("controller startup requires a release profile")?;
+        let controller = plan
+            .as_ref()
+            .context("controller startup requires a controller plan")?;
+        let admission = config
+            .admission
+            .as_ref()
+            .context("controller startup requires admission")?;
+        let pawn = profile.pawn_open_plan(admission.map_url)?;
+        crate::experimental::peer_lab::validate_controller_startup(
+            profile,
+            &network.controller_startup,
+            controller,
+            pawn.is_some(),
+        )?;
+        Some(pawn)
+    } else {
+        None
+    };
     let address = SocketAddrV4::new(network.bind, network.port);
     let mut lab = match authentication {
         Some((address, authenticator)) => {
@@ -1769,11 +1791,15 @@ fn bind_session(
                 .context("compose the PlayerState open plan")?,
             _ => None,
         };
-        let pawn = match (&profile, &config.admission) {
-            (Some(profile), Some(admission)) => profile
-                .pawn_open_plan(admission.map_url)
-                .context("compose the pawn open plan")?,
-            _ => None,
+        let pawn = if let Some(pawn) = startup_pawn {
+            pawn
+        } else {
+            match (&profile, &config.admission) {
+                (Some(profile), Some(admission)) => profile
+                    .pawn_open_plan(admission.map_url)
+                    .context("compose the pawn open plan")?,
+                _ => None,
+            }
         };
         if let Some(pawn) = pawn {
             let content = pawn_content(tables.as_mut())?;
@@ -1852,6 +1878,14 @@ fn bind_session(
                     .context("compose the saved manager open plans")?;
             }
         }
+    }
+    if !network.controller_startup.is_empty() {
+        lab.enable_controller_startup(
+            profile
+                .as_ref()
+                .context("controller startup release missing")?,
+            network.controller_startup.clone(),
+        )?;
     }
     Ok(Some(BoundNetwork {
         lab,

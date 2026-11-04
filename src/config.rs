@@ -51,6 +51,8 @@ pub const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub controller_startup: Vec<crate::experimental::peer_lab::ControllerStartupAction>,
     pub enabled: bool,
     /// IPv4 address to bind; loopback only while the layer is experimental.
     pub bind: Ipv4Addr,
@@ -89,6 +91,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            controller_startup: Vec::new(),
             bind: Ipv4Addr::LOCALHOST,
             port: 17_777,
             max_players: 8,
@@ -103,6 +106,10 @@ impl Default for NetworkConfig {
 
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.controller_startup.len() <= 32,
+            "network.controller_startup exceeds 32 actions"
+        );
         ensure!(
             self.bind.is_loopback(),
             "network.bind must be an IPv4 loopback address while the session layer is experimental"
@@ -149,6 +156,9 @@ impl NetworkConfig {
 
 #[derive(Args, Debug, Default)]
 pub struct ConfigOptions {
+    /// Replace TOML startup actions in flag order; clear them with [] in TOML.
+    #[arg(long, value_enum)]
+    pub controller_startup: Option<Vec<crate::experimental::peer_lab::ControllerStartupAction>>,
     /// Read up to 64 KiB of native TOML. Relative data paths use the working directory.
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -193,6 +203,9 @@ impl ConfigOptions {
         }
         if let Some(path) = &self.authored_replication {
             config.network.authored_replication = Some(path.clone());
+        }
+        if let Some(actions) = &self.controller_startup {
+            config.network.controller_startup.clone_from(actions);
         }
         config.validate()?;
         Ok(config)

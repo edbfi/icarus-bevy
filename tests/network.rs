@@ -7762,3 +7762,199 @@ fn pawn_temperature_tick_contexts_are_per_connection_and_discarded_on_close() {
     third.close().unwrap();
     fixture.app.world_mut().resource_mut::<PeerLab>().poll();
 }
+
+#[test]
+fn configured_controller_startup_is_explicit_ordered_and_bounded() {
+    use icarus_bevy::experimental::peer_lab::ControllerStartupAction::{
+        FlushLevelStreaming, RestartPawn,
+    };
+    assert!(NetworkConfig::default().controller_startup.is_empty());
+    let parsed: ServerConfig = toml::from_str(
+        "[network]\ncontroller_startup = ['restart-pawn', 'flush-level-streaming']\n",
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.network.controller_startup,
+        vec![RestartPawn, FlushLevelStreaming]
+    );
+    assert!(parsed.validate().is_ok());
+    let encoded = toml::to_string(&ServerConfig::default()).unwrap();
+    assert!(!encoded.contains("controller_startup"));
+    assert!(
+        toml::from_str::<ServerConfig>("[network]\ncontroller_startup = ['unknown']\n").is_err()
+    );
+    let excessive = NetworkConfig {
+        controller_startup: vec![FlushLevelStreaming; 33],
+        ..NetworkConfig::default()
+    };
+    assert!(excessive.validate().is_err());
+}
+
+#[test]
+fn startup_without_release_rejects_before_occupied_bind() {
+    use icarus_bevy::experimental::peer_lab::ControllerStartupAction::FlushLevelStreaming;
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut config = enabled(occupied.local_addr().unwrap().port());
+    config.controller_startup = vec![FlushLevelStreaming];
+    let error = network::bind(&config)
+        .err()
+        .expect("startup requires release");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("controller startup requires a release profile"),
+        "{message}"
+    );
+    assert!(!message.contains("bind the experimental"), "{message}");
+}
+
+#[test]
+fn startup_config_cli_override_preserves_order_without_creating_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    let config = directory.path().join("server.toml");
+    fs::write(
+        &config,
+        "[network]\ncontroller_startup = ['flush-level-streaming']\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .args(["check-config", "--config"])
+        .arg(&config)
+        .arg("--data-dir")
+        .arg(&state)
+        .args([
+            "--controller-startup",
+            "restart-pawn",
+            "--controller-startup",
+            "flush-level-streaming",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: ServerConfig =
+        toml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    use icarus_bevy::experimental::peer_lab::ControllerStartupAction::{
+        FlushLevelStreaming, RestartPawn,
+    };
+    assert_eq!(
+        parsed.network.controller_startup,
+        vec![RestartPawn, FlushLevelStreaming]
+    );
+    assert!(!state.exists());
+}
+
+#[test]
+fn startup_missing_release_fails_before_socket_and_state_creation() {
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    let config = directory.path().join("server.toml");
+    fs::write(
+        &config,
+        format!(
+            "[network]\nenabled = true\nport = {}\ncontroller_startup = ['restart-pawn']\n",
+            occupied.local_addr().unwrap().port()
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .args(["run", "--config"])
+        .arg(config)
+        .arg("--data-dir")
+        .arg(&state)
+        .args(["--max-ticks", "1"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("controller startup requires a release profile"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("bind the experimental"), "{stderr}");
+    assert!(!stderr.contains("\"event\":\"started\""), "{stderr}");
+    assert!(!state.exists());
+}
+
+#[test]
+fn disabled_network_ignores_startup_without_loading_release_or_binding() {
+    use icarus_bevy::experimental::peer_lab::ControllerStartupAction::RestartPawn;
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let config = NetworkConfig {
+        enabled: false,
+        port: occupied.local_addr().unwrap().port(),
+        release_profile: Some(std::path::PathBuf::from("missing-startup-release.toml")),
+        controller_startup: vec![RestartPawn],
+        ..NetworkConfig::default()
+    };
+    assert!(network::bind(&config).unwrap().is_none());
+}
+
+#[test]
+fn startup_validator_rejects_restart_without_pawn() {
+    use icarus_bevy::experimental::peer_lab::{
+        ControllerStartupAction::RestartPawn, PeerLabAdmission, validate_controller_startup,
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let controller = profile
+        .player_controller_open_plan(PeerLabAdmission::default().map_url, network::SPAWN_LOCATION)
+        .unwrap()
+        .unwrap();
+    let error = validate_controller_startup(&profile, &[RestartPawn], &controller, false)
+        .expect_err("restart without pawn");
+    assert!(format!("{error:#}").contains("restart requires a pawn plan"));
+}
+
+#[test]
+fn controller_startup_production_reports_periodic_and_pre_shutdown_readiness() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("controller_startup = ['flush-level-streaming', 'restart-pawn']\n");
+    fs::write(&config, text).unwrap();
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, listening) = listening_address(&mut server);
+    assert_eq!(
+        listening["controller_startup"],
+        serde_json::json!(["flush-level-streaming", "restart-pawn"])
+    );
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let (mut client, _) = join_pinned_open(address, profile.pin.network_checksum, 32);
+    // Bounded authored traffic drains and acknowledges the reliable opens and
+    // startup sequence. These counters assert transport queuing only.
+    for _ in 0..4 {
+        client.collect(Duration::from_millis(250), 32).unwrap();
+        client.keepalive().unwrap();
+    }
+    let status = server.wait_for("startup queued", |record| {
+        record["event"] == "status" && record["readiness"]["controller_startup_actions_queued"] == 2
+    });
+    assert_eq!(status["readiness"]["controller_startup_actions_pending"], 0);
+    assert_eq!(
+        status["readiness"]["controller_startup_sequences_failed"],
+        0
+    );
+    assert_eq!(status["gameplay_ready"], false);
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    let stopped = server.event("stopped");
+    for field in [
+        "controller_startup_actions_queued",
+        "controller_startup_actions_pending",
+        "controller_startup_sequences_failed",
+    ] {
+        assert_eq!(
+            stopped["readiness_before_shutdown"][field],
+            status["readiness"][field]
+        );
+    }
+    assert_eq!(
+        stopped["readiness_before_shutdown"]["actor_channels_open"],
+        status["readiness"]["actor_channels_open"]
+    );
+    drop(client);
+}
