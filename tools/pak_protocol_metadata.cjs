@@ -57,10 +57,20 @@ function parseFooter(bytes, fileSize) {
   c.eof(); return {indexOffset, indexSize, indexHash, methods, footerOffset: fileSize - FOOTER_SIZE};
 }
 
-function parsePrimaryIndex(bytes, footer) {
+function entryLimit(value) {
+  check(Number.isSafeInteger(value) && value > 0 && value <= 131072);
+  return value;
+}
+
+function parsePrimaryIndexWithMount(bytes, footer, {maxEntries = LIMITS.entries} = {}) {
+  entryLimit(maxEntries);
   check(bytes.length === footer.indexSize && digest(bytes).equals(footer.indexHash));
-  const c = new Cursor(bytes), mount = c.str(); check(mount === '../../../');
-  const count = integer(c.i32(), LIMITS.entries); c.u64();
+  const c = new Cursor(bytes), mount = c.str();
+  check(mount.startsWith('../../../'));
+  const mountPrefix = mount.slice(9);
+  check(mountPrefix === '' || (mountPrefix.endsWith('/') && !/[\\:]/.test(mountPrefix) &&
+    mountPrefix.slice(0, -1).split('/').every(part => part !== '' && part !== '.' && part !== '..')));
+  const count = integer(c.i32(), maxEntries); c.u64();
   const sections = {};
   for (const kind of ['pathHash', 'directory']) {
     const present = c.u32(); check(present === 0 || present === 1);
@@ -76,15 +86,23 @@ function parsePrimaryIndex(bytes, footer) {
     const a = sections.pathHash, b = sections.directory;
     check(a.offset + a.size <= b.offset || b.offset + b.size <= a.offset);
   }
+  return {count, encoded, sections, mountPrefix};
+}
+
+function parsePrimaryIndex(bytes, footer) {
+  const {count, encoded, sections, mountPrefix} = parsePrimaryIndexWithMount(bytes, footer);
+  check(mountPrefix === '');
   return {count, encoded, sections};
 }
 
-function parseFullDirectoryIndex(bytes, section, primary) {
+function parseDirectoryIndex(bytes, section, primary, members, {maxEntries = LIMITS.entries} = {}) {
+  entryLimit(maxEntries);
+  integer(primary.count, maxEntries);
   check(bytes.length === section.size && digest(bytes).equals(section.hash));
-  const c = new Cursor(bytes), directories = integer(c.i32(), LIMITS.entries);
-  const paths = new Set(), locations = new Set(); let selected, count = 0;
+  const c = new Cursor(bytes), directories = integer(c.i32(), maxEntries);
+  const paths = new Set(), locations = new Set(); const selected = new Map(); let count = 0;
   for (let i = 0; i < directories; i++) {
-    const parent = c.str(), n = integer(c.i32(), LIMITS.entries);
+    const parent = c.str(), n = integer(c.i32(), maxEntries);
     // An empty root directory is a marker, never a selected member path.
     if (parent === '/') { check(n === 0); continue; }
     check(parent === '' || (parent.endsWith('/') && !parent.startsWith('/')));
@@ -95,12 +113,18 @@ function parseFullDirectoryIndex(bytes, section, primary) {
       check(name !== '' && name !== '.' && name !== '..' && !/[\/\\]/.test(name));
       const path = parent + name; check(!paths.has(path)); paths.add(path);
       check(location >= 0 && location < primary.encoded.length && !locations.has(location)); locations.add(location);
-      if (path === MEMBER) selected = location;
+      if (members.has(path)) selected.set(path, location);
       count++;
     }
   }
-  c.eof(); check(count === primary.count && selected !== undefined);
-  return {location: selected, locations};
+  c.eof(); check(count === primary.count);
+  return {selected, locations};
+}
+
+function parseFullDirectoryIndex(bytes, section, primary) {
+  const result = parseDirectoryIndex(bytes, section, primary, new Set([MEMBER]));
+  check(result.selected.has(MEMBER));
+  return {location: result.selected.get(MEMBER), locations: result.locations};
 }
 
 function decodeEntry(encoded, location, methods, locations) {
@@ -234,7 +258,7 @@ function inspectProtocolMetadata(path, {sha256} = {}) {
 }
 
 module.exports = {LIMITS, MEMBER, FOOTER_SIZE, parseFooter, parsePrimaryIndex,
-  parseFullDirectoryIndex, decodeEntry, decodeMember, decodeGameplayTagsIni, inspectProtocolMetadata};
+  parseFullDirectoryIndex, parseDirectoryIndex, parsePrimaryIndexWithMount, decodeEntry, decodeMember, decodeGameplayTagsIni, inspectProtocolMetadata};
 
 if (require.main === module) {
   try {

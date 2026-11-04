@@ -44,6 +44,10 @@ tungstenite = { version = "0.30.0", default-features = false, features = ["hands
 ureq = { version = "3.5.0", default-features = false, features = ["rustls-no-provider"] }
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 
+[dev-dependencies]
+# Reference-only research example; not linked into the native server.
+oozextract = { version = "=0.5.7", default-features = false }
+
 [lints.rust]
 unsafe_code = "forbid"
 

@@ -17,6 +17,9 @@ Address pairs are server / client.
 
 - 3.0.32 component field serialization bounds are 27/8 for PlayerData/Bestiary,
   including the extra encoded slot; registered field counts are 26/7 (F-1015).
+- Matched 3.0.34 bounds: controller/backend/PlayerData/Bestiary are
+  183/149/27/8; controller includes 155 native fields, 5 cooked net properties,
+  22 root net functions and the encoded slot. Static framing only (F-1016).
 - NetGUID references, export flags and checksum placement: F-850. Object exports
   carry the F-853 class network checksum (`experimental::class_checksum`);
   package and level exports carry `0` (F-852, F-853). `experimental::session_open`
@@ -33,10 +36,7 @@ Address pairs are server / client.
   saved-pose, gameplay and stock-client behavior remain unqualified.
 - Dynamic GUIDs assign on first serialization, by open or reference (F-794);
   components keep one GUID across connections.
-- Export repetition (F-796), server 25956137: `ShouldSendFullPath`
-  `0x14372bb10`, `IsNetGUIDAcked` `0x1437181b0`, `NotifyBunchCommit`
-  `0x143719b60`, `ReceivedAck` / `ReceivedNak` `0x14371e8b0` / `0x14371e9f0`
-  (`experimental::session_open::ConnectionExports`).
+- Export repetition: F-796 (`experimental::session_open::ConnectionExports`).
 - Actor opens with components (F-854): GUIDs and exports follow serialization
   order (actor/spawn, actor-block references by handle, component blocks,
   runtime subobject blocks naming their exported class), resolving each block's
@@ -238,5 +238,5 @@ scheduling or stock-client qualification.
 ## Evidence
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
-M-1126..M-1129, M-1147..M-1149. The cited finding rows retain the earlier
+M-1126..M-1129, M-1147..M-1149, M-1197, M-1198. The cited finding rows retain the earlier
 static and capture observations.
