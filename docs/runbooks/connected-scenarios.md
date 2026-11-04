@@ -1,73 +1,75 @@
 # Connected scenarios
 
-How a scenario with a real player is prepared, run and taken in. Each scenario
-needs its own case; the user's standing instruction authorizes them (F-968,
-gates "Before any original-server or client run"), and the user plays the
-client. An empty server pauses the game (F-895); the offline launcher's
-join mode lifts the pause with a synthetic player (F-895), which covers
-time-driven state. Map, harvest and build actions need a real player.
+Cases required (F-968; [gates](../gates.md)). User plays client. Empty servers
+pause; offline synthetic join covers time, not map/harvest/build
+(F-895).
 
 ## Route B: matched server on this host
 
-1. Fetch the public server build next to `icarus-orig/`, never over it:
-   `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir $PWD/icarus-server-live +login anonymous +app_update 2089300 validate +quit`,
-   rename the directory to `icarus-server-<buildid>` (from its app manifest),
-   inventory it with `tools/reference_inventory.py` and move the release pin
-   (`tools/release_watch.py pin`). It matches a client only while both are on
-   Steam's current public build.
-2. Write the case scope (`network_profile` mode `connected`) and a session for
-   `tools/run_reference_connected.py`: scope `reference-connected`, the install
-   and executable with its hash, a case-local `<prospect>.json` copy with its
-   hash, `scenario_id`, `shutdown_if_not_joined_seconds`,
-   `shutdown_if_empty_seconds`, `max_players`, observation (60 to 2700 s) and
-   timeout (plus 120 s), `max_runs` (at most 4) and the session window.
-3. The launcher copies SteamCMD's Linux `steamclient.so` pair into the run's
-   `.steam/sdk32` and `sdk64` (F-687), writes `ServerSettings.ini` with a
-   generated join password, publishes UDP 17777 and 27015 for the run only,
-   prints the server name and password, and stops once the server has saved
-   and loaded its lobby after the last player left, or at the deadline.
-   `GetServersAtAddress` on Steam's web API shows the registration.
-   Optional `connection_method: "direct"` advertises Direct and selects
-   `IpNetDriver` (F-1005). After prospect loading, verify a UDP 17777 stateless
-   challenge response before inviting the user; an advertisement or listening
-   log alone is insufficient. `capture_image` (built from
-   `tools/capture.Dockerfile`) and `capture_max_bytes` record the game and
-   query ports in `capture/game.pcap`. `examples/a2s_query` reads the A2S
-   answers through `127.0.0.1:27015`.
-4. The user joins: start Icarus, select the character of that world, **Join
-   Session**, switch the browser to dedicated servers, pick
-   `icarus-research-<scenario>`, enter the password, follow the steps below,
-   then leave with **Esc > exit to the main menu** (never the dropship).
+1. Fetch beside `icarus-orig/`, never over it:
+   `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir $PWD/icarus-server-live +login anonymous +app_update 2089300 validate +quit`.
+   Rename `icarus-server-<buildid>` (app manifest); `tools/reference_inventory.py`;
+   `tools/release_watch.py pin`. Both need Steam's current public build.
+2. `tools/run_reference_connected.py`: case `network_profile.mode: connected`;
+   session scope `reference-connected`, install/executable/hash, case-local
+   `<prospect>.json` copy/hash, `scenario_id`, `shutdown_if_not_joined_seconds`,
+   `shutdown_if_empty_seconds`, `max_players`, observation 60–2700 s,
+   timeout +120 s, `max_runs` ≤4, session window.
+3. Launcher copies Linux `steamclient.so` to `.steam/sdk32`/`sdk64` (F-687),
+   generates `ServerSettings.ini`/password, exposes UDP 17777/27015 during run,
+   prints name/password; stops after departure/save/lobby reload or deadline.
+   Steam `GetServersAtAddress`: registration.
+   `connection_method: "direct"` advertises Direct/uses `IpNetDriver` (F-1005).
+   Verify UDP 17777 stateless challenge after load, before invitation; listing/log
+   insufficient. `capture_image` (`tools/capture.Dockerfile`),
+   `capture_max_bytes`: both ports → `capture/game.pcap`;
+   `examples/a2s_query`: `127.0.0.1:27015`.
+4. Icarus → world's character → **Join Session** → dedicated servers →
+   `icarus-research-<scenario>` → password → scenario; leave via
+   **Esc > exit to the main menu**, never dropship.
 
 ## Route A: both on the user's PC
 
-When this host cannot serve, the user runs the official server beside the
-client: `pwsh tools/windows/icarus_scenario.ps1 -Action Setup` (isolated `-UserDir`,
-version match enforced, client `PlayerData` backed up), `start-server.cmd`,
-join as above, then `-Action Collect` and `-Action Restore`, and send the zip
-with its printed hash.
+Host unavailable: `pwsh tools/windows/icarus_scenario.ps1 -Action Setup`
+(isolated `-UserDir`, version match, `PlayerData` backup), `start-server.cmd`,
+join above; `-Action Collect`, `-Action Restore`; send zip/hash.
 
 ## Intake
 
-Copy returned zips unchanged into `reference-data/<date>-scenario-<id>/` with
-an inventory; route B outputs stay in their case. Logs carry account
-identifiers: keep everything private. Compare the input copy and the saved
-prospect with the save-load helpers (M-692), read the server log for recorder,
-connection and version lines, and index the case (`docs.md` rule 2).
+Inventory/preserve zips: `reference-data/<date>-scenario-<id>/`; route B:
+case-local. Keep account IDs private. Compare input/saved prospect (M-692),
+inspect recorder/connection/version logs; index (`docs.md` rule 2).
+
+Inbound metadata: one connection/input, case-qualified bindings:
+
+```bash
+target/debug/examples/capture_decode INPUT work/CASE/metadata.jsonl --inbound-controller-metadata --release-profile PROFILE --controller-channel CHANNEL --engine-net-version VERSION --byte-order little --backend-proxy-guid BACKEND --player-data-guid PLAYER_DATA --bestiary-guid BESTIARY
+```
+
+All flags required; byte order `little`/`big`; channel 1–32766; component GUIDs
+distinct, >1. Profile pin/class bounds: retained 3.0.32/3.0.34; matching engine
+version required. JSONL datagrams: `event:"datagram"`,
+`direction:"client_to_server"`/`"server_to_client"`, unsigned `ms`, nonempty even
+ASCII `hex`. C2S only, nondecreasing timestamps. Other events skip;
+all lines count. No `--values-channel`. New output only: 0600, checkout
+`work/`. Caps: 64 MiB input, 132 KiB/line, 100000 lines/datagrams/output rows,
+32 MiB datagrams/output; bounded queues/assemblies.
+Rows: `ms`, `channel`, `target_class`, nullable `field_index`, `bit_length`,
+`framing_disposition`; stdout: counters. No payloads/values/identities. `framed`
+means framing, not recognition/application. Unknown targets opaque;
+properties/exports/must-map/client opens unsupported. Compare original/native
+separately; check reliable/partial EOF counters. Missing prefixes/packets/bindings
+prevent absence/progress claims; times: capture/reassembly arrival. Errors leave
+an incomplete bounded prefix.
 
 ## Scenarios
 
-S1, player actions (about 15 minutes, one player, the supplied prospect):
+S1 (≈15 min, one player, supplied prospect): join/stand inside base near
+crop plots; open map/place marker/close; harvest one grown crop if any, plant
+one seed and note which; leave.
 
-1. Join and stand inside the base near the crop plots.
-2. Open the map, place one marker, close it.
-3. Harvest one grown crop, if any, and plant one seed in one plot; note which.
-4. Leave.
+S2 (≈5 min, one player, S1 prospect, direct/capture): join, stand one minute,
+leave. F-1006; dropship arrival/reported creature attack limit save parity.
+World entry: U-038, U-079.
 
-S2, direct join capture (about 5 minutes, one player, the S1 prospect, direct
-method and capture): join, stand still for a minute, leave. Captured: F-1006;
-dropship arrival and reported creature attack limit save-parity conclusions.
-Next: decode for native authentication (U-038, U-078).
-
-Later scenarios (build or remove one piece, feed a tame, a second player) are
-written here before they are run.
+Write later scenarios before runs.
