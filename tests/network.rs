@@ -7958,3 +7958,195 @@ fn controller_startup_production_reports_periodic_and_pre_shutdown_readiness() {
     );
     drop(client);
 }
+
+#[test]
+fn authored_world_config_is_explicit_strict_and_validated_before_bind() {
+    use icarus_bevy::authored_world_bootstrap::AuthoredWorldBootstrap;
+    assert!(NetworkConfig::default().authored_world.is_none());
+    assert!(
+        !toml::to_string(&NetworkConfig::default())
+            .unwrap()
+            .contains("authored_world")
+    );
+    let parsed: NetworkConfig = toml::from_str(
+        "release_profile = 'config/release.toml'\n[authored_world]\nseed = -7\nseed_initialised = true\nflod_tile_count = 0\n",
+    ).unwrap();
+    assert_eq!(parsed.authored_world.as_ref().unwrap().seed, -7);
+    assert!(parsed.validate().is_ok());
+    for body in [
+        "seed = 1\nseed_initialised = true", // No implicit tile count.
+        "seed = 1\nseed_initialised = true\nflod_tile_count = 0\nunknown = 1",
+    ] {
+        assert!(toml::from_str::<NetworkConfig>(&format!("[authored_world]\n{body}\n")).is_err());
+    }
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    for (count, release, expected) in [
+        (-1, true, "tile count must be"),
+        (65536, true, "tile count must be"),
+        (4096, true, "wire codec limits"),
+        (0, false, "requires a release profile"),
+    ] {
+        let config = NetworkConfig {
+            authored_world: Some(AuthoredWorldBootstrap {
+                seed: i32::MIN,
+                seed_initialised: false,
+                flod_tile_count: count,
+            }),
+            release_profile: release.then(release_toml),
+            ..enabled(occupied.local_addr().unwrap().port())
+        };
+        let error = format!("{:#}", network::bind(&config).err().unwrap());
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("bind the experimental"), "{error}");
+    }
+}
+
+#[test]
+fn authored_world_join_sends_seed_and_flod_without_duplicate_managers() {
+    use icarus_bevy::{
+        authored_world_bootstrap::AuthoredWorldBootstrap,
+        experimental::{
+            actor_channel::{ActorChannelCodec, read_actor_bunch_body},
+            archive::ByteOrder,
+            game_state_open::{GAME_STATE_CHANNEL_INDEX, handle},
+            manager_open::{FLOD_TILES_HANDLE, ManagerSlot},
+            packet::{BitWriter, Payload, read_packet},
+            peer_lab::PeerLabAdmission,
+            rep_layout::{RepLayoutCodec, RepValue, read_rep_properties},
+            sequencing::{PartialBunchReassembler, PartialReceive},
+        },
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let base_managers = lab_manager_plans(&profile).len();
+    let (mut app, address) = server_app(&NetworkConfig {
+        authored_world: Some(AuthoredWorldBootstrap {
+            seed: -7,
+            seed_initialised: true,
+            flod_tile_count: 2,
+        }),
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    });
+    assert_eq!(
+        app.world().resource::<PeerLab>().manager_open_count(),
+        base_managers + 1
+    );
+    let ((client, datagrams), _) = with_server(&mut app, move || {
+        join_pinned_open(address, profile.pin.network_checksum, 32)
+    });
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let packet_config = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    // Exports carry the opening header; the following partial contains the
+    // body. Reassemble per channel instead of requiring open on the body part.
+    let mut partials = std::collections::BTreeMap::<u32, PartialBunchReassembler>::new();
+    let mut opens = std::collections::BTreeMap::new();
+    for bytes in &datagrams {
+        for bunch in read_packet(bytes, &packet_config).unwrap().bunches {
+            let channel = bunch.header.channel_index;
+            let complete = if bunch.header.partial {
+                let empty = Payload::from_writer(BitWriter::new());
+                let payload = if bunch.header.has_package_map_exports {
+                    &empty
+                } else {
+                    &bunch.payload
+                };
+                match partials
+                    .entry(channel)
+                    .or_default()
+                    .receive_part(
+                        i64::from(bunch.header.reliable_sequence_raw.unwrap()),
+                        &bunch.header,
+                        payload,
+                        Some(65536),
+                    )
+                    .unwrap()
+                {
+                    PartialReceive::Complete { bunch, .. } => Some(bunch),
+                    PartialReceive::Incomplete { .. } => None,
+                    PartialReceive::IgnoredUnreliableInitial => panic!("reliable opens expected"),
+                }
+            } else if !bunch.header.has_package_map_exports {
+                Some(bunch)
+            } else {
+                None
+            };
+            if let Some(bunch) = complete
+                && bunch.header.open
+            {
+                assert!(
+                    opens.insert(channel, bunch).is_none(),
+                    "one initial open per channel"
+                );
+            }
+        }
+    }
+    assert!(partials.values().all(|partial| !partial.in_progress()));
+    let body = opens
+        .get(&GAME_STATE_CHANNEL_INDEX)
+        .expect("assembled GameState open body");
+    assert_eq!(
+        sent_game_state_value(&profile, &body.payload, handle::SEED),
+        RepValue::Int(-7)
+    );
+    assert_eq!(
+        sent_game_state_value(&profile, &body.payload, handle::SEED_INITIALISED),
+        RepValue::Bool(true)
+    );
+    assert!(
+        matches!(sent_game_state_value(&profile, &body.payload, handle::FLOD), RepValue::Object(reference) if reference.guid != 0)
+    );
+    let flod_channel = network::MANAGER_FIRST_CHANNEL + base_managers as u32;
+    let flod_body = opens.get(&flod_channel).expect("assembled FLOD open");
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: profile.engine_network_version,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: Default::default(),
+        },
+        checksums: false,
+        limits: Default::default(),
+    };
+    let flod = read_actor_bunch_body(&mut flod_body.payload.reader(), true, &codec.actor).unwrap();
+    let plan = profile
+        .manager_open_plan(ManagerSlot::Flod, PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let stream =
+        read_rep_properties(&mut flod.blocks[0].payload.reader(), &plan.layout, &codec).unwrap();
+    let tiles = stream
+        .entries
+        .into_iter()
+        .find(|entry| entry.handle == FLOD_TILES_HANDLE)
+        .expect("FLOD tiles field");
+    assert!(matches!(tiles.value, RepValue::DynamicArray(array) if array.count == 2));
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(stats.manager_opens_sent as usize, base_managers + 1);
+    assert_eq!(stats.manager_open_errors, 0);
+    with_server(&mut app, move || client.close().unwrap());
+}
+
+#[test]
+fn authored_world_planner_rejects_missing_session_prerequisites() {
+    use icarus_bevy::{
+        authored_world_bootstrap::AuthoredWorldBootstrap, experimental::peer_lab::PeerLabAdmission,
+    };
+    let mut profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let world = AuthoredWorldBootstrap {
+        seed: i32::MAX,
+        seed_initialised: true,
+        flod_tile_count: 0,
+    };
+    let map = PeerLabAdmission::default().map_url;
+    assert!(world.plan(&profile, map).is_ok());
+    profile.game_state = None;
+    let error = format!("{:#}", world.plan(&profile, map).unwrap_err());
+    assert!(error.contains("requires a GameState plan"), "{error}");
+    let mut profile = ReleaseProfile::load(&release_toml()).unwrap();
+    profile.managers = None;
+    assert!(world.plan(&profile, map).is_err());
+}

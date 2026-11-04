@@ -1074,6 +1074,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         );
     }
     let snapshot = loaded.map(|loaded| loaded.snapshot).unwrap_or_default();
+    if config.network.enabled
+        && let Some(world) = &config.network.authored_world
+    {
+        world.validate_preserved_prospect(snapshot.preserved_prospect.is_some())?;
+    }
     let target_tick = max_ticks
         .map(|ticks| {
             snapshot
@@ -1220,20 +1225,18 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if let Some(address) = network_address {
         // The server's own bound address, configured limits and pinned build;
         // never a client-supplied value.
-        eprintln!(
-            "{}",
-            with_native_replication_counts(
-                json!({"event": "network_listening", "experimental": true,
+        let mut record = json!({"event": "network_listening", "experimental": true,
             "address": address.to_string(), "max_players": config.network.max_players,
             "session_timeout_seconds": config.network.session_timeout_seconds,
             "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
             "data_pak": config.network.data_pak.as_ref().map(|path| path.display().to_string()),
             "data_pak_source": data_pak_source,
             "controller_startup": config.network.controller_startup,
-            "icarus_compatible": false, "gameplay_ready": false}),
-                app.world()
-            )
-        );
+            "icarus_compatible": false, "gameplay_ready": false});
+        if let Some(world) = &config.network.authored_world {
+            record["authored_world"] = json!(world);
+        }
+        eprintln!("{}", with_native_replication_counts(record, app.world()));
     }
 
     loop {

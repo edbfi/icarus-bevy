@@ -378,6 +378,35 @@ fn preserve_save_seeds_a_new_world_that_runs_and_never_overwrites() {
     assert!(String::from_utf8_lossy(&refused.stderr).contains("refusing to overwrite"));
     assert_eq!(inventory(&world), before);
 
+    // Explicit authored bootstrap cannot overwrite a preserved prospect.
+    let config = directory.path().join("bootstrap.toml");
+    let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml");
+    fs::write(&config, format!(
+        "[network]\nenabled = true\nport = 0\nrelease_profile = {:?}\n[network.authored_world]\nseed = 1\nseed_initialised = true\nflod_tile_count = 0\n",
+        release.to_str().unwrap()
+    )).unwrap();
+    let before = inventory(&world);
+    let rejected = server_bounded(
+        directory.path(),
+        &[
+            "run".as_ref(),
+            "--config".as_ref(),
+            config.as_os_str(),
+            "--data-dir".as_ref(),
+            world.as_os_str(),
+            "--max-ticks".as_ref(),
+            "1".as_ref(),
+        ],
+    );
+    assert!(!rejected.status.success());
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(
+        stderr.contains("conflicts with a preserved prospect"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("\"event\":\"started\""), "{stderr}");
+    assert_eq!(inventory(&world), before);
+
     // The world runs, autosaves keep its section and report schema 3.
     let run = server_bounded(
         directory.path(),

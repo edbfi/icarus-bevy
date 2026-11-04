@@ -14,8 +14,8 @@ target/release/icarus-server install-official-data --data-dir /var/lib/icarus-na
 # -> /var/lib/icarus-native/official/Icarus/Content/Data/data.pak and install.json
 ```
 
-Rerun after updates; `official/install.json` records provenance/hashes.
-`icarus-fetch --app 2089300 --file PATH --out DIR` fetches files; `--list` lists them.
+Rerun after updates; provenance/hashes: `official/install.json`.
+Fetch: `icarus-fetch --app 2089300 --file PATH --out DIR`; list: `--list`.
 
 ```bash
 python3 tools/cargo_guard.py build --release --locked
@@ -23,69 +23,75 @@ python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server check
 target/release/icarus-server run --config config/server.example.toml
 ```
 
-Smoke run:
+Smoke: add `--data-dir work/smoke-world --max-ticks 10` to `run`; retain the
+[build guard's](cargo-builds.md) `--hold-target` lease.
 
-```bash
-python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run --data-dir work/smoke-world --max-ticks 10
-```
+`--compressed` needs `--max-ticks`: unpaced simulated time, including autosave/
+status intervals; awaits autosaves ([workload](synthetic-workload.md)).
 
-`--compressed` requires `--max-ticks` and runs unpaced simulated time. Autosave
-and status intervals use simulated seconds and await in-flight autosaves
-([synthetic workload](synthetic-workload.md)).
+Default: provisional 30 Hz, ≤4 catch-up ticks/update; opt-in `[network]`.
+Stderr JSON reports foundation timings; `gameplay_ready: false`.
 
-Default: provisional 30 Hz, ≤4 catch-up ticks/update; sockets need `[network]`.
-Lifecycle/status/save JSON: stderr, `gameplay_ready: false`; foundation timings.
+Config: CLI → TOML → defaults; paths use CWD. Unknown fields/invalid limits
+reject. File: regular, ≤64 KiB, symlinks allowed; FIFOs/oversize reject before
+state opens (F-671). `check-config` creates no state.
 
-Config: CLI → TOML → defaults; unknown fields/invalid limits reject; paths use
-CWD. Require a regular file ≤64 KiB (symlinks allowed); reject FIFOs/oversized
-files before state opens (F-671). `check-config` creates no `--data-dir`.
-
-Builds: [guard](cargo-builds.md).
 
 ## Network sessions (experimental)
 
 `native_join_probe`: public listener, one Steam CM session:
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
-Defaults: UDP 17777/27015, one player, authored empty world;
-[connected-run case](../gates.md#before-any-original-server-or-client-run) required.
-Listing/Auth/Join limits: F-1010, F-1009; entry stalls (U-079).
-Ready's `authored_world`: `seed: 1`, `seed_initialised: true`, `flod_tile_count: 0`;
-Flags: `--seed`, `--seed-initialised`, `--flod-tile-count`.
-Startup: 1–32 authored actions, default none. Before sockets/TLS/Steam,
-preflight checks world wire composition, count and release RPCs/field bound.
-Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60); final
-stdout: pre-shutdown counts. Readiness: queues/channels/phases (F-1012).
-Password unvalidated; avoid real passwords.
-`controller_fields` (final: `controller_fields_before_shutdown`): live peers,
-≤64 rows per peer/aggregate: target kind, index, payload bits, disposition,
-saturating count; overflow/malformed-bunch counts; no payloads/identities.
-Removal drops rows. `Recognized` does not imply application; malformed tails
-apply no calls. Overflow prevents absence claims.
-`readiness.initial_open_outcomes`: `controller`, `pawn`,
-`game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
-(queued), `failed` (terminal), `skipped` (unattempted after controller abort),
-`pending`, `deferred` (drainable pressure). Retained until removal.
-No failures: `sequences_succeeded`; else `sequences_failed`.
-No ACK/spawn/geometry proof.
-`readiness.initialisation_blockers`: `requests_pending_queue` counts deferred
-initialisation batches; `awaiting_loadout_response` and
-`awaiting_bestiary_response` count missing answers only after reliable queue
-admission, for incomplete players. Gauges may overlap; `players_*` phases remain
-exclusive.
+Defaults: UDP 17777/27015, one player, empty world; requires a
+[case](../gates.md#before-any-original-server-or-client-run).
+Listing/Auth/Join: F-1010, F-1009; entry stalls (U-079).
+`--seed` (1), `--seed-initialised` (true), `--flod-tile-count` (0) appear in
+ready's `authored_world`. Startup: 1–32 actions, default none. World wire/count
+and release RPC/bound preflight precedes sockets/TLS/Steam.
+Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60);
+final stdout retains pre-shutdown counts (F-1012).
+Password unvalidated; use no real passwords.
+`controller_fields` (final: `controller_fields_before_shutdown`): ≤64 rows per
+live peer/aggregate, containing target/index/bit count/disposition/count, plus
+overflow/malformed counts; no payloads/identities. Removal drops rows. Recognized
+need not mean applied; malformed tails apply nothing; overflow prevents absence claims.
+Readiness (F-1012):
 
-`network.controller_startup` lists `flush-level-streaming`/`restart-pawn`;
-CLI `--controller-startup` flags replace it in order. TOML `[]` disables startup.
-Requires release/controller plans; restart needs a pawn.
-Actions require successful opens/controller settlement; restart also waits for
-its pawn's settlement/GUID. `network_listening` lists actions; readiness reports
-`controller_startup_actions_pending` (unqueued), `_queued` (transport admission),
-`_settled`, `_awaiting_ack` (queued minus settled), plus
-`controller_startup_sequences_settled` and `_failed`.
-Settlement requires a positive ACK leaving the whole controller channel open,
-not closing, with no pending reliable bunches. Unrelated traffic can delay this
-observation; later traffic retains it. A sequence settles when all configured
-actions settle without failure. Removal drops counts; no execution/spawn/geometry
-readiness is implied.
+- `initial_open_outcomes`: controller/pawn/GameState/PlayerState/managers/quests
+  counts for configured, committed (queued), failed, skipped after abort, pending
+  and deferred pressure; retained until removal. `sequences_succeeded` requires
+  no failures; otherwise `sequences_failed`. No ACK/spawn/geometry proof.
+- `initialisation_blockers`: `requests_pending_queue`, plus missing
+  `awaiting_loadout_response`/`awaiting_bestiary_response` after request queue
+  admission, for incomplete players. These overlap; `players_*` phases partition.
+
+`[network.authored_world]` optionally supplies explicit independent bootstrap
+inputs for `run`:
+
+```toml
+[network.authored_world]
+seed = 1
+seed_initialised = true
+flod_tile_count = 0
+```
+
+Fields required; omission preserves defaults. Requires release,
+controller, GameState and FLOD plans. Counts 0..=65535 must fit both byte-order
+codec budgets before binding. References create no tiles/terrain (U-079).
+`network_listening.authored_world` reports inputs when configured. Preserved
+prospects conflict: reject after load, before simulation/polling; socket may
+briefly bind, stored state unchanged. Disabled networking applies no bootstrap.
+
+`network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
+repeated CLI flags replace TOML; `[]` disables. Requires release/controller plans;
+restart also needs a settled pawn/GUID. Successful opens precede actions.
+`network_listening` lists actions. Readiness reports
+`controller_startup_actions_{pending,queued,settled,awaiting_ack}` and
+`controller_startup_sequences_{settled,failed}`. Pending means unqueued, queued
+means transport admission, awaiting ACK means queued minus settled. Settlement
+requires a positive ACK leaving the controller channel open, nonclosing and
+reliable-empty; unrelated traffic can delay it. Receipts persist until removal;
+a sequence settles when all actions settle without failure. Counts prove no
+execution/spawn/geometry readiness.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
