@@ -47,35 +47,37 @@ Builds: [guard](cargo-builds.md).
 
 ## Network sessions (experimental)
 
-`native_join_probe`: public listener, one native Steam CM session:
+`native_join_probe`: public listener, one Steam CM session:
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
 Defaults: UDP 17777/27015, one player, authored empty world;
 [connected-run case](../gates.md#before-any-original-server-or-client-run) required.
-Listing: F-1010. Auth/Join: one account, two runs; entry stalls (F-1009; U-079).
-Ready reports `authored_world`: `seed: 1`, `seed_initialised: true`,
-`flod_tile_count: 0`; client entry unqualified.
-Override with `--seed`, `--seed-initialised` and `--flod-tile-count`.
-Repeat `--controller-startup flush-level-streaming` or `--controller-startup
-restart-pawn` for 1–32 authored actions in flag order; omitted by default.
-Preflight before sockets/TLS/Steam checks world wire composition, action count,
-release RPC availability and field bound, not delivery or client readiness.
+Listing: F-1010; Auth/Join: one account/two runs; entry stalls (F-1009; U-079).
+Ready's `authored_world`: `seed: 1`, `seed_initialised: true`, `flod_tile_count: 0`;
+Flags: `--seed`, `--seed-initialised`, `--flod-tile-count`.
+Startup: 1–32 authored actions; default none. Before sockets/TLS/Steam,
+preflight checks world wire composition, count, release RPCs/field bound;
+delivery/readiness unqualified.
 Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60); final
-stdout keeps pre-shutdown counts. Readiness: queues/channels/player phases
-(F-1012). Password unvalidated; use no real password.
-`readiness.initial_open_outcomes` counts live peers by `controller`, `pawn`,
+stdout: pre-shutdown counts. Readiness: queues/channels/phases (F-1012).
+Password unvalidated; avoid real passwords.
+`controller_fields` (final: `controller_fields_before_shutdown`): live peers,
+≤64 rows per peer/aggregate: target kind, index, payload bits, disposition,
+saturating count; overflow/malformed-bunch counts; no payloads/identities.
+Removal drops rows. `Recognized` does not imply application; malformed tails
+apply no calls. Overflow prevents absence claims.
+`readiness.initial_open_outcomes`: live peers by `controller`, `pawn`,
 `game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
 (queued), `failed` (terminal), `skipped` (unattempted after controller abort),
-`pending`, `deferred` (pending under drainable pressure). Completed outcomes
-remain until peer removal; `sequences_succeeded` requires no failure,
-otherwise `sequences_failed` increments. Neither proves ACK, spawn or geometry readiness.
+`pending`, `deferred` (drainable pressure). Retained until removal.
+No failures: `sequences_succeeded`; else `sequences_failed`.
+No ACK/spawn/geometry proof.
 
 `network.controller_startup` lists `flush-level-streaming`/`restart-pawn`;
 CLI `--controller-startup` flags replace it in order. TOML `[]` disables startup.
 Requires release/controller plans; restart needs a pawn.
-Actions follow initial opens and controller settlement; restart waits for pawn
-settlement and uses its GUID. `network_listening` lists actions; `status`/`stopped`
-readiness counts pending/queued actions and failed sequences; no client readiness
-proof.
+Actions require successful opens/controller settlement; restart also waits for
+its pawn's settlement/GUID. `network_listening` lists actions; `status`/`stopped`
+counts pending/queued actions and failures, not client readiness.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
@@ -92,24 +94,24 @@ authored_gameplay = "/path/to/authored-gameplay.json"  # required with configure
 ```
 
 Profile/socket checks precede `--data-dir`; mismatched Hello gets Upgrade.
-Updates poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes sessions before
-draining/saving. `network_listening`: address/`version_check`; `status`/`stopped`:
-session counts. Prospect/mode: F-804. Row identities/authored values: F-993.
-Monotonic timeout removes peers with sent records but no ACK/NAK progress despite
-inbound traffic: `closed_by_delivery_stall`/`peers_delivery_stalled` count these
-apart from idle expiry. This is native policy, not original timing (F-1013).
+Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes sessions,
+then drains/saves. `network_listening`: address/`version_check`;
+`status`/`stopped`: session counts. Prospect/mode: F-804; row identities/authored
+values: F-993. Monotonic timeout removes peers with sent records but no ACK/NAK
+progress despite traffic: `closed_by_delivery_stall`/`peers_delivery_stalled`,
+distinct from idle expiry; native policy (F-1013).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
 Schematic, not playable. Match catalog row counts/names/order; author values
 independently, never copy gameplay tables. Missing tables have no pak fallback;
-omitted fields use parser defaults. Coverage/compatibility unproven. Without
+omitted fields use parser defaults. Coverage/compatibility unproven; without
 either input, lab defaults apply.
 
 Pawn opens use distinct positive `IcarusUID`s (handle 46, F-948). Saved
 `IcarusActorGUID`s reserve first; unreadable IDs fail startup. Claim/reservation/
-remap stores each cap at 262,144. Failed claims skip opens/count
-`pawn_open_errors`; peer removal frees UID. Character slot triggers backend
+remap stores cap at 262,144 each. Failed claims skip opens/count
+`pawn_open_errors`; removal frees UID. Character slot triggers backend
 user/character requests and `PlayerState` replication; three failures close
 the session (original: kick).
 ACK/NAK retries opens, profiles and one pending control reply per peer;
@@ -123,8 +125,8 @@ defaults are unavailable (F-979), weights (F-982), modifiers (F-981) and bounded
 stats (F-989).
 Incomplete inventory/modifier/stat inputs withhold derived stats and saved
 health/oxygen/food/water (F-989); independent fields restore. Unmatched players
-enter replicated History (F-967); UID stays claimed after disconnect.
-Unanswered clients never complete; original timeout only logs (F-959).
+enter replicated History (F-967); UID remains claimed after disconnect.
+Unanswered clients never complete; original timeout logs only (F-959).
 Rejected staging drops saved characters/controllers/History; joiners enter
 empty History as new players.
 
