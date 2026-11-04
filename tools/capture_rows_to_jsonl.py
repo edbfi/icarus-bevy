@@ -155,7 +155,11 @@ def convert(
                     length = unsigned(fields["frame.len"], (1 << 32) - 1)
                     if length == 0 or unsigned(fields["frame.cap_len"], (1 << 32) - 1) != length:
                         raise ValueError("truncated or invalid frame")
-                    if unsigned(fields["ip.flags.mf"], 1) or unsigned(fields["ip.frag_offset"], 8191):
+                    # TShark field output uses False/True; numeric exports use 0/1.
+                    more_fragments = fields["ip.flags.mf"]
+                    if more_fragments not in ("False", "True", "0", "1"):
+                        raise ValueError("invalid fragmentation flag")
+                    if more_fragments in ("True", "1") or unsigned(fields["ip.frag_offset"], 8191):
                         raise ValueError("fragmented packet")
                     payload = fields["udp.payload"]
                     if not re.fullmatch(r"(?:[0-9a-fA-F]{2})*|(?:[0-9a-fA-F]{2}:)*[0-9a-fA-F]{2}", payload):

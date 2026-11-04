@@ -73,6 +73,18 @@ class ConverterTest(unittest.TestCase):
                 _ = convert(fifo, output, root, CLIENT, SERVER)
             self.assertFalse(output.exists())
 
+    def test_tshark_boolean_fragment_flag(self) -> None:
+        for flag in ("False", "True", "false", "unexpected"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
+                packet = row()
+                packet["ip.flags.mf"] = [flag]
+                source, output, work = self.fixture(Path(directory), json.dumps(packet) + "\n")
+                if flag == "False":
+                    self.assertEqual(convert(source, output, work, CLIENT, SERVER), 1)
+                else:
+                    with self.assertRaisesRegex(ValueError, "incomplete output"):
+                        _ = convert(source, output, work, CLIENT, SERVER)
+
     def test_empty_udp_payload_cannot_produce_decoder_input(self) -> None:
         empty = row()
         empty["udp.payload"] = [""]
