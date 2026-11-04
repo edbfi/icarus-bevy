@@ -1,13 +1,12 @@
 # Native server: run, persistence and inspection
 
-Headless foundation: [constraints](../architecture.md),
-[status](../implementation-status.md).
+[Constraints](../architecture.md), [status](../implementation-status.md).
 
 ## Run
 
-Toolchain: F-879. Official server row identities fetch anonymously (Steam app
-2089300; no steamcmd/client, F-828, F-831). With `network.data_pak` unset,
-`run` discovers installed data. Both require `network.authored_gameplay` (F-993);
+Toolchain: F-879. Fetch row identities anonymously (app 2089300; F-828, F-831).
+Unset `network.data_pak` discovers installed data. Either source requires
+`network.authored_gameplay` (F-993);
 `network_listening` reports `data_pak`/`data_pak_source` (`configured`/`installed`):
 
 ```bash
@@ -15,9 +14,8 @@ target/release/icarus-server install-official-data --data-dir /var/lib/icarus-na
 # -> /var/lib/icarus-native/official/Icarus/Content/Data/data.pak and install.json
 ```
 
-`official/install.json` records build, depot, manifest, size, SHA-1/SHA-256;
-rerun after updates. `icarus-fetch --app 2089300 --file PATH --out DIR`
-fetches official server files; `--list` lists them.
+Rerun after updates; `official/install.json` records provenance/hashes.
+`icarus-fetch --app 2089300 --file PATH --out DIR` fetches files; `--list` lists them.
 
 ```bash
 python3 tools/cargo_guard.py build --release --locked
@@ -35,9 +33,8 @@ python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run -
 and status intervals use simulated seconds and await in-flight autosaves
 ([synthetic workload](synthetic-workload.md)).
 
-Default: provisional 30 Hz, ≤4 catch-up ticks/update. Sockets need `[network]`.
-Lifecycle/status/save JSON: stderr, `gameplay_ready: false`; timings measure
-foundation systems, not gameplay.
+Default: provisional 30 Hz, ≤4 catch-up ticks/update; sockets need `[network]`.
+Lifecycle/status/save JSON: stderr, `gameplay_ready: false`; foundation timings.
 
 Config: CLI → TOML → defaults; unknown fields/invalid limits reject; paths use
 CWD. Require a regular file ≤64 KiB (symlinks allowed); reject FIFOs/oversized
@@ -51,33 +48,44 @@ Builds: [guard](cargo-builds.md).
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
 Defaults: UDP 17777/27015, one player, authored empty world;
 [connected-run case](../gates.md#before-any-original-server-or-client-run) required.
-Listing: F-1010; Auth/Join: one account/two runs; entry stalls (F-1009; U-079).
+Listing/Auth/Join limits: F-1010, F-1009; entry stalls (U-079).
 Ready's `authored_world`: `seed: 1`, `seed_initialised: true`, `flod_tile_count: 0`;
 Flags: `--seed`, `--seed-initialised`, `--flod-tile-count`.
-Startup: 1–32 authored actions; default none. Before sockets/TLS/Steam,
-preflight checks world wire composition, count, release RPCs/field bound;
-delivery/readiness unqualified.
+Startup: 1–32 authored actions, default none. Before sockets/TLS/Steam,
+preflight checks world wire composition, count and release RPCs/field bound.
 Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60); final
 stdout: pre-shutdown counts. Readiness: queues/channels/phases (F-1012).
 Password unvalidated; avoid real passwords.
 `controller_fields` (final: `controller_fields_before_shutdown`): live peers,
 ≤64 rows per peer/aggregate: target kind, index, payload bits, disposition,
 saturating count; overflow/malformed-bunch counts; no payloads/identities.
-Removal drops rows. `Recognized` does not imply application; malformed tails
+Removal drops rows. `Recognized` proves no application; malformed tails
 apply no calls. Overflow prevents absence claims.
-`readiness.initial_open_outcomes`: live peers by `controller`, `pawn`,
+`readiness.initial_open_outcomes`: `controller`, `pawn`,
 `game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
 (queued), `failed` (terminal), `skipped` (unattempted after controller abort),
 `pending`, `deferred` (drainable pressure). Retained until removal.
 No failures: `sequences_succeeded`; else `sequences_failed`.
 No ACK/spawn/geometry proof.
+`readiness.initialisation_blockers`: `requests_pending_queue` counts deferred
+initialisation batches; `awaiting_loadout_response` and
+`awaiting_bestiary_response` count missing answers only after reliable queue
+admission, for incomplete players. Gauges may overlap; `players_*` phases remain
+exclusive.
 
 `network.controller_startup` lists `flush-level-streaming`/`restart-pawn`;
 CLI `--controller-startup` flags replace it in order. TOML `[]` disables startup.
 Requires release/controller plans; restart needs a pawn.
 Actions require successful opens/controller settlement; restart also waits for
-its pawn's settlement/GUID. `network_listening` lists actions; `status`/`stopped`
-counts pending/queued actions and failures, not client readiness.
+its pawn's settlement/GUID. `network_listening` lists actions; readiness reports
+`controller_startup_actions_pending` (unqueued), `_queued` (transport admission),
+`_settled`, `_awaiting_ack` (queued minus settled), plus
+`controller_startup_sequences_settled` and `_failed`.
+Settlement requires a positive ACK leaving the whole controller channel open,
+not closing, with no pending reliable bunches. Unrelated traffic can delay this
+observation; later traffic retains it. A sequence settles when all configured
+actions settle without failure. Removal drops counts; no execution/spawn/geometry
+readiness is implied.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
@@ -94,19 +102,17 @@ authored_gameplay = "/path/to/authored-gameplay.json"  # required with configure
 ```
 
 Profile/socket checks precede `--data-dir`; mismatched Hello gets Upgrade.
-Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes sessions,
-then drains/saves. `network_listening`: address/`version_check`;
-`status`/`stopped`: session counts. Prospect/mode: F-804; row identities/authored
-values: F-993. Monotonic timeout removes peers with sent records but no ACK/NAK
-progress despite traffic: `closed_by_delivery_stall`/`peers_delivery_stalled`,
-distinct from idle expiry; native policy (F-1013).
+Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes sessions, drains/saves.
+`network_listening`: address/`version_check`; `status`/`stopped`: session counts.
+Prospect/mode: F-804; data inputs: F-993. Monotonic delivery timeout counts
+`closed_by_delivery_stall`/`peers_delivery_stalled` separately from idle expiry:
+sent records without ACK/NAK progress, even with traffic (F-1013).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
-Schematic, not playable. Match catalog row counts/names/order; author values
-independently, never copy gameplay tables. Missing tables have no pak fallback;
-omitted fields use parser defaults. Coverage/compatibility unproven; without
-either input, lab defaults apply.
+Match catalog row counts/names/order; author values independently, never copy
+gameplay tables. Missing tables have no pak fallback; omitted fields use parser
+defaults. Without either input, lab defaults apply. Compatibility unproven.
 
 Pawn opens use distinct positive `IcarusUID`s (handle 46, F-948). Saved
 `IcarusActorGUID`s reserve first; unreadable IDs fail startup. Claim/reservation/
@@ -117,16 +123,14 @@ the session (original: kick).
 ACK/NAK retries opens, profiles and one pending control reply per peer;
 admission commits when queued. Begin waits for PlayerState; pawn retries keep
 one UID claim (F-1011).
-After loadout/bestiary responses and pawn open, `run` replicates
-`PlayerCharacterID`. Matching login ID/profile slot restores the saved UID once
-all joined controllers send `ServerFriendsListUpdated` (F-973, F-975), then
-saved pawn state with level/health clamps (F-964), inventories unless required
-defaults are unavailable (F-979), weights (F-982), modifiers (F-981) and bounded
-stats (F-989).
-Incomplete inventory/modifier/stat inputs withhold derived stats and saved
-health/oxygen/food/water (F-989); independent fields restore. Unmatched players
-enter replicated History (F-967); UID remains claimed after disconnect.
-Unanswered clients never complete; original timeout logs only (F-959).
+After loadout/bestiary answers and pawn open, `run` replicates `PlayerCharacterID`.
+Matching login ID/profile slot restores saved UID once, then state after all joined
+controllers send `ServerFriendsListUpdated` (F-973, F-975).
+Restore limits: pawn clamps (F-964), inventory defaults (F-979), weights (F-982),
+modifiers (F-981), stats (F-989). Incomplete inventory/modifier/stat inputs
+withhold derived stats and saved health/oxygen/food/water; independent fields
+restore. Unmatched players enter History (F-967); UID survives disconnect.
+Unanswered clients never complete (F-959).
 Rejected staging drops saved characters/controllers/History; joiners enter
 empty History as new players.
 
@@ -138,8 +142,8 @@ Duplicate adds, missing removals and missing/ambiguous/unchanged edits return fa
 Other members/time unchanged; atomic checks, ACK/loss retries.
 Join refreshes playing flags. No automatic spawn/departure, save or advert update.
 
-Explicit APIs (F-995, F-998, F-1000) share ACK gating, coalescing, pressure
-retries and loss repair. `refresh_restored_modifier_times` validates UID/raw/wire
+Explicit APIs (F-995, F-998, F-1000): ACK gating, coalescing, pressure/loss retries.
+`refresh_restored_modifier_times` validates UID/raw/wire
 batches; `refresh_pawn_temperature` merges fields (`None` unchanged, zero
 explicit). `set_restored_modifier_time`/`set_pawn_internal_temperature` preserve
 setter order and caller-owned effects before publication; temperature needs a
@@ -150,9 +154,9 @@ interval, elapsed time and fractional remainder. `configure_restored_modifier_ti
 existing restored UID, owner role, interval enablement, elapsed time/interval.
 `tick_pawn_temperature`/`tick_restored_modifier` take elapsed time/caller-owned
 effects and retain final values/timing from current state.
-Polling/retries never replay callbacks or infer climate, expiry, destruction or
-persistence. Disconnect drops timing; reconnect needs configuration. Getters
-return copies; counts use `PeerLabStats`/`SessionCounts`.
+Polling/retries never replay callbacks or infer climate/expiry/destruction/persistence.
+Disconnect drops timing; reconnect needs configuration. Counts:
+`PeerLabStats`/`SessionCounts`.
 
 Schema-4/7/11 hosts: `[network].authored_replication` or
 `run --authored-replication replication.json`; ignored without networking,
@@ -172,11 +176,11 @@ before latest incarnation opens with fresh GUID; blocked replacements coalesce.
 Identities remain while desired/open/awaiting ACK. GUIDs never recycle;
 exhaustion refuses opens.
 
-Each tick validates every source/proxy binding, even without peers. Corruption
-retires bridge/stops admission without native edits. `activated`: live bindings
-exposed since installation. Timers stay native; no modifier containers sent.
-Reconfiguration, original replacement, saved-pose mapping (U-025), import,
-physics, gameplay and clients unqualified. Costs: schema 4 only (F-939, F-941);
+Every tick validates all source/proxy bindings, even without peers. Corruption
+retires the bridge/stops admission without native edits. `activated`: live bindings
+exposed since installation. Timers stay native; modifier containers are not sent.
+Unqualified: reconfiguration, original replacement, saved-pose mapping (U-025),
+import, physics, gameplay, clients. Costs: schema 4 only (F-939, F-941);
 lifecycle unmeasured.
 Probes:
 
@@ -191,17 +195,15 @@ cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 
   --release-profile config/release.toml --seconds 3600 --sessions 8
 ```
 
-`--seconds` ≤259,320 (72 h 2 min): clocks start at each Join; the margin allows
-72 h after full admission. `--progress-interval-seconds 60`: aggregate
-`incomplete: true` JSON on stderr, final summary on stdout. Unsynchronized
-receive windows/gaps cannot certify interrupted runs. Write failures stop
-bounded probes; setup/close errors report kinds only.
+`--seconds` ≤259,320: per-Join clocks allow 72 h after admission.
+`--progress-interval-seconds 60`: aggregate `incomplete: true` JSON on stderr,
+final summary on stdout. Receive gaps cannot certify interrupted runs.
+Write failures stop probes; setup/close errors report kinds only.
 
 Use a terminal-independent supervisor; retain child/service-manager exits.
-Verify namespaces, affinity and cgroups: accepted user-service settings failed
-isolation/affinity (M-1042); bubblewrap namespace/`CPUAffinity` passed loopback
-and supervisor tests (M-1043). Require fresh scope, frozen inputs and a bounded
-owned unit; ongoing runs prove no duration.
+Verify namespaces, affinity and cgroups (failures: M-1042; qualified setup:
+M-1043). Require fresh scope, frozen inputs and a bounded owned unit;
+ongoing runs prove no duration.
 
 ## Replication scheduling (experimental)
 
@@ -220,20 +222,17 @@ cargo run --release --locked --example authored_host_bench # F-938 vs no bridge
 
 ## Persistence and recovery
 
-State defaults to ignored `work/runtime/`: single-writer advisory lock,
-60 s bounded-worker autosave of authored domain records/clock only, not ICARUS
-gameplay. Domain-ID entities need positions before capture (F-482).
+State: ignored `work/runtime/`, single-writer lock, 60 s bounded-worker autosave
+of authored records/clock. Domain-ID entities need positions (F-482).
 Schema 1: records/clock, 64 MiB. Schema 3 adds a write-once, digest-verified
 `preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
-Schemas 4–11: authored spatial worlds, C001 fixtures, relationships, owner
-lifecycle, scalars/inventories and owner modifiers (F-919, F-922, F-923, F-927,
-F-931; [authored native worlds](authored-worlds.md)), sharing a 64 MiB + 4 KiB
-generation cap including inline sections and sidecar reference. Unsupported
-schemas fail closed; preservation grants no import acceptance.
+Schemas 4–11: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
+F-931); 64 MiB + 4 KiB per generation including inline sections/sidecar reference.
+Unsupported schemas fail closed; preservation grants no import acceptance.
 
-Generations are checksummed/synced before atomic manifest publication. Two generations remain;
-current-file corruption recovers the previous one. Corrupt/missing manifests,
-noncanonical digests, unsupported schemas and other I/O errors fail closed
+Checksum/sync generations before atomic manifest publication; retain two.
+Current-file corruption recovers the previous one. Invalid/missing manifests,
+noncanonical digests, unsupported schemas and I/O errors fail closed
 (F-869, F-870, F-771). Back up before manual recovery. SIGINT/SIGTERM freezes
 simulation, drains work and saves by a deadline; failure exits nonzero.
 No hard process-exit-time guarantee (F-869); qualified only for local Linux
@@ -290,11 +289,10 @@ undeclared placement classes fail before planning. `data.pak` supplies no world
 roles (F-916). `importable: true`: reference coverage only, no geometry/adapters/
 gameplay parity; writes refused (`world_imported: false`).
 
-`DecodedImportCandidate::decode` lends migrated roots/recorder outcomes/unknown
-enums to `plan_decoded_import`, `planned_actors_from_candidate` and preservation.
-Limits: 256 MiB charged bytes, 1,048,576 typed elements; typing scratch releases.
-Exhaustion rejects all, including dropped records; RSS unbounded (F-920).
+`DecodedImportCandidate::decode`: planning/preservation; limits 256 MiB charged
+bytes, 1,048,576 typed elements; typing scratch releases. Exhaustion rejects
+all, including dropped records; RSS unbounded (F-920).
 `inspect-save --candidate-check --source prospect.json`: counts, retained charges,
 `required_decode_limits`/`remaining_headroom`, no names/values/import authority.
-Headroom cannot guarantee another recorder's preflight. Meanings/original round trips
-unvalidated; [synthetic workload](synthetic-workload.md): native scheduling/durability.
+Headroom cannot guarantee another recorder's preflight. Meanings/original round
+trips unvalidated; [workload](synthetic-workload.md).
