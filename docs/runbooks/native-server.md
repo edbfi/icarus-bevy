@@ -68,7 +68,7 @@ apply no calls. Overflow prevents absence claims.
 `readiness.initial_open_outcomes`: live peers by `controller`, `pawn`,
 `game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
 (queued), `failed` (terminal), `skipped` (unattempted after controller abort),
-`pending`, `deferred` (drainable pressure). Retained until removal;
+`pending`, `deferred` (drainable pressure). Retained until removal.
 No failures: `sequences_succeeded`; else `sequences_failed`.
 No ACK/spawn/geometry proof.
 
