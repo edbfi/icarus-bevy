@@ -59,7 +59,7 @@ Password unvalidated; avoid real passwords.
 `controller_fields` (final: `controller_fields_before_shutdown`): live peers,
 ≤64 rows per peer/aggregate: target kind, index, payload bits, disposition,
 saturating count; overflow/malformed-bunch counts; no payloads/identities.
-Removal drops rows. `Recognized` proves no application; malformed tails
+Removal drops rows. `Recognized` does not imply application; malformed tails
 apply no calls. Overflow prevents absence claims.
 `readiness.initial_open_outcomes`: `controller`, `pawn`,
 `game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
@@ -110,7 +110,7 @@ sent records without ACK/NAK progress, even with traffic (F-1013).
 
 `authored_gameplay` is a regular JSON file up to 8 MiB:
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
-Match catalog row counts/names/order; author values independently, never copy
+Schematic, not playable. Match catalog row counts/names/order; author values independently, never copy
 gameplay tables. Missing tables have no pak fallback; omitted fields use parser
 defaults. Without either input, lab defaults apply. Compatibility unproven.
 
@@ -130,7 +130,7 @@ Restore limits: pawn clamps (F-964), inventory defaults (F-979), weights (F-982)
 modifiers (F-981), stats (F-989). Incomplete inventory/modifier/stat inputs
 withhold derived stats and saved health/oxygen/food/water; independent fields
 restore. Unmatched players enter History (F-967); UID survives disconnect.
-Unanswered clients never complete (F-959).
+Unanswered clients never complete; original timeout logs only (F-959).
 Rejected staging drops saved characters/controllers/History; joiners enter
 empty History as new players.
 
@@ -223,7 +223,7 @@ cargo run --release --locked --example authored_host_bench # F-938 vs no bridge
 ## Persistence and recovery
 
 State: ignored `work/runtime/`, single-writer lock, 60 s bounded-worker autosave
-of authored records/clock. Domain-ID entities need positions (F-482).
+of authored records/clock, not ICARUS gameplay. Domain-ID entities need positions (F-482).
 Schema 1: records/clock, 64 MiB. Schema 3 adds a write-once, digest-verified
 `preserved-<sha256>.bin` sidecar; schema 2 still loads (F-567).
 Schemas 4–11: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
