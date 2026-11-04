@@ -122,6 +122,9 @@ pub struct NetGuidCache {
 /// with every reference until a packet that carried it is acked, and once per
 /// bunch. A GUID is not acked (absent), pending on the packet that first
 /// carried its export, or acked.
+/// Server 25956137 anchors (F-796): `ShouldSendFullPath` 0x14372bb10,
+/// `IsNetGUIDAcked` 0x1437181b0, `NotifyBunchCommit` 0x143719b60,
+/// `ReceivedAck` 0x14371e8b0 and `ReceivedNak` 0x14371e9f0.
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionExports {
     /// Pending (`Some(packet_id)`) or acked (`None`) GUIDs.

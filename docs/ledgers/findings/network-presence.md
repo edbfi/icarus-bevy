@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-02
+Last reconciled: 2026-11-04
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -22,3 +22,4 @@ Last reconciled: 2026-11-02
 | F-1012 | Readiness counts queues/channels, player phases and initial-open outcomes retained until peer removal; probe progress flushes periodically, final output retains pre-shutdown counts | measured | authored-test; M-1181, M-1186 | high; authored tests; queued opens prove no ACK, spawn or geometry readiness; no stock-client qualification | U-079, U-038 | active |
 | F-1013 | Native peers with outstanding sent records and no ACK/NAK progress expire using the idle timeout despite inbound activity; delivery-stall counters are separate from idle expiry | measured | authored-test; M-1182 | high; two authored-wire tests with injected monotonic times; no original timing or stock-client compatibility claim | U-079, U-038 | active |
 | F-1014 | Explicit caller-owned prospect membership adds by user/slot with F-946 initial flags; full validation is atomic, reliable publication coalesces/retries pressure | measured | authored-test; M-1188 | high; authored peers; F-946 informs defaults only; no automatic trigger, persistence, advert update or stock-client proof | U-070, U-038 | active |
+| F-1016 | 3.0.34 field bounds: controller 183, backend 149, PlayerData 27, Bestiary 8; controller = 155 native + 5 cooked net properties + 22 root net functions + 1 | observed | static-metadata; M-1197, M-1198 | high; matched public server; static framing only, no RPC semantics, world entry or compatibility proof | U-038, U-079 | active |

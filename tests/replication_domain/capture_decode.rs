@@ -1438,7 +1438,10 @@ fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() ->
 #[test]
 fn inbound_qualified_profiles_and_explicit_byte_orders_share_only_framing() -> Result<()> {
     use icarus_bevy::experimental::release::ReleaseProfile;
-    for profile in [ReleaseProfile::release_3_0_32()] {
+    for profile in [
+        ReleaseProfile::release_3_0_32(),
+        ReleaseProfile::release_3_0_34(),
+    ] {
         for order in [
             decoder::InboundByteOrder::Little,
             decoder::InboundByteOrder::Big,
@@ -1618,22 +1621,37 @@ fn inbound_reliable_partial_survives_unreliable_whole_bunch() -> Result<()> {
 }
 
 #[test]
-fn inbound_rejects_unqualified_3_0_34_before_creating_output() -> Result<()> {
+fn inbound_rejects_tampered_3_0_34_before_creating_output() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
     let root = tempfile::tempdir()?;
     let input = root.path().join("input.jsonl");
     let output = root.path().join("output.jsonl");
     fs::write(&input, "")?;
-    assert!(
-        decoder::run_inbound_metadata(
+    let mut tampered_pin = ReleaseProfile::release_3_0_34();
+    tampered_pin.pin.project_version.push_str("-altered");
+    tampered_pin.pin.network_checksum =
+        icarus_bevy::experimental::release::network_checksum(&tampered_pin.pin.project_version);
+    let mut tampered_bound = ReleaseProfile::release_3_0_34();
+    tampered_bound
+        .class_net_cache
+        .bp_icarus_player_controller_survival += 1;
+    for profile in [tampered_pin, tampered_bound] {
+        profile.validate()?;
+        let error = decoder::run_inbound_metadata(
             &input,
             &output,
             root.path(),
-            &icarus_bevy::experimental::release::ReleaseProfile::release_3_0_34(),
+            &profile,
             &inbound_config(),
         )
-        .is_err()
-    );
-    assert!(!output.exists());
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("qualified controller release profile")
+        );
+        assert!(!output.exists());
+    }
     Ok(())
 }
 

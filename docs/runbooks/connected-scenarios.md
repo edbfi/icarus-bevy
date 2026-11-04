@@ -47,8 +47,8 @@ target/debug/examples/capture_decode INPUT work/CASE/metadata.jsonl --inbound-co
 ```
 
 Required flags; order `little`/`big`; channel 1–32766; component GUIDs
-distinct, >1. Inbound: only 3.0.32 qualified (F-954, F-955, F-958);
-3.0.34 rejected until qualified. Match engine version.
+distinct, >1. Inbound framing supports pinned 3.0.32 (F-954, F-955, F-1015)
+and 3.0.34 (F-1016). Match engine version; neither grants RPC semantics.
 Datagrams: `event:"datagram"`,
 `direction:"client_to_server"`/`"server_to_client"`, unsigned `ms`, nonempty even
 ASCII `hex`. C2S only, nondecreasing timestamps; other events skip, all lines count.
@@ -60,6 +60,15 @@ Rows: `ms`, `channel`, `target_class`, nullable `field_index`, `bit_length`,
 `framed`: framing, not recognition/application. Unknown targets opaque;
 properties/exports/must-map/client opens unsupported. Compare original/native separately; check reliable/partial EOF counters. Missing prefixes/packets/bindings block absence/progress claims;
 times: capture/reassembly arrival. Errors: incomplete output; write failure may tear the final row.
+
+`tools/controller_package_members.cjs` selects the exact two controller members
+from explicitly hashed public-server packages; `tools/cooked_class_field_counts.cjs`
+counts bounded metadata prefixes. Its caller example is above
+`readControllerClassMetadata`; select `ZERO_VERSION_PROFILE` for the qualified
+3.0.34 zero-version header (M-1198), never as an automatic fallback. The optional `examples/protocol_oodle_decode.rs` uses pinned
+oozextract 0.5.7 only for reference decoding; callers enforce process memory,
+CPU and wall limits. No original assets ship. Retained source/count bindings:
+M-1198; bounds: F-1016.
 
 ## Scenarios
 

@@ -15,34 +15,26 @@ rules: [actor channel bunches](../../specs/network/actor-channel.md).
 Actor opens, content blocks and partial reassembly: F-709 to F-711, F-751,
 F-845, F-846, F-849; addresses and limits are in the
 [spec](../../specs/network/actor-channel.md).
-Component serialization bounds correct F-958's counts (F-1015).
+Component bounds correct F-958 (F-1015); matched 3.0.34 controller and component
+bounds are F-1016. These qualify static framing, not RPC semantics or world entry.
 
-Offline schema derivation is authorized ([gates](../../gates.md)). The
-gameplay-tag net-index dictionary derives from the client's tag table and
-configuration per release (F-702; U-065 resolved); for 3.0.32 it, the class
-checksums, cooked schemas and row indices all derive from the dedicated-server
-distribution, which is what the shipped server may use (F-828, F-832).
+Gameplay-tag indexing: F-702 (U-065 resolved). Dedicated-server sources for
+3.0.32 tags, checksums, cooked schemas and row indices: F-828, F-832;
+[research gates](../../gates.md).
 Native descriptors, cooked Blueprint schemas, `FClassNetCache` bounds and
 qualified codecs replay M-707 completely: 66,859 property entries, 2,607 RPC
 calls and 2,361 stat pairs (F-762; U-064, U-066 resolved).
 
-Server and client builds match in every scheduling stage, whose constants and
-guards the [spec](../../specs/network/actor-channel.md) lists (F-745, F-748,
-F-749, F-751, F-788, F-851); a native stage drives them over supplied actor
-positions (F-790); the authored motion/flags bridge, including hidden-aware
-priority and per-field loss repair, is qualified in F-938.
+Scheduling correspondence: F-745, F-748, F-749, F-751, F-788, F-851;
+native scheduling over supplied positions: F-790; authored motion/flags bridge:
+F-938.
 Export checksums compute natively (F-853; U-067) and exports
 repeat until acked, including returning-pawn component restores (F-796, F-964).
-Native composers rebuild the captured
-PlayerController (F-852), GameState (F-794) and pawn (F-854) opens bit for bit,
-including session pawn contents (F-854) and saved GameState prospect/mode
-values (F-855); `run` sends all four opens after Join (F-804). TimeOfDay
-advances on the original by a per-world hourly rate curve setting
-SecondsPerGameDay (F-805, F-855, F-856; U-071 resolved); `run` sends GameState
-updates at the captured cadence with constant-rate TimeOfDay (F-807),
-`ServerFPS` (F-808, F-809), locally saving `NetworkingStatus` with player pings
-(F-810, F-811, F-815, F-816), and `LockedMissions` from `D_FactionMissions`
-(F-834, F-835). Fresh-pawn vitals, inventories and stats: F-836, F-839.
+Native captured-open reconstruction: F-852, F-794, F-854, F-855; four opens after
+Join: F-804. Original TimeOfDay: F-805, F-855, F-856 (U-071 resolved);
+native cadence/TimeOfDay: F-807; ServerFPS: F-808, F-809; NetworkingStatus/pings:
+F-810, F-811, F-815, F-816; LockedMissions: F-834, F-835.
+Fresh-pawn vitals, inventories and stats: F-836, F-839.
 Saved manager/quest opens, bitwise capture comparisons and the 15-prospect
 census: F-859, F-861, F-862, F-864, F-866, F-867, F-914, F-933 to F-935;
 [world managers](../../specs/network/world-managers.md). U-074 and U-075 are
@@ -91,4 +83,4 @@ increases and zero without inferring their causes (F-992). Profile answers use t
 
 ## Artifacts
 
-M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149. Earlier observations remain indexed by the cited finding rows.
+M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198. Earlier observations remain indexed by the cited finding rows.

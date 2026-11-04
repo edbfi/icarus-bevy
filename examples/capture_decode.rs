@@ -3018,11 +3018,12 @@ impl InboundConfig {
             self.engine_net_version == profile.engine_network_version,
             "engine net version does not match explicit release profile"
         );
-        // The component constants have no runtime per-release override. Admit
-        // only 3.0.32, qualified by F-954/F-955/F-958. Cloned later profiles
-        // do not independently qualify controller or component bounds.
+        // The component constants have no runtime per-release override.
+        // 3.0.32 is qualified by F-954/F-955/F-1015; 3.0.34 by F-1016.
+        // These are static framing bounds, not RPC parameter semantics.
         let qualified = match profile.pin.build_id {
             25_956_137 => ReleaseProfile::release_3_0_32(),
+            26_313_077 => ReleaseProfile::release_3_0_34(),
             _ => bail!("inbound component bounds unavailable for this release"),
         };
         ensure!(
