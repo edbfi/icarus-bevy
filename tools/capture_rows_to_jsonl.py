@@ -1,7 +1,9 @@
 """Convert local caller-exported field JSONL; never dissect or capture traffic.
 
 Each row is an object mapping field names to arrays of strings (including
-ip.flags.mf and ip.frag_offset). Required fields must have exactly one value.
+ip.flags.mf and ip.frag_offset). Required fields must have exactly one value:
+frame.number, frame.time_epoch, frame.len, frame.cap_len, ip.src, ip.dst,
+udp.srcport, udp.dstport, udp.length, udp.payload, ip.flags.mf, ip.frag_offset.
 Timestamps are unsigned decimal seconds with at most 18 fractional digits.
 Outputs contain private raw datagrams and must remain beneath the work root.
 """
@@ -184,7 +186,10 @@ def convert(
                     count += 1
                     previous_frame, previous_time = frame, now
         except (ValueError, OSError, UnicodeError, RecursionError) as error:
-            raise ValueError(f"incomplete output: conversion failed after {count} datagrams") from error
+            raise ValueError(
+                f"incomplete output: conversion failed after {count} datagrams "
+                + f"at input row {rows} ({type(error).__name__})"
+            ) from error
     return count
 
 

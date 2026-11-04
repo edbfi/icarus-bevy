@@ -3019,11 +3019,10 @@ impl InboundConfig {
             "engine net version does not match explicit release profile"
         );
         // The component constants have no runtime per-release override. Admit
-        // only the retained 3.0.32 profile and 3.0.34's unchanged controller
-        // identities, rather than borrowing their bounds for an unknown build.
+        // only 3.0.32, qualified by F-954/F-955/F-958. Cloned later profiles
+        // do not independently qualify controller or component bounds.
         let qualified = match profile.pin.build_id {
             25_956_137 => ReleaseProfile::release_3_0_32(),
-            26_313_077 => ReleaseProfile::release_3_0_34(),
             _ => bail!("inbound component bounds unavailable for this release"),
         };
         ensure!(
@@ -3092,6 +3091,7 @@ struct InboundStats {
     reliable_pending_bytes_at_end: usize,
     partial_completed: usize,
     partial_rejected: usize,
+    whole_bunches_rejected: usize,
     partial_ignored: usize,
     partial_in_progress_at_end: bool,
     bunches_dispatched: usize,
@@ -3104,7 +3104,7 @@ struct InboundStats {
 #[derive(Serialize)]
 struct InboundRow {
     ms: u64,
-    channel: u32,
+    channel: Option<u32>,
     target_class: &'static str,
     field_index: Option<u32>,
     bit_length: usize,
@@ -3146,14 +3146,16 @@ impl InboundDecoder<'_> {
     ) -> Result<()> {
         let row = InboundRow {
             ms,
-            channel: self.config.controller_channel,
+            channel: (target_class != "unclassified_datagram")
+                .then_some(self.config.controller_channel),
             target_class,
             field_index,
             bit_length,
             framing_disposition,
         };
-        let bytes = serde_json::to_vec(&row)?;
-        let size = bytes.len() + 1;
+        let mut bytes = serde_json::to_vec(&row)?;
+        bytes.push(b'\n');
+        let size = bytes.len();
         ensure!(
             self.stats.output_rows < self.config.limits.max_output_rows,
             "inbound output row limit exceeded"
@@ -3167,7 +3169,6 @@ impl InboundDecoder<'_> {
             "inbound output byte limit exceeded"
         );
         self.output.write_all(&bytes)?;
-        self.output.write_all(b"\n")?;
         self.stats.output_rows += 1;
         self.stats.output_bytes += size;
         Ok(())
@@ -3331,11 +3332,12 @@ impl InboundDecoder<'_> {
             return self.row(ms, "controller_bunch", None, bits, reason);
         }
         if !header.partial {
-            // A nonpartial bunch interrupts an incomplete assembly. Never let
-            // fragments on either side of it become a synthetic complete body.
-            self.partial.clear();
+            // Unreliable whole bunches may interleave reliable fragments.
+            // Reliable discontinuities are checked by the reassembler.
             if bits.div_ceil(8) > self.config.limits.max_partial_bytes {
-                return self.reject_partial(ms, bits, "bunch_byte_limit");
+                self.partial.clear();
+                self.stats.whole_bunches_rejected += 1;
+                return self.row(ms, "controller_bunch", None, bits, "bunch_byte_limit");
             }
             return self.dispatch(ms, bunch);
         }
@@ -3468,8 +3470,8 @@ impl InboundDecoder<'_> {
 
 /// Bounded single-pass inbound decoder. Configuration, regular-file size and
 /// output confinement are checked before exclusively creating a mode-0600
-/// metadata file. Stream errors stop processing; already-written complete rows
-/// remain a bounded prefix. Existing files (including symlinks) are never opened
+/// metadata file. Stream errors stop processing; output is incomplete and a
+/// write failure may leave a torn final row. Existing files are never opened
 /// for output. No legacy S2C export, value or partial-assembly path is invoked.
 ///
 /// Each JSONL datagram row requires `event: "datagram"`, `direction` equal to

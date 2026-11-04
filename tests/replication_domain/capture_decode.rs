@@ -1438,10 +1438,7 @@ fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() ->
 #[test]
 fn inbound_qualified_profiles_and_explicit_byte_orders_share_only_framing() -> Result<()> {
     use icarus_bevy::experimental::release::ReleaseProfile;
-    for profile in [
-        ReleaseProfile::release_3_0_32(),
-        ReleaseProfile::release_3_0_34(),
-    ] {
+    for profile in [ReleaseProfile::release_3_0_32()] {
         for order in [
             decoder::InboundByteOrder::Little,
             decoder::InboundByteOrder::Big,
@@ -1593,7 +1590,61 @@ fn inbound_malformed_handler_prefixes_are_rejected_and_clear_partial() -> Result
         assert_eq!(report["stats"]["packets_rejected"], 1);
         assert_eq!(report["stats"]["partial_completed"], 0);
         assert_eq!(rows[0]["framing_disposition"], "malformed_packet");
+        assert!(rows[0]["channel"].is_null());
         assert_eq!(rows[1]["framing_disposition"], "partial_error");
     }
+    Ok(())
+}
+
+#[test]
+fn inbound_reliable_partial_survives_unreliable_whole_bunch() -> Result<()> {
+    let (first, last) = partial_actor()?;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(2, 11, vec![inbound_actor(None)?])?,
+            inbound_row(3, 12, vec![last])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["partial_completed"], 1);
+    assert_eq!(report["stats"]["partial_rejected"], 0);
+    assert_eq!(report["stats"]["bunches_dispatched"], 2);
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["field_index"] == 124));
+    assert_eq!(rows[0]["ms"], 2);
+    assert_eq!(rows[1]["ms"], 3);
+    Ok(())
+}
+
+#[test]
+fn inbound_rejects_unqualified_3_0_34_before_creating_output() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let input = root.path().join("input.jsonl");
+    let output = root.path().join("output.jsonl");
+    fs::write(&input, "")?;
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &output,
+            root.path(),
+            &icarus_bevy::experimental::release::ReleaseProfile::release_3_0_34(),
+            &inbound_config(),
+        )
+        .is_err()
+    );
+    assert!(!output.exists());
+    Ok(())
+}
+
+#[test]
+fn inbound_whole_bunch_limit_has_separate_counter() -> Result<()> {
+    let mut config = inbound_config();
+    config.limits.max_partial_bytes = 1;
+    let (report, rows) =
+        run_inbound_rows(&[inbound_row(1, 10, vec![inbound_actor(None)?])?], &config)?;
+    assert_eq!(report["stats"]["whole_bunches_rejected"], 1);
+    assert_eq!(report["stats"]["partial_rejected"], 0);
+    assert_eq!(rows[0]["framing_disposition"], "bunch_byte_limit");
     Ok(())
 }
