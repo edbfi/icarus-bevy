@@ -1004,6 +1004,11 @@ pub struct SessionCounts {
 pub struct ReadinessCounts {
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
+    /// Retained receipts after a positive ACK leaves the controller channel
+    /// open and reliably settled. No client execution is implied.
+    pub controller_startup_actions_settled: usize,
+    pub controller_startup_actions_awaiting_ack: usize,
+    pub controller_startup_sequences_settled: usize,
     pub controller_startup_actions_pending: usize,
     pub controller_startup_sequences_failed: usize,
     pub initial_open_outcomes: InitialOpenReadiness,
@@ -1024,10 +1029,20 @@ pub struct ReadinessCounts {
     pub players_awaiting_character_profile: usize,
     /// Includes an unsent initialisation request and missing loadout/bestiary answers.
     pub players_awaiting_initialisation: usize,
+    pub initialisation_blockers: InitialisationBlockers,
     /// Both answers accepted, but completion has not yet committed.
     pub players_awaiting_completion: usize,
     pub players_awaiting_finalisation: usize,
     pub players_finalised: usize,
+}
+
+/// Independent live-player blockers, separate from the exclusive player phases.
+/// Missing responses count only after their request batch enters transport.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct InitialisationBlockers {
+    pub requests_pending_queue: usize,
+    pub awaiting_loadout_response: usize,
+    pub awaiting_bestiary_response: usize,
 }
 
 /// Fixed categories of configured initial opens, without actor identities.
@@ -1415,6 +1430,7 @@ struct PeerEntry {
     controller_startup_pawn_guid: Option<u32>,
     controller_startup_next: Option<usize>,
     controller_startup_queued: usize,
+    controller_startup_settled: usize,
     controller_startup_failed: bool,
     controller_startup_retry_ready: bool,
     peer: LabPeer,
@@ -4547,6 +4563,17 @@ impl PeerLab {
         let mut counts = ReadinessCounts::default();
         for entry in self.peers.values() {
             counts.controller_startup_actions_queued += entry.controller_startup_queued;
+            counts.controller_startup_actions_settled += entry.controller_startup_settled;
+            counts.controller_startup_actions_awaiting_ack +=
+                entry.controller_startup_queued - entry.controller_startup_settled;
+            if let Some(actions) = &self.controller_startup
+                && !actions.is_empty()
+                && !entry.controller_startup_failed
+                && entry.controller_startup_queued == actions.len()
+                && entry.controller_startup_settled == actions.len()
+            {
+                counts.controller_startup_sequences_settled += 1;
+            }
             counts.controller_startup_sequences_failed +=
                 usize::from(entry.controller_startup_failed);
             if let (Some(actions), Some(next)) =
@@ -4597,6 +4624,21 @@ impl PeerLab {
             counts.actor_reliable_pending += pending;
             if entry.player.is_none() {
                 continue;
+            }
+            if !entry.profiles.completed && !entry.profiles.finalised {
+                counts.initialisation_blockers.requests_pending_queue += usize::from(
+                    !entry.profiles.initialisation_requested
+                        && matches!(
+                            entry.pending_profile_exchange,
+                            Some(PendingProfileExchange::Initialisation)
+                        ),
+                );
+                if entry.profiles.initialisation_requested {
+                    counts.initialisation_blockers.awaiting_loadout_response +=
+                        usize::from(!entry.profiles.has_loadout);
+                    counts.initialisation_blockers.awaiting_bestiary_response +=
+                        usize::from(!entry.profiles.has_bestiary);
+                }
             }
             if entry.profiles.finalised {
                 counts.players_finalised += 1;
@@ -4767,6 +4809,7 @@ impl PeerLab {
                         controller_startup_pawn_guid: None,
                         controller_startup_next: None,
                         controller_startup_queued: 0,
+                        controller_startup_settled: 0,
                         controller_startup_failed: false,
                         controller_startup_retry_ready: false,
                         pending_pawn_uid: None,
@@ -4845,6 +4888,17 @@ impl PeerLab {
                 let summary = received.summary();
                 match summary.disposition {
                     PacketDisposition::Accepted { .. } => {
+                        // Retain the receipt before subsequent calls can queue
+                        // unrelated controller traffic. NAKs retain reliable
+                        // out-bunches; closed/missing channels never settle.
+                        if !summary.acked.is_empty()
+                            && entry.controller_startup_queued > entry.controller_startup_settled
+                            && entry
+                                .player_controller_channel
+                                .is_some_and(|channel| entry.peer.actor_channel_settled(channel))
+                        {
+                            entry.controller_startup_settled = entry.controller_startup_queued;
+                        }
                         let retiring = entry.retiring_incarnations.len();
                         entry.retiring_incarnations.retain(|_, (_, channel)| {
                             !summary.released_actor_channels.contains(channel)
@@ -8235,6 +8289,101 @@ mod tests {
     }
 
     #[test]
+    fn readiness_initialisation_blockers_follow_admission_and_each_answer() {
+        let mut lab = prospect_refresh_lab();
+        lab.config.packet.sent_capacity = 8;
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        lab.game_state_open = None;
+        assert!(lab.send_player_controller_open(address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.player = Some(RegisteredPlayer {
+            player_id: 1,
+            name_units: "AUTHORED-BLOCKERS".encode_utf16().collect(),
+        });
+        entry.profiles.character_slot = Some(17);
+        assert_eq!(
+            lab.readiness_counts().initialisation_blockers,
+            InitialisationBlockers::default()
+        );
+        // An answer before its request is admitted is ignored and creates no
+        // missing-response observation.
+        lab.controller_call(
+            address,
+            ControllerCall::Initialisation(InitialisationAnswer::Loadout),
+        );
+        assert!(!lab.peers[&address].profiles.has_loadout);
+        let capacity = lab.peers[&address].peer.config().sent_capacity;
+        for _ in 0..capacity {
+            let datagram = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&datagram, address));
+        }
+        lab.request_initialisation(address);
+        assert!(!lab.peers[&address].profiles.initialisation_requested);
+        let deferred = lab.readiness_counts();
+        assert_eq!(
+            deferred.initialisation_blockers,
+            InitialisationBlockers {
+                requests_pending_queue: 1,
+                ..Default::default()
+            }
+        );
+        for _ in 0..4 {
+            lab.retry_pending_profile_exchanges();
+            assert_eq!(lab.readiness_counts(), deferred);
+        }
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        lab.retry_pending_profile_exchanges();
+        assert!(lab.peers[&address].profiles.initialisation_requested);
+        assert_eq!(
+            lab.readiness_counts().initialisation_blockers,
+            InitialisationBlockers {
+                requests_pending_queue: 0,
+                awaiting_loadout_response: 1,
+                awaiting_bestiary_response: 1,
+            }
+        );
+        lab.controller_call(
+            address,
+            ControllerCall::Initialisation(InitialisationAnswer::Bestiary),
+        );
+        assert_eq!(
+            lab.readiness_counts().initialisation_blockers,
+            InitialisationBlockers {
+                awaiting_loadout_response: 1,
+                ..Default::default()
+            }
+        );
+        lab.controller_call(
+            address,
+            ControllerCall::Initialisation(InitialisationAnswer::Bestiary),
+        );
+        assert_eq!(
+            lab.readiness_counts()
+                .initialisation_blockers
+                .awaiting_loadout_response,
+            1
+        );
+        lab.controller_call(
+            address,
+            ControllerCall::Initialisation(InitialisationAnswer::Loadout),
+        );
+        assert_eq!(lab.readiness_counts().players_awaiting_completion, 1);
+        assert_eq!(
+            lab.readiness_counts().initialisation_blockers,
+            InitialisationBlockers::default()
+        );
+        lab.remove_peer(address).unwrap();
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    #[test]
     fn readiness_snapshot_aggregates_multiple_peers_and_clears_on_shutdown() {
         let mut lab = prospect_refresh_lab();
         let (_first, _, _) = acked_game_state_peer(&mut lab);
@@ -8506,16 +8655,72 @@ mod tests {
         lab.retry_controller_startup();
         assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 1);
         assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 1);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_settled, 0);
+        assert_eq!(
+            lab.readiness_counts()
+                .controller_startup_actions_awaiting_ack,
+            1
+        );
+        assert_eq!(
+            lab.readiness_counts().controller_startup_sequences_settled,
+            0
+        );
         lab.retry_controller_startup();
         assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 1);
         ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_settled, 1);
+        assert_eq!(
+            lab.readiness_counts()
+                .controller_startup_actions_awaiting_ack,
+            0
+        );
         lab.retry_controller_startup();
         assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 2);
         assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 0);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_settled, 1);
+        assert_eq!(
+            lab.readiness_counts()
+                .controller_startup_actions_awaiting_ack,
+            1
+        );
+        assert_eq!(
+            lab.readiness_counts().controller_startup_sequences_settled,
+            0
+        );
         assert_eq!(
             lab.readiness_counts().controller_startup_sequences_failed,
             0
         );
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_settled, 2);
+        assert_eq!(
+            lab.readiness_counts()
+                .controller_startup_actions_awaiting_ack,
+            0
+        );
+        assert_eq!(
+            lab.readiness_counts().controller_startup_sequences_settled,
+            1
+        );
+        // Later reliable traffic cannot revoke an already retained receipt.
+        let channel = lab.peers[&address].player_controller_channel.unwrap();
+        lab.peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .reliable_actor_bunch(
+                channel,
+                Payload::from_writer(super::super::packet::BitWriter::new()),
+            )
+            .unwrap();
+        assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+        let settled = lab.readiness_counts();
+        assert_eq!(settled.controller_startup_actions_settled, 2);
+        assert_eq!(settled.controller_startup_sequences_settled, 1);
+        for _ in 0..4 {
+            lab.retry_controller_startup();
+            assert_eq!(lab.readiness_counts(), settled);
+        }
         lab.remove_peer(address).unwrap();
         assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
     }
@@ -8524,6 +8729,15 @@ mod tests {
         lab: &mut PeerLab,
         socket: &UdpSocket,
         client: &mut super::super::sequencing::PacketSequencer,
+    ) {
+        notify_startup_packets(lab, socket, client, |_| true);
+    }
+
+    fn notify_startup_packets(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        client: &mut super::super::sequencing::PacketSequencer,
+        delivered: impl Fn(usize) -> bool,
     ) {
         use super::super::packet::{Packet, Receiver, read_packet, write_packet};
         let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
@@ -8540,12 +8754,12 @@ mod tests {
             receiver: Receiver::Client,
             ..lab.config.packet.packet
         };
-        for _ in 0..count {
+        for index in 0..count {
             let mut bytes = [0; 2048];
             let length = socket.recv(&mut bytes).unwrap();
             let packet = read_packet(&bytes[..length], &config).unwrap();
             let received = client.receive(&packet.header).unwrap().unwrap();
-            client.ack_seq(received.sequence, true).unwrap();
+            client.ack_seq(received.sequence, delivered(index)).unwrap();
         }
         let bytes = write_packet(
             &Packet {
@@ -8559,6 +8773,94 @@ mod tests {
         .unwrap();
         client.commit().unwrap();
         receive_authored_at(lab, socket, &bytes, Instant::now());
+    }
+
+    #[test]
+    fn controller_startup_settlement_requires_ack_and_survives_loss_repair() {
+        for mixed in [false, true] {
+            let mut lab = prospect_refresh_lab();
+            lab.enable_controller_startup(
+                &ReleaseProfile::release_3_0_32(),
+                vec![ControllerStartupAction::FlushLevelStreaming],
+            )
+            .unwrap();
+            let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+            lab.game_state_open = None;
+            assert!(lab.send_player_controller_open(address));
+            ack_startup_packets(&mut lab, &socket, &mut client);
+            lab.retry_controller_startup();
+            assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 1);
+            if mixed {
+                // A positive ACK for independent traffic must not hide the
+                // startup packet's negative ACK in the same notification.
+                let datagram = lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .peer
+                    .ack_packet()
+                    .unwrap();
+                assert!(lab.send(&datagram, address));
+            }
+            notify_startup_packets(&mut lab, &socket, &mut client, |index| mixed && index > 0);
+            let lost = lab.readiness_counts();
+            assert_eq!(lost.controller_startup_actions_settled, 0);
+            assert_eq!(lost.controller_startup_actions_awaiting_ack, 1);
+            assert_eq!(lost.controller_startup_sequences_settled, 0);
+            assert!(lost.resend_bunches_pending > 0);
+            for _ in 0..4 {
+                lab.retry_controller_startup();
+                assert_eq!(lab.readiness_counts(), lost);
+            }
+            // The transport resends its retained bunch; startup does not
+            // enqueue the RPC a second time.
+            let datagram = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&datagram, address));
+            ack_startup_packets(&mut lab, &socket, &mut client);
+            let repaired = lab.readiness_counts();
+            assert_eq!(repaired.controller_startup_actions_queued, 1);
+            assert_eq!(repaired.controller_startup_actions_settled, 1);
+            assert_eq!(repaired.controller_startup_actions_awaiting_ack, 0);
+            assert_eq!(repaired.controller_startup_sequences_settled, 1);
+        }
+    }
+
+    #[test]
+    fn controller_startup_close_ack_is_not_an_open_channel_settlement_receipt() {
+        let mut lab = prospect_refresh_lab();
+        lab.enable_controller_startup(
+            &ReleaseProfile::release_3_0_32(),
+            vec![ControllerStartupAction::FlushLevelStreaming],
+        )
+        .unwrap();
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        lab.game_state_open = None;
+        assert!(lab.send_player_controller_open(address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        lab.retry_controller_startup();
+        let channel = lab.peers[&address].player_controller_channel.unwrap();
+        let close = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .reliable_actor_close(channel, 0)
+            .unwrap();
+        assert!(lab.send(&close, address));
+        assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert!(!lab.peers[&address].peer.has_actor_channel(channel));
+        let closed = lab.readiness_counts();
+        assert_eq!(closed.controller_startup_actions_settled, 0);
+        assert_eq!(closed.controller_startup_actions_awaiting_ack, 1);
+        assert_eq!(closed.controller_startup_sequences_settled, 0);
+        assert_eq!(lab.readiness_counts(), closed);
     }
 
     #[test]
