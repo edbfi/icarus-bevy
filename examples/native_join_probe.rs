@@ -23,7 +23,7 @@ use icarus_bevy::{
         archive::ByteOrder,
         game_state_open::handle,
         manager_open::{ManagerOpenPlan, ManagerSlot, compose_manager_open},
-        peer_lab::PeerLab,
+        peer_lab::{ControllerStartupAction, PeerLab},
         prospect_info::ProspectInfo,
         release::ReleaseProfile,
         rep_layout::RepValue,
@@ -44,6 +44,28 @@ use serde_json::json;
 const PROBE_MAP: &str = "/Game/Maps/Terrain_016_OLY/Terrain_016";
 const PROBE_PROSPECT_KEY: &str = "Outpost006_Olympus";
 const PROBE_PROSPECT_ID: &str = "native-auth-probe";
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum StartupAction {
+    FlushLevelStreaming,
+    RestartPawn,
+}
+
+impl StartupAction {
+    fn action(self) -> ControllerStartupAction {
+        match self {
+            Self::FlushLevelStreaming => ControllerStartupAction::FlushLevelStreaming,
+            Self::RestartPawn => ControllerStartupAction::RestartPawn,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::FlushLevelStreaming => "flush-level-streaming",
+            Self::RestartPawn => "restart-pawn",
+        }
+    }
+}
 #[derive(clap::Args)]
 struct AuthoredWorld {
     #[arg(long, default_value_t = 1, allow_hyphen_values = true)]
@@ -97,6 +119,9 @@ impl AuthoredWorld {
 #[derive(Parser)]
 #[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
 struct Options {
+    /// Explicit experimental controller calls, in flag order; at most 32.
+    #[arg(long, value_enum)]
+    controller_startup: Vec<StartupAction>,
     #[command(flatten)]
     authored_world: AuthoredWorld,
     #[arg(long)]
@@ -114,6 +139,44 @@ struct Options {
     /// Flush aggregate progress to stderr at this cadence; never includes player values.
     #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=60))]
     progress_interval_seconds: u64,
+}
+
+impl Options {
+    /// Pure preflight before sockets, TLS or Steam startup. Live configuration
+    /// still validates against the actual controller and pawn plans.
+    fn startup_plan(&self, profile: &ReleaseProfile) -> Result<Vec<ControllerStartupAction>> {
+        ensure!(
+            self.controller_startup.len() <= 32,
+            "at most 32 controller startup actions"
+        );
+        if self.controller_startup.is_empty() {
+            return Ok(vec![]);
+        }
+        profile.validate()?;
+        ensure!(
+            profile.player_controller.is_some(),
+            "startup requires a controller profile"
+        );
+        let actions: Vec<_> = self
+            .controller_startup
+            .iter()
+            .map(|action| action.action())
+            .collect();
+        if actions.contains(&ControllerStartupAction::RestartPawn) {
+            ensure!(profile.pawn.is_some(), "restart requires a pawn profile");
+        }
+        for action in &actions {
+            let index = match action {
+                ControllerStartupAction::FlushLevelStreaming => 23,
+                ControllerStartupAction::RestartPawn => 40,
+            };
+            ensure!(
+                index < profile.class_net_cache.bp_icarus_player_controller_survival,
+                "startup RPC exceeds release class bound"
+            );
+        }
+        Ok(actions)
+    }
 }
 
 fn emit_progress(value: &serde_json::Value) -> Result<()> {
@@ -135,6 +198,7 @@ fn main() -> Result<()> {
         "game and query ports must differ"
     );
     let profile = ReleaseProfile::load(&options.release)?;
+    let startup = options.startup_plan(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -206,6 +270,9 @@ fn main() -> Result<()> {
     // connection is polled. Connected world entry remains unqualified.
     bound.lab.extend_game_state_values(game_state)?;
     bound.lab.add_manager_open(ManagerSlot::Flod, flod)?;
+    if !startup.is_empty() {
+        bound.lab.enable_controller_startup(&profile, startup)?;
+    }
     network::apply_server_settings(&mut bound.lab, 60)?;
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
@@ -223,6 +290,7 @@ fn main() -> Result<()> {
         "seconds": options.seconds,
         "progress_interval_seconds": options.progress_interval_seconds,
         "authored_world": options.authored_world.report(),
+        "controller_startup": options.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
         "compatibility_proven": false,
     }))
     .err();
@@ -284,6 +352,51 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_flags_preserve_order_and_reject_invalid_plans_before_networking() {
+        let profile = ReleaseProfile::release_3_0_32();
+        let options = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--controller-startup",
+            "restart-pawn",
+            "--controller-startup",
+            "flush-level-streaming",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.startup_plan(&profile).unwrap(),
+            vec![
+                ControllerStartupAction::RestartPawn,
+                ControllerStartupAction::FlushLevelStreaming
+            ]
+        );
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(default.startup_plan(&profile).unwrap().is_empty());
+        assert!(
+            Options::try_parse_from([
+                "probe",
+                "--name",
+                "Authored",
+                "--controller-startup",
+                "unknown"
+            ])
+            .is_err()
+        );
+        let mut too_many = default;
+        too_many.controller_startup = vec![StartupAction::FlushLevelStreaming; 33];
+        assert!(too_many.startup_plan(&profile).is_err());
+        let mut no_pawn = profile.clone();
+        no_pawn.pawn = None;
+        assert!(options.startup_plan(&no_pawn).is_err());
+        let mut small_bound = profile;
+        small_bound
+            .class_net_cache
+            .bp_icarus_player_controller_survival = 40;
+        assert!(options.startup_plan(&small_bound).is_err());
+    }
 
     #[test]
     fn authored_world_defaults_and_wire_budget_are_checked_before_startup() {
