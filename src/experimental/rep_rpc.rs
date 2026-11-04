@@ -7,7 +7,7 @@
 //!
 //! After a content block's rep-layout properties, the client replicator reads
 //! field headers until its payload ends: a field index bounded like the
-//! engine's `SerializeInt` by the class cache's maximum index plus one, a
+//! engine's `SerializeInt` using the class's serialization bound (F-1015), a
 //! packed payload-bit count, then exactly that payload. An unknown index is
 //! skipped by its payload. Function fields carry RPC parameters; property
 //! fields carry custom-delta payloads: from engine net version 11 a
