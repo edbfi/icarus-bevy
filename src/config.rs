@@ -51,6 +51,9 @@ pub const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
+    /// Explicit independently authored seed and FLOD bootstrap, requiring a release profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authored_world: Option<crate::authored_world_bootstrap::AuthoredWorldBootstrap>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub controller_startup: Vec<crate::experimental::peer_lab::ControllerStartupAction>,
     pub enabled: bool,
@@ -90,6 +93,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
+            authored_world: None,
             enabled: false,
             controller_startup: Vec::new(),
             bind: Ipv4Addr::LOCALHOST,
@@ -106,6 +110,13 @@ impl Default for NetworkConfig {
 
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(world) = &self.authored_world {
+            world.validate()?;
+            ensure!(
+                self.release_profile.is_some(),
+                "network.authored_world requires a release profile"
+            );
+        }
         ensure!(
             self.controller_startup.len() <= 32,
             "network.controller_startup exceeds 32 actions"

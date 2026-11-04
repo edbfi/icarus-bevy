@@ -1739,6 +1739,22 @@ fn bind_session(
             .context("compose the PlayerController open plan")?,
         _ => None,
     };
+    let authored_world = network
+        .authored_world
+        .as_ref()
+        .map(|world| {
+            plan.as_ref()
+                .context("authored world requires a controller plan")?;
+            let profile = profile
+                .as_ref()
+                .context("authored world requires a release profile")?;
+            let admission = config
+                .admission
+                .as_ref()
+                .context("authored world requires admission")?;
+            world.plan(profile, admission.map_url)
+        })
+        .transpose()?;
     let authored_session = if network.authored_replication.is_some() {
         let plan = plan
             .as_ref()
@@ -1878,6 +1894,10 @@ fn bind_session(
                     .context("compose the saved manager open plans")?;
             }
         }
+    }
+    if let Some((values, flod)) = authored_world {
+        lab.extend_game_state_values(values)?;
+        lab.add_manager_open(ManagerSlot::Flod, flod)?;
     }
     if !network.controller_startup.is_empty() {
         lab.enable_controller_startup(
