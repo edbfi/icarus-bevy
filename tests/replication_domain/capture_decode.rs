@@ -543,3 +543,1108 @@ fn private_values_follow_same_class_subobjects_across_reordered_updates() -> Res
     }
     Ok(())
 }
+
+#[test]
+fn inbound_metadata_keeps_unknown_targets_opaque_and_bounds_known_fields() -> Result<()> {
+    let mut writer = BitWriter::new();
+    writer.write_bit(true);
+    let malformed = Payload::from_writer(writer);
+    assert_eq!(
+        decoder::inbound_field_metadata(&malformed, None, 8, 1)?["framing_disposition"],
+        "unknown_target_opaque"
+    );
+    assert!(decoder::inbound_field_metadata(&malformed, Some(183), 8, 1).is_err());
+    assert!(decoder::inbound_field_metadata(&malformed, None, 0, 1).is_err());
+    assert!(decoder::inbound_field_metadata(&malformed, Some(0), 8, 1).is_err());
+    Ok(())
+}
+
+fn inbound_config() -> decoder::InboundConfig {
+    decoder::InboundConfig {
+        controller_channel: 3,
+        engine_net_version: 17,
+        byte_order: decoder::InboundByteOrder::Little,
+        backend_proxy_guid: 10,
+        player_data_guid: 12,
+        bestiary_guid: 14,
+        limits: decoder::InboundLimits::default(),
+    }
+}
+
+fn inbound_datagram(sequence: u16, bunches: Vec<Bunch>) -> Result<String> {
+    let mut config = config();
+    config.receiver = Receiver::Server;
+    // A client-bound decoder would consume a nonexistent frame-time byte and
+    // misframe this packet. Exercise Receiver::Server rather than just its CLI.
+    let packet = Packet {
+        magic: 0,
+        header: PacketHeader {
+            sequence,
+            acked_sequence: 0,
+            history: vec![0],
+        },
+        info: Some(icarus_bevy::experimental::packet::PacketInfo {
+            jitter_clock: 7,
+            has_frame_time: true,
+            server_frame_time: None,
+        }),
+        bunches,
+    };
+    Ok(write_packet(&packet, &config)?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn inbound_row(ms: u64, sequence: u16, bunches: Vec<Bunch>) -> Result<Value> {
+    Ok(
+        json!({"event":"datagram", "direction":"client_to_server", "ms":ms,
+        "hex":inbound_datagram(sequence, bunches)?}),
+    )
+}
+
+fn field_payload(index: u32, bound: u32) -> Result<Payload> {
+    use icarus_bevy::experimental::rep_rpc::{FieldHeader, write_field_header};
+    let mut secret = BitWriter::new();
+    secret.write_bytes(b"SYNTHETIC_PLAYER_ID");
+    let mut writer = BitWriter::new();
+    write_field_header(
+        &mut writer,
+        &FieldHeader {
+            index,
+            payload: Payload::from_writer(secret),
+        },
+        bound,
+    )?;
+    Ok(Payload::from_writer(writer))
+}
+
+fn inbound_block(guid: Option<u32>, payload: Payload) -> ContentBlock {
+    ContentBlock {
+        has_rep_layout: false,
+        target: guid.map_or(BlockTarget::Actor, |guid| BlockTarget::SubObject {
+            object: NetGuidRef::plain(guid),
+            class: SubObjectClass::ClientSent,
+        }),
+        payload,
+    }
+}
+
+fn inbound_bunch(raw: Option<u32>, blocks: Vec<ContentBlock>) -> Result<Bunch> {
+    Ok(Bunch {
+        header: header(raw),
+        payload: encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: None,
+                blocks,
+            },
+            &codec(),
+        )?,
+    })
+}
+
+fn inbound_actor(raw: Option<u32>) -> Result<Bunch> {
+    inbound_bunch(raw, vec![inbound_block(None, field_payload(124, 183)?)])
+}
+
+fn json_lines(rows: &[Value]) -> String {
+    rows.iter().map(|row| format!("{row}\n")).collect()
+}
+
+fn run_inbound_rows(
+    rows: &[Value],
+    config: &decoder::InboundConfig,
+) -> Result<(Value, Vec<Value>)> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("authored.jsonl");
+    let output = work.join("metadata.jsonl");
+    fs::write(&input, json_lines(rows))?;
+    let report = decoder::run_inbound_metadata(
+        &input,
+        &output,
+        &work,
+        &ReleaseProfile::release_3_0_32(),
+        config,
+    )?;
+    let rows = fs::read_to_string(output)?
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<Vec<Value>, _>>()?;
+    Ok((report, rows))
+}
+
+#[test]
+fn inbound_controller_and_bound_components_emit_only_framing_metadata() -> Result<()> {
+    use icarus_bevy::experimental::rep_rpc::{
+        BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+        PLAYER_DATA_FIELD_INDEX_BOUND,
+    };
+    let mut unknown = BitWriter::new();
+    unknown.write_bit(true); // Invalid field stream, but an unknown target is opaque.
+    let bunch = inbound_bunch(
+        Some(100),
+        vec![
+            inbound_block(None, field_payload(182, 183)?),
+            inbound_block(Some(16), Payload::from_writer(unknown)),
+            inbound_block(
+                Some(10),
+                field_payload(148, BACKEND_PROXY_FIELD_INDEX_BOUND)?,
+            ),
+            inbound_block(Some(12), field_payload(25, PLAYER_DATA_FIELD_INDEX_BOUND)?),
+            inbound_block(
+                Some(14),
+                field_payload(6, BESTIARY_MANAGER_FIELD_INDEX_BOUND)?,
+            ),
+        ],
+    )?;
+    let (report, rows) = run_inbound_rows(&[inbound_row(9, 10, vec![bunch])?], &inbound_config())?;
+    assert_eq!(report["mode"], "inbound_controller_metadata");
+    assert_eq!(report["stats"]["bunches_dispatched"], 1);
+    assert_eq!(rows.len(), 5);
+    for (row, (target, index)) in rows.iter().zip([
+        ("BP_IcarusPlayerControllerSurvival_C", Some(182)),
+        ("unknown_component", None),
+        ("UBackendProxyComponent", Some(148)),
+        ("UPlayerDataComponent", Some(25)),
+        ("UBestiaryManagerComponent", Some(6)),
+    ]) {
+        let object = row.as_object().unwrap();
+        assert_eq!(object.len(), 6);
+        assert!(object.keys().all(|key| {
+            [
+                "ms",
+                "channel",
+                "target_class",
+                "field_index",
+                "bit_length",
+                "framing_disposition",
+            ]
+            .contains(&key.as_str())
+        }));
+        assert_eq!(row["ms"], 9);
+        assert_eq!(row["channel"], 3);
+        assert_eq!(row["target_class"], target);
+        assert_eq!(row["field_index"], json!(index));
+        assert_eq!(
+            row["framing_disposition"],
+            if index.is_some() {
+                "framed"
+            } else {
+                "unknown_target_opaque"
+            }
+        );
+        assert_eq!(
+            row["bit_length"],
+            if index.is_some() {
+                b"SYNTHETIC_PLAYER_ID".len() * 8
+            } else {
+                1
+            }
+        );
+    }
+    assert!(!json!(rows).to_string().contains("SYNTHETIC_PLAYER_ID"));
+    assert!(!report.to_string().contains("SYNTHETIC_PLAYER_ID"));
+    Ok(())
+}
+
+#[test]
+fn inbound_malformed_fields_do_not_publish_prefix_or_contaminate_siblings() -> Result<()> {
+    use icarus_bevy::experimental::rep_rpc::{FieldHeader, write_field_header};
+    let mut malformed = BitWriter::new();
+    write_field_header(
+        &mut malformed,
+        &FieldHeader {
+            index: 124,
+            payload: Payload::from_writer(BitWriter::new()),
+        },
+        183,
+    )?;
+    malformed.write_bit(true); // Truncated second field header.
+    let mut rep_layout = inbound_block(None, field_payload(124, 183)?);
+    rep_layout.has_rep_layout = true;
+    let bunch = inbound_bunch(
+        None,
+        vec![
+            inbound_block(None, Payload::from_writer(malformed)),
+            rep_layout,
+            inbound_block(Some(12), field_payload(24, 26)?),
+        ],
+    )?;
+    let mut bad_body = BitWriter::new();
+    bad_body.write_bit(true); // Truncated content block header.
+    let malformed_body = Bunch {
+        header: header(None),
+        payload: Payload::from_writer(bad_body),
+    };
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![bunch])?,
+            inbound_row(2, 11, vec![malformed_body])?,
+            json!({"event":"datagram", "direction":"client_to_server", "ms":3, "hex":"00"}),
+            inbound_row(4, 12, vec![inbound_actor(None)?])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["framing_disposition"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "fields_rejected",
+            "unsupported_rep_layout",
+            "framed",
+            "actor_body_rejected",
+            "malformed_packet",
+            "framed"
+        ]
+    );
+    assert_eq!(report["stats"]["packets_rejected"], 1);
+    assert_eq!(rows[2]["field_index"], 24);
+    assert_eq!(rows[5]["field_index"], 124);
+    Ok(())
+}
+
+#[test]
+fn inbound_reliable_ordering_drains_bounded_pending_and_drops_duplicates() -> Result<()> {
+    let bunch = inbound_actor(Some(100))?;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![bunch.clone()])?,
+            inbound_row(2, 11, vec![inbound_actor(Some(102))?])?,
+            inbound_row(3, 12, vec![inbound_actor(Some(102))?])?,
+            inbound_row(4, 13, vec![inbound_actor(Some(101))?])?,
+            inbound_row(5, 14, vec![bunch])?,
+            inbound_row(6, 14, vec![inbound_actor(Some(103))?])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["reliable_delivered"], 3);
+    assert_eq!(report["stats"]["reliable_queued"], 1);
+    assert_eq!(report["stats"]["reliable_duplicates"], 2);
+    assert_eq!(report["stats"]["packets_stale_or_duplicate"], 1);
+    assert_eq!(report["stats"]["reliable_pending_at_end"], 0);
+    assert_eq!(report["stats"]["reliable_pending_bytes_at_end"], 0);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["ms"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [1, 4, 2]
+    );
+    Ok(())
+}
+
+fn partial_actor() -> Result<(Bunch, Bunch)> {
+    let bunch = inbound_actor(Some(100))?;
+    let mut reader = bunch.payload.reader();
+    let mut first = BitWriter::new();
+    first.write_bits(reader.read_bits(8), 8);
+    let mut last = BitWriter::new();
+    while reader.remaining() > 0 {
+        let bits = reader.remaining().min(32) as u32;
+        last.write_bits(reader.read_bits(bits), bits);
+    }
+    Ok((
+        Bunch {
+            header: BunchHeader {
+                partial: true,
+                partial_initial: true,
+                ..header(Some(100))
+            },
+            payload: Payload::from_writer(first),
+        },
+        Bunch {
+            header: BunchHeader {
+                partial: true,
+                partial_final: true,
+                ..header(Some(101))
+            },
+            payload: Payload::from_writer(last),
+        },
+    ))
+}
+
+#[test]
+fn inbound_only_dispatches_successful_bounded_partial_completion() -> Result<()> {
+    let (first, last) = partial_actor()?;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(2, 11, vec![last.clone()])?,
+            inbound_row(3, 12, vec![last])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["partial_completed"], 1);
+    assert_eq!(report["stats"]["bunches_dispatched"], 1);
+    assert_eq!(report["stats"]["reliable_duplicates"], 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["field_index"], 124);
+    assert_eq!(rows[0]["ms"], 2);
+    Ok(())
+}
+
+#[test]
+fn inbound_partial_errors_discard_assembly_before_any_dispatch() -> Result<()> {
+    let (first, last) = partial_actor()?;
+    let mut non_aligned = first.clone();
+    let mut bit = BitWriter::new();
+    bit.write_bit(true);
+    non_aligned.payload = Payload::from_writer(bit);
+    let mut replacement_initial = first.clone();
+    replacement_initial.header.reliable_sequence_raw = Some(101);
+    let mut final_after_error = last.clone();
+    final_after_error.header.reliable_sequence_raw = Some(102);
+    for rows in [
+        vec![
+            inbound_row(1, 10, vec![non_aligned])?,
+            inbound_row(2, 11, vec![last.clone()])?,
+        ],
+        vec![
+            inbound_row(1, 10, vec![first.clone()])?,
+            inbound_row(2, 11, vec![replacement_initial])?,
+            inbound_row(3, 12, vec![final_after_error])?,
+        ],
+    ] {
+        let (report, output) = run_inbound_rows(&rows, &inbound_config())?;
+        assert_eq!(report["stats"]["bunches_dispatched"], 0);
+        assert_eq!(report["stats"]["partial_completed"], 0);
+        assert_eq!(report["stats"]["partial_in_progress_at_end"], false);
+        assert!(
+            output
+                .iter()
+                .all(|row| row["framing_disposition"] == "partial_error")
+        );
+    }
+    // Unreliable continuation cannot join a reliable initial.
+    let mut unreliable_last = last;
+    unreliable_last.header = BunchHeader {
+        partial: true,
+        partial_final: true,
+        ..header(None)
+    };
+    let (report, output) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(2, 11, vec![unreliable_last])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["bunches_dispatched"], 0);
+    assert_eq!(output[0]["framing_disposition"], "partial_error");
+    Ok(())
+}
+
+#[test]
+fn inbound_partial_bytes_and_zero_data_part_counts_are_bounded() -> Result<()> {
+    let (first, last) = partial_actor()?;
+    let mut config = inbound_config();
+    config.limits.max_partial_bytes = 1;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![first.clone()])?,
+            inbound_row(2, 11, vec![last.clone()])?,
+        ],
+        &config,
+    )?;
+    assert_eq!(report["stats"]["partial_completed"], 0);
+    assert_eq!(report["stats"]["partial_in_progress_at_end"], false);
+    assert_eq!(rows[0]["framing_disposition"], "partial_error");
+
+    let middle = Bunch {
+        header: BunchHeader {
+            partial: true,
+            ..header(Some(101))
+        },
+        payload: Payload::from_writer(BitWriter::new()),
+    };
+    let mut final_part = last;
+    final_part.header.reliable_sequence_raw = Some(103);
+    let mut middle2 = middle.clone();
+    middle2.header.reliable_sequence_raw = Some(102);
+    let mut config = inbound_config();
+    config.limits.max_partial_parts = 2;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(2, 11, vec![middle])?,
+            inbound_row(3, 12, vec![middle2])?,
+            inbound_row(4, 13, vec![final_part])?,
+        ],
+        &config,
+    )?;
+    assert_eq!(report["stats"]["partial_completed"], 0);
+    assert_eq!(report["stats"]["bunches_dispatched"], 0);
+    assert_eq!(rows[0]["framing_disposition"], "partial_part_limit");
+    assert_eq!(rows[1]["framing_disposition"], "partial_error");
+    Ok(())
+}
+
+#[test]
+fn inbound_rejects_exports_must_map_and_client_opens_without_guessing() -> Result<()> {
+    let (first, last) = partial_actor()?;
+    for flag in 0..3 {
+        let mut rejected = inbound_actor(Some(101))?;
+        match flag {
+            0 => rejected.header.has_package_map_exports = true,
+            1 => rejected.header.has_must_be_mapped_guids = true,
+            _ => {
+                rejected.header.control = true;
+                rejected.header.open = true;
+            }
+        }
+        let mut last = last.clone();
+        last.header.reliable_sequence_raw = Some(102);
+        let (report, rows) = run_inbound_rows(
+            &[
+                inbound_row(1, 10, vec![first.clone()])?,
+                inbound_row(2, 11, vec![rejected])?,
+                inbound_row(3, 12, vec![last])?,
+            ],
+            &inbound_config(),
+        )?;
+        assert_eq!(report["stats"]["bunches_dispatched"], 0);
+        assert_eq!(
+            rows[0]["framing_disposition"],
+            [
+                "unsupported_exports",
+                "unsupported_must_map",
+                "unsupported_client_open"
+            ][flag]
+        );
+        assert_eq!(rows[1]["framing_disposition"], "partial_error");
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_pending_count_and_byte_limits_apply_before_enqueue() -> Result<()> {
+    for limit_bytes in [false, true] {
+        let mut config = inbound_config();
+        if limit_bytes {
+            config.limits.max_pending_reliable_bytes =
+                inbound_actor(Some(102))?.payload.bit_len().div_ceil(8);
+        } else {
+            config.limits.max_pending_reliable = 1;
+        }
+        let (report, rows) = run_inbound_rows(
+            &[
+                inbound_row(1, 10, vec![inbound_actor(Some(100))?])?,
+                inbound_row(2, 11, vec![inbound_actor(Some(102))?])?,
+                inbound_row(3, 12, vec![inbound_actor(Some(103))?])?,
+                inbound_row(4, 13, vec![inbound_actor(Some(102))?])?,
+            ],
+            &config,
+        )?;
+        assert_eq!(report["stats"]["reliable_queued"], 1);
+        assert_eq!(report["stats"]["reliable_rejected"], 1);
+        assert_eq!(report["stats"]["reliable_duplicates"], 1);
+        assert_eq!(report["stats"]["reliable_pending_at_end"], 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["framing_disposition"], "reliable_pending_limit");
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_stream_contract_rejects_missing_invalid_and_ambiguous_values() -> Result<()> {
+    let valid = inbound_row(1, 10, vec![inbound_actor(None)?])?;
+    for (key, bad) in [
+        ("event", Value::Null),
+        ("direction", Value::Null),
+        ("direction", json!("inbound")),
+        ("ms", Value::Null),
+        ("ms", json!(-1)),
+        ("ms", json!(1.5)),
+        ("hex", json!("0")),
+        ("hex", json!("zz")),
+        ("hex", json!("")),
+        ("hex", json!("éé")),
+    ] {
+        let mut row = valid.clone();
+        row[key] = bad;
+        assert!(
+            run_inbound_rows(&[row], &inbound_config()).is_err(),
+            "accepted invalid {key}"
+        );
+    }
+    assert!(
+        run_inbound_rows(
+            &[inbound_row(2, 10, vec![])?, inbound_row(1, 11, vec![])?],
+            &inbound_config()
+        )
+        .is_err()
+    );
+    let mut opposite = valid.clone();
+    opposite["direction"] = json!("server_to_client");
+    let (report, rows) = run_inbound_rows(
+        &[json!({"event":"reply", "hex":"00"}), opposite, valid],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["datagrams"], 1);
+    assert_eq!(report["stats"]["skipped_rows"], 2);
+    assert_eq!(rows.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn inbound_enforces_file_line_datagram_and_output_bounds() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    let rows = [
+        inbound_row(1, 10, vec![inbound_actor(None)?])?,
+        inbound_row(2, 11, vec![inbound_actor(None)?])?,
+    ];
+    let text = json_lines(&rows);
+    for bound in 0..8 {
+        let root = tempfile::tempdir()?;
+        let work = root.path().join("work");
+        fs::create_dir(&work)?;
+        let input = work.join("authored.jsonl");
+        let output = work.join("metadata.jsonl");
+        fs::write(&input, &text)?;
+        let mut config = inbound_config();
+        match bound {
+            0 => config.limits.max_file_bytes = text.len() - 1,
+            1 => config.limits.max_line_bytes = rows[0].to_string().len(),
+            2 => config.limits.max_lines = 1,
+            3 => config.limits.max_datagrams = 1,
+            4 => config.limits.max_datagram_bytes = rows[0]["hex"].as_str().unwrap().len() / 2 - 1,
+            5 => {
+                config.limits.max_total_datagram_bytes = rows[0]["hex"].as_str().unwrap().len() / 2
+            }
+            6 => config.limits.max_output_rows = 1,
+            _ => config.limits.max_output_bytes = 1,
+        }
+        assert!(
+            decoder::run_inbound_metadata(
+                &input,
+                &output,
+                &work,
+                &ReleaseProfile::release_3_0_32(),
+                &config
+            )
+            .is_err(),
+            "bound {bound}"
+        );
+        if bound == 0 {
+            assert!(!output.exists());
+        }
+        if let Ok(contents) = fs::read_to_string(output) {
+            assert!(contents.len() <= config.limits.max_output_bytes);
+            assert!(contents.lines().count() <= config.limits.max_output_rows);
+            assert!(
+                contents
+                    .lines()
+                    .all(|row| serde_json::from_str::<Value>(row).is_ok())
+            );
+        }
+    }
+    // Field and content-block limits reject before publishing a success prefix.
+    let payload = field_payload(124, 183)?;
+    let mut two = BitWriter::new();
+    for _ in 0..2 {
+        let mut reader = payload.reader();
+        while reader.remaining() > 0 {
+            let bits = reader.remaining().min(32) as u32;
+            two.write_bits(reader.read_bits(bits), bits);
+        }
+    }
+    let mut config = inbound_config();
+    config.limits.max_fields = 1;
+    let (_, rows) = run_inbound_rows(
+        &[inbound_row(
+            1,
+            10,
+            vec![inbound_bunch(
+                None,
+                vec![inbound_block(None, Payload::from_writer(two))],
+            )?],
+        )?],
+        &config,
+    )?;
+    assert_eq!(rows[0]["framing_disposition"], "fields_rejected");
+    config.limits.max_blocks = 1;
+    let (_, rows) = run_inbound_rows(
+        &[inbound_row(
+            1,
+            10,
+            vec![inbound_bunch(
+                None,
+                vec![
+                    inbound_block(None, payload.clone()),
+                    inbound_block(None, payload),
+                ],
+            )?],
+        )?],
+        &config,
+    )?;
+    assert_eq!(rows[0]["framing_disposition"], "actor_body_rejected");
+    Ok(())
+}
+
+fn inbound_cli_args(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    profile: &std::path::Path,
+) -> Vec<String> {
+    vec![
+        "capture_decode".into(),
+        input.display().to_string(),
+        output.display().to_string(),
+        "--inbound-controller-metadata".into(),
+        "--release-profile".into(),
+        profile.display().to_string(),
+        "--controller-channel".into(),
+        "3".into(),
+        "--engine-net-version".into(),
+        "17".into(),
+        "--byte-order".into(),
+        "little".into(),
+        "--backend-proxy-guid".into(),
+        "10".into(),
+        "--player-data-guid".into(),
+        "12".into(),
+        "--bestiary-guid".into(),
+        "14".into(),
+    ]
+}
+
+#[test]
+fn inbound_cli_validates_all_bindings_before_exclusive_output_creation() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("authored.jsonl");
+    let output = work.join("metadata.jsonl");
+    let profile_path = work.join("release.toml");
+    let profile = ReleaseProfile::release_3_0_32();
+    fs::write(
+        &profile_path,
+        format!(
+            "[release]\napp_id={}\nbuild_id={}\nproject_version={:?}\nnetwork_checksum={}\n",
+            profile.pin.app_id,
+            profile.pin.build_id,
+            profile.pin.project_version,
+            profile.pin.network_checksum
+        ),
+    )?;
+    fs::write(
+        &input,
+        json_lines(&[inbound_row(1, 10, vec![inbound_actor(None)?])?]),
+    )?;
+    let valid = inbound_cli_args(&input, &output, &profile_path);
+    for flag in [
+        "--release-profile",
+        "--controller-channel",
+        "--engine-net-version",
+        "--byte-order",
+        "--backend-proxy-guid",
+        "--player-data-guid",
+        "--bestiary-guid",
+    ] {
+        let mut args = valid.clone();
+        let index = args.iter().position(|arg| arg == flag).unwrap();
+        args.drain(index..index + 2);
+        assert!(decoder::run_cli_in(args, &work).is_err(), "missing {flag}");
+        assert!(!output.exists());
+    }
+    for (flag, value) in [
+        ("--controller-channel", "0"),
+        ("--controller-channel", "32767"),
+        ("--engine-net-version", "16"),
+        ("--byte-order", "native"),
+        ("--backend-proxy-guid", "0"),
+        ("--backend-proxy-guid", "1"),
+        ("--player-data-guid", "10"),
+        ("--bestiary-guid", "12"),
+    ] {
+        let mut args = valid.clone();
+        let index = args.iter().position(|arg| arg == flag).unwrap();
+        args[index + 1] = value.into();
+        assert!(decoder::run_cli_in(args, &work).is_err(), "invalid {flag}");
+        assert!(!output.exists());
+    }
+    let mut with_values = valid.clone();
+    with_values.extend(["--values-channel".into(), "3".into()]);
+    assert!(decoder::run_cli_in(with_values, &work).is_err());
+    assert!(!output.exists());
+    let mut no_mode = valid.clone();
+    no_mode.retain(|arg| arg != "--inbound-controller-metadata");
+    assert!(decoder::run_cli_in(no_mode, &work).is_err());
+    assert!(!output.exists());
+
+    let report = decoder::run_cli_in(valid.clone(), &work)?;
+    assert_eq!(report["stats"]["output_rows"], 1);
+    let original = fs::read(&output)?;
+    assert!(decoder::run_cli_in(valid, &work).is_err());
+    assert_eq!(fs::read(&output)?, original);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(&output)?.permissions().mode() & 0o777, 0o600);
+    Ok(())
+}
+
+#[test]
+fn inbound_unknown_release_and_invalid_limits_fail_before_output() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("empty.jsonl");
+    let output = work.join("metadata.jsonl");
+    fs::write(&input, "")?;
+    let mut profile = ReleaseProfile::release_3_0_32();
+    profile.pin.build_id += 1;
+    assert!(
+        decoder::run_inbound_metadata(&input, &output, &work, &profile, &inbound_config()).is_err()
+    );
+    assert!(!output.exists());
+    let mut config = inbound_config();
+    config.limits.max_partial_bytes += 1;
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &output,
+            &work,
+            &ReleaseProfile::release_3_0_32(),
+            &config
+        )
+        .is_err()
+    );
+    assert!(!output.exists());
+    config = inbound_config();
+    config.limits.max_pending_reliable = 0;
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &output,
+            &work,
+            &ReleaseProfile::release_3_0_32(),
+            &config
+        )
+        .is_err()
+    );
+    assert!(!output.exists());
+    Ok(())
+}
+
+#[test]
+fn capture_cli_defaults_still_run_both_server_to_client_passes() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("authored.jsonl");
+    let cli_output = work.join("cli.jsonl");
+    let ordinary_output = work.join("ordinary.jsonl");
+    fs::write(&input, synthetic_capture()?)?;
+    let report = decoder::run_cli_in(
+        [
+            "capture_decode".to_owned(),
+            input.display().to_string(),
+            cli_output.display().to_string(),
+        ],
+        &work,
+    )?;
+    let expected = decoder::run_in(&input, &ordinary_output, &work)?;
+    assert_eq!(report, expected);
+    assert_eq!(fs::read(cli_output)?, fs::read(ordinary_output)?);
+    assert!(report["passes"]["strict"].is_object());
+    assert!(report["passes"]["export_hypothesis"].is_object());
+    Ok(())
+}
+
+#[test]
+fn inbound_stream_rejects_truncated_json_and_duplicate_contract_keys() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    for text in [
+        "{",
+        "[]\n",
+        "[\"datagram\",\"client_to_server\",1,\"00\"]\n",
+        "{\"event\":\"datagram\",\"direction\":\"server_to_client\",\"direction\":\"client_to_server\",\"ms\":1,\"hex\":\"00\"}\n",
+        "{\"event\":\"datagram\",\"event\":\"reply\"}\n",
+    ] {
+        let root = tempfile::tempdir()?;
+        let work = root.path().join("work");
+        fs::create_dir(&work)?;
+        let input = work.join("authored.jsonl");
+        let output = work.join("metadata.jsonl");
+        fs::write(&input, text)?;
+        assert!(
+            decoder::run_inbound_metadata(
+                &input,
+                &output,
+                &work,
+                &ReleaseProfile::release_3_0_32(),
+                &inbound_config()
+            )
+            .is_err()
+        );
+        assert!(fs::read(output)?.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    let input = work.join("authored.jsonl");
+    let sentinel = b"preserved input";
+    fs::write(&input, sentinel)?;
+    let outside = root.path().join("outside.jsonl");
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &outside,
+            &work,
+            &ReleaseProfile::release_3_0_32(),
+            &inbound_config()
+        )
+        .is_err()
+    );
+    assert!(!outside.exists());
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &input,
+            &work,
+            &ReleaseProfile::release_3_0_32(),
+            &inbound_config()
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(&input)?, sentinel);
+    let output = work.join("metadata.jsonl");
+    std::os::unix::fs::symlink(&input, &output)?;
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &output,
+            &work,
+            &ReleaseProfile::release_3_0_32(),
+            &inbound_config()
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(&input)?, sentinel);
+    assert!(fs::symlink_metadata(output)?.file_type().is_symlink());
+    Ok(())
+}
+
+#[test]
+fn inbound_qualified_profiles_and_explicit_byte_orders_share_only_framing() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    for profile in [ReleaseProfile::release_3_0_32()] {
+        for order in [
+            decoder::InboundByteOrder::Little,
+            decoder::InboundByteOrder::Big,
+        ] {
+            let root = tempfile::tempdir()?;
+            let work = root.path().join("work");
+            fs::create_dir(&work)?;
+            let input = work.join("authored.jsonl");
+            let output = work.join("metadata.jsonl");
+            fs::write(
+                &input,
+                json_lines(&[inbound_row(1, 10, vec![inbound_actor(None)?])?]),
+            )?;
+            let mut config = inbound_config();
+            config.byte_order = order;
+            let report = decoder::run_inbound_metadata(&input, &output, &work, &profile, &config)?;
+            assert_eq!(report["stats"]["output_rows"], 1);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_inline_exports_are_explicitly_rejected_and_other_channels_are_isolated() -> Result<()> {
+    use icarus_bevy::experimental::actor_channel::GuidExport;
+    let exported = ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::SubObject {
+            object: NetGuidRef {
+                guid: 1,
+                export: Some(GuidExport {
+                    no_load: false,
+                    path: None,
+                    checksum: None,
+                    bare_checksum_flag: false,
+                }),
+            },
+            class: SubObjectClass::ClientSent,
+        },
+        payload: Payload::from_writer(BitWriter::new()),
+    };
+    let with_export = inbound_bunch(
+        None,
+        vec![inbound_block(None, field_payload(124, 183)?), exported],
+    )?;
+    let mut other_channel = inbound_actor(None)?;
+    other_channel.header.channel_index = 4;
+    other_channel.header.has_package_map_exports = true;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![with_export])?,
+            inbound_row(2, 11, vec![other_channel, inbound_actor(None)?])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["other_channel_bunches"], 1);
+    assert_eq!(report["stats"]["bunches_dispatched"], 1);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["framing_disposition"], "unsupported_exports");
+    assert_eq!(rows[1]["framing_disposition"], "framed");
+    Ok(())
+}
+
+#[test]
+fn inbound_handlers_preserve_partial_and_queued_reliable_state_without_values() -> Result<()> {
+    use icarus_bevy::experimental::{
+        handshake::initial_request,
+        steam_auth::{SteamAuthMessage, encode_datagram},
+    };
+    for (byte_order, archive_order) in [
+        (decoder::InboundByteOrder::Little, ByteOrder::Little),
+        (decoder::InboundByteOrder::Big, ByteOrder::Big),
+    ] {
+        let mut config = inbound_config();
+        config.byte_order = byte_order;
+        let (first, last) = partial_actor()?;
+        // Queue sequence 102 while the partial waits for sequence 101. Handler
+        // frames must neither clear that partial nor consume packet sequences.
+        let queued = inbound_actor(Some(102))?;
+        let connection = [
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(3, 11, vec![queued])?,
+            inbound_row(5, 12, vec![last])?,
+        ];
+        let handlers = [
+            initial_request().to_vec(),
+            encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: "SYNTHETIC_AUTH_SECRET".encode_utf16().collect(),
+                    steam_id: 987654321012345678,
+                },
+                archive_order,
+                0,
+                0,
+            )?,
+        ];
+        let mut interleaved = vec![connection[0].clone()];
+        for (index, frame) in handlers.into_iter().enumerate() {
+            let hex: String = frame.iter().map(|byte| format!("{byte:02x}")).collect();
+            interleaved.push(json!({"event":"datagram", "direction":"client_to_server",
+                "ms":2 + 2 * index, "hex":hex}));
+            interleaved.push(connection[index + 1].clone());
+        }
+        let (baseline, expected_rows) = run_inbound_rows(&connection, &config)?;
+        let (report, rows) = run_inbound_rows(&interleaved, &config)?;
+        assert_eq!(rows, expected_rows);
+        assert_eq!(report["stats"]["stateless_handshakes"], 1);
+        assert_eq!(report["stats"]["steam_auth_frames"], 1);
+        assert_eq!(report["stats"]["packets_rejected"], 0);
+        assert_eq!(report["stats"]["partial_completed"], 1);
+        assert_eq!(report["stats"]["reliable_queued"], 1);
+        for key in [
+            "packets_decoded",
+            "packets_stale_or_duplicate",
+            "reliable_delivered",
+            "reliable_pending_at_end",
+            "partial_in_progress_at_end",
+            "bunches_dispatched",
+        ] {
+            assert_eq!(report["stats"][key], baseline["stats"][key], "{key}");
+        }
+        let serialized = format!("{report}{rows:?}");
+        for secret in [
+            "SYNTHETIC_AUTH_SECRET",
+            "987654321012345678",
+            "steam_id",
+            "ticket",
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_malformed_handler_prefixes_are_rejected_and_clear_partial() -> Result<()> {
+    for hex in ["01", "02"] {
+        let (first, last) = partial_actor()?;
+        let (report, rows) = run_inbound_rows(
+            &[
+                inbound_row(1, 10, vec![first])?,
+                json!({"event":"datagram", "direction":"client_to_server", "ms":2, "hex":hex}),
+                inbound_row(3, 11, vec![last])?,
+            ],
+            &inbound_config(),
+        )?;
+        assert_eq!(report["stats"]["stateless_handshakes"], 0);
+        assert_eq!(report["stats"]["steam_auth_frames"], 0);
+        assert_eq!(report["stats"]["packets_rejected"], 1);
+        assert_eq!(report["stats"]["partial_completed"], 0);
+        assert_eq!(rows[0]["framing_disposition"], "malformed_packet");
+        assert!(rows[0]["channel"].is_null());
+        assert_eq!(rows[1]["framing_disposition"], "partial_error");
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_reliable_partial_survives_unreliable_whole_bunch() -> Result<()> {
+    let (first, last) = partial_actor()?;
+    let (report, rows) = run_inbound_rows(
+        &[
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(2, 11, vec![inbound_actor(None)?])?,
+            inbound_row(3, 12, vec![last])?,
+        ],
+        &inbound_config(),
+    )?;
+    assert_eq!(report["stats"]["partial_completed"], 1);
+    assert_eq!(report["stats"]["partial_rejected"], 0);
+    assert_eq!(report["stats"]["bunches_dispatched"], 2);
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["field_index"] == 124));
+    assert_eq!(rows[0]["ms"], 2);
+    assert_eq!(rows[1]["ms"], 3);
+    Ok(())
+}
+
+#[test]
+fn inbound_rejects_unqualified_3_0_34_before_creating_output() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let input = root.path().join("input.jsonl");
+    let output = root.path().join("output.jsonl");
+    fs::write(&input, "")?;
+    assert!(
+        decoder::run_inbound_metadata(
+            &input,
+            &output,
+            root.path(),
+            &icarus_bevy::experimental::release::ReleaseProfile::release_3_0_34(),
+            &inbound_config(),
+        )
+        .is_err()
+    );
+    assert!(!output.exists());
+    Ok(())
+}
+
+#[test]
+fn inbound_whole_bunch_limit_has_separate_counter() -> Result<()> {
+    let mut config = inbound_config();
+    config.limits.max_partial_bytes = 1;
+    let (report, rows) =
+        run_inbound_rows(&[inbound_row(1, 10, vec![inbound_actor(None)?])?], &config)?;
+    assert_eq!(report["stats"]["whole_bunches_rejected"], 1);
+    assert_eq!(report["stats"]["partial_rejected"], 0);
+    assert_eq!(rows[0]["framing_disposition"], "bunch_byte_limit");
+    Ok(())
+}

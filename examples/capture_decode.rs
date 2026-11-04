@@ -18,26 +18,34 @@
 //!   `UChannel::ReceivedNextBunch` partial-bunch reassembly (`0x1437c5500`,
 //!   `PartialBunchReassembler`).
 //!
+//! `--inbound-controller-metadata` opts into a separate bounded, single-pass
+//! client-to-server controller decoder. It requires explicit release/wire
+//! settings and component bindings; see [`run_inbound_metadata`] for its JSONL
+//! contract and [`InboundLimits`] for resource ceilings. Its exclusive output
+//! contains framing metadata only, with no decoded values or object identities.
+//!
 //! Stdout carries aggregate counts only; channel names appear as hard-coded
 //! indices or the word `string`. Per-item detail, including any path or class
 //! strings, goes to the second argument, which must lie under this
 //! checkout's `work/` directory.
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use icarus_bevy::experimental::{
     actor_channel::{
         ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
         EXPORT_HAS_CHECKSUM, EXPORT_HAS_PATH, EXPORT_NO_LOAD, MAX_GUID_DEPTH, NetGuidRef,
         PackageMapState, SpawnRecord, SpawnVector, SubObjectClass,
         encode_player_controller_open_bunch_body, guid_kind, parse_actor_bunch,
-        parse_player_controller_open_bunch, read_content_block, read_spawn, write_content_block,
+        parse_player_controller_open_bunch, read_client_actor_bunch_body, read_content_block,
+        read_spawn, write_content_block,
     },
     archive::{ByteOrder, read_string_frame},
     control_messages::{ControlCodec, Decoded, read_control_messages},
@@ -84,15 +92,16 @@ use icarus_bevy::experimental::{
         world_talent_manager_rep_layout, write_rep_properties,
     },
     rep_rpc::{
-        FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, FieldHeader, RpcParameter,
-        bp_icarus_player_state_rpc_parameters, encode_rpc_payload, icarus_character_rpc_parameters,
-        parse_rpc_payload, player_controller_rpc_parameters, read_custom_delta_header,
-        read_fast_array_delta, read_field_header, write_custom_delta_header,
-        write_fast_array_delta, write_field_header,
+        BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND, FAST_ARRAY_COUNT_CAP,
+        FastArrayItem, FastArrayItemLayout, FieldHeader, PLAYER_DATA_FIELD_INDEX_BOUND,
+        RpcParameter, bp_icarus_player_state_rpc_parameters, encode_rpc_payload,
+        icarus_character_rpc_parameters, parse_rpc_payload, player_controller_rpc_parameters,
+        read_custom_delta_header, read_fast_array_delta, read_field_header,
+        write_custom_delta_header, write_fast_array_delta, write_field_header,
     },
     sequencing::{
-        MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive,
-        ReliableChannel, ReliableReceive, is_newer, max_single_bunch_size_bits,
+        MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, MAX_QUEUED_RELIABLE, PartialBunchReassembler,
+        PartialReceive, ReliableChannel, ReliableReceive, is_newer, max_single_bunch_size_bits,
         reconstruct_reliable_sequence, sequence_difference, split_outgoing_bunch,
     },
 };
@@ -101,7 +110,7 @@ use serde_json::{Value, json};
 
 #[derive(Parser)]
 struct Options {
-    /// Local probe JSONL capture (reply events with hex datagrams).
+    /// Local probe JSONL capture (reply events by default; datagram events in inbound mode).
     input: PathBuf,
     /// Per-item detail JSONL; must lie under this checkout's `work/`.
     detail: PathBuf,
@@ -113,6 +122,23 @@ struct Options {
     /// Explicit release metadata; defaults to the retained 3.0.32 capture profile.
     #[arg(long)]
     release_profile: Option<PathBuf>,
+    /// Opt in to metadata-only client-to-server controller decoding. Input rows:
+    /// event=datagram, direction=client_to_server, unsigned ms, hex datagram.
+    /// Requires every inbound option below and an explicit release profile.
+    #[arg(long)]
+    inbound_controller_metadata: bool,
+    #[arg(long)]
+    controller_channel: Option<u32>,
+    #[arg(long)]
+    engine_net_version: Option<u32>,
+    #[arg(long, value_enum)]
+    byte_order: Option<InboundByteOrder>,
+    #[arg(long)]
+    backend_proxy_guid: Option<u32>,
+    #[arg(long)]
+    player_data_guid: Option<u32>,
+    #[arg(long)]
+    bestiary_guid: Option<u32>,
 }
 
 /// The probe's channel-index ceiling for replies (handshake_probe).
@@ -2761,21 +2787,826 @@ pub fn run_recording(
     Ok(json!({"input":input, "wire":wire, "passes":passes}))
 }
 
-fn main() -> Result<()> {
-    let options = Options::parse();
+/// Parse and validate the same CLI as the example, with an injectable output
+/// root for authored tests. Inbound configuration is checked before output opens.
+pub fn run_cli_in<I, T>(args: I, work_root: &Path) -> Result<Value>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let options = Options::try_parse_from(args)?;
+    if options.inbound_controller_metadata {
+        ensure!(
+            options.values_channel.is_none(),
+            "inbound mode cannot record values"
+        );
+        let profile = ReleaseProfile::load(
+            options
+                .release_profile
+                .as_deref()
+                .context("inbound mode requires --release-profile")?,
+        )?;
+        let inbound = InboundConfig {
+            controller_channel: options
+                .controller_channel
+                .context("inbound mode requires --controller-channel")?,
+            engine_net_version: options
+                .engine_net_version
+                .context("inbound mode requires --engine-net-version")?,
+            byte_order: options
+                .byte_order
+                .context("inbound mode requires --byte-order")?,
+            backend_proxy_guid: options
+                .backend_proxy_guid
+                .context("inbound mode requires --backend-proxy-guid")?,
+            player_data_guid: options
+                .player_data_guid
+                .context("inbound mode requires --player-data-guid")?,
+            bestiary_guid: options
+                .bestiary_guid
+                .context("inbound mode requires --bestiary-guid")?,
+            limits: InboundLimits::default(),
+        };
+        return run_inbound_metadata(
+            &options.input,
+            &options.detail,
+            work_root,
+            &profile,
+            &inbound,
+        );
+    }
+    ensure!(
+        options.controller_channel.is_none()
+            && options.engine_net_version.is_none()
+            && options.byte_order.is_none()
+            && options.backend_proxy_guid.is_none()
+            && options.player_data_guid.is_none()
+            && options.bestiary_guid.is_none(),
+        "inbound options require --inbound-controller-metadata"
+    );
     let profile = options
         .release_profile
         .as_deref()
         .map(ReleaseProfile::load)
         .transpose()?
         .unwrap_or_else(ReleaseProfile::release_3_0_32);
-    let report = run_recording(
+    run_recording(
         &options.input,
         &options.detail,
-        &repository_work(),
+        work_root,
         &profile,
         options.values_channel,
-    )?;
+    )
+}
+
+fn main() -> Result<()> {
+    let result = run_cli_in(std::env::args_os(), &repository_work());
+    if let Err(error) = &result
+        && let Some(error) = error.downcast_ref::<clap::Error>()
+    {
+        error.exit();
+    }
+    let report = result?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+/// Frame fields for an explicitly classified inbound target. This helper does
+/// not decode values or imply that the receiver accepts or applies a field.
+/// Unknown targets must remain opaque rather than borrowing an actor bound.
+pub fn inbound_field_metadata(
+    payload: &Payload,
+    index_bound: Option<u32>,
+    max_payload_bits: usize,
+    max_fields: usize,
+) -> Result<Value> {
+    ensure!(
+        payload.bit_len() <= max_payload_bits,
+        "inbound block exceeds bit limit"
+    );
+    let Some(bound) = index_bound else {
+        return Ok(json!({"framing_disposition":"unknown_target_opaque",
+            "payload_bits":payload.bit_len(), "fields":[]}));
+    };
+    ensure!(bound > 0, "field bound must be positive");
+    let mut reader = BitReader::new(payload.bytes(), payload.bit_len())?;
+    let mut fields = Vec::new();
+    while !reader.at_end() {
+        ensure!(
+            fields.len() < max_fields,
+            "inbound field count exceeds limit"
+        );
+        let field = read_field_header(&mut reader, bound, max_payload_bits)?;
+        fields.push(json!({"field_index":field.index,
+            "payload_bits":field.payload.bit_len(), "framing_disposition":"framed"}));
+    }
+    Ok(json!({"framing_disposition":"framed", "fields":fields}))
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum InboundByteOrder {
+    Little,
+    Big,
+}
+
+impl InboundByteOrder {
+    fn archive(self) -> ByteOrder {
+        match self {
+            Self::Little => ByteOrder::Little,
+            Self::Big => ByteOrder::Big,
+        }
+    }
+}
+
+/// Local resource policy, not a claim about the original server's limits.
+/// Callers may lower these ceilings for a bounded experiment; raising them is
+/// rejected. Payload storage exists only in bounded decoding/reassembly queues;
+/// no raw wire-part history or decoded values are retained or written.
+#[derive(Clone, Debug)]
+pub struct InboundLimits {
+    pub max_file_bytes: usize,
+    pub max_line_bytes: usize,
+    pub max_lines: usize,
+    pub max_datagrams: usize,
+    pub max_datagram_bytes: usize,
+    pub max_total_datagram_bytes: usize,
+    pub max_partial_bytes: usize,
+    pub max_partial_parts: usize,
+    pub max_pending_reliable: usize,
+    pub max_pending_reliable_bytes: usize,
+    pub max_blocks: usize,
+    pub max_fields: usize,
+    pub max_output_rows: usize,
+    pub max_output_bytes: usize,
+}
+
+impl Default for InboundLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: 64 * 1024 * 1024,
+            max_line_bytes: 132 * 1024,
+            max_lines: 100_000,
+            max_datagrams: 100_000,
+            max_datagram_bytes: 65_507,
+            max_total_datagram_bytes: 32 * 1024 * 1024,
+            max_partial_bytes: MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES,
+            max_partial_parts: 256,
+            max_pending_reliable: MAX_QUEUED_RELIABLE,
+            max_pending_reliable_bytes: 2 * 1024 * 1024,
+            max_blocks: 1024,
+            max_fields: 1024,
+            max_output_rows: 100_000,
+            max_output_bytes: 32 * 1024 * 1024,
+        }
+    }
+}
+
+impl InboundLimits {
+    fn validate(&self) -> Result<()> {
+        let ceiling = Self::default();
+        for (value, max) in [
+            (self.max_file_bytes, ceiling.max_file_bytes),
+            (self.max_line_bytes, ceiling.max_line_bytes),
+            (self.max_lines, ceiling.max_lines),
+            (self.max_datagrams, ceiling.max_datagrams),
+            (self.max_datagram_bytes, ceiling.max_datagram_bytes),
+            (
+                self.max_total_datagram_bytes,
+                ceiling.max_total_datagram_bytes,
+            ),
+            (self.max_partial_bytes, ceiling.max_partial_bytes),
+            (self.max_partial_parts, ceiling.max_partial_parts),
+            (self.max_pending_reliable, ceiling.max_pending_reliable),
+            (
+                self.max_pending_reliable_bytes,
+                ceiling.max_pending_reliable_bytes,
+            ),
+            (self.max_blocks, ceiling.max_blocks),
+            (self.max_fields, ceiling.max_fields),
+            (self.max_output_rows, ceiling.max_output_rows),
+            (self.max_output_bytes, ceiling.max_output_bytes),
+        ] {
+            ensure!(value > 0 && value <= max, "invalid inbound resource limit");
+        }
+        Ok(())
+    }
+}
+
+/// Explicit caller bindings to the three permitted controller subobject
+/// classes, not identities inferred from traffic. All GUIDs must be nonzero,
+/// non-default (not 1) and distinct. Unknown objects remain opaque.
+#[derive(Clone, Debug)]
+pub struct InboundConfig {
+    pub controller_channel: u32,
+    pub engine_net_version: u32,
+    pub byte_order: InboundByteOrder,
+    pub backend_proxy_guid: u32,
+    pub player_data_guid: u32,
+    pub bestiary_guid: u32,
+    pub limits: InboundLimits,
+}
+
+impl InboundConfig {
+    fn validate(&self, profile: &ReleaseProfile) -> Result<()> {
+        profile.validate()?;
+        self.limits.validate()?;
+        ensure!(
+            (1..MAX_CHANNELS).contains(&self.controller_channel),
+            "invalid controller channel"
+        );
+        ensure!(
+            self.engine_net_version == profile.engine_network_version,
+            "engine net version does not match explicit release profile"
+        );
+        // The component constants have no runtime per-release override. Admit
+        // only 3.0.32, qualified by F-954/F-955/F-958. Cloned later profiles
+        // do not independently qualify controller or component bounds.
+        let qualified = match profile.pin.build_id {
+            25_956_137 => ReleaseProfile::release_3_0_32(),
+            _ => bail!("inbound component bounds unavailable for this release"),
+        };
+        ensure!(
+            profile.pin == qualified.pin
+                && profile.engine_network_version == qualified.engine_network_version
+                && profile.class_net_cache == qualified.class_net_cache,
+            "inbound field bounds require a qualified controller release profile"
+        );
+        let guids = [
+            self.backend_proxy_guid,
+            self.player_data_guid,
+            self.bestiary_guid,
+        ];
+        ensure!(
+            guids.iter().all(|guid| *guid > 1)
+                && guids.into_iter().collect::<BTreeSet<_>>().len() == 3,
+            "component GUID bindings must be non-default and distinct"
+        );
+        Ok(())
+    }
+
+    fn target(
+        &self,
+        target: &BlockTarget,
+        profile: &ReleaseProfile,
+    ) -> (&'static str, Option<u32>) {
+        match target {
+            BlockTarget::Actor => (
+                "BP_IcarusPlayerControllerSurvival_C",
+                Some(profile.class_net_cache.bp_icarus_player_controller_survival),
+            ),
+            BlockTarget::SubObject { object, .. } if object.guid == self.backend_proxy_guid => (
+                "UBackendProxyComponent",
+                Some(BACKEND_PROXY_FIELD_INDEX_BOUND),
+            ),
+            BlockTarget::SubObject { object, .. } if object.guid == self.player_data_guid => {
+                ("UPlayerDataComponent", Some(PLAYER_DATA_FIELD_INDEX_BOUND))
+            }
+            BlockTarget::SubObject { object, .. } if object.guid == self.bestiary_guid => (
+                "UBestiaryManagerComponent",
+                Some(BESTIARY_MANAGER_FIELD_INDEX_BOUND),
+            ),
+            _ => ("unknown_component", None),
+        }
+    }
+}
+
+#[derive(Default, Serialize)]
+struct InboundStats {
+    lines: usize,
+    file_bytes: usize,
+    skipped_rows: usize,
+    datagrams: usize,
+    datagram_bytes: usize,
+    stateless_handshakes: usize,
+    steam_auth_frames: usize,
+    packets_decoded: usize,
+    packets_rejected: usize,
+    packets_stale_or_duplicate: usize,
+    other_channel_bunches: usize,
+    reliable_delivered: usize,
+    reliable_queued: usize,
+    reliable_duplicates: usize,
+    reliable_rejected: usize,
+    reliable_pending_at_end: usize,
+    reliable_pending_bytes_at_end: usize,
+    partial_completed: usize,
+    partial_rejected: usize,
+    whole_bunches_rejected: usize,
+    partial_ignored: usize,
+    partial_in_progress_at_end: bool,
+    bunches_dispatched: usize,
+    output_rows: usize,
+    output_bytes: usize,
+}
+
+/// Only this fixed, metadata-only shape is allowed into the inbound output.
+/// In particular, error text, payloads, object GUIDs and player IDs are absent.
+#[derive(Serialize)]
+struct InboundRow {
+    ms: u64,
+    channel: Option<u32>,
+    target_class: &'static str,
+    field_index: Option<u32>,
+    bit_length: usize,
+    framing_disposition: &'static str,
+}
+
+/// Reject duplicate contract keys rather than allowing the last value in a
+/// JSON object to choose its direction or timestamp. Unrelated recorder keys
+/// are ignored; non-datagram events need no direction, timestamp or hex.
+#[derive(serde::Deserialize)]
+struct InboundInputRow {
+    event: String,
+    direction: Option<Value>,
+    ms: Option<Value>,
+    hex: Option<Value>,
+}
+
+struct InboundDecoder<'a> {
+    config: &'a InboundConfig,
+    profile: &'a ReleaseProfile,
+    output: File,
+    stats: InboundStats,
+    last_packet: Option<u16>,
+    packet_sequence: i64,
+    reliable: Option<ReliableChannel<Arrival>>,
+    pending_bytes: BTreeMap<i64, usize>,
+    pending_total: usize,
+    partial: PartialBunchReassembler,
+}
+
+impl InboundDecoder<'_> {
+    fn row(
+        &mut self,
+        ms: u64,
+        target_class: &'static str,
+        field_index: Option<u32>,
+        bit_length: usize,
+        framing_disposition: &'static str,
+    ) -> Result<()> {
+        let row = InboundRow {
+            ms,
+            channel: (target_class != "unclassified_datagram")
+                .then_some(self.config.controller_channel),
+            target_class,
+            field_index,
+            bit_length,
+            framing_disposition,
+        };
+        let mut bytes = serde_json::to_vec(&row)?;
+        bytes.push(b'\n');
+        let size = bytes.len();
+        ensure!(
+            self.stats.output_rows < self.config.limits.max_output_rows,
+            "inbound output row limit exceeded"
+        );
+        ensure!(
+            size <= self
+                .config
+                .limits
+                .max_output_bytes
+                .saturating_sub(self.stats.output_bytes),
+            "inbound output byte limit exceeded"
+        );
+        self.output.write_all(&bytes)?;
+        self.stats.output_rows += 1;
+        self.stats.output_bytes += size;
+        Ok(())
+    }
+
+    fn reject_partial(&mut self, ms: u64, bits: usize, disposition: &'static str) -> Result<()> {
+        self.partial.clear();
+        self.stats.partial_rejected += 1;
+        self.row(ms, "controller_bunch", None, bits, disposition)
+    }
+
+    fn feed(&mut self, ms: u64, bytes: &[u8]) -> Result<()> {
+        // These complete handler frames carry no connection sequence header.
+        // Validate before classifying: malformed prefixes still reach the packet
+        // rejection path. Both codecs bound allocation; retain only counters,
+        // never authentication fields or stateless cookies.
+        if bytes.first().is_some_and(|first| first & 1 != 0)
+            && icarus_bevy::experimental::handshake::decode_frame(bytes).is_ok()
+        {
+            self.stats.stateless_handshakes += 1;
+            return Ok(());
+        }
+        if bytes.first().is_some_and(|first| first & 3 == 2)
+            && icarus_bevy::experimental::steam_auth::decode_datagram(
+                bytes,
+                self.config.byte_order.archive(),
+                0,
+                0,
+            )
+            .is_ok()
+        {
+            self.stats.steam_auth_frames += 1;
+            return Ok(());
+        }
+        let mut config = packet_config();
+        config.receiver = Receiver::Server;
+        // max_packet_bytes determines the wire payload-length bit width, not
+        // this reader's resource ceiling. Keep the qualified framing unchanged;
+        // run_inbound_metadata bounds each datagram before it reaches this path.
+        let packet = match read_packet(bytes, &config) {
+            Ok(packet) => packet,
+            Err(_) => {
+                self.stats.packets_rejected += 1;
+                // No packet identity can be trusted after a framing error.
+                self.partial.clear();
+                return self.row(
+                    ms,
+                    "unclassified_datagram",
+                    None,
+                    bytes.len() * 8,
+                    "malformed_packet",
+                );
+            }
+        };
+        match self.last_packet {
+            None => self.packet_sequence = i64::from(packet.header.sequence),
+            Some(last) if is_newer(packet.header.sequence, last) => {
+                self.packet_sequence +=
+                    i64::from(sequence_difference(packet.header.sequence, last));
+            }
+            Some(_) => {
+                self.stats.packets_stale_or_duplicate += 1;
+                return Ok(());
+            }
+        }
+        self.last_packet = Some(packet.header.sequence);
+        self.stats.packets_decoded += 1;
+        for bunch in packet.bunches {
+            if bunch.header.channel_index != self.config.controller_channel {
+                self.stats.other_channel_bunches += 1;
+                continue;
+            }
+            self.receive(ms, bunch)?;
+        }
+        Ok(())
+    }
+
+    fn receive(&mut self, ms: u64, bunch: Bunch) -> Result<()> {
+        let Some(raw) = bunch
+            .header
+            .reliable_sequence_raw
+            .filter(|_| bunch.header.reliable)
+        else {
+            return self.delivered(Arrival {
+                datagram: self.stats.datagrams,
+                ms: Some(ms),
+                sequence: self.packet_sequence,
+                bunch,
+            });
+        };
+        // As in the legacy capture decoder, the first observed reliable value
+        // seeds ordering; a mid-stream capture cannot establish the true seed.
+        let channel = self
+            .reliable
+            .get_or_insert_with(|| ReliableChannel::new(raw + RELIABLE_SEQUENCE_LIMIT - 1, 0));
+        let sequence = reconstruct_reliable_sequence(raw, channel.in_reliable())?;
+        let bits = bunch.payload.bit_len();
+        let bytes = bits.div_ceil(8);
+        let new_pending = sequence > i64::from(channel.in_reliable()) + 1
+            && !self.pending_bytes.contains_key(&sequence);
+        if new_pending
+            && (self.pending_bytes.len() >= self.config.limits.max_pending_reliable
+                || bytes
+                    > self
+                        .config
+                        .limits
+                        .max_pending_reliable_bytes
+                        .saturating_sub(self.pending_total))
+        {
+            self.stats.reliable_rejected += 1;
+            self.partial.clear();
+            return self.row(ms, "controller_bunch", None, bits, "reliable_pending_limit");
+        }
+        let arrival = Arrival {
+            datagram: self.stats.datagrams,
+            ms: Some(ms),
+            sequence,
+            bunch,
+        };
+        match channel.receive_reliable(raw, arrival) {
+            Ok(ReliableReceive::Delivered(batch)) => {
+                self.stats.reliable_delivered += batch.len();
+                for arrival in batch {
+                    if let Some(size) = self.pending_bytes.remove(&arrival.sequence) {
+                        self.pending_total -= size;
+                    }
+                    self.delivered(arrival)?;
+                }
+            }
+            Ok(ReliableReceive::Queued) => {
+                self.pending_bytes.insert(sequence, bytes);
+                self.pending_total += bytes;
+                self.stats.reliable_queued += 1;
+            }
+            Ok(ReliableReceive::Duplicate) => self.stats.reliable_duplicates += 1,
+            Err(_) => {
+                self.stats.reliable_rejected += 1;
+                self.partial.clear();
+                self.row(ms, "controller_bunch", None, bits, "reliable_error")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn delivered(&mut self, arrival: Arrival) -> Result<()> {
+        let ms = arrival.ms.context("missing inbound timestamp")?;
+        let bunch = arrival.bunch;
+        let header = &bunch.header;
+        let bits = bunch.payload.bit_len();
+        let unsupported = if header.has_package_map_exports {
+            Some("unsupported_exports")
+        } else if header.has_must_be_mapped_guids {
+            Some("unsupported_must_map")
+        } else if header.open {
+            Some("unsupported_client_open")
+        } else {
+            None
+        };
+        if let Some(reason) = unsupported {
+            self.partial.clear();
+            return self.row(ms, "controller_bunch", None, bits, reason);
+        }
+        if !header.partial {
+            // Unreliable whole bunches may interleave reliable fragments.
+            // Reliable discontinuities are checked by the reassembler.
+            if bits.div_ceil(8) > self.config.limits.max_partial_bytes {
+                self.partial.clear();
+                self.stats.whole_bunches_rejected += 1;
+                return self.row(ms, "controller_bunch", None, bits, "bunch_byte_limit");
+            }
+            return self.dispatch(ms, bunch);
+        }
+        if self
+            .partial
+            .parts_in_progress()
+            .is_some_and(|parts| parts >= self.config.limits.max_partial_parts)
+        {
+            return self.reject_partial(ms, bits, "partial_part_limit");
+        }
+        // Authoritative assembly: no legacy Partial.data or wire-parts vector.
+        match self.partial.receive_part(
+            arrival.sequence,
+            header,
+            &bunch.payload,
+            Some(self.config.limits.max_partial_bytes),
+        ) {
+            Ok(PartialReceive::Complete { bunch, .. }) => {
+                self.stats.partial_completed += 1;
+                self.dispatch(ms, bunch)
+            }
+            Ok(PartialReceive::Incomplete { .. }) => Ok(()),
+            Ok(PartialReceive::IgnoredUnreliableInitial) => {
+                self.stats.partial_ignored += 1;
+                Ok(())
+            }
+            Err(_) => self.reject_partial(ms, bits, "partial_error"),
+        }
+    }
+
+    fn dispatch(&mut self, ms: u64, bunch: Bunch) -> Result<()> {
+        let codec = ActorChannelCodec {
+            engine_net_version: self.config.engine_net_version,
+            exports_enabled: false,
+            has_level: true,
+            order: self.config.byte_order.archive(),
+            limits: ActorChannelLimits {
+                max_blocks: self.config.limits.max_blocks,
+                max_payload_bits: self.config.limits.max_partial_bytes * 8,
+                max_path_units: 1024,
+            },
+        };
+        // Rejection covers malformed framing and local resource ceilings;
+        // exceeding our bounds alone does not establish malformed traffic.
+        let body = match read_client_actor_bunch_body(&mut bunch.payload.reader(), &codec) {
+            Ok(body) => body,
+            Err(_) => {
+                return self.row(
+                    ms,
+                    "controller_bunch",
+                    None,
+                    bunch.payload.bit_len(),
+                    "actor_body_rejected",
+                );
+            }
+        };
+        // Even with exports_enabled=false, a default GUID can carry inline
+        // export flags/path data. Never treat it as a component binding or
+        // establish package-map state from it in this metadata-only mode.
+        if body.blocks.iter().any(|block| {
+            matches!(&block.target,
+            BlockTarget::SubObject { object, .. } if object.export.is_some())
+        }) {
+            return self.row(
+                ms,
+                "controller_bunch",
+                None,
+                bunch.payload.bit_len(),
+                "unsupported_exports",
+            );
+        }
+        self.stats.bunches_dispatched += 1;
+        for block in body.blocks {
+            let (target, bound) = self.config.target(&block.target, self.profile);
+            if bound.is_none() {
+                self.row(
+                    ms,
+                    target,
+                    None,
+                    block.payload.bit_len(),
+                    "unknown_target_opaque",
+                )?;
+                continue;
+            }
+            if block.has_rep_layout {
+                self.row(
+                    ms,
+                    target,
+                    None,
+                    block.payload.bit_len(),
+                    "unsupported_rep_layout",
+                )?;
+                continue;
+            }
+            // Validate the entire field stream before emitting any of its
+            // fields. A malformed tail must not publish a successful prefix.
+            let metadata = match inbound_field_metadata(
+                &block.payload,
+                bound,
+                codec.limits.max_payload_bits,
+                self.config.limits.max_fields,
+            ) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    self.row(ms, target, None, block.payload.bit_len(), "fields_rejected")?;
+                    continue;
+                }
+            };
+            let fields = metadata["fields"]
+                .as_array()
+                .context("inbound metadata fields")?;
+            if fields.is_empty() {
+                self.row(ms, target, None, 0, "empty_field_stream")?;
+            }
+            for field in fields {
+                self.row(
+                    ms,
+                    target,
+                    field["field_index"].as_u64().map(|index| index as u32),
+                    field["payload_bits"]
+                        .as_u64()
+                        .context("inbound field bit length")? as usize,
+                    "framed",
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Bounded single-pass inbound decoder. Configuration, regular-file size and
+/// output confinement are checked before exclusively creating a mode-0600
+/// metadata file. Stream errors stop processing; output is incomplete and a
+/// write failure may leave a torn final row. Existing files are never opened
+/// for output. No legacy S2C export, value or partial-assembly path is invoked.
+///
+/// Each JSONL datagram row requires `event: "datagram"`, `direction` equal to
+/// `client_to_server` or `server_to_client`, unsigned `ms`, and nonempty even
+/// ASCII `hex`. Only client-to-server rows decode; other events are skipped.
+/// Selected timestamps must be nondecreasing. Every line, including skipped
+/// rows, counts against the file/line limits. Defaults are in [`InboundLimits`].
+pub fn run_inbound_metadata(
+    input: &Path,
+    output: &Path,
+    work_root: &Path,
+    profile: &ReleaseProfile,
+    config: &InboundConfig,
+) -> Result<Value> {
+    config.validate(profile)?;
+    check_detail_path(output, work_root)?;
+    let metadata = std::fs::metadata(input).context("inbound input metadata")?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= config.limits.max_file_bytes as u64,
+        "inbound input must be a bounded regular file"
+    );
+    let file = File::open(input).context("open inbound input")?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= config.limits.max_file_bytes as u64,
+        "inbound input must be a bounded regular file"
+    );
+    let output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(output)
+        .context("exclusively create inbound metadata output")?;
+    let mut decoder = InboundDecoder {
+        config,
+        profile,
+        output,
+        stats: InboundStats::default(),
+        last_packet: None,
+        packet_sequence: 0,
+        reliable: None,
+        pending_bytes: BTreeMap::new(),
+        pending_total: 0,
+        partial: PartialBunchReassembler::new(),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut last_ms = None;
+    loop {
+        line.clear();
+        let remaining = config
+            .limits
+            .max_file_bytes
+            .saturating_sub(decoder.stats.file_bytes);
+        let bytes = (&mut reader)
+            .take((config.limits.max_line_bytes.min(remaining) + 1) as u64)
+            .read_until(b'\n', &mut line)?;
+        if bytes == 0 {
+            break;
+        }
+        ensure!(bytes <= remaining, "inbound file byte limit exceeded");
+        ensure!(
+            bytes <= config.limits.max_line_bytes,
+            "inbound line byte limit exceeded"
+        );
+        ensure!(
+            decoder.stats.lines < config.limits.max_lines,
+            "inbound line count limit exceeded"
+        );
+        decoder.stats.lines += 1;
+        decoder.stats.file_bytes += bytes;
+        ensure!(
+            line.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{'),
+            "inbound row must be an object"
+        );
+        let value: InboundInputRow = serde_json::from_slice(&line)
+            .map_err(|_| anyhow::anyhow!("invalid inbound JSONL row"))?;
+        if value.event != "datagram" {
+            decoder.stats.skipped_rows += 1;
+            continue;
+        }
+        let direction = value
+            .direction
+            .as_ref()
+            .and_then(Value::as_str)
+            .context("datagram requires direction")?;
+        ensure!(
+            matches!(direction, "client_to_server" | "server_to_client"),
+            "invalid datagram direction"
+        );
+        let ms = value
+            .ms
+            .as_ref()
+            .and_then(Value::as_u64)
+            .context("datagram requires unsigned ms")?;
+        let hex = value
+            .hex
+            .as_ref()
+            .and_then(Value::as_str)
+            .context("datagram requires hex")?;
+        ensure!(
+            !hex.is_empty()
+                && hex.len().is_multiple_of(2)
+                && hex.len() / 2 <= config.limits.max_datagram_bytes
+                && hex.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "invalid or oversized datagram hex"
+        );
+        if direction == "server_to_client" {
+            decoder.stats.skipped_rows += 1;
+            continue;
+        }
+        ensure!(
+            last_ms.is_none_or(|last| ms >= last),
+            "inbound timestamps must be nondecreasing"
+        );
+        last_ms = Some(ms);
+        ensure!(
+            decoder.stats.datagrams < config.limits.max_datagrams,
+            "inbound datagram count limit exceeded"
+        );
+        let size = hex.len() / 2;
+        ensure!(
+            size <= config
+                .limits
+                .max_total_datagram_bytes
+                .saturating_sub(decoder.stats.datagram_bytes),
+            "inbound total datagram byte limit exceeded"
+        );
+        decoder.stats.datagrams += 1;
+        decoder.stats.datagram_bytes += size;
+        decoder.feed(ms, &decode_hex(hex)?)?;
+    }
+    decoder.stats.reliable_pending_at_end = decoder.pending_bytes.len();
+    decoder.stats.reliable_pending_bytes_at_end = decoder.pending_total;
+    decoder.stats.partial_in_progress_at_end = decoder.partial.in_progress();
+    decoder.output.flush()?;
+    Ok(json!({"mode":"inbound_controller_metadata", "stats":decoder.stats}))
 }
