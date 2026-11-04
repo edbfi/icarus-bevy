@@ -4,11 +4,11 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const {countCookedClassFields, LIMITS: CLASS_LIMITS, PROFILE, ZERO_VERSION_PROFILE} = require('./cooked_class_field_counts.cjs');
-const {LIMITS: PAK_LIMITS, FOOTER_SIZE, parseFooter, parsePrimaryIndexWithMount,
+const {LIMITS: PAK_LIMITS, MAX_DIRECTORY_ENTRIES, FOOTER_SIZE, parseFooter, parsePrimaryIndexWithMount,
   parseDirectoryIndex} = require('./pak_protocol_metadata.cjs');
 const MEMBERS = Object.freeze(['Icarus/Content/BP/Player/BP_IcarusPlayerControllerSurvival.uasset',
   'Icarus/Content/BP/Player/BP_IcarusPlayerControllerSurvival.uexp']);
-const LIMITS = Object.freeze({entries: 131072, blocks: 1024, packages: 8, path: 4096, member: 64 * 1024 * 1024,
+const LIMITS = Object.freeze({entries: MAX_DIRECTORY_ENTRIES, blocks: 1024, packages: 8, path: 4096, member: 64 * 1024 * 1024,
   totalPackage: PAK_LIMITS.package, totalIndex: 128 * 1024 * 1024,
   totalMember: 128 * 1024 * 1024});
 const FAILURE = 'Unsupported or invalid controller package metadata';
@@ -163,7 +163,7 @@ function selectControllerPackageMembers(packages, process) {
     }
     check(MEMBERS.every(member => selected.has(member)));
     for (const record of opened) record.unchanged();
-    const metadata = {profile: 'icarus-controller-package-members', version: 1, metadata_only: true,
+    const metadata = {profile: 'icarus-controller-package-members', version: 1, output_metadata_only: true,
       package_hashes_verified: true, payload_checksums_verified: false, release_qualified: false,
       members: MEMBERS.map(member => selected.get(member))};
     const result = process ? process(metadata, privateMembers) : metadata;
@@ -176,6 +176,21 @@ function selectControllerPackageMembers(packages, process) {
 function inspectControllerPackageMembers(packages) {
   return selectControllerPackageMembers(packages);
 }
+// Caller example, from the repository root after building the reference example
+// through tools/cargo_guard.py. Bind packages=[{path, sha256}, ...] and an
+// absolute decoder executable/hash in the case first; impose an outer process
+// CPU/memory/wall budget too. This is not a CLI or an automatic profile probe.
+// const {execFileSync} = require('node:child_process');
+// const decodeBlock = (bytes, expected) => execFileSync('prlimit', [
+//   '--as=536870912', '--cpu=20', '--', decoder,
+//   String(bytes.length), String(expected)
+// ], {input: bytes, timeout: 25000, killSignal: 'SIGKILL', maxBuffer: 67108864});
+// const result = readControllerClassMetadata(packages, decodeBlock,
+//   {profile: ZERO_VERSION_PROFILE});
+// ZERO_VERSION_PROFILE is only for the independently qualified omitted-version
+// header (legacy -7, UE3/UE4/licensee 0, flags 0x80000000) in M-1198/build26313077.
+// It does not infer an engine version; unknown headers reject. PROFILE remains
+// the explicit UE4-522 layout. Output contains metadata, never decoded bytes.
 // decodeBlock(compressedBuffer, expectedOutputLength) must synchronously return
 // an exact-size Buffer. The caller owns decoder execution/time isolation.
 function readControllerClassMetadata(packages, decodeBlock, options = {}) {

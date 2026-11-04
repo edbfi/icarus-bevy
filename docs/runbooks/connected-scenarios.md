@@ -63,8 +63,9 @@ times: capture/reassembly arrival. Errors: incomplete output; write failure may 
 
 `tools/controller_package_members.cjs` selects the exact two controller members
 from explicitly hashed public-server packages; `tools/cooked_class_field_counts.cjs`
-counts bounded metadata prefixes. Select the zero-version profile explicitly
-when required. The optional `examples/protocol_oodle_decode.rs` uses pinned
+counts bounded metadata prefixes. Its caller example is above
+`readControllerClassMetadata`; select `ZERO_VERSION_PROFILE` for the qualified
+3.0.34 zero-version header (M-1198), never as an automatic fallback. The optional `examples/protocol_oodle_decode.rs` uses pinned
 oozextract 0.5.7 only for reference decoding; callers enforce process memory,
 CPU and wall limits. No original assets ship. Retained source/count bindings:
 M-1198; bounds: F-1016.

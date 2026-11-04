@@ -62,7 +62,7 @@ function input(t, bytes) {
 }
 test('exact two members yield metadata, declared Oodle and exclusive ranges without payload output', t => {
   const source = input(t, fixture()), result = inspect([source]);
-  assert.equal(result.metadata_only, true); assert.equal(result.release_qualified, false);
+  assert.equal(result.output_metadata_only, true); assert.equal(result.release_qualified, false);
   assert.equal(result.payload_checksums_verified, false);
   assert.deepEqual(result.members.map(m => m.member_path), MEMBERS);
   for (const m of result.members) {
@@ -223,6 +223,7 @@ function classBuffers({zero = false} = {}) {
 test('class reader supports uncompressed selected members and emits only metadata/counts/digests', t => {
   const payloads = classBuffers(), source = input(t, fixture({compressed: false, payloads}));
   const result = readClass([source]);
+  assert.equal(result.output_metadata_only, true);
   assert.equal(result.payload_checksums_verified, true);
   assert.equal(result.release_qualified, false);
   assert.equal(result.local_net_property_count, 0);

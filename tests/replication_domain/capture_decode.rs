@@ -1628,21 +1628,27 @@ fn inbound_rejects_tampered_3_0_34_before_creating_output() -> Result<()> {
     let output = root.path().join("output.jsonl");
     fs::write(&input, "")?;
     let mut tampered_pin = ReleaseProfile::release_3_0_34();
-    tampered_pin.pin.network_checksum ^= 1;
+    tampered_pin.pin.project_version.push_str("-altered");
+    tampered_pin.pin.network_checksum =
+        icarus_bevy::experimental::release::network_checksum(&tampered_pin.pin.project_version);
     let mut tampered_bound = ReleaseProfile::release_3_0_34();
     tampered_bound
         .class_net_cache
         .bp_icarus_player_controller_survival += 1;
     for profile in [tampered_pin, tampered_bound] {
+        profile.validate()?;
+        let error = decoder::run_inbound_metadata(
+            &input,
+            &output,
+            root.path(),
+            &profile,
+            &inbound_config(),
+        )
+        .unwrap_err();
         assert!(
-            decoder::run_inbound_metadata(
-                &input,
-                &output,
-                root.path(),
-                &profile,
-                &inbound_config(),
-            )
-            .is_err()
+            error
+                .to_string()
+                .contains("qualified controller release profile")
         );
         assert!(!output.exists());
     }

@@ -8,6 +8,7 @@ const {TextDecoder} = require('node:util');
 
 const LIMITS = Object.freeze({index: 64 * 1024 * 1024, entries: 100000,
   member: 4 * 1024 * 1024, string: 4096, package: 64 * 1024 * 1024 * 1024});
+const MAX_DIRECTORY_ENTRIES = 131072;
 const MEMBER = 'Icarus/Config/DefaultGameplayTags.ini';
 const FOOTER_SIZE = 221;
 const decoder = new TextDecoder('utf-8', {fatal: true});
@@ -58,7 +59,7 @@ function parseFooter(bytes, fileSize) {
 }
 
 function entryLimit(value) {
-  check(Number.isSafeInteger(value) && value > 0 && value <= 131072);
+  check(Number.isSafeInteger(value) && value > 0 && value <= MAX_DIRECTORY_ENTRIES);
   return value;
 }
 
@@ -257,7 +258,7 @@ function inspectProtocolMetadata(path, {sha256} = {}) {
   } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
-module.exports = {LIMITS, MEMBER, FOOTER_SIZE, parseFooter, parsePrimaryIndex,
+module.exports = {LIMITS, MAX_DIRECTORY_ENTRIES, MEMBER, FOOTER_SIZE, parseFooter, parsePrimaryIndex,
   parseFullDirectoryIndex, parseDirectoryIndex, parsePrimaryIndexWithMount, decodeEntry, decodeMember, decodeGameplayTagsIni, inspectProtocolMetadata};
 
 if (require.main === module) {
