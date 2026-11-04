@@ -156,6 +156,7 @@ impl NetworkConfig {
 
 #[derive(Args, Debug, Default)]
 pub struct ConfigOptions {
+    /// Replace TOML startup actions in flag order; clear them with [] in TOML.
     #[arg(long, value_enum)]
     pub controller_startup: Option<Vec<crate::experimental::peer_lab::ControllerStartupAction>>,
     /// Read up to 64 KiB of native TOML. Relative data paths use the working directory.

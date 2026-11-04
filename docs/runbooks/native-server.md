@@ -70,7 +70,7 @@ remain until peer removal; `sequences_succeeded` requires no failure,
 otherwise `sequences_failed` increments. Neither proves ACK, spawn or geometry readiness.
 
 `network.controller_startup` lists `flush-level-streaming`/`restart-pawn`;
-CLI `--controller-startup` flags replace it in order. Empty disables startup.
+CLI `--controller-startup` flags replace it in order. TOML `[]` disables startup.
 Requires release/controller plans; restart needs a pawn.
 Actions follow initial opens and controller settlement; restart waits for pawn
 settlement and uses its GUID. `network_listening` lists actions; `status`/`stopped`
