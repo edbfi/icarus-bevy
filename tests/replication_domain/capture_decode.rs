@@ -1504,3 +1504,96 @@ fn inbound_inline_exports_are_explicitly_rejected_and_other_channels_are_isolate
     assert_eq!(rows[1]["framing_disposition"], "framed");
     Ok(())
 }
+
+#[test]
+fn inbound_handlers_preserve_partial_and_queued_reliable_state_without_values() -> Result<()> {
+    use icarus_bevy::experimental::{
+        handshake::initial_request,
+        steam_auth::{SteamAuthMessage, encode_datagram},
+    };
+    for (byte_order, archive_order) in [
+        (decoder::InboundByteOrder::Little, ByteOrder::Little),
+        (decoder::InboundByteOrder::Big, ByteOrder::Big),
+    ] {
+        let mut config = inbound_config();
+        config.byte_order = byte_order;
+        let (first, last) = partial_actor()?;
+        // Queue sequence 102 while the partial waits for sequence 101. Handler
+        // frames must neither clear that partial nor consume packet sequences.
+        let queued = inbound_actor(Some(102))?;
+        let connection = [
+            inbound_row(1, 10, vec![first])?,
+            inbound_row(3, 11, vec![queued])?,
+            inbound_row(5, 12, vec![last])?,
+        ];
+        let handlers = [
+            initial_request().to_vec(),
+            encode_datagram(
+                &SteamAuthMessage::UserData {
+                    ticket: "SYNTHETIC_AUTH_SECRET".encode_utf16().collect(),
+                    steam_id: 987654321012345678,
+                },
+                archive_order,
+                0,
+                0,
+            )?,
+        ];
+        let mut interleaved = vec![connection[0].clone()];
+        for (index, frame) in handlers.into_iter().enumerate() {
+            let hex: String = frame.iter().map(|byte| format!("{byte:02x}")).collect();
+            interleaved.push(json!({"event":"datagram", "direction":"client_to_server",
+                "ms":2 + 2 * index, "hex":hex}));
+            interleaved.push(connection[index + 1].clone());
+        }
+        let (baseline, expected_rows) = run_inbound_rows(&connection, &config)?;
+        let (report, rows) = run_inbound_rows(&interleaved, &config)?;
+        assert_eq!(rows, expected_rows);
+        assert_eq!(report["stats"]["stateless_handshakes"], 1);
+        assert_eq!(report["stats"]["steam_auth_frames"], 1);
+        assert_eq!(report["stats"]["packets_rejected"], 0);
+        assert_eq!(report["stats"]["partial_completed"], 1);
+        assert_eq!(report["stats"]["reliable_queued"], 1);
+        for key in [
+            "packets_decoded",
+            "packets_stale_or_duplicate",
+            "reliable_delivered",
+            "reliable_pending_at_end",
+            "partial_in_progress_at_end",
+            "bunches_dispatched",
+        ] {
+            assert_eq!(report["stats"][key], baseline["stats"][key], "{key}");
+        }
+        let serialized = format!("{report}{rows:?}");
+        for secret in [
+            "SYNTHETIC_AUTH_SECRET",
+            "987654321012345678",
+            "steam_id",
+            "ticket",
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn inbound_malformed_handler_prefixes_are_rejected_and_clear_partial() -> Result<()> {
+    for hex in ["01", "02"] {
+        let (first, last) = partial_actor()?;
+        let (report, rows) = run_inbound_rows(
+            &[
+                inbound_row(1, 10, vec![first])?,
+                json!({"event":"datagram", "direction":"client_to_server", "ms":2, "hex":hex}),
+                inbound_row(3, 11, vec![last])?,
+            ],
+            &inbound_config(),
+        )?;
+        assert_eq!(report["stats"]["stateless_handshakes"], 0);
+        assert_eq!(report["stats"]["steam_auth_frames"], 0);
+        assert_eq!(report["stats"]["packets_rejected"], 1);
+        assert_eq!(report["stats"]["partial_completed"], 0);
+        assert_eq!(rows[0]["framing_disposition"], "malformed_packet");
+        assert_eq!(rows[1]["framing_disposition"], "partial_error");
+    }
+    Ok(())
+}

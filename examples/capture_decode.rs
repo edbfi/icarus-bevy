@@ -3078,6 +3078,8 @@ struct InboundStats {
     skipped_rows: usize,
     datagrams: usize,
     datagram_bytes: usize,
+    stateless_handshakes: usize,
+    steam_auth_frames: usize,
     packets_decoded: usize,
     packets_rejected: usize,
     packets_stale_or_duplicate: usize,
@@ -3178,6 +3180,28 @@ impl InboundDecoder<'_> {
     }
 
     fn feed(&mut self, ms: u64, bytes: &[u8]) -> Result<()> {
+        // These complete handler frames carry no connection sequence header.
+        // Validate before classifying: malformed prefixes still reach the packet
+        // rejection path. Both codecs bound allocation; retain only counters,
+        // never authentication fields or stateless cookies.
+        if bytes.first().is_some_and(|first| first & 1 != 0)
+            && icarus_bevy::experimental::handshake::decode_frame(bytes).is_ok()
+        {
+            self.stats.stateless_handshakes += 1;
+            return Ok(());
+        }
+        if bytes.first().is_some_and(|first| first & 3 == 2)
+            && icarus_bevy::experimental::steam_auth::decode_datagram(
+                bytes,
+                self.config.byte_order.archive(),
+                0,
+                0,
+            )
+            .is_ok()
+        {
+            self.stats.steam_auth_frames += 1;
+            return Ok(());
+        }
         let mut config = packet_config();
         config.receiver = Receiver::Server;
         // max_packet_bytes determines the wire payload-length bit width, not
