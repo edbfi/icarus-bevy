@@ -1229,6 +1229,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
             "data_pak": config.network.data_pak.as_ref().map(|path| path.display().to_string()),
             "data_pak_source": data_pak_source,
+            "controller_startup": config.network.controller_startup,
             "icarus_compatible": false, "gameplay_ready": false}),
                 app.world()
             )
@@ -1289,7 +1290,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 "max_tick_micros": metrics.max_tick_micros,
                 "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
                 "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
-                "sessions": network::session_counts(app.world())}),
+                "sessions": network::session_counts(app.world()),
+                "readiness": app.world().get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>().map(|lab| lab.readiness_counts())}),
                     app.world()
                 )
             );
@@ -1303,6 +1305,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     // Idempotent: admission is already stopped; close every session and drop
     // the socket before the bounded drain and final save.
     network::stop_admission(app.world_mut());
+    let readiness = app
+        .world()
+        .get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>()
+        .map(|lab| lab.readiness_counts());
     let sessions = network::teardown(app.world_mut());
     let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
     // A failed in-flight autosave is reported as in the loop; the final save still runs.
@@ -1327,7 +1333,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         "{}",
         with_native_replication_counts(
             json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
-        "gameplay_ready": false, "sessions": sessions}),
+        "gameplay_ready": false, "sessions": sessions, "readiness_before_shutdown": readiness}),
             app.world()
         )
     );
