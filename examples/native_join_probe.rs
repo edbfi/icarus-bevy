@@ -295,7 +295,7 @@ fn main() -> Result<()> {
         let now = Instant::now();
         if now >= next_progress {
             let lab = app.world().resource::<PeerLab>();
-            output_error = emit_progress(&json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"stats":lab.stats(),"compatibility_proven":false})).err();
+            output_error = emit_progress(&json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"stats":lab.stats(),"compatibility_proven":false})).err();
             // Schedule from now: slow updates never create a catch-up burst.
             next_progress = now + progress_interval;
         }
@@ -313,6 +313,7 @@ fn main() -> Result<()> {
     let mut lab = app.world_mut().resource_mut::<PeerLab>();
     let counts = lab.session_counts();
     let readiness = lab.readiness_counts();
+    let controller_fields = lab.controller_field_totals();
     let stats = lab.stats().clone();
     let peak = lab.peak_peer_count();
     lab.shutdown();
@@ -328,7 +329,7 @@ fn main() -> Result<()> {
     } else {
         reason
     };
-    let summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    let summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"controller_fields_before_shutdown":controller_fields,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &summary)?;
     writeln!(&mut stdout)?;

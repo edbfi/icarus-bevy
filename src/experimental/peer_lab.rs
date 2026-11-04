@@ -1339,7 +1339,79 @@ enum InitialOpenOutcome {
     Failed,
 }
 
+/// Privacy-preserving observations; recognition does not imply application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub enum ControllerFieldTarget {
+    Actor,
+    PermittedSubobject,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub enum ControllerFieldDisposition {
+    Recognized,
+    Ignored,
+    Malformed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ControllerFieldSummary {
+    pub target: ControllerFieldTarget,
+    pub index: u32,
+    pub payload_bits: usize,
+    pub disposition: ControllerFieldDisposition,
+    pub count: u64,
+}
+
+/// At most 64 distinct observations per live peer; no payloads or identities.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct ControllerFieldDiagnostics {
+    pub entries: Vec<ControllerFieldSummary>,
+    pub overflow: u64,
+    pub malformed_bunches: u64,
+}
+
+impl ControllerFieldDiagnostics {
+    fn record(
+        &mut self,
+        target: ControllerFieldTarget,
+        index: u32,
+        payload_bits: usize,
+        disposition: ControllerFieldDisposition,
+    ) {
+        self.record_count(target, index, payload_bits, disposition, 1);
+    }
+
+    fn record_count(
+        &mut self,
+        target: ControllerFieldTarget,
+        index: u32,
+        payload_bits: usize,
+        disposition: ControllerFieldDisposition,
+        count: u64,
+    ) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| {
+            entry.target == target
+                && entry.index == index
+                && entry.payload_bits == payload_bits
+                && entry.disposition == disposition
+        }) {
+            entry.count = entry.count.saturating_add(count);
+        } else if self.entries.len() < 64 {
+            self.entries.push(ControllerFieldSummary {
+                target,
+                index,
+                payload_bits,
+                disposition,
+                count,
+            });
+        } else {
+            self.overflow = self.overflow.saturating_add(count);
+        }
+    }
+}
+
 struct PeerEntry {
+    controller_field_diagnostics: ControllerFieldDiagnostics,
     controller_startup_pawn_guid: Option<u32>,
     controller_startup_next: Option<usize>,
     controller_startup_queued: usize,
@@ -1494,6 +1566,7 @@ fn controller_initialisation_calls(
     engine_net_version: u32,
     order: super::archive::ByteOrder,
     components: [Option<u32>; 3],
+    diagnostics: &mut ControllerFieldDiagnostics,
 ) -> Result<(Vec<ControllerCall>, usize)> {
     let actor = actor_codec(engine_net_version, order);
     let body = read_client_actor_bunch_body(&mut payload.reader(), &actor)?;
@@ -1531,43 +1604,63 @@ fn controller_initialisation_calls(
         let mut reader = block.payload.reader();
         while !reader.at_end() {
             let field = read_field_header(&mut reader, bound, actor.limits.max_payload_bits)?;
-            if component.is_none() && field.index == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
-            {
-                calls.push(ControllerCall::Begin(parse_begin_player_initialisation(
-                    &field.payload,
-                    &codec,
-                )?));
-            } else if component.is_none() && field.index == SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX
-            {
-                // Its friend IDs are not interpreted.
-                calls.push(ControllerCall::FriendsList);
-            } else if component == Some(0)
-                && matches!(
-                    field.index,
-                    RESPONSE_GET_USER_PROFILE | RESPONSE_GET_CHARACTER_PROFILE
-                )
-            {
-                let kind = if field.index == RESPONSE_GET_USER_PROFILE {
-                    ProfileKind::User
-                } else {
-                    ProfileKind::Character
-                };
-                calls.push(ControllerCall::Profile(profile_exchange::parse_response(
-                    &field.payload,
-                    kind,
-                    &codec,
-                )?));
-            } else if component == Some(1) && field.index == SERVER_RECEIVE_LOADOUT {
-                calls.push(ControllerCall::Initialisation(
-                    InitialisationAnswer::Loadout,
-                ));
-            } else if component == Some(2) && field.index == SERVER_RECEIVE_BESTIARY_DATA {
-                calls.push(ControllerCall::Initialisation(
-                    InitialisationAnswer::Bestiary,
-                ));
+            let target = if component.is_none() {
+                ControllerFieldTarget::Actor
             } else {
-                ignored += 1;
-            }
+                ControllerFieldTarget::PermittedSubobject
+            };
+            let before = calls.len();
+            let parsed = (|| -> Result<()> {
+                if component.is_none()
+                    && field.index == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
+                {
+                    calls.push(ControllerCall::Begin(parse_begin_player_initialisation(
+                        &field.payload,
+                        &codec,
+                    )?));
+                } else if component.is_none()
+                    && field.index == SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX
+                {
+                    // Its friend IDs are not interpreted.
+                    calls.push(ControllerCall::FriendsList);
+                } else if component == Some(0)
+                    && matches!(
+                        field.index,
+                        RESPONSE_GET_USER_PROFILE | RESPONSE_GET_CHARACTER_PROFILE
+                    )
+                {
+                    let kind = if field.index == RESPONSE_GET_USER_PROFILE {
+                        ProfileKind::User
+                    } else {
+                        ProfileKind::Character
+                    };
+                    calls.push(ControllerCall::Profile(profile_exchange::parse_response(
+                        &field.payload,
+                        kind,
+                        &codec,
+                    )?));
+                } else if component == Some(1) && field.index == SERVER_RECEIVE_LOADOUT {
+                    calls.push(ControllerCall::Initialisation(
+                        InitialisationAnswer::Loadout,
+                    ));
+                } else if component == Some(2) && field.index == SERVER_RECEIVE_BESTIARY_DATA {
+                    calls.push(ControllerCall::Initialisation(
+                        InitialisationAnswer::Bestiary,
+                    ));
+                } else {
+                    ignored += 1;
+                }
+                Ok(())
+            })();
+            let disposition = if parsed.is_err() {
+                ControllerFieldDisposition::Malformed
+            } else if calls.len() > before {
+                ControllerFieldDisposition::Recognized
+            } else {
+                ControllerFieldDisposition::Ignored
+            };
+            diagnostics.record(target, field.index, field.payload.bit_len(), disposition);
+            parsed?;
         }
     }
     Ok((calls, ignored))
@@ -4416,6 +4509,38 @@ impl PeerLab {
             .and_then(|entry| entry.character_slot)
     }
 
+    /// Bounded field observations for a live peer; recognition is not application.
+    pub fn controller_field_diagnostics(
+        &self,
+        address: SocketAddrV4,
+    ) -> Option<&ControllerFieldDiagnostics> {
+        self.peers
+            .get(&address)
+            .map(|entry| &entry.controller_field_diagnostics)
+    }
+
+    /// Aggregate live-peer observations into at most 64 rows, without identities.
+    pub fn controller_field_totals(&self) -> ControllerFieldDiagnostics {
+        let mut totals = ControllerFieldDiagnostics::default();
+        for peer in self.peers.values() {
+            let diagnostics = &peer.controller_field_diagnostics;
+            totals.overflow = totals.overflow.saturating_add(diagnostics.overflow);
+            totals.malformed_bunches = totals
+                .malformed_bunches
+                .saturating_add(diagnostics.malformed_bunches);
+            for entry in &diagnostics.entries {
+                totals.record_count(
+                    entry.target,
+                    entry.index,
+                    entry.payload_bits,
+                    entry.disposition,
+                    entry.count,
+                );
+            }
+        }
+        totals
+    }
+
     /// Count current transport queues and primary joined-player phases without
     /// retaining per-peer detail or allocating output proportional to traffic.
     pub fn readiness_counts(&self) -> ReadinessCounts {
@@ -4628,6 +4753,7 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        controller_field_diagnostics: ControllerFieldDiagnostics::default(),
                         auth_request: None,
                         auth_identity: None,
                         auth_accepted: false,
@@ -4868,7 +4994,12 @@ impl PeerLab {
                                 plan.engine_net_version,
                                 entry.peer.connection_byte_order(),
                                 [entry.backend_proxy, entry.player_data, entry.bestiary],
+                                &mut entry.controller_field_diagnostics,
                             ) else {
+                                entry.controller_field_diagnostics.malformed_bunches = entry
+                                    .controller_field_diagnostics
+                                    .malformed_bunches
+                                    .saturating_add(1);
                                 bump(&mut self.stats.actor_bunches_malformed);
                                 continue;
                             };
@@ -10141,5 +10272,598 @@ mod tests {
         let mut config = PeerLabConfig::default();
         config.packet.sent_capacity = 0;
         assert!(config.validate().is_err());
+    }
+    mod controller_field_diagnostic_tests {
+        use super::super::super::{
+            actor_channel::{NetGuidRef, SubObjectClass},
+            archive::ByteOrder,
+            packet::{BitWriter, Bunch, BunchHeader, Name, Packet, write_packet},
+            sequencing::{PacketSequencer, wire_reliable_sequence},
+            session_open::ACTOR_CHANNEL_NAME_INDEX,
+        };
+        use super::*;
+
+        fn controller_peer(lab: &mut PeerLab) -> (UdpSocket, SocketAddrV4, PacketSequencer) {
+            let (socket, address, mut client) = acked_game_state_peer(lab);
+            // The base fixture has neither Login identity nor a controller channel.
+            // Open the actual controller transport and retain its allocated component
+            // GUIDs; never repurpose the fixture's GameState channel as a controller.
+            assert!(matches!(
+                lab.send_initial_controller_open(address),
+                InitialOpenOutcome::Committed
+            ));
+            ack_startup_packets(lab, &socket, &mut client);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            entry.player = Some(RegisteredPlayer {
+                player_id: i32::from(address.port()),
+                name_units: "AUTHORED-DIAGNOSTIC-PLAYER".encode_utf16().collect(),
+            });
+            assert!(
+                entry
+                    .peer
+                    .actor_channel_settled(entry.player_controller_channel.unwrap())
+            );
+            assert!(entry.backend_proxy.is_some());
+            assert!(entry.player_data.is_some());
+            assert!(entry.bestiary.is_some());
+            (socket, address, client)
+        }
+
+        fn field_block(target: BlockTarget, bound: u32, fields: &[(u32, Payload)]) -> ContentBlock {
+            let mut writer = BitWriter::new();
+            for (index, payload) in fields {
+                write_field_header(
+                    &mut writer,
+                    &FieldHeader {
+                        index: *index,
+                        payload: payload.clone(),
+                    },
+                    bound,
+                )
+                .unwrap();
+            }
+            ContentBlock {
+                has_rep_layout: false,
+                target,
+                payload: Payload::from_writer(writer),
+            }
+        }
+
+        fn subobject(guid: u32) -> BlockTarget {
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(guid),
+                class: SubObjectClass::ClientSent,
+            }
+        }
+
+        fn empty_payload() -> Payload {
+            Payload::from_writer(BitWriter::new())
+        }
+
+        fn receive_controller_payload(
+            lab: &mut PeerLab,
+            socket: &UdpSocket,
+            client: &mut PacketSequencer,
+            reliable_raw: u32,
+            payload: Payload,
+        ) {
+            let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+                unreachable!("IPv4 fixture")
+            };
+            let bytes = write_packet(
+                &Packet {
+                    magic: 0,
+                    header: client.header().unwrap(),
+                    info: None,
+                    bunches: vec![Bunch {
+                        header: BunchHeader {
+                            control: false,
+                            open: false,
+                            close: false,
+                            close_reason: None,
+                            paused: false,
+                            reliable: true,
+                            channel_index: lab.peers[&address].player_controller_channel.unwrap(),
+                            has_package_map_exports: false,
+                            has_must_be_mapped_guids: false,
+                            partial: false,
+                            reliable_sequence_raw: Some(reliable_raw),
+                            partial_initial: false,
+                            partial_final: false,
+                            channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+                        },
+                        payload,
+                    }],
+                },
+                &lab.config.packet.packet,
+            )
+            .unwrap();
+            client.commit().unwrap();
+            receive_authored_at(lab, socket, &bytes, Instant::now());
+        }
+
+        fn client_actor_body(lab: &PeerLab, blocks: Vec<ContentBlock>) -> Payload {
+            encode_actor_bunch_body(
+                &ActorBunchBody {
+                    spawn: None,
+                    blocks,
+                },
+                &actor_codec(
+                    lab.player_controller_open
+                        .as_ref()
+                        .unwrap()
+                        .engine_net_version,
+                    lab.config.packet.codec.order,
+                ),
+            )
+            .unwrap()
+        }
+
+        fn assert_diagnostics_eq(
+            actual: &ControllerFieldDiagnostics,
+            expected: &ControllerFieldDiagnostics,
+        ) {
+            assert_eq!(actual.entries, expected.entries);
+            assert_eq!(actual.overflow, expected.overflow);
+            assert_eq!(actual.malformed_bunches, expected.malformed_bunches);
+        }
+
+        #[test]
+        fn subobject_isolation_preserves_permitted_field_classification() {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let entry = &lab.peers[&address];
+            let backend = entry.backend_proxy.unwrap();
+            let player_data = entry.player_data.unwrap();
+            let bestiary = entry.bestiary.unwrap();
+            let components = [Some(backend), Some(player_data), Some(bestiary)];
+            // Avoid the default GUID (1), which requires export flags on wire.
+            // This authored reference is distinct from all permitted components.
+            let unknown = (2..)
+                .find(|guid| !components.contains(&Some(*guid)))
+                .unwrap();
+            let valid_blocks = vec![
+                field_block(
+                    subobject(player_data),
+                    PLAYER_DATA_FIELD_INDEX_BOUND,
+                    &[(SERVER_RECEIVE_LOADOUT, empty_payload())],
+                ),
+                field_block(
+                    subobject(bestiary),
+                    BESTIARY_MANAGER_FIELD_INDEX_BOUND,
+                    &[(SERVER_RECEIVE_BESTIARY_DATA, empty_payload())],
+                ),
+            ];
+            let valid_payload = client_actor_body(&lab, valid_blocks.clone());
+            let mut expected = ControllerFieldDiagnostics::default();
+            let (calls, ignored) = controller_initialisation_calls(
+                &valid_payload,
+                lab.player_controller_open
+                    .as_ref()
+                    .unwrap()
+                    .engine_net_version,
+                lab.config.packet.codec.order,
+                components,
+                &mut expected,
+            )
+            .unwrap();
+            assert_eq!(ignored, 0);
+            assert!(matches!(
+                calls.as_slice(),
+                [
+                    ControllerCall::Initialisation(InitialisationAnswer::Loadout),
+                    ControllerCall::Initialisation(InitialisationAnswer::Bestiary),
+                ]
+            ));
+            let mut blocks = vec![
+                // An actor RPC index on a known subobject must not dispatch on the actor.
+                field_block(
+                    subobject(backend),
+                    BACKEND_PROXY_FIELD_INDEX_BOUND,
+                    &[
+                        (SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload()),
+                        (SERVER_RECEIVE_LOADOUT, empty_payload()),
+                    ],
+                ),
+                // The Bestiary index also exists in other component caches. Matching
+                // the field number alone must not recognize it on PlayerData.
+                field_block(
+                    subobject(player_data),
+                    PLAYER_DATA_FIELD_INDEX_BOUND,
+                    &[(SERVER_RECEIVE_BESTIARY_DATA, empty_payload())],
+                ),
+                // Unknown subobjects are skipped before attempting their fields,
+                // including an otherwise recognized actor RPC and an invalid header.
+                field_block(
+                    subobject(unknown),
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    &[(SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload())],
+                ),
+                ContentBlock {
+                    has_rep_layout: true,
+                    target: subobject(unknown),
+                    payload: {
+                        let mut writer = BitWriter::new();
+                        writer.write_bit(true);
+                        Payload::from_writer(writer)
+                    },
+                },
+            ];
+            blocks.extend(valid_blocks);
+            let payload = client_actor_body(&lab, blocks);
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+            assert_eq!(diagnostics.malformed_bunches, 0);
+            assert_eq!(diagnostics.overflow, 0);
+            assert_eq!(diagnostics.entries.len(), 5);
+            assert!(
+                diagnostics
+                    .entries
+                    .iter()
+                    .all(|entry| entry.target == ControllerFieldTarget::PermittedSubobject)
+            );
+            let recognized: Vec<_> = diagnostics
+                .entries
+                .iter()
+                .filter(|entry| entry.disposition == ControllerFieldDisposition::Recognized)
+                .cloned()
+                .collect();
+            assert_eq!(recognized, expected.entries);
+            assert_eq!(
+                diagnostics
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.disposition == ControllerFieldDisposition::Ignored)
+                    .count(),
+                3
+            );
+            assert_eq!(lab.stats.controller_fields_ignored, 3);
+            assert_eq!(lab.stats.friends_lists_received, 0);
+            assert!(!lab.peers[&address].profiles.friend_ids_ready);
+            assert_eq!(lab.stats.initialisation_calls_ignored, 0);
+            assert_eq!(lab.stats.loadout_responses_received, 1);
+            assert_eq!(lab.stats.bestiary_responses_received, 1);
+            assert_eq!(lab.stats.initialisation_answers_ignored, 2);
+            assert_eq!(lab.stats.actor_bunches_malformed, 0);
+            assert_diagnostics_eq(&lab.controller_field_totals(), diagnostics);
+        }
+
+        #[test]
+        fn duplicate_reliable_controller_bunch_advances_diagnostics_and_domain_once() {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            let payload = actor_fields(false);
+            let accepted_before = lab.stats.data_accepted;
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload.clone());
+            let first = lab.controller_field_diagnostics(address).unwrap().clone();
+            assert_eq!(first.entries.len(), 2);
+            assert!(first.entries.iter().all(|entry| entry.count == 1));
+            assert_eq!(
+                first.entries[0].disposition,
+                ControllerFieldDisposition::Recognized
+            );
+            assert_eq!(
+                first.entries[1].disposition,
+                ControllerFieldDisposition::Ignored
+            );
+            assert_eq!(lab.stats.friends_lists_received, 1);
+            assert!(lab.peers[&address].profiles.friend_ids_ready);
+            assert_eq!(lab.stats.controller_fields_ignored, 1);
+            assert_eq!(lab.stats.initialisation_calls_ignored, 0);
+            assert_eq!(lab.stats.actor_duplicate_reliable, 0);
+            // Commit a fresh packet header while reusing the reliable sequence.
+            // Replaying identical datagram bytes would only test packet rejection.
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            assert_eq!(lab.stats.data_accepted, accepted_before + 2);
+            assert_eq!(lab.stats.actor_duplicate_reliable, 1);
+            assert_eq!(lab.stats.friends_lists_received, 1);
+            assert_eq!(lab.stats.controller_fields_ignored, 1);
+            assert_eq!(lab.stats.initialisation_calls_ignored, 0);
+            assert_eq!(lab.stats.actor_bunches_malformed, 0);
+            assert_diagnostics_eq(lab.controller_field_diagnostics(address).unwrap(), &first);
+            assert_diagnostics_eq(&lab.controller_field_totals(), &first);
+        }
+
+        #[test]
+        fn peer_removal_and_shutdown_drop_only_live_controller_diagnostics() {
+            let mut lab = prospect_refresh_lab();
+            let (first_socket, first, mut first_client) = controller_peer(&mut lab);
+            let (second_socket, second, mut second_client) = controller_peer(&mut lab);
+            for (socket, client, payload) in [
+                (&first_socket, &mut first_client, actor_fields(true)),
+                (&second_socket, &mut second_client, actor_fields(false)),
+            ] {
+                let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                receive_controller_payload(&mut lab, socket, client, raw, payload);
+            }
+            let first_diagnostics = lab.controller_field_diagnostics(first).unwrap();
+            assert_eq!(first_diagnostics.entries.len(), 2);
+            assert_eq!(first_diagnostics.malformed_bunches, 1);
+            assert!(
+                !lab.peers[&first].profiles.friend_ids_ready,
+                "malformed trailing input must not apply the preceding recognized call"
+            );
+            assert_eq!(lab.stats.friends_lists_received, 1);
+            assert_eq!(lab.stats.controller_fields_ignored, 1);
+            let second_diagnostics = lab.controller_field_diagnostics(second).unwrap().clone();
+            assert_eq!(second_diagnostics.entries.len(), 2);
+            assert!(
+                second_diagnostics
+                    .entries
+                    .iter()
+                    .all(|entry| entry.count == 1)
+            );
+            let totals = lab.controller_field_totals();
+            assert_eq!(totals.entries.len(), 2);
+            assert!(totals.entries.iter().all(|entry| entry.count == 2));
+            assert_eq!(totals.malformed_bunches, 1);
+            assert_eq!(totals.overflow, 0);
+            lab.remove_peer(first).unwrap();
+            assert!(lab.controller_field_diagnostics(first).is_none());
+            assert_diagnostics_eq(
+                lab.controller_field_diagnostics(second).unwrap(),
+                &second_diagnostics,
+            );
+            assert_diagnostics_eq(&lab.controller_field_totals(), &second_diagnostics);
+            assert_eq!(lab.peer_count(), 1);
+            assert_eq!(lab.shutdown(), 1);
+            assert!(lab.controller_field_diagnostics(first).is_none());
+            assert!(lab.controller_field_diagnostics(second).is_none());
+            assert_diagnostics_eq(
+                &lab.controller_field_totals(),
+                &ControllerFieldDiagnostics::default(),
+            );
+            assert_eq!(lab.peer_count(), 0);
+            assert_eq!(lab.shutdown(), 0);
+        }
+
+        #[test]
+        fn aggregate_controller_diagnostics_are_bounded_saturating_metadata() {
+            let mut lab = prospect_refresh_lab();
+            let (_first_socket, first, _) = acked_game_state_peer(&mut lab);
+            let (_second_socket, second, _) = acked_game_state_peer(&mut lab);
+            for (address, start) in [(first, 0), (second, 64)] {
+                let diagnostics = &mut lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .controller_field_diagnostics;
+                for index in start..start + 65 {
+                    diagnostics.record_count(
+                        ControllerFieldTarget::Actor,
+                        index,
+                        8,
+                        ControllerFieldDisposition::Ignored,
+                        u64::MAX,
+                    );
+                }
+                diagnostics.record(
+                    ControllerFieldTarget::Actor,
+                    start + 65,
+                    8,
+                    ControllerFieldDisposition::Ignored,
+                );
+                diagnostics.malformed_bunches = u64::MAX;
+                assert_eq!(diagnostics.entries.len(), 64);
+                assert_eq!(diagnostics.overflow, u64::MAX);
+            }
+            let totals = lab.controller_field_totals();
+            assert_eq!(totals.entries.len(), 64);
+            assert!(totals.entries.iter().all(|entry| entry.count == u64::MAX));
+            assert_eq!(totals.overflow, u64::MAX);
+            assert_eq!(totals.malformed_bunches, u64::MAX);
+            let value = serde_json::to_value(&totals).unwrap();
+            let mut keys: Vec<_> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["entries", "malformed_bunches", "overflow"]);
+            for entry in value["entries"].as_array().unwrap() {
+                let mut keys: Vec<_> = entry
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    ["count", "disposition", "index", "payload_bits", "target"]
+                );
+            }
+            // With neither peer's own overflow involved, 128 distinct rows must
+            // still be bounded to 64 aggregate rows and charge the discarded counts.
+            for address in [first, second] {
+                let diagnostics = &mut lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .controller_field_diagnostics;
+                diagnostics.overflow = 0;
+                diagnostics.malformed_bunches = 0;
+                for entry in &mut diagnostics.entries {
+                    entry.count = 1;
+                }
+            }
+            let totals = lab.controller_field_totals();
+            assert_eq!(totals.entries.len(), 64);
+            assert_eq!(totals.overflow, 64);
+            assert_eq!(totals.malformed_bunches, 0);
+            // Identical rows from distinct peers saturate their aggregate count.
+            let shared = lab.peers[&first].controller_field_diagnostics.entries[0].clone();
+            for address in [first, second] {
+                let diagnostics = &mut lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .controller_field_diagnostics;
+                diagnostics.entries = vec![shared.clone()];
+                diagnostics.entries[0].count = u64::MAX;
+            }
+            let totals = lab.controller_field_totals();
+            assert_eq!(totals.entries.len(), 1);
+            assert_eq!(totals.entries[0].count, u64::MAX);
+            assert_eq!(totals.overflow, 0);
+        }
+
+        fn actor_fields(trailing: bool) -> Payload {
+            let mut writer = BitWriter::new();
+            for index in [SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, 0] {
+                write_field_header(
+                    &mut writer,
+                    &FieldHeader {
+                        index,
+                        payload: empty_payload(),
+                    },
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                )
+                .unwrap();
+            }
+            let fields = Payload::from_writer(writer);
+            let fields = if trailing {
+                // An incomplete header after two complete observations.
+                let mut writer = BitWriter::new();
+                let mut reader = fields.reader();
+                while !reader.at_end() {
+                    writer.write_bit(reader.read_bit());
+                }
+                writer.write_bit(true);
+                Payload::from_writer(writer)
+            } else {
+                fields
+            };
+            encode_actor_bunch_body(
+                &ActorBunchBody {
+                    spawn: None,
+                    blocks: vec![ContentBlock {
+                        has_rep_layout: false,
+                        target: BlockTarget::Actor,
+                        payload: fields,
+                    }],
+                },
+                &actor_codec(0, ByteOrder::Little),
+            )
+            .unwrap()
+        }
+
+        #[test]
+        fn mixed_fields_are_observations_and_trailing_failure_returns_no_calls() {
+            let mut diagnostics = ControllerFieldDiagnostics::default();
+            let result = controller_initialisation_calls(
+                &actor_fields(false),
+                0,
+                ByteOrder::Little,
+                [None; 3],
+                &mut diagnostics,
+            )
+            .unwrap();
+            assert_eq!(result.0.len(), 1);
+            assert_eq!(result.1, 1);
+            assert_eq!(diagnostics.entries.len(), 2);
+            assert_eq!(
+                diagnostics.entries[0].disposition,
+                ControllerFieldDisposition::Recognized
+            );
+            assert_eq!(
+                diagnostics.entries[1].disposition,
+                ControllerFieldDisposition::Ignored
+            );
+            let mut diagnostics = ControllerFieldDiagnostics::default();
+            assert!(
+                controller_initialisation_calls(
+                    &actor_fields(true),
+                    0,
+                    ByteOrder::Little,
+                    [None; 3],
+                    &mut diagnostics
+                )
+                .is_err()
+            );
+            assert_eq!(diagnostics.entries.len(), 2);
+        }
+
+        #[test]
+        fn malformed_recognized_payload_records_disposition_without_applying_calls() {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let payload = client_actor_body(
+                &lab,
+                vec![field_block(
+                    BlockTarget::Actor,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    &[
+                        (SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload()),
+                        (SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, {
+                            // Present ChrSlot, missing its required Int payload.
+                            let mut writer = BitWriter::new();
+                            writer.write_bit(true);
+                            Payload::from_writer(writer)
+                        }),
+                    ],
+                )],
+            );
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+
+            let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+            assert_eq!(diagnostics.entries.len(), 2);
+            assert_eq!(diagnostics.malformed_bunches, 1);
+            assert_eq!(diagnostics.overflow, 0);
+            assert_eq!(
+                diagnostics.entries[0].disposition,
+                ControllerFieldDisposition::Recognized
+            );
+            let malformed = &diagnostics.entries[1];
+            assert_eq!(malformed.target, ControllerFieldTarget::Actor);
+            assert_eq!(
+                malformed.index,
+                SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
+            );
+            assert_eq!(malformed.payload_bits, 1);
+            assert_eq!(malformed.disposition, ControllerFieldDisposition::Malformed);
+            assert_eq!(malformed.count, 1);
+            assert_eq!(lab.stats.actor_bunches_malformed, 1);
+            assert_eq!(lab.stats.friends_lists_received, 0);
+            assert_eq!(lab.stats.controller_fields_ignored, 0);
+            assert!(!lab.peers[&address].profiles.friend_ids_ready);
+            assert_eq!(lab.character_slot(address), None);
+            assert_diagnostics_eq(&lab.controller_field_totals(), diagnostics);
+        }
+
+        #[test]
+        fn observations_are_bounded_and_saturate_without_cross_target_coalescing() {
+            let mut diagnostics = ControllerFieldDiagnostics::default();
+            for index in 0..1000 {
+                diagnostics.record(
+                    ControllerFieldTarget::Actor,
+                    index,
+                    8,
+                    ControllerFieldDisposition::Ignored,
+                );
+            }
+            assert_eq!(diagnostics.entries.len(), 64);
+            assert_eq!(diagnostics.overflow, 936);
+            diagnostics.entries[0].count = u64::MAX;
+            diagnostics.record(
+                ControllerFieldTarget::Actor,
+                0,
+                8,
+                ControllerFieldDisposition::Ignored,
+            );
+            assert_eq!(diagnostics.entries[0].count, u64::MAX);
+            diagnostics.record(
+                ControllerFieldTarget::PermittedSubobject,
+                0,
+                8,
+                ControllerFieldDisposition::Ignored,
+            );
+            assert_eq!(diagnostics.overflow, 937);
+            assert_eq!(diagnostics.entries[0].target, ControllerFieldTarget::Actor);
+        }
     }
 }
