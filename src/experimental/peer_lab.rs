@@ -192,8 +192,8 @@ use crate::{
 };
 
 use super::actor_channel::{
-    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, encode_actor_bunch_body,
-    read_client_actor_bunch_body,
+    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
+    encode_actor_bunch_body, read_client_actor_bunch_body,
 };
 use super::actor_open::{Block, Reference};
 use super::admission::{
@@ -250,6 +250,55 @@ use super::rep_rpc::{
     SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, parse_begin_player_initialisation,
     read_field_header,
 };
+use super::rep_rpc::{
+    FieldHeader, RpcArgument, RpcItem, encode_rpc_payload, player_controller_rpc_parameters,
+    write_field_header,
+};
+
+/// Explicit caller-authored startup actions. Their order and necessity are not
+/// qualified against a stock client. No actions are enabled by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerStartupAction {
+    FlushLevelStreaming,
+    RestartPawn,
+}
+
+fn controller_startup_payload(
+    action: ControllerStartupAction,
+    field_index_bound: u32,
+    pawn: Option<u32>,
+    codec: &RepLayoutCodec,
+) -> Result<Payload> {
+    let (index, arguments) = match action {
+        ControllerStartupAction::FlushLevelStreaming => (23, vec![]),
+        ControllerStartupAction::RestartPawn => (
+            40,
+            vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(
+                super::actor_channel::NetGuidRef::plain(pawn.context("startup pawn unavailable")?),
+            ))])],
+        ),
+    };
+    let parameters =
+        player_controller_rpc_parameters(index).context("startup RPC layout missing")?;
+    let payload = encode_rpc_payload(&parameters, &arguments, codec)?;
+    let mut writer = super::packet::BitWriter::new();
+    write_field_header(
+        &mut writer,
+        &FieldHeader { index, payload },
+        field_index_bound,
+    )?;
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![ContentBlock {
+                has_rep_layout: false,
+                target: BlockTarget::Actor,
+                payload: Payload::from_writer(writer),
+            }],
+        },
+        &codec.actor,
+    )
+}
 use super::server_fps::ServerFpsMeter;
 use super::session_open::{
     ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PathSegment,
@@ -909,6 +958,10 @@ pub struct SessionCounts {
 /// Transport settlement is not client actor-spawn or geometry readiness proof.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ReadinessCounts {
+    /// Queued means accepted by reliable transport, not ACKed or spawned.
+    pub controller_startup_actions_queued: usize,
+    pub controller_startup_actions_pending: usize,
+    pub controller_startup_sequences_failed: usize,
     pub initial_open_outcomes: InitialOpenReadiness,
     pub pending_control_replies: usize,
     pub pending_initial_opens: usize,
@@ -1243,6 +1296,11 @@ enum InitialOpenOutcome {
 }
 
 struct PeerEntry {
+    controller_startup_pawn_guid: Option<u32>,
+    controller_startup_next: Option<usize>,
+    controller_startup_queued: usize,
+    controller_startup_failed: bool,
+    controller_startup_retry_ready: bool,
     peer: LabPeer,
     auth_request: Option<u64>,
     auth_identity: Option<u64>,
@@ -1565,6 +1623,8 @@ impl GameStateSession {
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
+    controller_startup: Option<Vec<ControllerStartupAction>>,
+    controller_startup_bound: u32,
     socket: UdpSocket,
     authenticator: Option<AuthClient>,
     authority: CookieAuthority,
@@ -1716,6 +1776,8 @@ impl PeerLab {
             admitting: true,
             peak_peers: 0,
             player_controller_open: None,
+            controller_startup: None,
+            controller_startup_bound: BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
             pawn_open: None,
             pawn_restore_item_rows: Vec::new(),
             inventory_restore: None,
@@ -4053,6 +4115,57 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Configure at most 32 explicit actions once, before admitting any peers.
+    /// Actions retain caller order and start only after all initial opens queue
+    /// successfully and the controller and referenced pawn channels settle.
+    /// This conservative ACK policy does not establish geometry or possession.
+    pub fn enable_controller_startup(
+        &mut self,
+        profile: &ReleaseProfile,
+        actions: Vec<ControllerStartupAction>,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "configure controller startup before peers"
+        );
+        ensure!(
+            self.controller_startup.is_none(),
+            "controller startup already configured"
+        );
+        ensure!(
+            (1..=32).contains(&actions.len()),
+            "controller startup needs 1..=32 actions"
+        );
+        profile.validate()?;
+        let controller = self
+            .player_controller_open
+            .as_ref()
+            .context("controller startup requires a controller plan")?;
+        ensure!(
+            profile.engine_network_version == controller.engine_net_version,
+            "startup release differs from controller plan"
+        );
+        let field_index_bound = profile.class_net_cache.bp_icarus_player_controller_survival;
+        ensure!(
+            !actions.contains(&ControllerStartupAction::RestartPawn) || self.pawn_open.is_some(),
+            "restart requires a pawn plan"
+        );
+        let codec = RepLayoutCodec {
+            actor: actor_codec(
+                controller.engine_net_version,
+                super::archive::ByteOrder::Little,
+            ),
+            checksums: false,
+            limits: Default::default(),
+        };
+        for &action in &actions {
+            controller_startup_payload(action, field_index_bound, Some(2), &codec)?;
+        }
+        self.controller_startup_bound = field_index_bound;
+        self.controller_startup = Some(actions);
+        Ok(())
+    }
+
     /// Open each joined peer's PlayerController with `plan` (module docs):
     /// registers the plan's level chain in the driver-wide GUID cache first,
     /// as the original does at world start. Requires admission. Configuration
@@ -4287,6 +4400,19 @@ impl PeerLab {
     pub fn readiness_counts(&self) -> ReadinessCounts {
         let mut counts = ReadinessCounts::default();
         for entry in self.peers.values() {
+            counts.controller_startup_actions_queued += entry.controller_startup_queued;
+            counts.controller_startup_sequences_failed +=
+                usize::from(entry.controller_startup_failed);
+            if let (Some(actions), Some(next)) =
+                (&self.controller_startup, entry.controller_startup_next)
+            {
+                counts.controller_startup_actions_pending += actions.len() - next;
+            } else if let Some(actions) = &self.controller_startup
+                && entry.initial_opens.is_some()
+                && !entry.controller_startup_failed
+            {
+                counts.controller_startup_actions_pending += actions.len();
+            }
             let outcomes = &entry.initial_open_outcomes;
             let initial = &mut counts.initial_open_outcomes;
             initial.configured.add(&outcomes.configured);
@@ -4491,6 +4617,11 @@ impl PeerLab {
                         queued_pawn_temperature: None,
                         peer,
                         pawn_uid: None,
+                        controller_startup_pawn_guid: None,
+                        controller_startup_next: None,
+                        controller_startup_queued: 0,
+                        controller_startup_failed: false,
+                        controller_startup_retry_ready: false,
                         pending_pawn_uid: None,
                         restored_character: None,
                         restored_modifiers: Vec::new(),
@@ -4579,6 +4710,9 @@ impl PeerLab {
                         entry.ack_pending = true;
                         if !summary.acked.is_empty() || !summary.naked.is_empty() {
                             entry.delivery_progress_at = Some(now);
+                            if entry.controller_startup_next.is_some() {
+                                entry.controller_startup_retry_ready = true;
+                            }
                             entry.ack_capacity_blocked = false;
                             if entry.pending_control_reply.is_some() {
                                 entry.control_reply_retry_ready = true;
@@ -5793,6 +5927,96 @@ impl PeerLab {
 
     /// Retry only after packet notifications release capacity. In particular,
     /// merely polling an unchanged full queue cannot spin or consume more IDs.
+    fn retry_controller_startup(&mut self) {
+        let Some(actions) = &self.controller_startup else {
+            return;
+        };
+        let Some(plan) = &self.player_controller_open else {
+            return;
+        };
+        let needs_pawn = actions.contains(&ControllerStartupAction::RestartPawn);
+        let addresses: Vec<_> = self.peers.keys().copied().collect();
+        for address in addresses {
+            while let Some(entry) = self.peers.get_mut(&address) {
+                let Some(next) = entry.controller_startup_next else {
+                    break;
+                };
+                if !entry.controller_startup_retry_ready {
+                    break;
+                }
+                if next == actions.len() {
+                    entry.controller_startup_next = None;
+                    entry.controller_startup_retry_ready = false;
+                    break;
+                }
+                let Some(channel) = entry.player_controller_channel else {
+                    entry.controller_startup_failed = true;
+                    entry.controller_startup_next = None;
+                    break;
+                };
+                // A reliable ACK is a conservative prerequisite for bare GUID
+                // references across channels. It proves no gameplay readiness.
+                if !entry.peer.actor_channel_settled(channel)
+                    || (needs_pawn
+                        && self.pawn_open.as_ref().is_none_or(|(_, channel, _)| {
+                            !entry.peer.actor_channel_settled(*channel)
+                        }))
+                {
+                    entry.controller_startup_retry_ready = false;
+                    break;
+                }
+                let codec = RepLayoutCodec {
+                    actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+                    checksums: false,
+                    limits: Default::default(),
+                };
+                let pawn = if needs_pawn {
+                    entry
+                        .controller_startup_pawn_guid
+                        .context("startup pawn GUID unavailable")
+                        .map(Some)
+                } else {
+                    Ok(None)
+                };
+                let sent = pawn
+                    .and_then(|pawn| {
+                        controller_startup_payload(
+                            actions[next],
+                            self.controller_startup_bound,
+                            pawn,
+                            &codec,
+                        )
+                    })
+                    .and_then(|payload| {
+                        entry.peer.reliable_actor_bunch_datagrams(channel, payload)
+                    });
+                match sent {
+                    Ok(sent) => {
+                        entry.controller_startup_next = Some(next + 1);
+                        entry.controller_startup_queued += 1;
+                        entry.ack_pending = false;
+                        // Transport owns loss repair after queue acceptance.
+                        // Socket failure must not enqueue the same call twice.
+                        for datagram in &sent.datagrams {
+                            if !matches!(self.socket.send_to(datagram, address), Ok(length) if length == datagram.len())
+                            {
+                                bump(&mut self.stats.io_errors);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if !transport_capacity_can_drain(entry, &error, channel) {
+                            entry.controller_startup_failed = true;
+                            entry.controller_startup_next = None;
+                        }
+                        entry.controller_startup_retry_ready = false;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn retry_initial_opens(&mut self) {
         let ready: Vec<_> = self
             .peers
@@ -5820,6 +6044,14 @@ impl PeerLab {
             let Some(stage) = pending.remaining.front().copied() else {
                 if let Some(entry) = self.peers.get_mut(&address) {
                     entry.initial_opens = None;
+                    if self.controller_startup.is_some() {
+                        if entry.initial_open_outcomes.failed.is_empty() {
+                            entry.controller_startup_next = Some(0);
+                            entry.controller_startup_retry_ready = true;
+                        } else {
+                            entry.controller_startup_failed = true;
+                        }
+                    }
                 }
                 // Exhausted means no initial work remains, not that every open
                 // succeeded: permanent stage errors retain the existing policy.
@@ -5871,6 +6103,7 @@ impl PeerLab {
                     return;
                 }
                 InitialOpenOutcome::Failed if matches!(stage, InitialOpenStage::Controller) => {
+                    entry.controller_startup_failed = self.controller_startup.is_some();
                     for &stage in pending.remaining.iter().skip(1) {
                         entry.initial_open_outcomes.skipped.record(stage);
                     }
@@ -6044,6 +6277,7 @@ impl PeerLab {
         };
         entry.pending_pawn_uid = None;
         entry.pawn_uid = claimed;
+        entry.controller_startup_pawn_guid = cache.actor_guid(state.key).ok();
         entry.pawn_temperature = Some(temperature);
         entry.queued_pawn_temperature = Some(temperature);
         entry.pawn_character_state = Some(state.content.character_state);
@@ -6524,6 +6758,7 @@ impl PeerLab {
         }
         self.retry_control_replies();
         self.retry_initial_opens();
+        self.retry_controller_startup();
         self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
@@ -7965,6 +8200,361 @@ mod tests {
             lab.readiness_counts().initial_open_outcomes,
             InitialOpenReadiness::default()
         );
+    }
+
+    #[test]
+    fn controller_startup_configuration_is_bounded_atomic_and_opt_in() {
+        use ControllerStartupAction::{FlushLevelStreaming, RestartPawn};
+        let mut lab = prospect_refresh_lab();
+        assert!(lab.controller_startup.is_none());
+        for actions in [vec![], vec![FlushLevelStreaming; 33], vec![RestartPawn]] {
+            assert!(
+                lab.enable_controller_startup(&ReleaseProfile::release_3_0_32(), actions)
+                    .is_err()
+            );
+            assert!(lab.controller_startup.is_none());
+        }
+        lab.enable_controller_startup(&ReleaseProfile::release_3_0_32(), vec![FlushLevelStreaming])
+            .unwrap();
+        assert!(
+            lab.enable_controller_startup(
+                &ReleaseProfile::release_3_0_32(),
+                vec![FlushLevelStreaming]
+            )
+            .is_err()
+        );
+        assert_eq!(lab.controller_startup, Some(vec![FlushLevelStreaming]));
+        let (_socket, _, _) = acked_game_state_peer(&mut lab);
+        assert!(
+            lab.enable_controller_startup(
+                &ReleaseProfile::release_3_0_32(),
+                vec![FlushLevelStreaming]
+            )
+            .is_err()
+        );
+        assert_eq!(lab.controller_startup, Some(vec![FlushLevelStreaming]));
+    }
+
+    #[test]
+    fn controller_startup_payload_targets_actor_and_resolves_each_pawn() {
+        use super::super::{
+            actor_channel::{NetGuidRef, read_actor_bunch_body},
+            archive::ByteOrder,
+            rep_rpc::parse_rpc_payload,
+        };
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let codec = RepLayoutCodec {
+                actor: actor_codec(30, order),
+                checksums: false,
+                limits: Default::default(),
+            };
+            for pawn in [2, 42] {
+                let payload = controller_startup_payload(
+                    ControllerStartupAction::RestartPawn,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    Some(pawn),
+                    &codec,
+                )
+                .unwrap();
+                let body =
+                    read_actor_bunch_body(&mut payload.reader(), false, &codec.actor).unwrap();
+                assert!(body.spawn.is_none());
+                assert_eq!(body.blocks.len(), 1);
+                let block = &body.blocks[0];
+                assert!(matches!(block.target, BlockTarget::Actor));
+                assert!(!block.has_rep_layout);
+                let mut reader = block.payload.reader();
+                let field = read_field_header(
+                    &mut reader,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    codec.actor.limits.max_payload_bits,
+                )
+                .unwrap();
+                assert!(reader.at_end());
+                assert_eq!(field.index, 40);
+                let arguments = parse_rpc_payload(
+                    &field.payload,
+                    &player_controller_rpc_parameters(40).unwrap(),
+                    &codec,
+                )
+                .unwrap();
+                assert_eq!(
+                    arguments,
+                    vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(
+                        NetGuidRef::plain(pawn)
+                    ))])]
+                );
+            }
+            assert!(
+                controller_startup_payload(
+                    ControllerStartupAction::RestartPawn,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    None,
+                    &codec
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn controller_startup_waits_for_open_ack_and_retains_order_without_poll_replays() {
+        use ControllerStartupAction::FlushLevelStreaming;
+        let mut lab = prospect_refresh_lab();
+        lab.config.packet.sent_capacity = 8;
+        lab.enable_controller_startup(
+            &ReleaseProfile::release_3_0_32(),
+            vec![FlushLevelStreaming, FlushLevelStreaming],
+        )
+        .unwrap();
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        // The authored fixture supplies an already-settled actor channel. A
+        // startup cursor is installed only by the normal open sequence below.
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 0);
+        lab.retry_controller_startup();
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 0);
+        lab.game_state_open = None;
+        assert!(lab.send_player_controller_open(address));
+        assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 2);
+        lab.retry_controller_startup();
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 0);
+        assert!(!lab.peers[&address].controller_startup_retry_ready);
+        let snapshot = lab.readiness_counts();
+        for _ in 0..4 {
+            lab.retry_controller_startup();
+        }
+        assert_eq!(lab.readiness_counts(), snapshot);
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        // Occupy the bounded sent-record ring with independently authored
+        // ACK-only packets while the actor channel itself remains settled.
+        let capacity = lab.peers[&address].peer.config().sent_capacity;
+        for _ in 0..capacity {
+            let datagram = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&datagram, address));
+        }
+        lab.retry_controller_startup();
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 0);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 2);
+        assert_eq!(
+            lab.readiness_counts().controller_startup_sequences_failed,
+            0
+        );
+        let pressure = lab.readiness_counts();
+        for _ in 0..4 {
+            lab.retry_controller_startup();
+        }
+        assert_eq!(lab.readiness_counts(), pressure);
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        lab.retry_controller_startup();
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 1);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 1);
+        lab.retry_controller_startup();
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 1);
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        lab.retry_controller_startup();
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 2);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 0);
+        assert_eq!(
+            lab.readiness_counts().controller_startup_sequences_failed,
+            0
+        );
+        lab.remove_peer(address).unwrap();
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    fn ack_startup_packets(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        client: &mut super::super::sequencing::PacketSequencer,
+    ) {
+        use super::super::packet::{Packet, Receiver, read_packet, write_packet};
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let count = lab.peers[&address]
+            .peer
+            .sequencer()
+            .notify()
+            .sent_records()
+            .len();
+        assert!(count > 0);
+        let config = super::super::packet::PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        for _ in 0..count {
+            let mut bytes = [0; 2048];
+            let length = socket.recv(&mut bytes).unwrap();
+            let packet = read_packet(&bytes[..length], &config).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        let bytes = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        client.commit().unwrap();
+        receive_authored_at(lab, socket, &bytes, Instant::now());
+    }
+
+    #[test]
+    fn controller_startup_aborts_after_failed_initial_open_without_publishing() {
+        let mut lab = prospect_refresh_lab();
+        lab.enable_controller_startup(
+            &ReleaseProfile::release_3_0_32(),
+            vec![ControllerStartupAction::FlushLevelStreaming],
+        )
+        .unwrap();
+        let (_socket, address, _) = acked_game_state_peer(&mut lab);
+        // Authored terminal initial-stage failure: it cannot become a startup
+        // success merely because the remaining stage queue is now empty.
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.initial_open_outcomes.failed.pawn = 1;
+        entry.initial_opens = Some(PendingInitialOpens {
+            remaining: VecDeque::new(),
+            controller_guids: None,
+            player_state_is_host: true,
+            begin_slot: None,
+            retry_ready: true,
+        });
+        lab.retry_initial_opens();
+        lab.retry_controller_startup();
+        assert_eq!(
+            lab.readiness_counts().controller_startup_sequences_failed,
+            1
+        );
+        assert_eq!(lab.readiness_counts().controller_startup_actions_queued, 0);
+        assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 0);
+    }
+
+    #[test]
+    fn controller_startup_restart_uses_each_opened_pawn_and_waits_for_its_ack() {
+        use super::super::{
+            actor_channel::read_actor_bunch_body,
+            packet::{Receiver, read_packet},
+            pawn_open::PAWN_CHANNEL_INDEX,
+            rep_rpc::parse_rpc_payload,
+        };
+        let profile = ReleaseProfile::release_3_0_32();
+        let mut lab = prospect_refresh_lab();
+        lab.enable_pawn_open(
+            profile
+                .pawn_open_plan(PeerLabAdmission::default().map_url)
+                .unwrap()
+                .unwrap(),
+            PAWN_CHANNEL_INDEX,
+            PawnContent::default(),
+        )
+        .unwrap();
+        lab.enable_controller_startup(&profile, vec![ControllerStartupAction::RestartPawn])
+            .unwrap();
+        let mut fixtures = Vec::new();
+        for connection in [1, 2] {
+            let (socket, address, client) = acked_game_state_peer(&mut lab);
+            lab.peers.get_mut(&address).unwrap().connection_id = Some(connection);
+            fixtures.push((socket, address, client, connection));
+        }
+        lab.game_state_open = None;
+        let mut pawn_guids = Vec::new();
+        for (socket, address, client, connection) in &mut fixtures {
+            assert!(lab.send_player_controller_open(*address));
+            let expected = lab.guid_cache.actor_guid(pawn_key(*connection)).unwrap();
+            assert_eq!(
+                lab.peers[address].controller_startup_pawn_guid,
+                Some(expected)
+            );
+            pawn_guids.push(expected);
+            lab.retry_controller_startup();
+            assert_eq!(lab.peers[address].controller_startup_queued, 0);
+            ack_startup_packets(&mut lab, socket, client);
+            // Keep only the pawn channel unsettled, independently of the
+            // controller. This authored reliable body is transport test data.
+            let codec = RepLayoutCodec {
+                actor: actor_codec(
+                    profile.engine_network_version,
+                    super::super::archive::ByteOrder::Little,
+                ),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let payload = controller_startup_payload(
+                ControllerStartupAction::FlushLevelStreaming,
+                lab.controller_startup_bound,
+                None,
+                &codec,
+            )
+            .unwrap();
+            let sent = lab
+                .peers
+                .get_mut(address)
+                .unwrap()
+                .peer
+                .reliable_actor_bunch_datagrams(PAWN_CHANNEL_INDEX, payload)
+                .unwrap();
+            assert!(lab.send_all(&sent, *address));
+            assert!(
+                lab.peers[address].peer.actor_channel_settled(
+                    lab.player_controller_open.as_ref().unwrap().channel_index
+                )
+            );
+            lab.retry_controller_startup();
+            assert_eq!(lab.peers[address].controller_startup_queued, 0);
+            ack_startup_packets(&mut lab, socket, client);
+            lab.retry_controller_startup();
+            assert_eq!(lab.peers[address].controller_startup_queued, 1);
+            let mut bytes = [0; 2048];
+            let length = socket.recv(&mut bytes).unwrap();
+            let packet = read_packet(
+                &bytes[..length],
+                &super::super::packet::PacketConfig {
+                    receiver: Receiver::Client,
+                    ..lab.config.packet.packet
+                },
+            )
+            .unwrap();
+            assert_eq!(packet.bunches.len(), 1);
+            assert_eq!(
+                packet.bunches[0].header.channel_index,
+                lab.player_controller_open.as_ref().unwrap().channel_index
+            );
+            let body =
+                read_actor_bunch_body(&mut packet.bunches[0].payload.reader(), false, &codec.actor)
+                    .unwrap();
+            let field = read_field_header(
+                &mut body.blocks[0].payload.reader(),
+                lab.controller_startup_bound,
+                codec.actor.limits.max_payload_bits,
+            )
+            .unwrap();
+            assert_eq!(field.index, 40);
+            let args = parse_rpc_payload(
+                &field.payload,
+                &player_controller_rpc_parameters(40).unwrap(),
+                &codec,
+            )
+            .unwrap();
+            assert_eq!(
+                args,
+                vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(
+                    super::super::actor_channel::NetGuidRef::plain(expected)
+                ))])]
+            );
+        }
+        assert_ne!(pawn_guids[0], pawn_guids[1]);
+        lab.shutdown();
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
     }
 
     #[test]

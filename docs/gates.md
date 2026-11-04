@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-02
+Last reconciled: 2026-11-04
 
 ## Before any C001 original-code case
 
@@ -104,7 +104,8 @@ Last reconciled: 2026-11-02
 - Each runtime experiment requires its own case scope and current launcher
   session; historical authorization windows remain expired (F-218, F-252).
 - The user's standing instruction (2026-10-28, renewed through
-  2026-11-02; F-968, M-1183) authorizes offline and online research: network
+  2026-11-04; F-968, M-1191) authorizes offline and online
+  research: network
   and Steam access, fetching and running the matched official dedicated server,
   original-runtime runs, and connected stock-client scenarios against the
   original or the native server, without per-scenario approval. This replaces
