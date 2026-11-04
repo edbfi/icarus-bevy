@@ -293,5 +293,5 @@ Limits: 256 MiB charged bytes, 1,048,576 typed elements; typing scratch releases
 Exhaustion rejects all, including dropped records; RSS unbounded (F-920).
 `inspect-save --candidate-check --source prospect.json`: counts, retained charges,
 `required_decode_limits`/`remaining_headroom`, no names/values/import authority.
-Headroom guarantees no further recorder preflight. Meanings/original round trips
+Headroom cannot guarantee another recorder's preflight. Meanings/original round trips
 unvalidated; [synthetic workload](synthetic-workload.md): native scheduling/durability.
