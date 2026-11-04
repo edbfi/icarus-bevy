@@ -152,29 +152,21 @@ impl Options {
         if self.controller_startup.is_empty() {
             return Ok(vec![]);
         }
-        profile.validate()?;
-        ensure!(
-            profile.player_controller.is_some(),
-            "startup requires a controller profile"
-        );
+        let controller = profile
+            .player_controller_open_plan(PROBE_MAP, [0.0; 3])?
+            .context("startup requires a controller profile")?;
+        let pawn = profile.pawn_open_plan(PROBE_MAP)?;
         let actions: Vec<_> = self
             .controller_startup
             .iter()
             .map(|action| action.action())
             .collect();
-        if actions.contains(&ControllerStartupAction::RestartPawn) {
-            ensure!(profile.pawn.is_some(), "restart requires a pawn profile");
-        }
-        for action in &actions {
-            let index = match action {
-                ControllerStartupAction::FlushLevelStreaming => 23,
-                ControllerStartupAction::RestartPawn => 40,
-            };
-            ensure!(
-                index < profile.class_net_cache.bp_icarus_player_controller_survival,
-                "startup RPC exceeds release class bound"
-            );
-        }
+        icarus_bevy::experimental::peer_lab::validate_controller_startup(
+            profile,
+            &actions,
+            &controller,
+            pawn.is_some(),
+        )?;
         Ok(actions)
     }
 }

@@ -54,8 +54,7 @@ Defaults: UDP 17777/27015, one player, authored empty world;
 Listing: F-1010; Auth/Join: one account/two runs; entry stalls (F-1009; U-079).
 Ready's `authored_world`: `seed: 1`, `seed_initialised: true`, `flod_tile_count: 0`;
 Flags: `--seed`, `--seed-initialised`, `--flod-tile-count`.
-Repeat `--controller-startup` with `flush-level-streaming` or `restart-pawn`:
-1–32 authored actions in flag order; default none. Before sockets/TLS/Steam,
+Startup: 1–32 authored actions; default none. Before sockets/TLS/Steam,
 preflight checks world wire composition, count, release RPCs/field bound;
 delivery/readiness unqualified.
 Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60); final
@@ -64,8 +63,8 @@ Password unvalidated; avoid real passwords.
 `controller_fields` (final: `controller_fields_before_shutdown`): live peers,
 ≤64 rows per peer/aggregate: target kind, index, payload bits, disposition,
 saturating count; overflow/malformed-bunch counts; no payloads/identities.
-Removal drops rows. `Recognized`: parsed, not applied; malformed tails apply
-no bunch calls.
+Removal drops rows. `Recognized` does not imply application; malformed tails
+apply no calls. Overflow prevents absence claims.
 `readiness.initial_open_outcomes`: live peers by `controller`, `pawn`,
 `game_state`, `player_state`, `managers`, `quests`: `configured`, `committed`
 (queued), `failed` (terminal), `skipped` (unattempted after controller abort),
@@ -73,11 +72,12 @@ no bunch calls.
 No failures: `sequences_succeeded`; else `sequences_failed`.
 No ACK/spawn/geometry proof.
 
-`PeerLab::enable_controller_startup`:
-Configure once before peers, after controller and (for restart) pawn.
-Actions require successful initial-open queuing and controller reliable
-settlement; restart requires pawn settlement and its peer-specific GUID.
-No automatic trigger or possession/geometry proof.
+`network.controller_startup` lists `flush-level-streaming`/`restart-pawn`;
+CLI `--controller-startup` flags replace it in order. TOML `[]` disables startup.
+Requires release/controller plans; restart needs a pawn.
+Actions require successful opens/controller settlement; restart also waits for
+its pawn's settlement/GUID. `network_listening` lists actions; `status`/`stopped`
+counts pending/queued actions and failures, not client readiness.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 

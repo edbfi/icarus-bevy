@@ -257,10 +257,54 @@ use super::rep_rpc::{
 
 /// Explicit caller-authored startup actions. Their order and necessity are not
 /// qualified against a stock client. No actions are enabled by default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, clap::ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum ControllerStartupAction {
     FlushLevelStreaming,
     RestartPawn,
+}
+
+/// Validate an explicit plan without binding sockets or allocating live GUIDs.
+pub fn validate_controller_startup(
+    profile: &ReleaseProfile,
+    actions: &[ControllerStartupAction],
+    controller: &PlayerControllerOpenPlan,
+    has_pawn: bool,
+) -> Result<()> {
+    ensure!(
+        (1..=32).contains(&actions.len()),
+        "controller startup needs 1..=32 actions"
+    );
+    profile.validate()?;
+    ensure!(
+        profile.engine_network_version == controller.engine_net_version,
+        "startup release differs from controller plan"
+    );
+    ensure!(
+        !actions.contains(&ControllerStartupAction::RestartPawn) || has_pawn,
+        "restart requires a pawn plan"
+    );
+    for order in [
+        super::archive::ByteOrder::Little,
+        super::archive::ByteOrder::Big,
+    ] {
+        let codec = RepLayoutCodec {
+            actor: actor_codec(controller.engine_net_version, order),
+            checksums: false,
+            limits: Default::default(),
+        };
+        for &action in actions {
+            controller_startup_payload(
+                action,
+                profile.class_net_cache.bp_icarus_player_controller_survival,
+                Some(2),
+                &codec,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn controller_startup_payload(
@@ -4225,36 +4269,13 @@ impl PeerLab {
             self.controller_startup.is_none(),
             "controller startup already configured"
         );
-        ensure!(
-            (1..=32).contains(&actions.len()),
-            "controller startup needs 1..=32 actions"
-        );
-        profile.validate()?;
         let controller = self
             .player_controller_open
             .as_ref()
             .context("controller startup requires a controller plan")?;
-        ensure!(
-            profile.engine_network_version == controller.engine_net_version,
-            "startup release differs from controller plan"
-        );
-        let field_index_bound = profile.class_net_cache.bp_icarus_player_controller_survival;
-        ensure!(
-            !actions.contains(&ControllerStartupAction::RestartPawn) || self.pawn_open.is_some(),
-            "restart requires a pawn plan"
-        );
-        let codec = RepLayoutCodec {
-            actor: actor_codec(
-                controller.engine_net_version,
-                super::archive::ByteOrder::Little,
-            ),
-            checksums: false,
-            limits: Default::default(),
-        };
-        for &action in &actions {
-            controller_startup_payload(action, field_index_bound, Some(2), &codec)?;
-        }
-        self.controller_startup_bound = field_index_bound;
+        validate_controller_startup(profile, &actions, controller, self.pawn_open.is_some())?;
+        self.controller_startup_bound =
+            profile.class_net_cache.bp_icarus_player_controller_survival;
         self.controller_startup = Some(actions);
         Ok(())
     }
