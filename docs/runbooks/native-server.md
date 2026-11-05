@@ -32,8 +32,9 @@ status intervals; awaits autosaves ([workload](synthetic-workload.md)).
 Provisional 30 Hz, ≤4 catch-up ticks/update; opt-in `[network]`.
 Stderr JSON reports foundation timings; `gameplay_ready: false`.
 
-CLI → TOML → defaults; paths use CWD. Unknowns/invalid limits reject. File: regular, ≤64 KiB, symlinks allowed; FIFOs/oversize reject before
-state opens (F-671). `check-config` creates no state.
+CLI → TOML → defaults; paths use CWD. Unknowns/invalid limits reject.
+File: regular, ≤64 KiB, symlinks allowed; FIFOs/oversize reject before state
+opens (F-671). `check-config` creates no state.
 
 
 ## Network sessions (experimental)
@@ -57,17 +58,18 @@ Readiness (F-1012):
 
 - `initial_open_outcomes`: controller/pawn/GameState/PlayerState/managers/quests
   counts: configured, committed (queued), settled, awaiting_ack, failed, skipped,
-  pending, deferred. Managers aggregate opens. `sequences_succeeded`: no failures;
+  pending, deferred. `sequences_succeeded`: no failures;
   else `sequences_failed`. Settlement requires a positive ACK
   with the channel open, nonclosing and reliable-empty; unrelated traffic can
   delay it. Closed unsettled channels cannot settle after reuse. Receipts latch
-  until teardown. `sequences_settled`: successful sequences with all opens settled. No execution/world-readiness proof.
+  until teardown. `sequences_settled`: successful sequences with all opens
+  settled. No execution/world-readiness proof.
 - `initialisation_blockers`: `requests_pending_queue`, plus missing
   `awaiting_loadout_response`/`awaiting_bestiary_response` after request queue
   admission, for incomplete players. Overlap allowed; `players_*` phases partition.
 
-`[network.authored_world]` supplies authored bootstrap
-inputs for `run`:
+`[network.authored_world]` optionally supplies independent bootstrap for `run`;
+omission keeps defaults:
 
 ```toml
 [network.authored_world]
@@ -76,8 +78,8 @@ seed_initialised = true
 flod_tile_count = 0
 ```
 
-Requires all fields and release/controller/GameState/FLOD plans. Counts 0..=65535 must fit both byte-order
-codec budgets before binding. No tiles/terrain created (U-079).
+Requires all fields and release/controller/GameState/FLOD plans. Counts
+0..=65535 must fit both byte-order budgets before binding. No terrain (U-079).
 `network_listening.authored_world` reports inputs when configured. Preserved
 prospects conflict: reject after load, before simulation/polling; socket may
 briefly bind, stored state unchanged. Disabled networking applies no bootstrap.
