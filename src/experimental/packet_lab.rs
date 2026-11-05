@@ -1230,6 +1230,28 @@ impl LabPeer {
                 .is_some_and(|channel| channel.out_bunches().is_empty())
     }
 
+    /// Latest unwrapped reliable sequence allocated on this actor channel.
+    pub(crate) fn actor_reliable_sequence(&self, index: u32) -> Option<u32> {
+        self.actors
+            .get(&index)
+            .map(|channel| channel.out_reliable())
+    }
+
+    /// Positive ACKs covered every reliable bunch in this committed span.
+    /// Later traffic is independent; an ACKed bunch retained behind an older
+    /// gap is still acknowledged. Callers must abandon spans when channels release
+    /// so a replacement channel cannot satisfy an earlier incarnation's receipt.
+    pub(crate) fn actor_reliable_span_settled(&self, index: u32, first: u32, last: u32) -> bool {
+        first <= last
+            && !self.closing_actors.contains(&index)
+            && self.actors.get(&index).is_some_and(|channel| {
+                channel.out_reliable() >= last
+                    && !channel.out_bunches().iter().any(|bunch| {
+                        !bunch.acked && (first..=last).contains(&bunch.reliable_sequence)
+                    })
+            })
+    }
+
     /// Send `payload` (an actor bunch body without spawn) as one unreliable
     /// bunch on open actor channel `index`, in a datagram with the ack state
     /// and resends; nothing is retained, as for UE property updates. Fails
