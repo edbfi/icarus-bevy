@@ -1002,6 +1002,7 @@ pub struct SessionCounts {
 /// Transport settlement is not client actor-spawn or geometry readiness proof.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ReadinessCounts {
+    pub initialisation_transport: InitialisationTransportCounts,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
     /// Retained receipts after a positive ACK leaves the controller channel
@@ -1034,6 +1035,49 @@ pub struct ReadinessCounts {
     pub players_awaiting_completion: usize,
     pub players_awaiting_finalisation: usize,
     pub players_finalised: usize,
+}
+
+/// Retained transport receipts for the request batch on the controller and
+/// character-ID publication on PlayerState. Queue acceptance and positive ACK
+/// settlement are independent of response/application and finalisation phases.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct InitialisationTransportCounts {
+    pub requests_queued: usize,
+    pub requests_settled: usize,
+    pub requests_awaiting_ack: usize,
+    pub completions_queued: usize,
+    pub completions_settled: usize,
+    pub completions_awaiting_ack: usize,
+}
+
+#[derive(Default)]
+struct InitialisationReceipt {
+    channel: Option<u32>,
+    first: u32,
+    last: u32,
+    settled: bool,
+    abandoned: bool,
+}
+
+impl InitialisationReceipt {
+    fn observe_positive_ack(&mut self, peer: &LabPeer, released: &[u32]) {
+        if let Some(channel) = self.channel {
+            self.abandoned |= released.contains(&channel);
+            self.settled |=
+                !self.abandoned && peer.actor_reliable_span_settled(channel, self.first, self.last);
+        }
+    }
+
+    fn committed(peer: &LabPeer, channel: u32, previous: u32) -> Self {
+        Self {
+            channel: Some(channel),
+            first: previous + 1,
+            last: peer
+                .actor_reliable_sequence(channel)
+                .expect("committed actor channel"),
+            ..Default::default()
+        }
+    }
 }
 
 /// Independent live-player blockers, separate from the exclusive player phases.
@@ -1456,6 +1500,8 @@ impl ControllerFieldDiagnostics {
 }
 
 struct PeerEntry {
+    initialisation_request_receipt: InitialisationReceipt,
+    initialisation_completion_receipt: InitialisationReceipt,
     controller_field_diagnostics: ControllerFieldDiagnostics,
     controller_startup_pawn_guid: Option<u32>,
     controller_startup_next: Option<usize>,
@@ -4592,6 +4638,17 @@ impl PeerLab {
     pub fn readiness_counts(&self) -> ReadinessCounts {
         let mut counts = ReadinessCounts::default();
         for entry in self.peers.values() {
+            let transport = &mut counts.initialisation_transport;
+            let request = &entry.initialisation_request_receipt;
+            transport.requests_queued += usize::from(request.channel.is_some());
+            transport.requests_settled += usize::from(request.settled);
+            transport.requests_awaiting_ack +=
+                usize::from(request.channel.is_some() && !request.settled);
+            let completion = &entry.initialisation_completion_receipt;
+            transport.completions_queued += usize::from(completion.channel.is_some());
+            transport.completions_settled += usize::from(completion.settled);
+            transport.completions_awaiting_ack +=
+                usize::from(completion.channel.is_some() && !completion.settled);
             counts.controller_startup_actions_queued += entry.controller_startup_queued;
             counts.controller_startup_actions_settled += entry.controller_startup_settled;
             counts.controller_startup_actions_awaiting_ack +=
@@ -4845,6 +4902,8 @@ impl PeerLab {
                         controller_startup_next: None,
                         controller_startup_queued: 0,
                         controller_startup_settled: 0,
+                        initialisation_request_receipt: InitialisationReceipt::default(),
+                        initialisation_completion_receipt: InitialisationReceipt::default(),
                         controller_startup_failed: false,
                         controller_startup_retry_ready: false,
                         pending_pawn_uid: None,
@@ -4926,6 +4985,16 @@ impl PeerLab {
                         // Observe before inbound calls or retries can enqueue
                         // more traffic. NAKs and close ACKs cannot settle opens.
                         if !summary.acked.is_empty() {
+                            entry.initialisation_request_receipt.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                            entry
+                                .initialisation_completion_receipt
+                                .observe_positive_ack(
+                                    &entry.peer,
+                                    &summary.released_actor_channels,
+                                );
                             entry.initial_open_outcomes.observe_positive_ack(
                                 &entry.peer,
                                 &summary.released_actor_channels,
@@ -5453,13 +5522,19 @@ impl PeerLab {
                 &prospect,
                 &codec,
             )?;
-            let sent = entry.peer.reliable_actor_bunch_datagrams(
-                entry
-                    .player_controller_channel
-                    .context("no controller channel")?,
-                payload,
-            )?;
+            let channel = entry
+                .player_controller_channel
+                .context("no controller channel")?;
+            let previous = entry
+                .peer
+                .actor_reliable_sequence(channel)
+                .context("controller channel missing")?;
+            let sent = entry
+                .peer
+                .reliable_actor_bunch_datagrams(channel, payload)?;
             entry.profiles.initialisation_requested = true;
+            entry.initialisation_request_receipt =
+                InitialisationReceipt::committed(&entry.peer, channel, previous);
             entry.ack_pending = false;
             Ok::<_, anyhow::Error>(sent)
         })();
@@ -5516,13 +5591,19 @@ impl PeerLab {
                 entry.profiles.character_slot.context("no profile slot")?,
             )?;
             let payload = profile_exchange::player_state_update(77, &values, &plan.layout, &codec)?;
-            let sent = entry.peer.reliable_actor_bunch_datagrams(
-                entry
-                    .player_state_channel
-                    .context("no PlayerState channel")?,
-                payload,
-            )?;
+            let channel = entry
+                .player_state_channel
+                .context("no PlayerState channel")?;
+            let previous = entry
+                .peer
+                .actor_reliable_sequence(channel)
+                .context("PlayerState channel missing")?;
+            let sent = entry
+                .peer
+                .reliable_actor_bunch_datagrams(channel, payload)?;
             entry.profiles.completed = true;
+            entry.initialisation_completion_receipt =
+                InitialisationReceipt::committed(&entry.peer, channel, previous);
             entry.ack_pending = false;
             Ok::<_, anyhow::Error>(sent)
         })();
@@ -8438,6 +8519,370 @@ mod tests {
         );
         lab.remove_peer(address).unwrap();
         assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    fn initialisation_transport_peer() -> (
+        PeerLab,
+        UdpSocket,
+        SocketAddrV4,
+        super::super::sequencing::PacketSequencer,
+    ) {
+        use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+        let mut lab = prospect_refresh_lab();
+        let profile = ReleaseProfile::release_3_0_32();
+        let map = PeerLabAdmission::default().map_url;
+        lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
+            .unwrap();
+        lab.enable_pawn_open(
+            profile.pawn_open_plan(map).unwrap().unwrap(),
+            super::super::pawn_open::PAWN_CHANNEL_INDEX,
+            PawnContent::default(),
+        )
+        .unwrap();
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.connection_id = Some(1);
+        entry.player = Some(RegisteredPlayer {
+            player_id: 1,
+            name_units: "AUTHORED-INITIALISATION".encode_utf16().collect(),
+        });
+        entry.login_unique_id = Some(UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+            value: NetIdValue::Text(ArchiveText::text("AuthoredPlayer").unwrap()),
+        });
+        entry.profiles.character_slot = Some(3);
+        let game_state = lab.game_state_open.take();
+        assert!(lab.send_player_controller_open(address));
+        lab.game_state_open = game_state;
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(lab.stats.player_state_opens_sent, 1);
+        assert_eq!(lab.stats.pawn_opens_sent, 1);
+        (lab, socket, address, client)
+    }
+
+    fn queue_initialisation_phase(lab: &mut PeerLab, address: SocketAddrV4, completion: bool) {
+        if completion {
+            let entry = lab.peers.get_mut(&address).unwrap();
+            entry.profiles.has_loadout = true;
+            entry.profiles.has_bestiary = true;
+            lab.complete_player_initialisation(address);
+            assert!(lab.peers[&address].profiles.completed);
+        } else {
+            lab.request_initialisation(address);
+            assert!(lab.peers[&address].profiles.initialisation_requested);
+        }
+    }
+
+    fn phase_transport_counts(completion: bool, settled: bool) -> InitialisationTransportCounts {
+        if completion {
+            InitialisationTransportCounts {
+                completions_queued: 1,
+                completions_settled: usize::from(settled),
+                completions_awaiting_ack: usize::from(!settled),
+                ..Default::default()
+            }
+        } else {
+            InitialisationTransportCounts {
+                requests_queued: 1,
+                requests_settled: usize::from(settled),
+                requests_awaiting_ack: usize::from(!settled),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[test]
+    fn initialisation_transport_receipts_require_ack_and_survive_loss_repair() {
+        for completion in [false, true] {
+            for mixed in [false, true] {
+                let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+                queue_initialisation_phase(&mut lab, address, completion);
+                let queued = phase_transport_counts(completion, false);
+                assert_eq!(lab.readiness_counts().initialisation_transport, queued);
+                if mixed {
+                    let packet = lab
+                        .peers
+                        .get_mut(&address)
+                        .unwrap()
+                        .peer
+                        .ack_packet()
+                        .unwrap();
+                    assert!(lab.send(&packet, address));
+                }
+                notify_startup_packets(&mut lab, &socket, &mut client, |index| mixed && index > 0);
+                assert_eq!(lab.readiness_counts().initialisation_transport, queued);
+                assert!(lab.readiness_counts().resend_bunches_pending > 0);
+                let updates = lab.stats.player_character_id_updates_sent;
+                let requests = lab.stats.loadout_requests_sent;
+                for _ in 0..3 {
+                    lab.retry_pending_profile_exchanges();
+                    assert_eq!(lab.readiness_counts().initialisation_transport, queued);
+                }
+                let repair = lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .peer
+                    .ack_packet()
+                    .unwrap();
+                assert!(lab.send(&repair, address));
+                ack_startup_packets(&mut lab, &socket, &mut client);
+                assert_eq!(
+                    lab.readiness_counts().initialisation_transport,
+                    phase_transport_counts(completion, true)
+                );
+                assert_eq!(lab.stats.player_character_id_updates_sent, updates);
+                assert_eq!(lab.stats.loadout_requests_sent, requests);
+                lab.remove_peer(address).unwrap();
+                assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+                let (_replacement, _, _) = acked_game_state_peer(&mut lab);
+                assert_eq!(
+                    lab.readiness_counts().initialisation_transport,
+                    InitialisationTransportCounts::default()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn initialisation_transport_receipts_ignore_later_same_channel_traffic() {
+        for completion in [false, true] {
+            let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+            queue_initialisation_phase(&mut lab, address, completion);
+            let phase_packets = lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .len();
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let channel = if completion {
+                entry.player_state_channel
+            } else {
+                entry.player_controller_channel
+            }
+            .unwrap();
+            let later = entry
+                .peer
+                .reliable_actor_bunch_datagrams(
+                    channel,
+                    Payload::from_writer(super::super::packet::BitWriter::new()),
+                )
+                .unwrap();
+            assert!(lab.send_all(&later, address));
+            notify_startup_packets(&mut lab, &socket, &mut client, |index| {
+                index < phase_packets
+            });
+            assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+            let settled = phase_transport_counts(completion, true);
+            assert_eq!(lab.readiness_counts().initialisation_transport, settled);
+            let repair = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&repair, address));
+            ack_startup_packets(&mut lab, &socket, &mut client);
+            assert_eq!(lab.readiness_counts().initialisation_transport, settled);
+        }
+    }
+
+    #[test]
+    fn initialisation_transport_receipts_recognise_acked_span_behind_an_older_gap() {
+        for completion in [false, true] {
+            let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let channel = if completion {
+                entry.player_state_channel
+            } else {
+                entry.player_controller_channel
+            }
+            .unwrap();
+            let older = entry
+                .peer
+                .reliable_actor_bunch_datagrams(
+                    channel,
+                    Payload::from_writer(super::super::packet::BitWriter::new()),
+                )
+                .unwrap();
+            let older_packets = older.packet_ids.len();
+            assert!(lab.send_all(&older, address));
+            queue_initialisation_phase(&mut lab, address, completion);
+            notify_startup_packets(&mut lab, &socket, &mut client, |index| {
+                index >= older_packets
+            });
+            assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+            assert_eq!(
+                lab.readiness_counts().initialisation_transport,
+                phase_transport_counts(completion, true)
+            );
+        }
+    }
+
+    #[test]
+    fn initialisation_transport_phases_settle_independently_of_finalisation() {
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        queue_initialisation_phase(&mut lab, address, false);
+        let request_packets = lab.peers[&address]
+            .peer
+            .sequencer()
+            .notify()
+            .sent_records()
+            .len();
+        queue_initialisation_phase(&mut lab, address, true);
+        lab.peers
+            .get_mut(&address)
+            .unwrap()
+            .profiles
+            .friend_ids_ready = true;
+        lab.finalise_connected_players();
+        assert!(lab.peers[&address].profiles.finalised);
+        assert_eq!(
+            lab.readiness_counts().initialisation_transport,
+            InitialisationTransportCounts {
+                requests_queued: 1,
+                requests_awaiting_ack: 1,
+                completions_queued: 1,
+                completions_awaiting_ack: 1,
+                ..Default::default()
+            }
+        );
+        notify_startup_packets(&mut lab, &socket, &mut client, |index| {
+            index < request_packets
+        });
+        assert_eq!(
+            lab.readiness_counts().initialisation_transport,
+            InitialisationTransportCounts {
+                requests_queued: 1,
+                requests_settled: 1,
+                completions_queued: 1,
+                completions_awaiting_ack: 1,
+                ..Default::default()
+            }
+        );
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(
+            lab.readiness_counts().initialisation_transport,
+            InitialisationTransportCounts {
+                requests_queued: 1,
+                requests_settled: 1,
+                completions_queued: 1,
+                completions_settled: 1,
+                ..Default::default()
+            }
+        );
+        assert!(lab.peers[&address].profiles.finalised);
+    }
+
+    #[test]
+    fn initialisation_transport_close_and_channel_reuse_cannot_settle_old_receipts() {
+        for completion in [false, true] {
+            let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+            queue_initialisation_phase(&mut lab, address, completion);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let channel = if completion {
+                entry.player_state_channel
+            } else {
+                entry.player_controller_channel
+            }
+            .unwrap();
+            let close = entry.peer.reliable_actor_close(channel, 0).unwrap();
+            assert!(lab.send(&close, address));
+            ack_startup_packets(&mut lab, &socket, &mut client);
+            let queued = phase_transport_counts(completion, false);
+            assert_eq!(lab.readiness_counts().initialisation_transport, queued);
+            assert!(!lab.peers[&address].peer.has_actor_channel(channel));
+            let mut config = lab.config.packet.packet;
+            config.receiver = super::super::packet::Receiver::Client;
+            let mut reopened = super::super::packet::read_packet(&close, &config)
+                .unwrap()
+                .bunches
+                .pop()
+                .unwrap();
+            reopened.header.open = true;
+            reopened.header.close = false;
+            reopened.header.close_reason = None;
+            reopened.header.reliable_sequence_raw = None;
+            let sent = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .reliable_actor_open_datagrams(&reopened, &[])
+                .unwrap();
+            assert!(lab.send_all(&sent, address));
+            ack_startup_packets(&mut lab, &socket, &mut client);
+            assert!(lab.peers[&address].peer.actor_channel_settled(channel));
+            assert_eq!(lab.readiness_counts().initialisation_transport, queued);
+        }
+    }
+
+    #[test]
+    fn initialisation_transport_split_span_waits_for_repair_across_wire_sequence_wrap() {
+        use super::super::game_state_open::handle;
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        let channel = lab.peers[&address].player_controller_channel.unwrap();
+        while lab.peers[&address]
+            .peer
+            .actor_reliable_sequence(channel)
+            .unwrap()
+            < 1022
+        {
+            let previous = lab.peers[&address]
+                .peer
+                .actor_reliable_sequence(channel)
+                .unwrap();
+            for _ in 0..(1022 - previous).min(32) {
+                let sent = lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .peer
+                    .reliable_actor_bunch_datagrams(
+                        channel,
+                        Payload::from_writer(super::super::packet::BitWriter::new()),
+                    )
+                    .unwrap();
+                assert!(lab.send_all(&sent, address));
+            }
+            ack_startup_packets(&mut lab, &socket, &mut client);
+        }
+        lab.game_state_open.as_mut().unwrap().state.values.insert(
+            handle::ACTIVE_PROSPECT_FIRST,
+            RepValue::Str(ArchiveText::text(&"G".repeat(1500)).unwrap()),
+        );
+        lab.request_initialisation(address);
+        let receipt = &lab.peers[&address].initialisation_request_receipt;
+        assert_eq!(receipt.first, 1023);
+        assert!(receipt.last >= 1024);
+        notify_startup_packets(&mut lab, &socket, &mut client, |index| index > 0);
+        assert_eq!(
+            lab.readiness_counts().initialisation_transport,
+            phase_transport_counts(false, false)
+        );
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(
+            lab.readiness_counts().initialisation_transport,
+            phase_transport_counts(false, true)
+        );
     }
 
     #[test]

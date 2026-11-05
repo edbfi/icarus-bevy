@@ -47,26 +47,9 @@ Listing/Auth/Join: F-1010, F-1009; entry stalls (U-079).
 `--seed` (1), `--seed-initialised` (true), `--flod-tile-count` (0) appear in
 ready's `authored_world`. Startup: 1–32 actions, default none. World wire/count
 and release RPC/bound preflight precedes sockets/TLS/Steam.
-Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60);
-final stdout retains pre-shutdown counts (F-1012).
 Password unvalidated; use no real passwords.
-`controller_fields` (final: `controller_fields_before_shutdown`): ≤64 rows per
-peer/aggregate: target/index/bit count/disposition/count; overflow/malformed
-counts; no payloads/identities. Removal drops rows. Recognized
-need not mean applied; malformed tails apply nothing; overflow prevents absence claims.
-Readiness (F-1012):
-
-- `initial_open_outcomes`: controller/pawn/GameState/PlayerState/managers/quests
-  counts: configured, committed (queued), settled, awaiting_ack, failed, skipped,
-  pending, deferred. `sequences_succeeded`: no failures;
-  else `sequences_failed`. Settlement requires a positive ACK
-  with the channel open, nonclosing and reliable-empty; unrelated traffic can
-  delay it. Closed unsettled channels cannot settle after reuse. Receipts latch
-  until teardown. `sequences_settled`: successful sequences with all opens
-  settled. No execution/world-readiness proof.
-- `initialisation_blockers`: `requests_pending_queue`, plus missing
-  `awaiting_loadout_response`/`awaiting_bestiary_response` after request queue
-  admission, for incomplete players. Overlap allowed; `players_*` phases partition.
+Probe output and session diagnostics: [network readiness](network-readiness.md)
+(F-1012).
 
 `[network.authored_world]` optionally supplies independent bootstrap for `run`;
 omission keeps defaults:
@@ -89,10 +72,10 @@ repeated CLI flags replace TOML; `[]` disables. Requires release/controller plan
 restart also needs a settled pawn/GUID. Successful opens precede actions.
 `network_listening` lists actions. Readiness reports
 `controller_startup_actions_{pending,queued,settled,awaiting_ack}` and
-`controller_startup_sequences_{settled,failed}`. Pending means unqueued, queued
-means transport admission, awaiting ACK means queued minus settled. Settlement
-uses the open-channel ACK rule above; receipts persist until removal. All
-actions must settle without failure. No execution/spawn/geometry proof.
+`controller_startup_sequences_{settled,failed}`. Pending is unqueued;
+queued is admission; awaiting ACK is queued minus settled. Settlement uses
+[network readiness](network-readiness.md)'s reliable-empty channel rule;
+all actions must settle without failure.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
@@ -121,25 +104,18 @@ Schematic, not playable. Match catalog row counts/names/order; author values ind
 gameplay tables. Missing tables have no pak fallback; omitted fields use parser
 defaults. Without either input, lab defaults apply. Compatibility unproven.
 
-Pawn opens use distinct positive `IcarusUID`s (handle 46, F-948). Saved
-`IcarusActorGUID`s reserve first; unreadable IDs fail startup. Claim/reservation/
-remap stores cap at 262,144 each. Failed claims skip opens/count
-`pawn_open_errors`; removal frees UID. Character slot triggers backend
-user/character requests and `PlayerState` replication; three failures close
-the session (original: kick).
+Pawn UID policy: F-948; claim/reservation/remap stores cap at 262,144 each.
+Unreadable saved IDs fail startup; failed claims skip opens/count
+`pawn_open_errors`; removal frees UID. Character-slot profile exchange and
+`PlayerState` replication close the session after three failures (original: kick).
 ACK/NAK retries opens, profiles and one pending control reply per peer;
 admission commits when queued. Begin waits for PlayerState; pawn retries keep
 one UID claim (F-1011).
-After loadout/bestiary answers and pawn open, `run` replicates `PlayerCharacterID`.
-Matching login ID/profile slot restores saved UID once, then state after all joined
-controllers send `ServerFriendsListUpdated` (F-973, F-975).
-Restore limits: pawn clamps (F-964), inventory defaults (F-979), weights (F-982),
-modifiers (F-981), stats (F-989). Incomplete inventory/modifier/stat inputs
-withhold derived stats and saved health/oxygen/food/water; independent fields
-restore. Unmatched players enter History (F-967); UID survives disconnect.
-Unanswered clients never complete; original timeout logs only (F-959).
-Rejected staging drops saved characters/controllers/History; joiners enter
-empty History as new players.
+Player initialization/restore: F-973, F-975; limits: F-964, F-979, F-982,
+F-981, F-989. Incomplete inputs withhold derived stats and saved vitals;
+independent fields restore. Unmatched players enter History (F-967);
+unanswered clients never complete (F-959). Rejected staging discards its
+characters/controllers/History; joiners enter empty History as new players.
 
 Caller-owned `PeerLab` APIs need `enable_member_refresh`:
 `complete_prospect_member_spawn` adds status-2, unsettled/not-playing members
@@ -149,12 +125,11 @@ Duplicate adds, missing removals and missing/ambiguous/unchanged edits return fa
 Other members/time unchanged; atomic checks, ACK/loss retries.
 Join refreshes playing flags. No automatic spawn/departure, save or advert update.
 
-Explicit APIs (F-995, F-998, F-1000): ACK gating, coalescing, pressure/loss retries.
-`refresh_restored_modifier_times` validates UID/raw/wire
-batches; `refresh_pawn_temperature` merges fields (`None` unchanged, zero
-explicit). `set_restored_modifier_time`/`set_pawn_internal_temperature` preserve
-setter order and caller-owned effects before publication; temperature needs a
-known value and stat reads.
+Publication/setters: F-995, F-998, F-1000.
+`refresh_restored_modifier_times` validates UID/raw/wire batches;
+`refresh_pawn_temperature` merges fields (`None` unchanged, zero explicit).
+`set_restored_modifier_time`/`set_pawn_internal_temperature` retain setter order
+and caller effects; temperature needs a known value and stat reads.
 
 `configure_pawn_temperature_tick`: all four temperatures, reference/cache flags,
 interval, elapsed time and fractional remainder. `configure_restored_modifier_tick`:
@@ -215,10 +190,8 @@ ongoing runs prove no duration.
 ## Replication scheduling (experimental)
 
 `replication::ReplicationPlugin`: `FixedUpdate` between gameplay/tick finish;
-`experimental::actor_channel` consider/relevancy/priority per `NetViewer`
-produces `ReplicationFrame` with UE defaults, not ICARUS values.
-`SpatialMode::Grid` (default off) matches naive relevancy. No sending or
-bandwidth/dormancy/ownership/destruction model.
+authored scheduling/replay only (F-762, F-761), with `SpatialMode::Grid` off by
+default. No sending, bandwidth, dormancy, ownership or destruction model.
 
 ```bash
 cargo run --release --locked --example replication_bench -- --viewers 1,4,8
