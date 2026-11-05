@@ -15,7 +15,7 @@ Actor opens, content blocks and partial reassembly: F-709 to F-711, F-751,
 F-845, F-846, F-849; addresses and limits are in the
 [spec](../../specs/network/actor-channel.md).
 Component bounds correct F-958 (F-1015); matched 3.0.34 controller and component
-bounds are F-1016. Framing: F-1016; RPC identities: F-1019. Eight opens settle without Begin (F-1017); visibility handling is partial (F-1018). Name codec/callbacks remain U-079; no cause proof.
+bounds are F-1016; RPC identities: F-1019. Eight opens settle without Begin (F-1017); visibility handling is partial (F-1018). Name codec/callbacks remain U-079; no cause proof.
 
 Gameplay-tag indexing: F-702 (U-065 resolved). Dedicated-server sources for
 3.0.32 tags, checksums, cooked schemas and row indices: F-828, F-832;
