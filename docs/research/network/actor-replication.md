@@ -1,7 +1,6 @@
 # Actor replication after login
 
-Static/recorded-wire actor exchange after control admission; wire/scheduling
-rules: [actor channel bunches](../../specs/network/actor-channel.md).
+After control admission: [actor channel rules](../../specs/network/actor-channel.md).
 
 ## Question cluster
 
@@ -16,7 +15,7 @@ Actor opens, content blocks and partial reassembly: F-709 to F-711, F-751,
 F-845, F-846, F-849; addresses and limits are in the
 [spec](../../specs/network/actor-channel.md).
 Component bounds correct F-958 (F-1015); matched 3.0.34 controller and component
-bounds are F-1016. These qualify static framing, not RPC semantics or world entry.
+bounds are F-1016; RPC identities: F-1019. Eight opens settle without Begin (F-1017); visibility handling is partial (F-1018). Name codec/callbacks remain U-079; no cause proof.
 
 Gameplay-tag indexing: F-702 (U-065 resolved). Dedicated-server sources for
 3.0.32 tags, checksums, cooked schemas and row indices: F-828, F-832;
@@ -83,4 +82,4 @@ increases and zero without inferring their causes (F-992). Profile answers use t
 
 ## Artifacts
 
-M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198. Earlier observations remain indexed by the cited finding rows.
+M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209.
