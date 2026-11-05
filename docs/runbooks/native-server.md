@@ -104,7 +104,7 @@ Schematic, not playable. Match catalog row counts/names/order; author values ind
 gameplay tables. Missing tables have no pak fallback; omitted fields use parser
 defaults. Without either input, lab defaults apply. Compatibility unproven.
 
-Pawn UID policy: F-948; claim/reservation/remap stores cap at 262,144 each.
+Pawn UID policy: F-948, handle 46; claim/reservation/remap stores cap at 262,144 each.
 Unreadable saved IDs fail startup; failed claims skip opens/count
 `pawn_open_errors`; removal frees UID. Character-slot profile exchange and
 `PlayerState` replication close the session after three failures (original: kick).
@@ -190,8 +190,9 @@ ongoing runs prove no duration.
 ## Replication scheduling (experimental)
 
 `replication::ReplicationPlugin`: `FixedUpdate` between gameplay/tick finish;
-authored scheduling/replay only (F-762, F-761), with `SpatialMode::Grid` off by
-default. No sending, bandwidth, dormancy, ownership or destruction model.
+`ReplicationFrame` uses UE defaults, not ICARUS values.
+`SpatialMode::Grid` defaults off. No sending, bandwidth, dormancy, ownership
+or destruction model.
 
 ```bash
 cargo run --release --locked --example replication_bench -- --viewers 1,4,8
