@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-04
+Last reconciled: 2026-11-05
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -19,7 +19,7 @@ Last reconciled: 2026-11-04
 | F-1009 | Native S2 replay frames 441 game packets; a stock client authenticates and reaches control Join and initial actor opens, but stays at Preparing geometry without player initialization | measured | runtime-capture, authored-test; M-1166, M-1171 to M-1175 | high; one account, two runs; trait/RPC replay gaps; no world entry or gameplay proof | U-038, U-079 | active |
 | F-1010 | ProspectInfo_s is a base64 LE archive: scalar fields then associated members; enums are u8 and Booleans u32. SelectedDropPoint/custom settings are absent. Native encoding reproduces 595 B and makes an authored prospect selectable | observed | runtime-capture, authored-test; M-1170, M-1171 | high; 3.0.34, one advert and native configuration | U-038 | active |
 | F-1011 | Pressure retains control reply/admission, opens and profile phases; Begin waits for PlayerState; pawn retries retain one UID, freed on disconnect/permanent failure. Controller/managers configure once; collisions reject atomically | measured | authored-test; M-1176, M-1178, M-1180, M-1187 | high; bounded authored tests; no geometry-cause or stock-client proof | U-079 | active |
-| F-1012 | Readiness counts queues/channels, player phases, initialization blockers, retained open outcomes and startup ACK counts; probe flushes progress and retains final counts | measured | authored-test; M-1181, M-1186, M-1199 | high; authored tests; startup receipts require an open settled channel; no execution, spawn, geometry or stock-client proof | U-079, U-038 | active |
+| F-1012 | Readiness counts queues/channels, player phases, initialization blockers and retained open/startup outcomes; probe retains progress/final counts; initial opens retain transport ACK receipts | measured | authored-test; M-1181, M-1186, M-1199, M-1202, M-1203 | high; positive ACK with channel open/nonclosing/reliable-empty; no execution/world-entry/client proof | U-079, U-038 | active |
 | F-1013 | Native peers with outstanding sent records and no ACK/NAK progress expire using the idle timeout despite inbound activity; delivery-stall counters are separate from idle expiry | measured | authored-test; M-1182 | high; two authored-wire tests with injected monotonic times; no original timing or stock-client compatibility claim | U-079, U-038 | active |
 | F-1014 | Explicit caller-owned prospect membership adds by user/slot with F-946 initial flags; full validation is atomic, reliable publication coalesces/retries pressure | measured | authored-test; M-1188 | high; authored peers; F-946 informs defaults only; no automatic trigger, persistence, advert update or stock-client proof | U-070, U-038 | active |
 | F-1016 | 3.0.34 field bounds: controller 183, backend 149, PlayerData 27, Bestiary 8; controller = 155 native + 5 cooked net properties + 22 root net functions + 1 | observed | static-metadata; M-1197, M-1198 | high; matched public server; static framing only, no RPC semantics, world entry or compatibility proof | U-038, U-079 | active |

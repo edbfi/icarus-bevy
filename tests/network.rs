@@ -7924,15 +7924,37 @@ fn controller_startup_production_reports_periodic_and_pre_shutdown_readiness() {
     );
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let (mut client, _) = join_pinned_open(address, profile.pin.network_checksum, 32);
-    // Bounded authored traffic drains and acknowledges the reliable opens and
-    // startup sequence. These counters assert transport queuing only.
-    for _ in 0..4 {
+    // Drain and acknowledge authored traffic until a periodic receipt confirms
+    // settlement; queue admission alone does not establish transport delivery.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
         client.collect(Duration::from_millis(250), 32).unwrap();
         client.keepalive().unwrap();
+        let status = server.event("status");
+        if status["readiness"]["controller_startup_actions_queued"] == 2
+            && status["readiness"]["initial_open_outcomes"]["sequences_settled"] == 1
+        {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "initial opens did not settle: {status}"
+        );
+    };
+    let initial = &status["readiness"]["initial_open_outcomes"];
+    for stage in [
+        "controller",
+        "pawn",
+        "game_state",
+        "player_state",
+        "managers",
+        "quests",
+    ] {
+        assert_eq!(initial["settled"][stage], initial["committed"][stage]);
+        assert_eq!(initial["awaiting_ack"][stage], 0);
     }
-    let status = server.wait_for("startup queued", |record| {
-        record["event"] == "status" && record["readiness"]["controller_startup_actions_queued"] == 2
-    });
+    assert_eq!(initial["settled"]["controller"], 1);
+    assert_eq!(initial["sequences_settled"], 1);
     assert_eq!(status["readiness"]["controller_startup_actions_pending"], 0);
     assert_eq!(
         status["readiness"]["controller_startup_sequences_failed"],
@@ -7950,6 +7972,12 @@ fn controller_startup_production_reports_periodic_and_pre_shutdown_readiness() {
         assert_eq!(
             stopped["readiness_before_shutdown"][field],
             status["readiness"][field]
+        );
+    }
+    for field in ["settled", "awaiting_ack", "sequences_settled"] {
+        assert_eq!(
+            stopped["readiness_before_shutdown"]["initial_open_outcomes"][field],
+            status["readiness"]["initial_open_outcomes"][field]
         );
     }
     assert_eq!(

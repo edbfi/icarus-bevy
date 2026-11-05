@@ -1089,21 +1089,51 @@ impl InitialOpenStageCounts {
 pub struct InitialOpenReadiness {
     pub configured: InitialOpenStageCounts,
     pub committed: InitialOpenStageCounts,
+    /// Retained positive-ACK receipts observed with the channel open,
+    /// nonclosing and reliable-empty. These prove no client execution.
+    pub settled: InitialOpenStageCounts,
+    pub awaiting_ack: InitialOpenStageCounts,
     pub failed: InitialOpenStageCounts,
     pub skipped: InitialOpenStageCounts,
     pub pending: InitialOpenStageCounts,
     pub deferred: InitialOpenStageCounts,
     pub sequences_succeeded: usize,
     pub sequences_failed: usize,
+    pub sequences_settled: usize,
 }
 
 #[derive(Default)]
 struct InitialOpenOutcomes {
     configured: InitialOpenStageCounts,
     committed: InitialOpenStageCounts,
+    settled: InitialOpenStageCounts,
+    /// Only committed stages enter this bounded list. Later reliable traffic
+    /// cannot retract a receipt once it has moved to `settled`.
+    awaiting_ack: Vec<InitialOpenReceipt>,
     failed: InitialOpenStageCounts,
     skipped: InitialOpenStageCounts,
     deferred: bool,
+}
+
+struct InitialOpenReceipt {
+    stage: InitialOpenStage,
+    channel: u32,
+    /// A later actor on a reused channel cannot satisfy the original open.
+    abandoned: bool,
+}
+
+impl InitialOpenOutcomes {
+    fn observe_positive_ack(&mut self, peer: &LabPeer, released: &[u32]) {
+        self.awaiting_ack.retain_mut(|receipt| {
+            receipt.abandoned |= released.contains(&receipt.channel);
+            if !receipt.abandoned && peer.actor_channel_settled(receipt.channel) {
+                self.settled.record(receipt.stage);
+                false
+            } else {
+                true
+            }
+        });
+    }
 }
 
 /// The session key of connection `connection`'s pawn: session keys from
@@ -1349,7 +1379,7 @@ struct PendingInitialOpens {
 }
 
 enum InitialOpenOutcome {
-    Committed,
+    Committed(u32),
     Deferred,
     Failed,
 }
@@ -4590,6 +4620,10 @@ impl PeerLab {
             let initial = &mut counts.initial_open_outcomes;
             initial.configured.add(&outcomes.configured);
             initial.committed.add(&outcomes.committed);
+            initial.settled.add(&outcomes.settled);
+            for receipt in &outcomes.awaiting_ack {
+                initial.awaiting_ack.record(receipt.stage);
+            }
             initial.failed.add(&outcomes.failed);
             initial.skipped.add(&outcomes.skipped);
             if let Some(pending) = &entry.initial_opens {
@@ -4604,6 +4638,7 @@ impl PeerLab {
             } else if !outcomes.configured.is_empty() {
                 if outcomes.failed.is_empty() {
                     initial.sequences_succeeded += 1;
+                    initial.sequences_settled += usize::from(outcomes.awaiting_ack.is_empty());
                 } else {
                     initial.sequences_failed += 1;
                 }
@@ -4888,6 +4923,14 @@ impl PeerLab {
                 let summary = received.summary();
                 match summary.disposition {
                     PacketDisposition::Accepted { .. } => {
+                        // Observe before inbound calls or retries can enqueue
+                        // more traffic. NAKs and close ACKs cannot settle opens.
+                        if !summary.acked.is_empty() {
+                            entry.initial_open_outcomes.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                        }
                         // Retain the receipt before subsequent calls can queue
                         // unrelated controller traffic. NAKs retain reliable
                         // out-bunches; closed/missing channels never settle.
@@ -6291,8 +6334,16 @@ impl PeerLab {
             };
             entry.initial_open_outcomes.deferred = matches!(outcome, InitialOpenOutcome::Deferred);
             match outcome {
-                InitialOpenOutcome::Committed => {
-                    entry.initial_open_outcomes.committed.record(stage)
+                InitialOpenOutcome::Committed(channel) => {
+                    entry.initial_open_outcomes.committed.record(stage);
+                    entry
+                        .initial_open_outcomes
+                        .awaiting_ack
+                        .push(InitialOpenReceipt {
+                            stage,
+                            channel,
+                            abandoned: false,
+                        });
                 }
                 InitialOpenOutcome::Failed => entry.initial_open_outcomes.failed.record(stage),
                 InitialOpenOutcome::Deferred => {}
@@ -6316,7 +6367,7 @@ impl PeerLab {
                     entry.initial_opens = None;
                     return;
                 }
-                InitialOpenOutcome::Committed | InitialOpenOutcome::Failed => {
+                InitialOpenOutcome::Committed(_) | InitialOpenOutcome::Failed => {
                     // Preserve permanent-error behavior: later independent
                     // stages are still attempted; only pressure retains a stage.
                     let _ = pending.remaining.pop_front();
@@ -6390,11 +6441,12 @@ impl PeerLab {
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
+        let channel = plan.channel_index;
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
-        InitialOpenOutcome::Committed
+        InitialOpenOutcome::Committed(channel)
     }
 
     /// Compose and send the player's pawn open (F-797) on its owner's
@@ -6490,12 +6542,13 @@ impl PeerLab {
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
+        let channel = *channel;
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.pawn_opens_sent);
             self.complete_player_initialisation(address);
         }
-        InitialOpenOutcome::Committed
+        InitialOpenOutcome::Committed(channel)
     }
 
     /// Compose and send the GameState open (F-794) over as many datagrams as
@@ -6561,11 +6614,12 @@ impl PeerLab {
             }
         }
         entry.game_state = Some(replica);
+        let channel = session.channel_index;
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.game_state_opens_sent);
         }
-        InitialOpenOutcome::Committed
+        InitialOpenOutcome::Committed(channel)
     }
 
     /// Compose and send the PlayerState open the PlayerController references
@@ -6641,6 +6695,7 @@ impl PeerLab {
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
+        let channel = plan.channel_index;
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_state_opens_sent);
@@ -6655,7 +6710,7 @@ impl PeerLab {
         if let Some(slot) = begin {
             self.controller_call(address, ControllerCall::Begin(slot));
         }
-        InitialOpenOutcome::Committed
+        InitialOpenOutcome::Committed(channel)
     }
 
     /// Compose and send world manager `index` (F-859), committing GUID and
@@ -6701,10 +6756,11 @@ impl PeerLab {
             entry.player_history_pending = false;
             entry.player_history_retry_ready = false;
         }
+        let channel = *channel;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.manager_opens_sent);
         }
-        InitialOpenOutcome::Committed
+        InitialOpenOutcome::Committed(channel)
     }
 
     /// Compose and send saved quest actor `index` (`C019`, `F-934`),
@@ -6743,11 +6799,12 @@ impl PeerLab {
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
+        let channel = *channel;
         self.guid_cache = cache;
         if self.send_all(&sent, address) {
             bump(&mut self.stats.quest_opens_sent);
         }
-        InitialOpenOutcome::Committed
+        InitialOpenOutcome::Committed(channel)
     }
 
     fn send_acks(&mut self) {
@@ -8458,6 +8515,9 @@ mod tests {
         assert_eq!(partition, outcomes.configured);
         assert_eq!(outcomes.sequences_failed, 2);
         assert_eq!(outcomes.sequences_succeeded, 0);
+        assert_eq!(outcomes.sequences_settled, 0);
+        assert!(outcomes.settled.is_empty());
+        assert_eq!(outcomes.awaiting_ack, outcomes.committed);
         assert_eq!(snapshot.pending_initial_opens, 0);
         lab.retry_initial_opens();
         assert_eq!(lab.readiness_counts(), snapshot);
@@ -8492,6 +8552,9 @@ mod tests {
         assert!(snapshot.failed.is_empty());
         assert!(snapshot.skipped.is_empty());
         assert_eq!(snapshot.sequences_succeeded, 1);
+        assert_eq!(snapshot.sequences_settled, 0);
+        assert!(snapshot.settled.is_empty());
+        assert_eq!(snapshot.awaiting_ack, snapshot.committed);
         assert!(!lab.send_player_controller_open(address));
         lab.retry_initial_opens();
         assert_eq!(lab.readiness_counts().initial_open_outcomes, snapshot);
@@ -8501,6 +8564,215 @@ mod tests {
             lab.readiness_counts().initial_open_outcomes,
             InitialOpenReadiness::default()
         );
+    }
+
+    #[test]
+    fn initial_open_settlement_distinguishes_stages_and_survives_loss_repair() {
+        use super::super::{packet_lab::client_cookie_seeds, sequencing::PacketSequencer};
+        let mut lab = prospect_refresh_lab();
+        let (socket, address, _) = acked_game_state_peer(&mut lab);
+        // Reset both authored transport endpoints so this sequence includes
+        // the GameState, rather than reusing the fixture's settled open.
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.peer = LabPeer::from_cookie(&entry.cookie, *entry.peer.config()).unwrap();
+        entry.game_state = None;
+        let (incoming, outgoing) = client_cookie_seeds(&entry.cookie);
+        let mut client = PacketSequencer::new(incoming, outgoing, 64).unwrap();
+        assert!(lab.send_player_controller_open(address));
+        let queued = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(queued.committed.controller, 1);
+        assert_eq!(queued.committed.game_state, 1);
+        assert_eq!(queued.awaiting_ack, queued.committed);
+        assert!(queued.settled.is_empty());
+        assert_eq!(queued.sequences_succeeded, 1);
+        assert_eq!(queued.sequences_settled, 0);
+        for _ in 0..4 {
+            lab.retry_initial_opens();
+            assert_eq!(lab.readiness_counts().initial_open_outcomes, queued);
+        }
+        // The first controller packet is lost, while GameState packets and
+        // any remaining controller fragments receive positive ACKs.
+        notify_startup_packets(&mut lab, &socket, &mut client, |index| index > 0);
+        let partial = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(partial.settled.controller, 0);
+        assert_eq!(partial.awaiting_ack.controller, 1);
+        assert_eq!(partial.settled.game_state, 1);
+        assert_eq!(partial.awaiting_ack.game_state, 0);
+        assert_eq!(partial.sequences_settled, 0);
+        assert!(lab.readiness_counts().resend_bunches_pending > 0);
+        for _ in 0..4 {
+            lab.retry_initial_opens();
+            assert_eq!(lab.readiness_counts().initial_open_outcomes, partial);
+        }
+        let datagram = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&datagram, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let settled = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(settled.settled, settled.committed);
+        assert!(settled.awaiting_ack.is_empty());
+        assert_eq!(settled.sequences_settled, 1);
+        assert_eq!(settled.configured, queued.configured);
+        assert_eq!(settled.committed, queued.committed);
+        lab.remove_peer(address).unwrap();
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+        let (_replacement, _, _) = acked_game_state_peer(&mut lab);
+        assert_eq!(
+            lab.readiness_counts().initial_open_outcomes,
+            InitialOpenReadiness::default()
+        );
+    }
+
+    #[test]
+    fn initial_open_split_settlement_waits_for_every_reliable_part() {
+        use super::super::{
+            game_state_open::handle, packet_lab::client_cookie_seeds, sequencing::PacketSequencer,
+        };
+        let mut lab = prospect_refresh_lab();
+        let (socket, address, _) = acked_game_state_peer(&mut lab);
+        lab.game_state_open.as_mut().unwrap().state.values.insert(
+            handle::RICH_PRESENCE_GUID,
+            RepValue::Str(ArchiveText::text(&"G".repeat(1_500)).unwrap()),
+        );
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.peer = LabPeer::from_cookie(&entry.cookie, *entry.peer.config()).unwrap();
+        entry.game_state = None;
+        let (incoming, outgoing) = client_cookie_seeds(&entry.cookie);
+        let mut client = PacketSequencer::new(incoming, outgoing, 64).unwrap();
+        entry
+            .initial_open_outcomes
+            .configured
+            .record(InitialOpenStage::GameState);
+        entry.initial_opens = Some(PendingInitialOpens {
+            remaining: VecDeque::from([InitialOpenStage::GameState]),
+            controller_guids: None,
+            player_state_is_host: false,
+            begin_slot: None,
+            retry_ready: true,
+        });
+        lab.retry_initial_opens();
+        assert!(
+            lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .len()
+                > 1
+        );
+        assert_eq!(
+            lab.readiness_counts()
+                .initial_open_outcomes
+                .committed
+                .game_state,
+            1
+        );
+        notify_startup_packets(&mut lab, &socket, &mut client, |index| index > 0);
+        let partial = lab.readiness_counts().initial_open_outcomes;
+        assert!(partial.settled.is_empty());
+        assert_eq!(partial.awaiting_ack.game_state, 1);
+        assert_eq!(partial.sequences_settled, 0);
+        let datagram = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&datagram, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let repaired = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(repaired.settled.game_state, 1);
+        assert!(repaired.awaiting_ack.is_empty());
+        assert_eq!(repaired.sequences_settled, 1);
+    }
+
+    #[test]
+    fn initial_open_settlement_is_retained_through_later_reliable_traffic() {
+        let mut lab = prospect_refresh_lab();
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        lab.game_state_open = None;
+        assert!(lab.send_player_controller_open(address));
+        let queued = lab.readiness_counts().initial_open_outcomes;
+        notify_startup_packets(&mut lab, &socket, &mut client, |_| false);
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, queued);
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let settled = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(settled.settled.controller, 1);
+        assert_eq!(settled.sequences_settled, 1);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let channel = entry.player_controller_channel.unwrap();
+        let sent = entry
+            .peer
+            .reliable_actor_bunch_datagrams(
+                channel,
+                Payload::from_writer(super::super::packet::BitWriter::new()),
+            )
+            .unwrap();
+        assert!(lab.send_all(&sent, address));
+        assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, settled);
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, settled);
+    }
+
+    #[test]
+    fn initial_open_close_ack_does_not_create_a_settlement_receipt() {
+        let mut lab = prospect_refresh_lab();
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        lab.game_state_open = None;
+        assert!(lab.send_player_controller_open(address));
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let channel = entry.player_controller_channel.unwrap();
+        let close = entry.peer.reliable_actor_close(channel, 0).unwrap();
+        assert!(lab.send(&close, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert!(!lab.peers[&address].peer.has_actor_channel(channel));
+        let closed = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(closed.committed.controller, 1);
+        assert_eq!(closed.awaiting_ack.controller, 1);
+        assert!(closed.settled.is_empty());
+        assert_eq!(closed.sequences_settled, 0);
+        lab.retry_initial_opens();
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, closed);
+        // Reuse the released transport channel with an authored open. Reusing
+        // the controller composer would also exercise its unrelated handling
+        // of previously exported archetype/level references.
+        let mut config = lab.config.packet.packet;
+        config.receiver = super::super::packet::Receiver::Client;
+        let mut reopened = super::super::packet::read_packet(&close, &config)
+            .unwrap()
+            .bunches
+            .pop()
+            .unwrap();
+        reopened.header.open = true;
+        reopened.header.close = false;
+        reopened.header.close_reason = None;
+        reopened.header.reliable_sequence_raw = None;
+        let sent = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .reliable_actor_open_datagrams(&reopened, &[])
+            .unwrap();
+        assert!(lab.send_all(&sent, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert!(lab.peers[&address].peer.actor_channel_settled(channel));
+        assert_eq!(lab.readiness_counts().initial_open_outcomes, closed);
     }
 
     #[test]
@@ -9033,6 +9305,9 @@ mod tests {
         assert_eq!(outcomes.deferred.controller, 1);
         assert_eq!(outcomes.deferred.game_state, 0);
         assert!(outcomes.failed.is_empty());
+        assert!(outcomes.settled.is_empty());
+        assert!(outcomes.awaiting_ack.is_empty());
+        assert_eq!(outcomes.sequences_settled, 0);
         for _ in 0..4 {
             lab.retry_initial_opens();
         }
@@ -10592,7 +10867,7 @@ mod tests {
             // GUIDs; never repurpose the fixture's GameState channel as a controller.
             assert!(matches!(
                 lab.send_initial_controller_open(address),
-                InitialOpenOutcome::Committed
+                InitialOpenOutcome::Committed(_)
             ));
             ack_startup_packets(lab, &socket, &mut client);
             let entry = lab.peers.get_mut(&address).unwrap();
