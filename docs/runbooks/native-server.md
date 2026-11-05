@@ -4,8 +4,8 @@
 
 ## Run
 
-Toolchain: F-879. Fetch row identities anonymously (app 2089300; F-828, F-831).
-Unset `network.data_pak` discovers installed data. Either source requires
+Toolchain: F-879. Anonymous row identities: app 2089300 (F-828, F-831).
+`network.data_pak` defaults to installed data. Both require
 `network.authored_gameplay` (F-993);
 `network_listening` reports `data_pak`/`data_pak_source` (`configured`/`installed`):
 
@@ -29,11 +29,10 @@ Smoke: add `--data-dir work/smoke-world --max-ticks 10` to `run`; retain the
 `--compressed` needs `--max-ticks`: unpaced simulated time, including autosave/
 status intervals; awaits autosaves ([workload](synthetic-workload.md)).
 
-Default: provisional 30 Hz, ≤4 catch-up ticks/update; opt-in `[network]`.
+Provisional 30 Hz, ≤4 catch-up ticks/update; opt-in `[network]`.
 Stderr JSON reports foundation timings; `gameplay_ready: false`.
 
-Config: CLI → TOML → defaults; paths use CWD. Unknown fields/invalid limits
-reject. File: regular, ≤64 KiB, symlinks allowed; FIFOs/oversize reject before
+CLI → TOML → defaults; paths use CWD. Unknowns/invalid limits reject. File: regular, ≤64 KiB, symlinks allowed; FIFOs/oversize reject before
 state opens (F-671). `check-config` creates no state.
 
 
@@ -51,20 +50,23 @@ Progress: stderr JSON every 5 s (`--progress-interval-seconds`, 1–60);
 final stdout retains pre-shutdown counts (F-1012).
 Password unvalidated; use no real passwords.
 `controller_fields` (final: `controller_fields_before_shutdown`): ≤64 rows per
-live peer/aggregate, containing target/index/bit count/disposition/count, plus
-overflow/malformed counts; no payloads/identities. Removal drops rows. Recognized
+peer/aggregate: target/index/bit count/disposition/count; overflow/malformed
+counts; no payloads/identities. Removal drops rows. Recognized
 need not mean applied; malformed tails apply nothing; overflow prevents absence claims.
 Readiness (F-1012):
 
 - `initial_open_outcomes`: controller/pawn/GameState/PlayerState/managers/quests
-  counts for configured, committed (queued), failed, skipped after abort, pending
-  and deferred pressure; retained until removal. `sequences_succeeded` requires
-  no failures; otherwise `sequences_failed`. No ACK/spawn/geometry proof.
+  counts: configured, committed (queued), settled, awaiting_ack, failed, skipped,
+  pending, deferred. Managers aggregate opens. `sequences_succeeded`: no failures;
+  else `sequences_failed`. Settlement requires a positive ACK
+  with the channel open, nonclosing and reliable-empty; unrelated traffic can
+  delay it. Closed unsettled channels cannot settle after reuse. Receipts latch
+  until teardown. `sequences_settled`: successful sequences with all opens settled. No execution/world-readiness proof.
 - `initialisation_blockers`: `requests_pending_queue`, plus missing
   `awaiting_loadout_response`/`awaiting_bestiary_response` after request queue
-  admission, for incomplete players. These overlap; `players_*` phases partition.
+  admission, for incomplete players. Overlap allowed; `players_*` phases partition.
 
-`[network.authored_world]` optionally supplies explicit independent bootstrap
+`[network.authored_world]` supplies authored bootstrap
 inputs for `run`:
 
 ```toml
@@ -74,9 +76,8 @@ seed_initialised = true
 flod_tile_count = 0
 ```
 
-Fields required; omission preserves defaults. Requires release,
-controller, GameState and FLOD plans. Counts 0..=65535 must fit both byte-order
-codec budgets before binding. References create no tiles/terrain (U-079).
+Requires all fields and release/controller/GameState/FLOD plans. Counts 0..=65535 must fit both byte-order
+codec budgets before binding. No tiles/terrain created (U-079).
 `network_listening.authored_world` reports inputs when configured. Preserved
 prospects conflict: reject after load, before simulation/polling; socket may
 briefly bind, stored state unchanged. Disabled networking applies no bootstrap.
@@ -88,10 +89,8 @@ restart also needs a settled pawn/GUID. Successful opens precede actions.
 `controller_startup_actions_{pending,queued,settled,awaiting_ack}` and
 `controller_startup_sequences_{settled,failed}`. Pending means unqueued, queued
 means transport admission, awaiting ACK means queued minus settled. Settlement
-requires a positive ACK leaving the controller channel open, nonclosing and
-reliable-empty; unrelated traffic can delay it. Receipts persist until removal;
-a sequence settles when all actions settle without failure. Counts prove no
-execution/spawn/geometry readiness.
+uses the open-channel ACK rule above; receipts persist until removal. All
+actions must settle without failure. No execution/spawn/geometry proof.
 
 `[network]` enables `run`'s loopback peer lab (default off, F-875):
 
