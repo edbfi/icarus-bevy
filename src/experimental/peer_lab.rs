@@ -247,8 +247,8 @@ use super::rep_rpc::{
     BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
     RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
     SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
-    SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, parse_begin_player_initialisation,
-    read_field_header,
+    SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, SERVER_SHORT_TIMEOUT_FIELD_INDEX,
+    parse_begin_player_initialisation, parse_rpc_payload, read_field_header,
 };
 use super::rep_rpc::{
     FieldHeader, RpcArgument, RpcItem, encode_rpc_payload, player_controller_rpc_parameters,
@@ -1645,6 +1645,7 @@ struct RegisteredPlayer {
 
 enum ControllerCall {
     Begin(i32),
+    ShortTimeout,
     FriendsList,
     Profile(ProfileResponse),
     Initialisation(InitialisationAnswer),
@@ -1710,6 +1711,9 @@ fn controller_initialisation_calls(
                         &field.payload,
                         &codec,
                     )?));
+                } else if component.is_none() && field.index == SERVER_SHORT_TIMEOUT_FIELD_INDEX {
+                    parse_rpc_payload(&field.payload, &[], &codec)?;
+                    calls.push(ControllerCall::ShortTimeout);
                 } else if component.is_none()
                     && field.index == SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX
                 {
@@ -5312,6 +5316,9 @@ impl PeerLab {
             return;
         };
         match call {
+            // The bounded field diagnostics retain recognition. Timeout policy
+            // and the original callback's effects are not qualified here.
+            ControllerCall::ShortTimeout => {}
             ControllerCall::Begin(slot) => {
                 if slot == -1
                     || entry.character_slot.is_some()
@@ -11428,6 +11435,153 @@ mod tests {
             assert_eq!(actual.entries, expected.entries);
             assert_eq!(actual.overflow, expected.overflow);
             assert_eq!(actual.malformed_bunches, expected.malformed_bunches);
+        }
+
+        #[test]
+        fn short_timeout_layout_requires_exactly_empty_parameters() {
+            let parameters =
+                player_controller_rpc_parameters(SERVER_SHORT_TIMEOUT_FIELD_INDEX).unwrap();
+            assert!(parameters.is_empty());
+            assert!(player_controller_rpc_parameters(82).is_none());
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                let codec = RepLayoutCodec {
+                    actor: actor_codec(0, order),
+                    checksums: false,
+                    limits: Default::default(),
+                };
+                assert!(
+                    parse_rpc_payload(&empty_payload(), &parameters, &codec)
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    encode_rpc_payload(&parameters, &[], &codec)
+                        .unwrap()
+                        .bit_len(),
+                    0
+                );
+                for bit in [false, true] {
+                    let mut writer = BitWriter::new();
+                    writer.write_bit(bit);
+                    let nonempty = Payload::from_writer(writer);
+                    assert!(parse_rpc_payload(&nonempty, &parameters, &codec).is_err());
+                }
+            }
+        }
+
+        #[test]
+        fn short_timeout_observation_is_controller_only_and_does_not_change_timeout_policy() {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let entry = &lab.peers[&address];
+            let backend = entry.backend_proxy.unwrap();
+            let components = [entry.backend_proxy, entry.player_data, entry.bestiary];
+            // Deterministically choose a nondefault reference outside all
+            // permitted subobjects; unknown objects are skipped before parsing.
+            let unknown = (2..)
+                .find(|guid| !components.contains(&Some(*guid)))
+                .unwrap();
+            let timeout = lab.config.idle_timeout;
+            let payload = client_actor_body(
+                &lab,
+                vec![
+                    field_block(
+                        subobject(backend),
+                        BACKEND_PROXY_FIELD_INDEX_BOUND,
+                        &[(SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload())],
+                    ),
+                    field_block(
+                        subobject(unknown),
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &[(SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload())],
+                    ),
+                    field_block(
+                        BlockTarget::Actor,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &[
+                            (SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload()),
+                            (SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload()),
+                            (82, empty_payload()),
+                        ],
+                    ),
+                ],
+            );
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+            assert_eq!(diagnostics.entries.len(), 3);
+            assert_eq!(diagnostics.malformed_bunches, 0);
+            assert_eq!(diagnostics.overflow, 0);
+            let recognized = diagnostics
+                .entries
+                .iter()
+                .filter(|entry| entry.disposition == ControllerFieldDisposition::Recognized)
+                .collect::<Vec<_>>();
+            assert_eq!(recognized.len(), 1);
+            assert_eq!(recognized[0].target, ControllerFieldTarget::Actor);
+            assert_eq!(recognized[0].index, SERVER_SHORT_TIMEOUT_FIELD_INDEX);
+            assert_eq!(recognized[0].payload_bits, 0);
+            assert_eq!(recognized[0].count, 2);
+            assert_eq!(lab.stats.controller_fields_ignored, 2);
+            assert_eq!(lab.stats.actor_bunches_malformed, 0);
+            assert_eq!(lab.stats.initialisation_calls_ignored, 0);
+            assert_eq!(lab.character_slot(address), None);
+            assert!(!lab.peers[&address].profiles.friend_ids_ready);
+            assert_eq!(lab.config.idle_timeout, timeout);
+            assert_diagnostics_eq(&lab.controller_field_totals(), diagnostics);
+            let last_seen = lab.peers[&address].last_seen;
+            lab.expire_idle(last_seen + timeout);
+            assert!(lab.has_peer(address));
+            lab.expire_idle(last_seen + timeout + Duration::from_millis(1));
+            assert!(!lab.has_peer(address));
+            assert_eq!(lab.stats.peers_expired, 1);
+        }
+
+        #[test]
+        fn malformed_short_timeout_tail_discards_earlier_controller_calls() {
+            for bit in [false, true] {
+                let mut lab = prospect_refresh_lab();
+                let (socket, address, mut client) = controller_peer(&mut lab);
+                let mut writer = BitWriter::new();
+                writer.write_bit(bit);
+                let payload = client_actor_body(
+                    &lab,
+                    vec![field_block(
+                        BlockTarget::Actor,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &[
+                            (SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload()),
+                            (SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload()),
+                            (
+                                SERVER_SHORT_TIMEOUT_FIELD_INDEX,
+                                Payload::from_writer(writer),
+                            ),
+                        ],
+                    )],
+                );
+                let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+                let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+                assert_eq!(diagnostics.entries.len(), 3);
+                assert_eq!(diagnostics.malformed_bunches, 1);
+                assert_eq!(
+                    diagnostics.entries[1].index,
+                    SERVER_SHORT_TIMEOUT_FIELD_INDEX
+                );
+                assert_eq!(
+                    diagnostics.entries[1].disposition,
+                    ControllerFieldDisposition::Recognized
+                );
+                let malformed = &diagnostics.entries[2];
+                assert_eq!(malformed.index, SERVER_SHORT_TIMEOUT_FIELD_INDEX);
+                assert_eq!(malformed.payload_bits, 1);
+                assert_eq!(malformed.disposition, ControllerFieldDisposition::Malformed);
+                assert_eq!(lab.stats.actor_bunches_malformed, 1);
+                assert_eq!(lab.stats.friends_lists_received, 0);
+                assert_eq!(lab.stats.controller_fields_ignored, 0);
+                assert!(!lab.peers[&address].profiles.friend_ids_ready);
+                assert_eq!(lab.character_slot(address), None);
+            }
         }
 
         #[test]
