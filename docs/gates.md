@@ -76,11 +76,14 @@ Last reconciled: 2026-11-06
 
 ## Before enabling visibility dispatch or effects
 
-- Conditional static outer framing is qualified (F-1020). Before dispatch, bind
-  the actual 612-bit payload/provenance and live normal profile/layout/ops;
-  qualify callbacks before effects (U-079). M-1207 counts the whole field
-  payload, including any outer bit, not custom length. Offline case limits:
-  M-1211, M-1215, M-1217, M-1219, M-1221, M-1229.
+- Before dispatch, bind actual 612-bit payload/provenance and live
+  normal profile/layout/ops; conditional framing grants no installation
+  (F-1020 to F-1022). Before effects, bind native bit1, D's live
+  receiver/vptr, delegates and actor/channel identities; qualify Close,
+  reentrancy and client progress. F-1023 is static; F-1024 only logs intentions
+  (U-079). M-1207 counts the whole field including any outer bit, not custom
+  length; no payload retained. Offline case authorization/limits:
+  M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1240.
 
 ## Before deriving replication schema for the server
 

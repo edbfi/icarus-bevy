@@ -27,14 +27,8 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
 
 ## Confirmed
 
-- Conditional normal server 26313077 RPC82 field: one LSB-first presence bit
-  precedes custom reuse, visible, PackageName and FileName iff reuse is clear
-  (otherwise loading copies PackageName). Absent skips custom decoding and
-  retains initialized storage; its contents are unqualified. The selected
-  nonshared sender sets presence even for zero-looking structs; shared masks
-  remain unresolved (F-1020). Qualified reader/map and engine17 names select
-  packed EName index <703 or FString plus raw u32 number; no alignment or
-  second generic struct bit. Live profile/layout/ops remain unproved.
+- Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
+  (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
   (F-1015). Matched 3.0.34 controller/backend/PlayerData/Bestiary bounds:
   183/149/27/8 (F-1016); static framing only.
@@ -210,14 +204,6 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
   the qualified arithmetic. Initial values and callee effects remain explicit.
 
 ## Candidate
-
-Caller-qualified server 26313077/engine 17/game 0 normal little-endian visibility
-parsing stages one typed value after exact consumption (F-1021). Canonical
-packed integers, strict strings and 65,536-unit cap are native subset rules.
-An explicit outer-layout assertion permits Absent/Present decoding without
-inferring initialized defaults. No PeerLab RPC82 dispatch or callbacks.
-RPC78 validates empty parameters without timeout behavior.
-Opt-in [private capture](../../runbooks/network-readiness.md#private-selected-rpc82-capture): F-1022; no decoder activation.
 
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
 Explicit temperature/modifier ticks retain connection-local timing (F-1000). No automatic climate,

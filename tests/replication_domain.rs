@@ -89,3 +89,6 @@ mod time_of_day;
 
 #[path = "replication_domain/visibility.rs"]
 mod visibility;
+
+#[path = "replication_domain/visibility_state.rs"]
+mod visibility_state;

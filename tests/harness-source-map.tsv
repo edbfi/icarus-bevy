@@ -118,3 +118,4 @@ time_of_day	tests/time_of_day.rs	replication_domain	tests/replication_domain/tim
 typed_check	tests/typed_check.rs	typed_check	tests/typed_check.rs		subprocess
 typed_value	tests/typed_value.rs	save_format	tests/save_format/typed_value.rs	typed_value::	in-process
 visibility	tests/visibility.rs	replication_domain	tests/replication_domain/visibility.rs	visibility::	in-process
+visibility_state	tests/visibility_state.rs	replication_domain	tests/replication_domain/visibility_state.rs	visibility_state::	in-process
