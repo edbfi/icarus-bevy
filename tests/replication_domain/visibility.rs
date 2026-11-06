@@ -214,7 +214,7 @@ fn authored_string_unit_limit_includes_terminator_for_both_widths() {
 }
 
 #[test]
-fn impossible_or_over_limit_string_counts_reject_before_payload_allocation() {
+fn impossible_or_over_limit_string_counts_are_rejected() {
     for count in [
         i32::MIN,
         i32::MIN + 1,
