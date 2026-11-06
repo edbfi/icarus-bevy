@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const {inspectSelectedTypes, PROFILE, CAPS} = require('../pdb_selected_types.cjs');
+const {inspectSelectedTypes, PROFILE, CAPS, inspectSelectedEnums, ENUM_PROFILE} = require('../pdb_selected_types.cjs');
 
 const TARGET = 'Authored::Parameters';
 const u8 = n => Buffer.from([n]);
@@ -230,4 +230,140 @@ test('exact output and retained-byte budgets pass while one lower rejects atomic
     fails(() => inspect(bytes, {output_bytes: outputBytes - 1}));
     assert.deepEqual(inspect(bytes, {retained_bytes: expected.charged_retained_bytes}), expected);
     fails(() => inspect(bytes, {retained_bytes: expected.charged_retained_bytes - 1}));
+});
+
+// Enum extension fixtures are independently authored. LF_ENUMERATE is the
+// modern leaf: attributes, encoded integer, zero-terminated name, CV padding.
+const ENUM_NAME = 'Authored::Flags';
+function enumNumber(value, leaf = 0x800a) {
+    const widths = new Map([[0x8000,1],[0x8001,2],[0x8002,2],[0x8003,4],[0x8004,4],[0x8009,8],[0x800a,8]]);
+    const bytes = Buffer.alloc(widths.get(leaf));
+    if (leaf === 0x8009) bytes.writeBigInt64LE(BigInt(value));
+    else if (leaf === 0x800a) bytes.writeBigUInt64LE(BigInt(value));
+    else if ([0x8000,0x8001,0x8003].includes(leaf)) bytes.writeIntLE(Number(value),0,bytes.length);
+    else bytes.writeUIntLE(Number(value),0,bytes.length);
+    return Buffer.concat([u16(leaf),bytes]);
+}
+const enumerator = (name,value,encoding=null,attributes=3) => padded(Buffer.concat([
+    u16(0x1502),u16(attributes),encoding===null?enumNumber(value):encoding,z(name)]));
+function enumTag({name=ENUM_NAME, count=1, fields=0x1000, underlying=0x77,
+    flags=0,unique=null}={}) {
+    return record(0x1507,u16(count),u16(flags|(unique===null?0:0x200)),u32(underlying),
+        u32(fields),z(name),unique===null?Buffer.alloc(0):z(unique));
+}
+const enumInspect = (bytes,limits={},names=[ENUM_NAME]) => inspectSelectedEnums(reader(bytes),{profile:ENUM_PROFILE,names,limits});
+const enumFixture = () => stream([list(enumerator('High',1n<<63n),enumerator('Maximum',(1n<<64n)-1n)),enumTag({count:2})]);
+
+test('enum selectors snapshot changing getters and ignore custom infinite iterators', () => {
+    const bytes = enumFixture(), names = [ENUM_NAME];
+    let getterReads = 0, iteratorCalls = 0;
+    names[Symbol.iterator] = function* () {
+        iteratorCalls++;
+        while (true) yield 'UnselectedPrivateSentinel';
+    };
+    const result = inspectSelectedEnums(reader(bytes), {profile: ENUM_PROFILE, limits: {selectors: 1},
+        get names() { return ++getterReads === 1 ? names : ['UnselectedPrivateSentinel']; },
+    });
+    assert.deepEqual(result.selected.map(value => value.name), [ENUM_NAME]);
+    assert.equal(getterReads, 1); assert.equal(iteratorCalls, 0);
+    const inherited = new Array(1);
+    Object.setPrototypeOf(inherited, Object.assign(Object.create(Array.prototype), {0: ENUM_NAME}));
+    for (const invalid of [new Array(1), inherited, [ENUM_NAME, ENUM_NAME]]) {
+        fails(() => enumInspect(bytes, {selectors: 1}, invalid));
+    }
+});
+
+test('enum unsigned 64-bit values remain decimal strings with declaration-only limits',()=>{
+    const r=enumInspect(enumFixture()),e=r.selected[0];
+    assert.equal(r.profile,ENUM_PROFILE);assert.equal(e.width_bytes,8);assert.equal(e.signed,false);
+    assert.equal(e.declared_enumerator_count,2);
+    assert.deepEqual(e.enumerators,[{name:'High',attributes:3,value_decimal:'9223372036854775808'},
+        {name:'Maximum',attributes:3,value_decimal:'18446744073709551615'}]);
+    assert.equal(r.release_qualified,false);assert.equal(r.runtime_behavior_proven,false);
+    assert.equal(r.original_layout_qualified,false);assert.equal(r.caller_provenance_verified,false);
+    assert.equal(r.unselected_payloads_validated,false);assert.equal(r.hash_tables_validated,false);
+    assert.doesNotThrow(()=>JSON.stringify(r));
+});
+
+test('enum signed 64-bit minima/maxima and negative values preserve exact signs',()=>{
+    const bytes=stream([list(enumerator('Min',0,enumNumber(-(1n<<63n),0x8009)),
+        enumerator('MinusOne',0,enumNumber(-1,0x8000)),enumerator('Max',0,enumNumber((1n<<63n)-1n,0x8009))),
+        enumTag({underlying:0x76,count:3})]);
+    const e=enumInspect(bytes).selected[0];
+    assert.equal(e.signed,true);assert.deepEqual(e.enumerators.map(x=>x.value_decimal),['-9223372036854775808','-1','9223372036854775807']);
+});
+
+test('enum encoded integer widths and direct immediate values are handled independently',()=>{
+    const encodings=[u16(0),u16(0x7fff),enumNumber(-128,0x8000),enumNumber(-32768,0x8001),
+        enumNumber(65535,0x8002),enumNumber(-2147483648,0x8003),enumNumber(4294967295,0x8004)];
+    const values=['0','32767','-128','-32768','65535','-2147483648','4294967295'];
+    const bytes=stream([list(...encodings.map((enc,i)=>enumerator('Value'+i,0,enc))),enumTag({underlying:0x76,count:encodings.length})]);
+    assert.deepEqual(enumInspect(bytes).selected[0].enumerators.map(x=>x.value_decimal),values);
+});
+
+test('enum continuation order and equal-value aliases are retained completely',()=>{
+    const bytes=stream([list(enumerator('First',1),continuation(0x1001)),
+        list(enumerator('Alias',1),enumerator('Last',2)),enumTag({count:3})]);
+    assert.deepEqual(enumInspect(bytes).selected[0].enumerators.map(x=>x.name),['First','Alias','Last']);
+    fails(()=>enumInspect(bytes,{continuations:1}));
+    const cycle=stream([list(enumerator('First',1),continuation(0x1000)),enumTag()]);
+    fails(()=>enumInspect(cycle));
+});
+
+test('enum exact selection ignores UDT names and minimally discovers unrelated enums',()=>{
+    const unrelated=enumTag({name:'Unrelated',flags:0x200,unique:'A'});
+    unrelated[unrelated.length-1]=0x7f; // invalid unselected suffix remains uninterpreted
+    const bytes=stream([list(enumerator('First',1)),enumTag(),udt({name:ENUM_NAME}),unrelated,
+        enumTag({name:'Other',underlying:0x77})]);
+    const r=enumInspect(bytes,{},['Other',ENUM_NAME]);
+    assert.deepEqual(r.selected.map(x=>x.name),['Other',ENUM_NAME]);
+    assert.equal(r.unselected_payloads_validated,false);
+    fails(()=>enumInspect(bytes,{},[ENUM_NAME+'Extra']));
+});
+
+test('enum forward declarations require one matching unambiguous definition',()=>{
+    const bytes=stream([list(enumerator('First',1)),enumTag({flags:0x80,count:0,fields:0}),enumTag()]);
+    assert.equal(enumInspect(bytes).selected[0].forward_declarations.length,1);
+    fails(()=>enumInspect(stream([list(enumerator('First',1)),enumTag(),enumTag()])));
+    fails(()=>enumInspect(stream([enumTag({flags:0x80,count:0,fields:0})])));
+    fails(()=>enumInspect(stream([list(enumerator('First',1)),enumTag({flags:0x80,count:0,fields:0,underlying:0x76}),enumTag()])));
+    fails(()=>enumInspect(stream([list(enumerator('First',1)),enumTag({flags:0x80,count:0,fields:0,unique:'One'}),enumTag({unique:'Two'})])));
+    fails(()=>enumInspect(bytes,{candidates:1}));
+});
+
+test('enum incomplete counts, unsupported members and out-of-range integers fail atomically',()=>{
+    for(const bytes of [stream([list(enumerator('First',1)),enumTag({count:2})]),
+        stream([list(enumerator('First',1)),enumTag({count:0})]),
+        stream([list(member('NotEnumerator')),enumTag()]),
+        stream([list(enumerator('Negative',0,enumNumber(-1,0x8009))),enumTag()]),
+        stream([list(enumerator('TooLarge',256)),enumTag({underlying:0x69})]),
+        stream([list(enumerator('BadFloat',0,Buffer.concat([u16(0x8005),Buffer.alloc(4)]))),enumTag()]),
+        stream([list(enumerator('Repeat',1),enumerator('Repeat',2)),enumTag({count:2})])])fails(()=>enumInspect(bytes));
+    const bytes=stream([list(enumerator('First',1)),enumTag(),list(member('LateWrongKind')),enumTag({name:'Other',fields:0x1002})]);
+    fails(()=>enumInspect(bytes,{},[ENUM_NAME,'Other']));
+});
+
+test('enum underlying integer modifiers are bounded; pointer/bool/enum bases reject',()=>{
+    const modifier=record(0x1001,u32(0x77),u16(1));
+    const bytes=stream([list(enumerator('First',1)),modifier,enumTag({underlying:0x1001})]);
+    assert.equal(enumInspect(bytes).selected[0].width_bytes,8);
+    assert.equal(enumInspect(bytes).dependent_types.length,1);
+    fails(()=>enumInspect(bytes,{dependencies:0}));
+    fails(()=>enumInspect(bytes,{depth:0}));
+    for(const underlying of [0x30,0x677,0,0x1001]){
+        const bad=stream([list(enumerator('First',1)),enumTag({underlying})]);fails(()=>enumInspect(bad));
+    }
+});
+
+test('enum lower-only aggregate enumerator/output limits preserve complete admission',()=>{
+    const bytes=enumFixture(),r=enumInspect(bytes),size=Buffer.byteLength(JSON.stringify(r));
+    assert.equal(enumInspect(bytes,{enumerators:2}).selected[0].enumerators.length,2);
+    fails(()=>enumInspect(bytes,{enumerators:1}));
+    // Lowering output cap alone does not change charged_retained_bytes.
+    assert.deepEqual(enumInspect(bytes,{output_bytes:size}),r);
+    fails(()=>enumInspect(bytes,{output_bytes:size-1}));
+    const multiple=stream([list(enumerator('First',1)),enumTag(),enumTag({name:'Other'})]);
+    fails(()=>enumInspect(multiple,{enumerators:1},[ENUM_NAME,'Other']));
+    for(const limits of [{enumerators:4097},{enumerators:-1},{enumerators:1.5},{candidates:0},{output_bytes:0}])fails(()=>enumInspect(bytes,limits));
+    fails(()=>inspectSelectedEnums(reader(bytes),{profile:PROFILE,names:[ENUM_NAME]}));
 });

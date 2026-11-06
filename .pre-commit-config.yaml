@@ -92,6 +92,18 @@ repos:
         language: system
         pass_filenames: false
         files: ^tools/(native_class_params\.cjs|pe_candidates\.cjs|tests/(native_class_params\.test|pe_candidates_fixtures)\.cjs)$
+      - id: native-field-inputs-tests
+        name: Test bounded native field inputs
+        entry: node --test tools/tests/native_field_inputs.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(native_field_inputs\.cjs|native_class_params\.cjs|pe_candidates\.cjs|tests/(native_field_inputs\.test|pe_candidates_fixtures)\.cjs)$
+      - id: native-field-names-tests
+        name: Test bounded native field names
+        entry: node --test tools/tests/native_field_names.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(native_field_names\.cjs|pe_candidates\.cjs|tests/(native_field_names\.test|pe_candidates_fixtures)\.cjs)$
       - id: pdb-procedure-range-tests
         name: Test bounded PDB declared procedure ranges
         entry: node --test --test-concurrency=1 tools/tests/pdb_procedure_ranges.test.cjs
