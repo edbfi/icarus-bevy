@@ -9,7 +9,6 @@ relevancy/priority/readiness after control admission.
 
 ## Current answer
 
-Protocol and scheduling: [actor channel](../../specs/network/actor-channel.md).
 Component/controller bounds:
 F-1015, F-1016; RPC identities: F-1019. Eight opens settle without Begin
 (F-1017). [Visibility](../../specs/network/visibility-state.md): F-1020 wire,
@@ -24,6 +23,7 @@ F-762 replays 66,859 properties, 2,607 RPCs, 2,361 stat pairs (U-064/U-066 resol
 quest, profile/restore and modifier/temperature contracts. Automatic
 climate/scheduling remain unqualified. Prospect refresh/initialization:
 F-936, F-1014, F-1011, F-975; original triggers remain U-070 (F-822).
+UID/membership: F-943 to F-946, F-949 to F-951; loadout/backend: F-956 to F-958.
 
 ## Open
 
@@ -36,4 +36,4 @@ F-936, F-1014, F-1011, F-975; original triggers remain U-070 (F-822).
 
 ## Artifacts
 
-M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209, M-1211 to M-1225, M-1227 to M-1235.
+M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209, M-1211 to M-1225, M-1227 to M-1239.

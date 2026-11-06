@@ -58,6 +58,8 @@ pub enum ObjectDescriptor {
 
 pub struct VisibilityFacts<'a> {
     /// Missing entries mean unknown classification, rather than non-level.
+    /// Cached non-null keys must stay described; eviction is not modeled.
+    /// Use InvalidOrNonLevel for a known invalid key, not an absent entry.
     pub objects: &'a BTreeMap<ObjectIdentity, ObjectDescriptor>,
     /// The two full names used by the selected persistent-level comparison.
     /// This connection-world fact is distinct from an add's package world.
