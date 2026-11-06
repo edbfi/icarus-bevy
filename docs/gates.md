@@ -118,8 +118,7 @@ Last reconciled: 2026-11-06
 - Each runtime experiment requires its own case scope and current launcher
   session; historical authorization windows remain expired (F-218, F-252).
 - The user's standing instruction (2026-10-28, renewed through
-  2026-11-05; F-968, M-1201) authorizes offline and online
-  research: network
+  2026-11-06; F-968, M-1245) authorizes offline and online research: network
   and Steam access, fetching and running the matched official dedicated server,
   original-runtime runs, and connected stock-client scenarios against the
   original or the native server, without per-scenario approval. This replaces

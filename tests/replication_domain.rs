@@ -92,3 +92,6 @@ mod visibility;
 
 #[path = "replication_domain/visibility_state.rs"]
 mod visibility_state;
+
+#[path = "replication_domain/visibility_gather.rs"]
+mod visibility_gather;
