@@ -15,7 +15,10 @@ Actor opens, content blocks and partial reassembly: F-709 to F-711, F-751,
 F-845, F-846, F-849; addresses and limits are in the
 [spec](../../specs/network/actor-channel.md).
 Component bounds correct F-958 (F-1015); matched 3.0.34 controller and component
-bounds are F-1016; RPC identities: F-1019. Eight opens settle without Begin (F-1017); visibility handling is partial (F-1018). Name codec/callbacks remain U-079; no cause proof.
+bounds are F-1016; RPC identities: F-1019. Eight opens settle without Begin
+(F-1017). Visibility custom order and a conditional name codec are F-1020;
+caller-qualified native parsing/staging is F-1021. Original payload consumption,
+outer framing, installation and callbacks remain U-079; no cause proof.
 
 Gameplay-tag indexing: F-702 (U-065 resolved). Dedicated-server sources for
 3.0.32 tags, checksums, cooked schemas and row indices: F-828, F-832;
@@ -41,29 +44,14 @@ resolved; unsupported quest classes and `Check()` graphs fail closed (U-076).
 New-player `History` appends coalesce across temporary per-peer send pressure
 (F-865, F-967).
 
-Native prospect refresh: F-936. Profile phases retry send pressure (F-975).
-Initial opens retain pending stages, Begin and pawn UID ownership (F-1011).
-A saved member's Join refreshes who is playing by login ID, as original spawn
-completion does (F-822, F-945). Native unassociated joins change nothing;
-the original adds them from character records (F-946).
-Explicit membership publication: F-1014.
-Original trigger timing remains U-070; native coverage
-uses authored peers. Each pawn open claims a distinct
-IcarusUID by the original's search order around saved actor UIDs (F-943, F-944,
-F-948); a returning player's controller and pawn recorders match by PlayerCharacterID,
-and the pawn then retakes its saved UID (F-947, F-949, F-950); the client
-sends its character slot and profiles (F-951). `run` follows that sequence on authored
-loopback peers: UID/state sends retry temporary queue pressure (F-964),
-and new players join History (F-954, F-967, F-975). The original
-finalises players only after every controller's friends list (F-973); the probe,
-initialising as a saved character, captured its restore of a returning pawn (F-972, F-974); `run` restores inventories, weights, modifiers and stats; incomplete inputs withhold dependent levels (F-978 to F-989);
-modifier and temperature call models preserve local order
-(F-991, F-994, F-996, F-997). Native time/temperature updates share reliable delivery
-(F-995, F-998); temperature tick order and connection-owned temperature/modifier
-ticks are qualified (F-999, F-1000). Automatic scheduling and climate remain open. GUID-tagged replay distinguishes countdown,
-increases and zero without inferring their causes (F-992). Profile answers use the PlayerState's trees and verified backend component
-(F-955); retry/kick and loadout/bestiary gates precede prospect initialization
-(F-956 to F-959).
+Prospect refresh/membership and initialization: F-936, F-1014, F-1011, F-975;
+original membership: F-822, F-945, F-946 (U-070). UID/state matching and profiles:
+F-943, F-944, F-947 to F-951; retry/History: F-954, F-964, F-967, F-975.
+Original friends-list finalization and returning-pawn capture: F-972 to F-974.
+Native restore/withheld levels: F-978 to F-989; modifier/temperature order and
+ticks: F-991, F-992, F-994 to F-1000. Automatic scheduling/climate remain open.
+Profile/backend, retry/kick, loadout/bestiary: F-955 to F-959;
+[world managers](../../specs/network/world-managers.md).
 
 ## Open
 
@@ -82,4 +70,4 @@ increases and zero without inferring their causes (F-992). Profile answers use t
 
 ## Artifacts
 
-M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209.
+M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209, M-1211 to M-1225.
