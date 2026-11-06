@@ -2,24 +2,25 @@
 
 ## Status
 
-Experimental: static observations of client build 25793767 and server build
-25621760, wire-checked against the 3.0.31 capture (F-704 to F-711, F-761,
-F-845). Last reconciled: 2026-11-04.
+Experimental: older server 25621760/client 25793767 and 3.0.31 capture
+(F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
+Last reconciled: 2026-11-06.
 
 ## Scope
 
-Actor-channel framing and scheduling after the control channel: exports,
-partial bunches, spawn records, content blocks, close and dormancy, and static
-server relevancy, priority, tick-rate, readiness and consider-list policy.
+Actor framing/scheduling after control admission, including visibility RPCs.
 Address pairs are server / client.
 
 ## Confirmed
 
-- 3.0.32 component field serialization bounds are 27/8 for PlayerData/Bestiary,
-  including the extra encoded slot; registered field counts are 26/7 (F-1015).
-- Matched 3.0.34 bounds: controller/backend/PlayerData/Bestiary are
-  183/149/27/8; controller includes 155 native fields, 5 cooked net properties,
-  22 root net functions and the encoded slot. Static framing only (F-1016).
+- Server 26313077 RPC82 custom order: reuse bit, visible bit, PackageName,
+  FileName iff reuse is clear; otherwise loading copies PackageName (F-1020).
+  Under the qualified reader/map and engine17 predicates, a name discriminator
+  selects packed EName index <703 or FString plus raw u32 number. Conditional
+  reader/ops construction is static evidence; live installation is unproved.
+- 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
+  (F-1015). Matched 3.0.34 controller/backend/PlayerData/Bestiary bounds:
+  183/149/27/8 (F-1016); static framing only.
 - NetGUID references, export flags and checksum placement: F-850. Object exports
   carry the F-853 class network checksum (`experimental::class_checksum`);
   package and level exports carry `0` (F-852, F-853). `experimental::session_open`
@@ -217,6 +218,12 @@ Address pairs are server / client.
 
 ## Candidate
 
+Caller-qualified server 26313077/engine 17/game 0 normal little-endian visibility
+parsing stages one typed value after exact consumption (F-1021). Canonical
+packed integers, strict strings and 65,536-unit cap are native subset rules.
+Default dispatch is unchanged: no outer presence framing, PeerLab RPC82 dispatch
+or callbacks. RPC78 validates empty parameters without timeout behavior.
+
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
 Explicit temperature/modifier ticks retain connection-local timing (F-1000). No automatic climate,
 scheduling or stock-client qualification.
@@ -233,10 +240,13 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
+- U-079: actual 612-bit RPC82 payload/framing, live profile/installation and
+  callbacks; M-1207 retains only count, so original consumption is untested.
+
 - Authenticated runtime relevancy and priority exercise (U-038).
 
 ## Evidence
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
-M-1126..M-1129, M-1147..M-1149, M-1197, M-1198. The cited finding rows retain the earlier
+M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217, M-1219, M-1221, M-1223 to M-1225. The cited finding rows retain the earlier
 static and capture observations.
