@@ -5,7 +5,8 @@ use icarus_bevy::experimental::packet::{BitReader, BitWriter, Payload};
 use icarus_bevy::experimental::release::ReleaseProfile;
 use icarus_bevy::experimental::rep_layout::NetworkName;
 use icarus_bevy::experimental::visibility::{
-    VisibilityArchiveProfile, VisibilityDecodeProfile, parse_visibility, read_visibility,
+    DecodedVisibilityParameter, VisibilityArchiveProfile, VisibilityDecodeProfile,
+    VisibilityRpc82Layout, parse_visibility, parse_visibility_rpc82, read_visibility,
     stage_visibility,
 };
 
@@ -391,4 +392,133 @@ fn diagnostics_do_not_disclose_names_or_number_values() {
         parse_visibility(&malformed, &profile()).unwrap_err()
     );
     assert!(!error.contains("SyntheticHiddenName"));
+}
+
+// Independently authored normal RPC82 field vectors; no observed capture bits.
+fn literal_outer(bytes: &[u8], bits: usize) -> Payload {
+    let mut source = BitReader::new(bytes, bits).unwrap();
+    let mut writer = BitWriter::new();
+    for _ in 0..bits {
+        writer.write_bit(source.read_bit());
+    }
+    Payload::from_writer(writer)
+}
+
+#[test]
+fn normal_rpc82_outer_vectors_preserve_presence_and_custom_bit_lengths() {
+    for (bytes, bits, reuse, visible) in [
+        (&[0x0b, 0x00][..], 12, true, false),
+        (&[0x0f, 0x00][..], 12, true, true),
+        (&[0x09, 0x10, 0x00][..], 21, false, false),
+        (&[0x0d, 0x10, 0x00][..], 21, false, true),
+    ] {
+        let payload = literal_outer(bytes, bits);
+        for route in [
+            VisibilityArchiveProfile::NormalLittleEndianNullMapCustom,
+            VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
+        ] {
+            let selected =
+                VisibilityDecodeProfile::qualify(&ReleaseProfile::release_3_0_34(), route).unwrap();
+            let value = parse_visibility_rpc82(
+                &payload,
+                &selected,
+                VisibilityRpc82Layout::NormalSingleCustomStruct,
+            )
+            .unwrap();
+            let DecodedVisibilityParameter::Present(value) = value else {
+                panic!("present fixture became absent");
+            };
+            assert_eq!(value.reuse_package_name, reuse);
+            assert_eq!(value.visible, visible);
+            assert_eq!(value.package_name, NetworkName::Hardcoded(0));
+            assert_eq!(value.file_name, NetworkName::Hardcoded(0));
+            assert_eq!(value.payload_bits, bits - 1);
+            let mut custom_reader = payload.reader();
+            assert!(custom_reader.read_bit());
+            assert_eq!(
+                read_visibility(&mut custom_reader, &selected).unwrap(),
+                value
+            );
+        }
+    }
+    let absent = literal_outer(&[0], 1);
+    assert_eq!(
+        parse_visibility_rpc82(
+            &absent,
+            &profile(),
+            VisibilityRpc82Layout::NormalSingleCustomStruct,
+        )
+        .unwrap(),
+        DecodedVisibilityParameter::Absent
+    );
+    // The absent representation contains no fabricated custom/default names.
+    assert!(parse_visibility(&absent, &profile()).is_err());
+}
+
+#[test]
+fn normal_rpc82_outer_rejects_truncation_trailing_bits_and_unqualified_layout() {
+    for (bytes, bits) in [
+        (&[0x0b, 0][..], 12),
+        (&[0x0f, 0][..], 12),
+        (&[0x09, 0x10, 0][..], 21),
+        (&[0x0d, 0x10, 0][..], 21),
+        (&[0][..], 1),
+    ] {
+        let payload = literal_outer(bytes, bits);
+        for truncated in 0..bits {
+            assert!(
+                parse_visibility_rpc82(
+                    &prefix(&payload, truncated),
+                    &profile(),
+                    VisibilityRpc82Layout::NormalSingleCustomStruct,
+                )
+                .is_err()
+            );
+        }
+        for tail in [false, true] {
+            assert!(
+                parse_visibility_rpc82(
+                    &with_tail(&payload, tail),
+                    &profile(),
+                    VisibilityRpc82Layout::NormalSingleCustomStruct,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            parse_visibility_rpc82(&payload, &profile(), VisibilityRpc82Layout::Unqualified,)
+                .is_err()
+        );
+    }
+    assert!(
+        VisibilityDecodeProfile::qualify(
+            &ReleaseProfile::release_3_0_34(),
+            VisibilityArchiveProfile::Unqualified,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn normal_rpc82_outer_reuses_strict_raw_name_decoder_without_alignment() {
+    let custom = custom(false, true, |writer| {
+        string(writer, -3, &[0, 0xd8, 0xe9, 0, 0, 0], u32::MAX);
+        string(writer, 3, b"Ab\0", 0x8000_0000);
+    });
+    let expected = parse_visibility(&custom, &profile()).unwrap();
+    let mut writer = BitWriter::new();
+    writer.write_bit(true);
+    let mut reader = custom.reader();
+    for _ in 0..custom.bit_len() {
+        writer.write_bit(reader.read_bit());
+    }
+    assert_eq!(
+        parse_visibility_rpc82(
+            &Payload::from_writer(writer),
+            &profile(),
+            VisibilityRpc82Layout::NormalSingleCustomStruct,
+        )
+        .unwrap(),
+        DecodedVisibilityParameter::Present(expected)
+    );
 }

@@ -76,10 +76,11 @@ Last reconciled: 2026-11-06
 
 ## Before enabling visibility dispatch or effects
 
-- Before dispatch, bind the actual 612-bit payload/provenance, outer presence
-  framing and live profile/ops installation; qualify callbacks before effects
-  (F-1020, F-1021; U-079). M-1207 retains no payload. Offline case authorization
-  and limits: M-1211, M-1215, M-1217, M-1219, M-1221.
+- Conditional static outer framing is qualified (F-1020). Before dispatch, bind
+  the actual 612-bit payload/provenance and live normal profile/layout/ops;
+  qualify callbacks before effects (U-079). M-1207 counts the whole field
+  payload, including any outer bit, not custom length. Offline case limits:
+  M-1211, M-1215, M-1217, M-1219, M-1221, M-1229.
 
 ## Before deriving replication schema for the server
 

@@ -14,20 +14,20 @@ Retrieve function addresses/operand receipts through the cited finding/evidence 
 
 ## Confirmed
 
-- Server 26313077 RPC82 custom order: reuse bit, visible bit, PackageName,
-  FileName iff reuse is clear; otherwise loading copies PackageName (F-1020).
-  Under the qualified reader/map and engine17 predicates, a name discriminator
-  selects packed EName index <703 or FString plus raw u32 number. Conditional
-  reader/ops construction is static evidence; live installation is unproved.
+- Conditional normal server 26313077 RPC82 field: one LSB-first presence bit
+  precedes custom reuse, visible, PackageName and FileName iff reuse is clear
+  (otherwise loading copies PackageName). Absent skips custom decoding and
+  retains initialized storage; its contents are unqualified. The selected
+  nonshared sender sets presence even for zero-looking structs; shared masks
+  remain unresolved (F-1020). Qualified reader/map and engine17 names select
+  packed EName index <703 or FString plus raw u32 number; no alignment or
+  second generic struct bit. Live profile/layout/ops remain unproved.
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
   (F-1015). Matched 3.0.34 controller/backend/PlayerData/Bestiary bounds:
   183/149/27/8 (F-1016); static framing only.
-- NetGUID references, export flags and checksum placement: F-850. Object exports
-  carry the F-853 class network checksum (`experimental::class_checksum`);
-  package and level exports carry `0` (F-852, F-853). `experimental::session_open`
-  and `game_state_open` compose the PlayerController and GameState opens
-  (F-852, F-794); `run` sends the PlayerController, pawn, GameState and
-  PlayerState opens after Join (F-784, F-804).
+- NetGUID references, export flags and checksums: F-850, F-852, F-853.
+  Controller/GameState open composition: F-852, F-794; four opens after Join:
+  F-784, F-804.
 - Authored bridge (F-938; [authored installation](../../runbooks/native-server.md#network-sessions-experimental)):
   motion/hidden/damage use the AActor prefix. Ordered open blocks seed known
   fields; opaque blocks invalidate them; superseded losses cannot revert
@@ -208,8 +208,10 @@ Retrieve function addresses/operand receipts through the cited finding/evidence 
 Caller-qualified server 26313077/engine 17/game 0 normal little-endian visibility
 parsing stages one typed value after exact consumption (F-1021). Canonical
 packed integers, strict strings and 65,536-unit cap are native subset rules.
-Default dispatch is unchanged: no outer presence framing, PeerLab RPC82 dispatch
-or callbacks. RPC78 validates empty parameters without timeout behavior.
+An explicit outer-layout assertion permits Absent/Present decoding without
+inferring initialized defaults. No PeerLab RPC82 dispatch or callbacks.
+RPC78 validates empty parameters without timeout behavior.
+Opt-in [private capture](../../runbooks/network-readiness.md#private-selected-rpc82-capture): F-1022; no decoder activation.
 
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
 Explicit temperature/modifier ticks retain connection-local timing (F-1000). No automatic climate,
@@ -227,7 +229,7 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
-- U-079: actual 612-bit RPC82 payload/framing, live profile/installation and
+- U-079: actual 612-bit RPC82 payload, live profile/layout/ops and
   callbacks; M-1207 retains only count, so original consumption is untested.
 
 - Authenticated runtime relevancy and priority exercise (U-038).
@@ -236,4 +238,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1226; earlier observations: cited findings.
+M-1219, M-1221, M-1223 to M-1232; earlier observations: cited findings.
