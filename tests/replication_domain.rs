@@ -86,3 +86,6 @@ mod temperature_tick;
 
 #[path = "replication_domain/time_of_day.rs"]
 mod time_of_day;
+
+#[path = "replication_domain/visibility.rs"]
+mod visibility;

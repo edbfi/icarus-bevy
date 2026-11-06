@@ -6,7 +6,7 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-05
+Last reconciled: 2026-11-06
 
 ## Before any C001 original-code case
 
@@ -73,6 +73,13 @@ Last reconciled: 2026-11-05
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically.
+
+## Before enabling visibility dispatch or effects
+
+- Before dispatch, bind the actual 612-bit payload/provenance, outer presence
+  framing and live profile/ops installation; qualify callbacks before effects
+  (F-1020, F-1021; U-079). M-1207 retains no payload. Offline case authorization
+  and limits: M-1211, M-1215, M-1217, M-1219, M-1221.
 
 ## Before deriving replication schema for the server
 

@@ -60,6 +60,7 @@ pub mod tagged;
 pub mod temperature;
 pub mod time_of_day;
 pub mod typed_value;
+pub mod visibility;
 
 /// Reflected CRC-32 of zero-extended UTF-16 units in little-endian order.
 ///
