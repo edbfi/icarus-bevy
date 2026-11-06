@@ -639,20 +639,7 @@ pub fn prepare_modifiers(
             after.entries.remove(index);
         }
         ModifierAction::Advance { elapsed_nanos } => {
-            after.entries.retain_mut(|entry| {
-                if let ModifierTimer::Timed {
-                    remaining_nanos,
-                    armed: true,
-                } = &mut entry.timer
-                {
-                    if elapsed_nanos >= *remaining_nanos {
-                        expired.push(entry.id);
-                        return false;
-                    }
-                    *remaining_nanos -= elapsed_nanos;
-                }
-                true
-            });
+            advance_entries(&mut after.entries, elapsed_nanos, |id| expired.push(id));
         }
     }
     after.cache = aggregate(&after.entries)?;
@@ -669,6 +656,57 @@ pub fn prepare_modifiers(
         added,
         expired,
     })
+}
+
+/// Advance validated timer entries in place. The return value records exactly
+/// whether a timer or membership changed; zero elapsed time leaves armed timers
+/// unchanged. The public staging path also retains ordered expiration IDs.
+fn advance_entries(
+    entries: &mut Vec<ModifierEntry>,
+    elapsed_nanos: u64,
+    mut on_expired: impl FnMut(ModifierId),
+) -> bool {
+    let mut changed = false;
+    entries.retain_mut(|entry| {
+        if let ModifierTimer::Timed {
+            remaining_nanos,
+            armed: true,
+        } = &mut entry.timer
+        {
+            if elapsed_nanos >= *remaining_nanos {
+                changed = true;
+                on_expired(entry.id);
+                return false;
+            }
+            changed |= elapsed_nanos != 0;
+            *remaining_nanos -= elapsed_nanos;
+        }
+        true
+    });
+    changed
+}
+
+/// Consume one owner from a captured, detached world snapshot. Capture has
+/// already cloned live payloads, so this path needs neither another before-state
+/// clone nor an external staging token. It still validates before and after,
+/// aggregates before checking revision exhaustion, and returns no partial state
+/// on error. The caller must validate/preflight the complete candidate before
+/// changing any live owner. Public prepared-token stale checks stay separate.
+pub(crate) fn advance_captured_modifiers(
+    mut state: OwnerModifierState,
+    elapsed_nanos: u64,
+) -> Result<OwnerModifierState> {
+    state.validate()?;
+    let changed = advance_entries(&mut state.entries, elapsed_nanos, |_| {});
+    state.cache = aggregate(&state.entries)?;
+    if changed {
+        state.revision = state
+            .revision
+            .checked_add(1)
+            .context("modifier revision exhausted")?;
+    }
+    state.validate()?;
+    Ok(state)
 }
 
 /// Complete authored modifier state for every live lifecycle owner. Dormant

@@ -21,8 +21,9 @@ exclusions (F-928), schema-11 timers/cache/authority (F-931).
 [Procedures/limits](../../runbooks/authored-worlds.md).
 
 Bool/I32 limits/exclusions: F-929, runbook. Schema-7/8/9 preflight/schema-11
-modifier costs: F-926; full preflight per step even empty; full ticks, uniform
-latency/peak-memory/speedup unqualified.
+modifier costs: F-926; owned advance avoids restaging, full preflight remains.
+Armed 1,024-owner call p95 fell in three pairs; other cells mixed (M-1259).
+No full-frame, throughput, uniform or RSS proof.
 
 Faults/redaction: F-239, F-671, F-870, F-880, F-423. Load/restarts (F-871),
 interrupted soaks/compressed 72-hour schedules (F-872, F-873), POSIX recovery
@@ -85,4 +86,4 @@ Whole binaries are compared; no single change is measured.
 
 ## Artifacts
 
-M-1130, M-1131; M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060, M-1063, M-1064, M-1069, M-1070, M-1075, M-1076, M-1088.
+M-1130, M-1131; M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060, M-1063, M-1064, M-1069, M-1070, M-1075, M-1076, M-1088, M-1256 to M-1260.
