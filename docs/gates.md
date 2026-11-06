@@ -79,11 +79,14 @@ Last reconciled: 2026-11-06
 - Before dispatch, bind actual 612-bit payload/provenance and live
   normal profile/layout/ops; conditional framing grants no installation
   (F-1020 to F-1022). Before effects, bind native bit1, D's live
-  receiver/vptr, delegates and actor/channel identities; qualify Close,
-  reentrancy and client progress. F-1023 is static; F-1024 only logs intentions
+  receiver/final vptr, actual delegate members and actor/channel identities;
+  bind Gather Q+0xe8 source, Q+0xf0 initialization/lifetime and map owner,
+  external weak/compaction predicates; qualify Close,
+  reentrancy and client progress. F-1023 qualifies conditional installation/
+  registration and logging-only candidates, not live bindings; F-1024 logs intentions
   (U-079). M-1207 counts the whole field including any outer bit, not custom
   length; no payload retained. Offline case authorization/limits:
-  M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1240.
+  M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1240, M-1241, M-1243.
 
 ## Before deriving replication schema for the server
 
@@ -115,8 +118,7 @@ Last reconciled: 2026-11-06
 - Each runtime experiment requires its own case scope and current launcher
   session; historical authorization windows remain expired (F-218, F-252).
 - The user's standing instruction (2026-10-28, renewed through
-  2026-11-05; F-968, M-1201) authorizes offline and online
-  research: network
+  2026-11-06; F-968, M-1245) authorizes offline and online research: network
   and Steam access, fetching and running the matched official dedicated server,
   original-runtime runs, and connected stock-client scenarios against the
   original or the native server, without per-scenario approval. This replaces
