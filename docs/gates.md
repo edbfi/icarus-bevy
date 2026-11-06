@@ -73,7 +73,8 @@ Last reconciled: 2026-11-06
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically. 3.0.35 intake and
-  selected cooked equivalence (F-1025/F-1026) do not qualify its full profile.
+  selected cooked/native-header qualification (F-1025 to F-1027) do not qualify
+  its full profile or permit repinning.
 
 ## Before enabling visibility dispatch or effects
 
