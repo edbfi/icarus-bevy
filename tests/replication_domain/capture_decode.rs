@@ -4,6 +4,9 @@
 #[path = "../../examples/capture_decode.rs"]
 mod decoder;
 
+#[path = "../../examples/native_join_probe/capture.rs"]
+mod private_native_capture;
+
 use std::fs;
 
 use anyhow::Result;
@@ -23,6 +26,50 @@ use icarus_bevy::experimental::{
 use serde_json::{Value, json};
 
 const ACTOR_NAME: u32 = 102;
+
+#[test]
+fn private_selected_capture_path_preflight_and_count_only_summary() -> Result<()> {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let root = tempfile::tempdir()?;
+    let work = root.path().join("work");
+    fs::create_dir(&work)?;
+    // Disabled mode does not even inspect a missing work root.
+    assert!(private_native_capture::prepare(None, &root.path().join("missing"))?.is_none());
+    let output = work.join("selected.jsonl");
+    let mut sink = private_native_capture::prepare(Some(&output), &work)?.unwrap();
+    assert_eq!(fs::metadata(&output)?.permissions().mode() & 0o777, 0o600);
+    assert!(private_native_capture::prepare(Some(&output), &work).is_err());
+    assert!(private_native_capture::prepare(Some(&root.path().join("outside")), &work).is_err());
+    assert!(private_native_capture::prepare(Some(&work.join("../escaped")), &work).is_err());
+    assert!(private_native_capture::prepare(Some(&work.join("missing/file")), &work).is_err());
+    let outside = root.path().join("preserve");
+    fs::write(&outside, "authored sentinel")?;
+    let link = work.join("link");
+    symlink(&outside, &link)?;
+    assert!(private_native_capture::prepare(Some(&link), &work).is_err());
+    let dangling = work.join("dangling");
+    symlink(work.join("absent"), &dangling)?;
+    assert!(private_native_capture::prepare(Some(&dangling), &work).is_err());
+    symlink(&work, work.join("linked-parent"))?;
+    assert!(
+        private_native_capture::prepare(Some(&work.join("linked-parent/file")), &work).is_err()
+    );
+    assert_eq!(fs::read_to_string(&outside)?, "authored sentinel");
+    assert!(!root.path().join("escaped").exists());
+    assert!(!root.path().join("outside").exists());
+    assert!(!work.join("absent").exists());
+    let running = serde_json::to_value(sink.counts())?;
+    assert!(running.as_object().unwrap().values().all(Value::is_u64));
+    assert_eq!(running["incomplete"], 1);
+    let mut disabled_summary = json!({"event": "authored"});
+    private_native_capture::add_counts(&mut disabled_summary, None);
+    assert_eq!(disabled_summary, json!({"event": "authored"}));
+    private_native_capture::add_counts(&mut disabled_summary, Some(sink.counts()));
+    assert_eq!(disabled_summary["private_rpc82_capture"], running);
+    assert_eq!(sink.finish().incomplete, 0);
+    assert_eq!(fs::metadata(output)?.len(), 0);
+    Ok(())
+}
 
 fn config() -> PacketConfig {
     PacketConfig {

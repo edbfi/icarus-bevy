@@ -654,6 +654,14 @@ impl LabPeer {
     /// overflow, delivered otherwise). A stale or duplicate
     /// packet is reported as [`PacketDisposition::Rejected`], not an error.
     pub fn receive(&mut self, datagram: &[u8]) -> Result<PeerReceive> {
+        self.receive_with_capture(datagram, None)
+    }
+
+    pub(crate) fn receive_with_capture(
+        &mut self,
+        datagram: &[u8],
+        capture: Option<&mut super::selected_rpc_capture::CaptureTap<'_>>,
+    ) -> Result<PeerReceive> {
         self.ensure_usable()?;
         let (header, bunches) = self.read_bounded(datagram)?;
         let staged = self.stage(&bunches)?;
@@ -746,7 +754,7 @@ impl LabPeer {
         }
         let delivered = self.deliver(staged, &mut summary);
         let messages = self.fail_on_error(delivered)?;
-        let (actor_bunches, actors_accepted) = self.deliver_actors(bunches, &mut summary);
+        let (actor_bunches, actors_accepted) = self.deliver_actors(bunches, &mut summary, capture);
         let acked = self.sequencer.ack_seq(received.sequence, actors_accepted);
         self.fail_on_error(acked)?;
         summary.queued_reliable = self.control.queued_len();
@@ -762,6 +770,7 @@ impl LabPeer {
         &mut self,
         bunches: Vec<Bunch>,
         summary: &mut ReceiveSummary,
+        mut capture: Option<&mut super::selected_rpc_capture::CaptureTap<'_>>,
     ) -> (Vec<Bunch>, bool) {
         let mut delivered = Vec::new();
         let mut accepted = true;
@@ -786,6 +795,9 @@ impl LabPeer {
             match channel.receive_reliable(raw, bunch) {
                 Ok(ReliableReceive::Delivered(bunches)) => {
                     for bunch in bunches {
+                        if let Some(tap) = capture.as_deref_mut() {
+                            tap.observe(&bunch);
+                        }
                         let header = &bunch.header;
                         if header.partial
                             || header.has_package_map_exports
