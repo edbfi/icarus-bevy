@@ -45,6 +45,7 @@ pub mod rep_rpc;
 pub mod rep_text;
 pub mod restore_rules;
 pub mod selected_rpc_capture;
+pub mod selected_visibility_replay;
 pub mod sequencing;
 pub mod server_fps;
 pub mod server_query;

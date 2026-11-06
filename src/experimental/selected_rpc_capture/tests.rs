@@ -324,3 +324,41 @@ fn write_failure_is_incomplete_and_never_claims_a_record() {
     assert_eq!(counts.output_bytes, 0);
     assert_eq!(counts.incomplete, 1);
 }
+#[test]
+fn writer_selected_absent_payload_replays_without_source_completion_claim() {
+    use crate::experimental::{
+        release::ReleaseProfile,
+        selected_visibility_replay::{ReplayProfile, replay},
+        visibility::{VisibilityArchiveProfile, VisibilityRpc82Layout},
+    };
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = tempfile::tempfile().unwrap();
+    let mut sink = PrivateRpc82Capture::from_file(file.try_clone().unwrap());
+    let mut writer = BitWriter::new();
+    writer.write_bit(false); // authored one-bit absent outer RPC parameter
+    tap(&mut sink).observe(&bunch(vec![block(
+        BlockTarget::Actor,
+        82,
+        Payload::from_writer(writer),
+    )]));
+    let final_counts = sink.finish();
+    assert_eq!(final_counts.observations, 1);
+    assert_eq!(final_counts.incomplete, 0);
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let profile = ReplayProfile::qualify(
+        &ReleaseProfile::release_3_0_34(),
+        VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
+        VisibilityRpc82Layout::NormalSingleCustomStruct,
+    )
+    .unwrap();
+    let summary = replay(file, &profile).unwrap();
+    assert_eq!(summary.records, 1);
+    assert_eq!(summary.accepted_absent, 1);
+    assert_eq!(summary.rejected, 0);
+    // Even a finalized authored writer does not grant this input API verified
+    // capture provenance/completeness. Those receipts remain external.
+    assert!(!summary.capture_complete_verified);
+    assert!(!summary.provenance_verified);
+    assert!(!summary.compatibility_proven);
+}
