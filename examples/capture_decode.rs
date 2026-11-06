@@ -36,6 +36,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "capture_decode/selected_visibility_cli.rs"]
+mod selected_visibility_cli;
+
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, ValueEnum};
 use icarus_bevy::experimental::{
@@ -2860,7 +2863,11 @@ where
 }
 
 fn main() -> Result<()> {
-    let result = run_cli_in(std::env::args_os(), &repository_work());
+    let args: Vec<_> = std::env::args_os().collect();
+    if let Some(code) = selected_visibility_cli::dispatch(&args, &repository_work()) {
+        std::process::exit(code);
+    }
+    let result = run_cli_in(args, &repository_work());
     if let Err(error) = &result
         && let Some(error) = error.downcast_ref::<clap::Error>()
     {
