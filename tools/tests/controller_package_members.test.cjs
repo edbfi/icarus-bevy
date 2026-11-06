@@ -265,8 +265,9 @@ test('opt-in controller protocol wrapper preserves verified provenance and unres
     assert.deepEqual(result.local_net_properties, []);
     assert.deepEqual(result.local_non_overriding_net_functions, []);
     assert.equal(result.checksum_derivation.status, 'unresolved');
-    assert.deepEqual(result.buffer_digests, readClass([source], undefined, {profile}).buffer_digests);
-    assert(!Object.hasOwn(readClass([source], undefined, {profile}), 'local_net_properties'));
+    const counts = readClass([source], undefined, {profile});
+    assert.deepEqual(result.buffer_digests, counts.buffer_digests);
+    assert(!Object.hasOwn(counts, 'local_net_properties'));
   }
 });
 

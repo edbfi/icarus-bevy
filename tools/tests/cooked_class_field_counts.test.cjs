@@ -180,6 +180,38 @@ test('opt-in protocol reader shares explicit profiles, malformed-input rejection
   fail(() => readCookedClassProtocolMetadata(bad.uasset, bad.uexp, identity));
 });
 
+test('opt-in descriptors preserve ordered class references and set and bool shapes', () => {
+  const props = [
+    {name: 'HardClass', type: 'ClassProperty', flags: 0x20, ref: -6, meta: -3},
+    {name: 'SoftClass', type: 'SoftClassProperty', flags: 0x20, ref: -3, meta: -6},
+    {name: 'Members', type: 'SetProperty', flags: 0x20, inner: {name: 'Member', type: 'NameProperty'}},
+    {name: 'Enabled', type: 'BoolProperty', flags: 0x20, size: 1, native: 1}
+  ];
+  const parent = {package: '/Script/Authored', object_path: ['AuthoredParent']};
+  const generated = {package: '/Script/Engine', object_path: ['BlueprintGeneratedClass']};
+  const descriptor = (name, property_type, overrides = {}) => ({
+    name: {base: name, number: 0, text: name}, property_type, array_dim: 1, element_size: 4,
+    property_flags: '0x0000000000000020', serialized_replication_index: 0,
+    replication_notify: {base: 'None', number: 0, text: 'None'}, lifetime_condition: 0,
+    references: [], children: [], ...overrides
+  });
+  for (const [f, profile] of [[fixture({classes: [{name: 'BP_Target_C', props}]}), PROFILE],
+    [zeroFixture({classes: [{name: 'BP_Target_C', props}]}), ZERO_VERSION_PROFILE]]) {
+    const result = readCookedClassProtocolMetadata(f.uasset, f.uexp, identity, {profile});
+    assert.deepEqual(result.local_net_properties, [
+      descriptor('HardClass', 'ClassProperty', {references: [parent, generated]}),
+      descriptor('SoftClass', 'SoftClassProperty', {references: [generated, parent]}),
+      descriptor('Members', 'SetProperty', {children: [descriptor('Member', 'NameProperty', {
+        property_flags: '0x0000000000000000'})]}),
+      descriptor('Enabled', 'BoolProperty', {element_size: 1})
+    ]);
+    assert.deepEqual(fields(result), [4, 0]);
+    const counts = count(f, identity, {profile});
+    assert.deepEqual(fields(counts), [4, 0]);
+    for (const property of props) assert(!JSON.stringify(counts).includes(property.name));
+  }
+});
+
 test('exact class selection among multiple exports preserves superclass and only emits metadata', () => {
   const f = fixture({classes: [
     {name: 'BP_Unrelated_C', props: [{name: 'UNRELATED_PRIVATE_NAME', flags: 0x20}]},
