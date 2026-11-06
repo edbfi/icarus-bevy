@@ -6,9 +6,9 @@
 //! reader, its null-map or qualified package-map name route, and custom struct
 //! dispatch. Neither payload contents nor native struct size establish them.
 //!
-//! Input starts at the custom serializer's reuse bit. Outer RPC property
-//! default-presence framing must already have been removed under a separately
-//! qualified layout; this module does not guess those bits. Exact consumption,
+//! The custom API starts at the reuse bit. The outer RPC82 adapter requires
+//! a separate caller assertion of the named normal single-custom-struct layout;
+//! neither API guesses framing from payload bits. Exact consumption,
 //! canonical packed integers and strict strings are authored admission rules.
 //! No captured payload replay or byte compatibility is claimed.
 
@@ -60,6 +60,51 @@ impl VisibilityDecodeProfile {
     }
 }
 
+/// Caller assertion of the named normal RPC82 LevelVisibility parameter layout:
+/// one non-bool parent and one custom struct command, under the archive/custom
+/// dispatch predicates in `VisibilityDecodeProfile`. This is separate from
+/// release/profile qualification and is never inferred from payload contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisibilityRpc82Layout {
+    Unqualified,
+    NormalSingleCustomStruct,
+}
+
+/// Outer parameter outcome. Absent retains the receiver's initialized storage;
+/// its native contents are unqualified. It is not a decoded zero/default value
+/// and must not clear or stage visibility state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecodedVisibilityParameter {
+    Absent,
+    Present(DecodedVisibility),
+}
+
+/// Parse one complete RPC82 field payload under an explicitly qualified normal
+/// single-custom-struct layout. Present starts the existing custom reader at
+/// bit 1 with no alignment; its `payload_bits` excludes the outer bit. Absent
+/// consumes only that bit. Exact consumption is authored admission policy.
+/// No staging, dispatch, initialized-value construction or callbacks occur.
+pub fn parse_visibility_rpc82(
+    payload: &Payload,
+    profile: &VisibilityDecodeProfile,
+    layout: VisibilityRpc82Layout,
+) -> Result<DecodedVisibilityParameter> {
+    ensure!(
+        layout == VisibilityRpc82Layout::NormalSingleCustomStruct,
+        "unqualified visibility RPC82 parameter layout unsupported"
+    );
+    validate_archive_profile(profile)?;
+    let mut reader = payload.reader();
+    if read_field(&mut reader, 1, "visibility parameter presence")? == 0 {
+        ensure!(reader.at_end(), "trailing absent visibility parameter bits");
+        return Ok(DecodedVisibilityParameter::Absent);
+    }
+    Ok(DecodedVisibilityParameter::Present(read_visibility(
+        &mut reader,
+        profile,
+    )?))
+}
+
 /// Complete custom value, preserving the reuse bit and raw name forms.
 /// Hardcoded indices are unresolved; string number bits are not interpreted
 /// as suffixes or interned identities. Debug exposes no name contents.
@@ -80,16 +125,7 @@ pub fn read_visibility(
     reader: &mut BitReader<'_>,
     profile: &VisibilityDecodeProfile,
 ) -> Result<DecodedVisibility> {
-    // The private token can only be created by qualify. Keep this explicit
-    // match so extending the archive enum cannot silently enable a route.
-    ensure!(
-        matches!(
-            profile.archive,
-            VisibilityArchiveProfile::NormalLittleEndianNullMapCustom
-                | VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom
-        ),
-        "unqualified visibility archive/custom dispatch unsupported"
-    );
+    validate_archive_profile(profile)?;
     ensure!(!reader.is_error(), "visibility reader already in error");
     let payload_bits = reader.remaining();
     let reuse_package_name = read_field(reader, 1, "visibility reuse bit")? != 0;
@@ -129,6 +165,20 @@ pub fn stage_visibility(
 ) -> Result<()> {
     let decoded = parse_visibility(payload, profile)?;
     *slot = Some(decoded);
+    Ok(())
+}
+
+fn validate_archive_profile(profile: &VisibilityDecodeProfile) -> Result<()> {
+    // The private token can only be created by qualify. Keep this explicit
+    // match so extending the archive enum cannot silently enable a route.
+    ensure!(
+        matches!(
+            profile.archive,
+            VisibilityArchiveProfile::NormalLittleEndianNullMapCustom
+                | VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom
+        ),
+        "unqualified visibility archive/custom dispatch unsupported"
+    );
     Ok(())
 }
 

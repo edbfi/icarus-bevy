@@ -1651,6 +1651,22 @@ enum ControllerCall {
     Initialisation(InitialisationAnswer),
 }
 
+pub(crate) fn validate_controller_capture(
+    payload: &Payload,
+    engine_net_version: u32,
+    order: super::archive::ByteOrder,
+    components: [Option<u32>; 3],
+) -> bool {
+    controller_initialisation_calls(
+        payload,
+        engine_net_version,
+        order,
+        components,
+        &mut ControllerFieldDiagnostics::default(),
+    )
+    .is_ok()
+}
+
 /// Stage a complete controller bunch before applying any calls: malformed
 /// trailing input must not partially mutate session state. Subobject payloads
 /// are never interpreted as calls on the controller itself.
@@ -1856,6 +1872,7 @@ impl GameStateSession {
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
+    private_rpc82_capture: Option<super::selected_rpc_capture::PrivateRpc82Capture>,
     controller_startup: Option<Vec<ControllerStartupAction>>,
     controller_startup_bound: u32,
     socket: UdpSocket,
@@ -1932,6 +1949,35 @@ impl fmt::Debug for PeerLab {
 }
 
 impl PeerLab {
+    /// Explicit private file sink. Installation is restricted to pre-admission
+    /// setup so selection and budgets cannot be reset during a run.
+    pub fn install_private_rpc82_capture(
+        &mut self,
+        capture: super::selected_rpc_capture::PrivateRpc82Capture,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0 && self.private_rpc82_capture.is_none(),
+            "capture installation requires fresh lab"
+        );
+        self.private_rpc82_capture = Some(capture);
+        Ok(())
+    }
+
+    pub fn private_rpc82_capture_counts(
+        &self,
+    ) -> Option<super::selected_rpc_capture::CaptureCounts> {
+        self.private_rpc82_capture
+            .as_ref()
+            .map(|capture| capture.counts())
+    }
+
+    pub fn finish_private_rpc82_capture(
+        &mut self,
+    ) -> Option<super::selected_rpc_capture::CaptureCounts> {
+        self.private_rpc82_capture
+            .as_mut()
+            .map(|capture| capture.finish())
+    }
     /// Validate `config` and bind IPv4 loopback only; zero selects an
     /// ephemeral port. A fresh random cookie secret is drawn per lab.
     pub fn bind(port: u16, config: PeerLabConfig) -> Result<Self> {
@@ -1997,6 +2043,7 @@ impl PeerLab {
 
     fn with_socket(socket: UdpSocket, authority: CookieAuthority, config: PeerLabConfig) -> Self {
         Self {
+            private_rpc82_capture: None,
             socket,
             authenticator: None,
             authority,
@@ -3591,6 +3638,11 @@ impl PeerLab {
     // original's FreeUniqueID call timing has not been established.
     fn remove_peer(&mut self, address: SocketAddrV4) -> Option<PeerEntry> {
         let entry = self.peers.remove(&address)?;
+        if let (Some(capture), Some(connection)) =
+            (&mut self.private_rpc82_capture, entry.connection_id)
+        {
+            capture.forget_connection(connection);
+        }
         if let (Some(auth), Some(request)) = (&self.authenticator, entry.auth_request) {
             // Queue failure marks the service unusable; the next poll closes
             // every peer. Never silently drop an EndAuthSession operation.
@@ -4981,7 +5033,24 @@ impl PeerLab {
         let mut close = false;
         let mut incarnation_released = false;
         let mut staged_calls = Vec::new();
-        let messages = match entry.peer.receive(&self.buffer[..length]) {
+        let mut capture = self.private_rpc82_capture.as_mut().and_then(|sink| {
+            Some(super::selected_rpc_capture::CaptureTap {
+                sink,
+                channel: entry.player_controller_channel?,
+                connection_ordinal: entry.connection_id?,
+                elapsed_ms: now
+                    .saturating_duration_since(self.started)
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64,
+                engine_net_version: self.player_controller_open.as_ref()?.engine_net_version,
+                order: entry.peer.connection_byte_order(),
+                components: [entry.backend_proxy, entry.player_data, entry.bestiary],
+            })
+        });
+        let messages = match entry
+            .peer
+            .receive_with_capture(&self.buffer[..length], capture.as_mut())
+        {
             Ok(received) => {
                 let summary = received.summary();
                 match summary.disposition {
@@ -11435,6 +11504,169 @@ mod tests {
             assert_eq!(actual.entries, expected.entries);
             assert_eq!(actual.overflow, expected.overflow);
             assert_eq!(actual.malformed_bunches, expected.malformed_bunches);
+        }
+
+        #[test]
+        fn private_rpc82_opt_in_preserves_dispatch_and_suppresses_reliable_duplicates() {
+            use super::super::super::selected_rpc_capture::PrivateRpc82Capture;
+            use std::io::{Read, Seek, SeekFrom};
+            let mut outcomes = Vec::new();
+            for mode in 0..3 {
+                let enabled = mode > 0;
+                let mut lab = prospect_refresh_lab();
+                let mut file = tempfile::tempfile().unwrap();
+                let readonly = tempfile::NamedTempFile::new().unwrap();
+                if enabled {
+                    lab.install_private_rpc82_capture(PrivateRpc82Capture::from_file(
+                        if mode == 2 {
+                            std::fs::File::open(readonly.path()).unwrap()
+                        } else {
+                            file.try_clone().unwrap()
+                        },
+                    ))
+                    .unwrap();
+                }
+                let (socket, address, mut client) = controller_peer(&mut lab);
+                lab.peers.get_mut(&address).unwrap().connection_id = Some(1);
+                let mut selected = BitWriter::new();
+                for bit in 0..612 {
+                    selected.write_bit(bit % 3 == 0);
+                }
+                let payload = client_actor_body(
+                    &lab,
+                    vec![field_block(
+                        BlockTarget::Actor,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &[
+                            (82, Payload::from_writer(selected)),
+                            (SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload()),
+                        ],
+                    )],
+                );
+                let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload.clone());
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+                assert!(lab.has_peer(address));
+                assert_eq!(lab.stats.actor_duplicate_reliable, 1);
+                assert_eq!(lab.stats.controller_fields_ignored, 1);
+                let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+                assert_eq!(
+                    diagnostics
+                        .entries
+                        .iter()
+                        .find(|field| field.index == 82)
+                        .unwrap()
+                        .disposition,
+                    ControllerFieldDisposition::Ignored
+                );
+                outcomes.push(serde_json::to_value(diagnostics).unwrap());
+                if mode == 1 {
+                    assert_eq!(lab.finish_private_rpc82_capture().unwrap().observations, 1);
+                    file.seek(SeekFrom::Start(0)).unwrap();
+                    let mut text = String::new();
+                    file.read_to_string(&mut text).unwrap();
+                    assert_eq!(text.lines().count(), 1);
+                    let row: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+                    assert_eq!(row["payload_bits"], 612);
+                    assert!(!text.contains("AUTHORED-DIAGNOSTIC-PLAYER"));
+                } else if mode == 2 {
+                    let counts = lab.finish_private_rpc82_capture().unwrap();
+                    assert_eq!(counts.observations, 0);
+                    assert_eq!(counts.write_errors, 1);
+                    assert_eq!(counts.incomplete, 1);
+                    assert!(lab.has_peer(address));
+                } else {
+                    assert!(lab.private_rpc82_capture_counts().is_none());
+                    assert_eq!(file.metadata().unwrap().len(), 0);
+                }
+            }
+            assert_eq!(outcomes[0], outcomes[1]);
+            assert_eq!(outcomes[0], outcomes[2]);
+        }
+
+        #[test]
+        fn private_capture_reassembles_ordered_parts_without_enabling_partial_dispatch() {
+            use super::super::super::{
+                selected_rpc_capture::PrivateRpc82Capture, sequencing::split_outgoing_bunch,
+            };
+            let mut lab = prospect_refresh_lab();
+            let file = tempfile::tempfile().unwrap();
+            lab.install_private_rpc82_capture(PrivateRpc82Capture::from_file(
+                file.try_clone().unwrap(),
+            ))
+            .unwrap();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            lab.peers.get_mut(&address).unwrap().connection_id = Some(1);
+            let mut selected = BitWriter::new();
+            for _ in 0..612 {
+                selected.write_bit(true);
+            }
+            let payload = client_actor_body(
+                &lab,
+                vec![field_block(
+                    BlockTarget::Actor,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    &[(82, Payload::from_writer(selected))],
+                )],
+            );
+            let channel = lab.peers[&address].player_controller_channel.unwrap();
+            let whole = Bunch {
+                header: BunchHeader {
+                    control: false,
+                    open: false,
+                    close: false,
+                    close_reason: None,
+                    paused: false,
+                    reliable: true,
+                    channel_index: channel,
+                    has_package_map_exports: false,
+                    has_must_be_mapped_guids: false,
+                    partial: false,
+                    reliable_sequence_raw: Some(wire_reliable_sequence(
+                        client.initial_reliable().1 + 1,
+                    )),
+                    partial_initial: false,
+                    partial_final: false,
+                    channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+                },
+                payload,
+            };
+            let parts = split_outgoing_bunch(&whole, &[], 512, Some(16 * 1024)).unwrap();
+            assert_eq!(parts.len(), 2);
+            // Queue the final part first. Neither an incomplete nor a queued
+            // part may produce a record. Re-send it later as a duplicate.
+            for (index, part) in [parts[1].clone(), parts[0].clone(), parts[1].clone()]
+                .into_iter()
+                .enumerate()
+            {
+                let bytes = write_packet(
+                    &Packet {
+                        magic: 0,
+                        header: client.header().unwrap(),
+                        info: None,
+                        bunches: vec![part],
+                    },
+                    &lab.config.packet.packet,
+                )
+                .unwrap();
+                client.commit().unwrap();
+                receive_authored_at(&mut lab, &socket, &bytes, Instant::now());
+                assert_eq!(
+                    lab.private_rpc82_capture_counts().unwrap().observations,
+                    u64::from(index > 0)
+                );
+            }
+            assert_eq!(lab.finish_private_rpc82_capture().unwrap().incomplete, 0);
+            assert_eq!(lab.stats.actor_duplicate_reliable, 1);
+            assert_eq!(lab.stats.actor_bunches_dropped, 2);
+            assert_eq!(lab.stats.controller_fields_ignored, 0);
+            assert!(
+                lab.controller_field_diagnostics(address)
+                    .unwrap()
+                    .entries
+                    .is_empty()
+            );
+            assert!(lab.has_peer(address));
         }
 
         #[test]

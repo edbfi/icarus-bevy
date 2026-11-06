@@ -16,9 +16,9 @@ F-845, F-846, F-849; addresses and limits are in the
 [spec](../../specs/network/actor-channel.md).
 Component bounds correct F-958 (F-1015); matched 3.0.34 controller and component
 bounds are F-1016; RPC identities: F-1019. Eight opens settle without Begin
-(F-1017). Visibility custom order and a conditional name codec are F-1020;
-caller-qualified native parsing/staging is F-1021. Original payload consumption,
-outer framing, installation and callbacks remain U-079; no cause proof.
+(F-1017). Conditional outer presence/custom order and name codec: F-1020;
+caller-qualified parsing/staging: F-1021; private capture: F-1022. Actual payload,
+live profile/layout/ops and callbacks remain U-079; no cause proof.
 
 Gameplay-tag indexing: F-702 (U-065 resolved). Dedicated-server sources for
 3.0.32 tags, checksums, cooked schemas and row indices: F-828, F-832;
@@ -70,4 +70,4 @@ Profile/backend, retry/kick, loadout/bestiary: F-955 to F-959;
 
 ## Artifacts
 
-M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209, M-1211 to M-1225.
+M-707, M-813, M-819, M-832, M-838..M-848, M-1083..M-1093, M-1096, M-1099, M-1102, M-1105..M-1108, M-1110, M-1112, M-1126..M-1149, M-1197, M-1198, M-1207 to M-1209, M-1211 to M-1225, M-1227 to M-1230.

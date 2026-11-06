@@ -36,6 +36,9 @@ use icarus_bevy::{
 };
 use serde_json::json;
 
+#[path = "native_join_probe/capture.rs"]
+mod native_join_capture;
+
 // Protocol identities observed in S2; the native world remains independently
 // authored and empty. These names do not import terrain or gameplay tables.
 const PROBE_MAP: &str = "/Game/Maps/Terrain_016_OLY/Terrain_016";
@@ -92,6 +95,9 @@ impl AuthoredWorld {
 #[derive(Parser)]
 #[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
 struct Options {
+    /// PRIVATE selected actor RPC82 JSONL, exclusively created under checkout work/.
+    #[arg(long)]
+    private_rpc82_output: Option<PathBuf>,
     /// Explicit experimental controller calls, in flag order; at most 32.
     #[arg(long, value_enum)]
     controller_startup: Vec<StartupAction>,
@@ -187,6 +193,11 @@ fn main() -> Result<()> {
         prospect_info: Some(encode_prospect_info(&prospect)?),
     };
     advert.validate()?;
+    // Must fail before sockets, TLS, Steam initialization, or authentication.
+    let private_capture = native_join_capture::prepare(
+        options.private_rpc82_output.as_deref(),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("work"),
+    )?;
     let query = UdpSocket::bind(options.query_bind).context("bind query listener")?;
     let tls = Tls::from_native_roots()?;
     let http = net::http_agent(&tls, &HttpTimeouts::default());
@@ -231,6 +242,9 @@ fn main() -> Result<()> {
     )?
     .context("network disabled")?;
     bound.lab.refresh_active_prospect(&prospect)?;
+    if let Some(capture) = private_capture {
+        bound.lab.install_private_rpc82_capture(capture)?;
+    }
     // Independently authored empty-world initialization, supplied before any
     // connection is polled. Connected world entry remains unqualified.
     bound.lab.extend_game_state_values(game_state)?;
@@ -268,7 +282,9 @@ fn main() -> Result<()> {
         let now = Instant::now();
         if now >= next_progress {
             let lab = app.world().resource::<PeerLab>();
-            output_error = emit_progress(&json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"stats":lab.stats(),"compatibility_proven":false})).err();
+            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"stats":lab.stats(),"compatibility_proven":false});
+            native_join_capture::add_counts(&mut progress, lab.private_rpc82_capture_counts());
+            output_error = emit_progress(&progress).err();
             // Schedule from now: slow updates never create a catch-up burst.
             next_progress = now + progress_interval;
         }
@@ -289,6 +305,7 @@ fn main() -> Result<()> {
     let controller_fields = lab.controller_field_totals();
     let stats = lab.stats().clone();
     let peak = lab.peak_peer_count();
+    let private_capture = lab.finish_private_rpc82_capture();
     lab.shutdown();
     let service_result = service.stop_and_join();
     let query_result = responder
@@ -302,11 +319,16 @@ fn main() -> Result<()> {
     } else {
         reason
     };
-    let summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"controller_fields_before_shutdown":controller_fields,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    let mut summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"controller_fields_before_shutdown":controller_fields,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    native_join_capture::add_counts(&mut summary, private_capture);
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &summary)?;
     writeln!(&mut stdout)?;
     stdout.flush()?;
+    ensure!(
+        private_capture.is_none_or(|counts| counts.write_errors == 0),
+        "private capture incomplete: write failure (see counts)"
+    );
     service_result?;
     query_result?;
     if let Some(error) = output_error {
