@@ -146,6 +146,28 @@ test('readonly/code/resource mappings, virtual tails and opaque pointers are bou
   const overlap=fixture();overlap.bytes.writeUInt32LE(0x1000,overlap.table+40+12);reject(overlap);
 });
 
+test('nonempty property and function lists reject null pointers', () => {
+  const property=fixture();
+  property.bytes.writeInt32LE(1,0x440);
+  property.bytes.writeBigUInt64LE(property.base+0x20a0n,0x428);
+  reject(property); // Mapped array, but its required property entry is zero.
+  const functions=fixture();
+  functions.bytes.writeUInt32LE(1,0x43c);
+  reject(functions); // Nonzero count requires a nonzero function-link pointer.
+});
+
+for (const [name,countOffset,pointerOffset] of [['dependency',56,24],['interface getter',68,48]]) {
+  test(`${name} rejects a non-executable pointee`, () => {
+    const f=fixture();
+    f.bytes.writeInt32LE(1,0x400+countOffset);
+    f.bytes.writeBigUInt64LE(f.base+0x20a0n,0x400+pointerOffset);
+    f.bytes.writeBigUInt64LE(f.target,0x4a0);
+    assert.equal(inspect(f.bytes,options(f)).selected.length,1);
+    f.bytes.writeBigUInt64LE(f.base+0x20c0n,0x4a0);
+    reject(f);
+  });
+}
+
 test('opaque and unselected bytes never leak as strings or descriptor interpretation', () => {
   const f=fixture(), marker='AuthoredPrivateMarker';
   f.bytes.write(marker,0x4c1,'ascii');f.bytes.write(marker,0x540,'ascii');
