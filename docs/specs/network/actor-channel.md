@@ -8,7 +8,8 @@ Last reconciled: 2026-11-06.
 
 ## Scope
 
-Actor framing/scheduling after control admission, including visibility RPCs.
+Actor framing/scheduling after control admission: exports, partials, spawn/content,
+close/dormancy, relevancy/priority/readiness and visibility RPCs.
 Address pairs are server / client.
 
 ## Confirmed
@@ -248,5 +249,5 @@ scheduling or stock-client qualification.
 ## Evidence
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
-M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217, M-1219, M-1221, M-1223 to M-1225. The cited finding rows retain the earlier
-static and capture observations.
+M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
+M-1219, M-1221, M-1223 to M-1226; earlier observations: cited findings.
