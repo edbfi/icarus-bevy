@@ -15,6 +15,13 @@
 const {isSharedArrayBuffer} = require('node:util').types;
 
 const PROFILE = 'tpi_v80_exact_udt_data_members_v1';
+const ENUM_PROFILE = 'tpi_v80_exact_enum_values_v1';
+// Enum extension layout checked against the primary sources:
+// https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/TypeRecordMapping.cpp
+// visitKnownRecord(EnumRecord), visitKnownMember(EnumeratorRecord): fixed enum
+// header; enumerator attributes, encoded integer, modern zero-terminated name.
+// https://raw.githubusercontent.com/microsoft/microsoft-pdb/master/include/cvinfo.h
+// lfEnumerate independently identifies the attribute + variable numeric tail.
 const CAPS = Object.freeze({
     stream_bytes: 512 * 1024 * 1024,
     records: 6000000,
@@ -32,10 +39,11 @@ const CAPS = Object.freeze({
     retained_bytes: 64 * 1024 * 1024,
     output_bytes: 65536,
 });
+const ENUM_CAPS = Object.freeze({...CAPS, enumerators: 4096});
 const LEAF = Object.freeze({
     MODIFIER: 0x1001, POINTER: 0x1002, FIELDLIST: 0x1203, BITFIELD: 0x1205,
     CLASS: 0x1504, STRUCTURE: 0x1505, ENUM: 0x1507, INTERFACE: 0x1519,
-    MEMBER: 0x150d, INDEX: 0x1404,
+    MEMBER: 0x150d, INDEX: 0x1404, ENUMERATE: 0x1502,
 });
 const GENERIC_ERROR = 'invalid or unsupported selected TPI types';
 const need = ok => { if (!ok) throw Error(GENERIC_ERROR); };
@@ -43,24 +51,30 @@ const plain = value => value !== null && typeof value === 'object'
     && !Array.isArray(value)
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
-function settings(options) {
+function settings(options, enums = false) {
     need(plain(options));
     need(Reflect.ownKeys(options).every(key => typeof key === 'string'
         && ['profile', 'names', 'limits'].includes(key)));
-    need(Object.hasOwn(options, 'profile') && options.profile === PROFILE && Object.hasOwn(options, 'names'));
-    const limits = {...CAPS};
+    need(Object.hasOwn(options, 'profile') && options.profile === (enums ? ENUM_PROFILE : PROFILE) && Object.hasOwn(options, 'names'));
+    const caps = enums ? ENUM_CAPS : CAPS;
+    const limits = {...caps};
     if (options.limits !== undefined) {
         need(plain(options.limits));
         for (const key of Reflect.ownKeys(options.limits)) {
-            need(typeof key === 'string' && Object.hasOwn(CAPS, key));
+            need(typeof key === 'string' && Object.hasOwn(caps, key));
             const value = options.limits[key];
-            need(Number.isSafeInteger(value) && value >= 0 && value <= CAPS[key]);
+            need(Number.isSafeInteger(value) && value >= 0 && value <= caps[key]);
             limits[key] = value;
         }
     }
-    need(Array.isArray(options.names) && options.names.length > 0 && options.names.length <= limits.selectors);
+    const selectedNames = options.names;
+    need(Array.isArray(selectedNames));
+    const selectorCount = selectedNames.length;
+    need(Number.isSafeInteger(selectorCount) && selectorCount > 0 && selectorCount <= limits.selectors);
     const names = [], seen = new Set();
-    for (const name of options.names) {
+    for (let index = 0; index < selectorCount; index++) {
+        need(Object.hasOwn(selectedNames, index));
+        const name = selectedNames[index];
         need(typeof name === 'string' && /^[\x21-\x7e]+$/.test(name)
             && name.length <= limits.name_bytes && !seen.has(name));
         seen.add(name);
@@ -79,9 +93,9 @@ class Cursor {
     u8() { return this.take(1)[0]; }
     u16() { return this.take(2).readUInt16LE(); }
     u32() { return this.take(4).readUInt32LE(); }
-    numeric() {
+    integer() {
         const leaf = this.u16();
-        if (leaf < 0x8000) return leaf;
+        if (leaf < 0x8000) return BigInt(leaf);
         let value;
         switch (leaf) {
         case 0x8000: value = BigInt(this.take(1).readInt8()); break;
@@ -93,6 +107,10 @@ class Cursor {
         case 0x800a: value = this.take(8).readBigUInt64LE(); break;
         default: need(false);
         }
+        return value;
+    }
+    numeric() {
+        const value = this.integer();
         need(value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER));
         return Number(value);
     }
@@ -161,9 +179,13 @@ function inspectSelectedTypes(reader, options) {
     try { return inspectImpl(reader, options); }
     catch { throw Error(GENERIC_ERROR); }
 }
+function inspectSelectedEnums(reader, options) {
+    try { return inspectImpl(reader, options, true); }
+    catch { throw Error(GENERIC_ERROR); }
+}
 
-function inspectImpl(reader, options) {
-    const {limits, names} = settings(options);
+function inspectImpl(reader, options, enums = false) {
+    const {limits, names} = settings(options, enums);
     need(reader && Number.isSafeInteger(reader.size) && reader.size >= 56
         && reader.size <= limits.stream_bytes && typeof reader.read === 'function');
     const streamSize = reader.size;
@@ -227,27 +249,36 @@ function inspectImpl(reader, options) {
         const length = prefix.readUInt16LE() + 2, leaf = prefix.readUInt16LE(2);
         need(length >= 4 && length <= limits.record_bytes && length <= limits.read_bytes
             && length % 4 === 0 && at + length <= streamSize);
-        if ([LEAF.CLASS, LEAF.STRUCTURE, LEAF.INTERFACE].includes(leaf)) {
+        if (enums ? leaf === LEAF.ENUM : [LEAF.CLASS, LEAF.STRUCTURE, LEAF.INTERFACE].includes(leaf)) {
             const record = read(at, length);
-            const name = candidateName(record);
+            const probe = enums ? new Cursor(record) : null;
+            if (probe) probe.take(12);
+            const name = probe ? probe.name() : candidateName(record);
             const selection = names.find(value => value.bytes.equals(name));
             if (selection) {
-                const parsed = tag(record);
+                let parsed;
+                if (enums) {
+                    const c = new Cursor(record);
+                    const count = c.u16(), flags = c.u16(), underlying = c.u32(), fieldList = c.u32();
+                    const enumName = c.name(), unique = flags & 0x200 ? c.name() : null;
+                    c.finish();
+                    parsed = {count, flags, underlying, fieldList, name: enumName, unique};
+                } else parsed = tag(record);
                 need(++candidates <= limits.candidates);
                 need(leaf !== LEAF.INTERFACE);
                 const unique = parsed.unique === null ? null : text(parsed.unique, limits.unique_name_bytes);
                 charge((unique === null ? 0 : unique.length) + 128);
                 const item = {
                     type_index: begin + ordinal, leaf, flags: parsed.flags,
-                    declared_member_count: parsed.count, field_list: parsed.fieldList,
-                    size_bytes: parsed.size, unique_name: unique,
+                    ...(enums ? {declared_enumerator_count: parsed.count} : {declared_member_count: parsed.count}), field_list: parsed.fieldList,
+                    ...(enums ? {underlying_type_index: parsed.underlying} : {size_bytes: parsed.size}), unique_name: unique,
                 };
-                need(parsed.derived === 0 && parsed.vshape === 0);
+                if (!enums) need(parsed.derived === 0 && parsed.vshape === 0);
                 if (parsed.flags & 0x80) {
-                    need(parsed.count === 0 && parsed.fieldList === 0 && parsed.size === 0);
+                    need(parsed.count === 0 && parsed.fieldList === 0 && (enums || parsed.size === 0));
                     selection.declarations.push(item);
                 } else {
-                    need(parsed.size > 0 && parsed.size <= limits.udt_bytes);
+                    if (!enums) need(parsed.size > 0 && parsed.size <= limits.udt_bytes);
                     selection.definitions.push(item);
                 }
             }
@@ -364,19 +395,71 @@ function inspectImpl(reader, options) {
         need(result.length === definition.declared_member_count);
         return result;
     }
+    // Enum values are declaration metadata, not runtime flag meanings. Only
+    // integer simple types through bounded modifier chains are supported.
+    function integerUnderlying(index, seen = new Set()) {
+        need(seen.size <= limits.depth && !seen.has(index));
+        if (SIMPLE.has(index)) {
+            const base = SIMPLE.get(index);
+            need(base.storage_kind === 'integer');
+            return;
+        }
+        const entry = record(index), c = new Cursor(entry.bytes);
+        need(entry.leaf === LEAF.MODIFIER);
+        seen.add(index);
+        const modified = c.u32(), modifiers = c.u16();
+        need((modifiers & ~7) === 0); c.finish();
+        integerUnderlying(modified, seen);
+    }
+    let enumeratorsTotal = 0;
+    function enumValues(definition) {
+        integerUnderlying(definition.underlying_type_index);
+        const base = width(definition.underlying_type_index);
+        const bits = BigInt(base.width_bytes * 8);
+        const minimum = base.signed ? -(1n << (bits - 1n)) : 0n;
+        const maximum = (1n << (base.signed ? bits - 1n : bits)) - 1n;
+        const result = [], seenLists = new Set(), seenNames = new Set();
+        let next = definition.field_list;
+        if (!next) need(definition.declared_enumerator_count === 0);
+        while (next !== 0) {
+            need(!seenLists.has(next) && seenLists.size < limits.continuations);
+            seenLists.add(next);
+            const entry = record(next); need(entry.leaf === LEAF.FIELDLIST);
+            const c = new Cursor(entry.bytes); next = 0;
+            while (c.at < c.bytes.length) {
+                const kind = c.u16();
+                if (kind === LEAF.INDEX) {
+                    need(c.u16() === 0); next = c.u32(); validIndex(next);
+                    c.finish(); break;
+                }
+                need(kind === LEAF.ENUMERATE && ++enumeratorsTotal <= limits.enumerators);
+                const attributes = c.u16(); need((attributes & ~3) === 0);
+                const value = c.integer(), name = text(c.name(), limits.name_bytes);
+                need(value >= minimum && value <= maximum && !seenNames.has(name));
+                seenNames.add(name); charge(name.length + 160);
+                result.push({name, attributes, value_decimal: value.toString(10)});
+                c.pad();
+            }
+        }
+        need(result.length === definition.declared_enumerator_count);
+        return {width_bytes: base.width_bytes, signed: base.signed, enumerators: result};
+    }
     const selected = names.map(selection => {
         need(selection.definitions.length === 1);
         const definition = selection.definitions[0];
         for (const declaration of selection.declarations) {
             need(declaration.leaf === definition.leaf);
+            if (enums) need(declaration.underlying_type_index === definition.underlying_type_index
+                && declaration.unique_name === definition.unique_name);
             if (declaration.unique_name !== null && definition.unique_name !== null) {
                 need(declaration.unique_name === definition.unique_name);
             }
         }
-        return {name: selection.name, ...definition, forward_declarations: selection.declarations, fields: fields(definition)};
+        return {name: selection.name, ...definition, forward_declarations: selection.declarations,
+            ...(enums ? enumValues(definition) : {fields: fields(definition)})};
     });
     const result = {
-        profile: PROFILE, version: 20040203, header_bytes: 56,
+        profile: enums ? ENUM_PROFILE : PROFILE, version: 20040203, header_bytes: 56,
         type_index_begin: begin, type_index_end: end, records_framed: count,
         record_bytes: recordBytes, selected,
         dependent_types: [...memo].sort(([left], [right]) => left - right)
@@ -386,7 +469,12 @@ function inspectImpl(reader, options) {
         caller_provenance_verified: false, original_layout_qualified: false,
         release_qualified: false, runtime_behavior_proven: false,
         charged_retained_bytes: charged,
-        limitations: [
+        limitations: enums ? [
+            'Caller must bind immutable stream reads, input hashes and matching provenance.',
+            'Only exact selected LF_ENUM declarations, integer underlying widths and complete supported enumerators are interpreted.',
+            'Enum declaration values do not establish runtime flag meanings, native consumers or release compatibility.',
+            'Unselected payloads, external type servers and incremental hash adjustments remain unqualified.',
+        ] : [
             'Caller must bind immutable stream reads, input hashes and matching provenance.',
             'Only selected modern class/struct data members and supported width dependencies are interpreted.',
             'Inheritance, methods, external type servers, unions and incremental hash adjustments are unsupported.',
@@ -397,4 +485,4 @@ function inspectImpl(reader, options) {
     return result;
 }
 
-module.exports = {inspectSelectedTypes, PROFILE, CAPS};
+module.exports = {inspectSelectedTypes, PROFILE, CAPS, inspectSelectedEnums, ENUM_PROFILE, ENUM_CAPS};
