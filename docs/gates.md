@@ -83,7 +83,7 @@ Last reconciled: 2026-11-06
   reentrancy and client progress. F-1023 is static; F-1024 only logs intentions
   (U-079). M-1207 counts the whole field including any outer bit, not custom
   length; no payload retained. Offline case authorization/limits:
-  M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1233.
+  M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1240.
 
 ## Before deriving replication schema for the server
 
