@@ -155,19 +155,18 @@ Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 
 ### Modifier advance costs
 
-F-926: historical Rust 1.99.1 / Bevy 0.20.0, five pairs: same-borrow charging
-dedup lowered nonempty 1,024-owner p95; empty/one-owner cells were mixed
-(M-1021/M-1023).
+F-926: Rust 1.99.1 / Bevy 0.20.0, five pairs: charging dedup lowered nonempty
+1,024-owner p95; empty/one-owner cells were mixed (M-1021/M-1023).
 
-Current Rust 1.99.1 / Bevy 0.20.1, three pairs: owned advance avoids restaging;
-full capture/preflight remains each step. Armed 1,024-owner median-of-run p95:
+Current Rust 1.99.1 / Bevy 0.20.1: owned advance avoids restaging. Full
+capture/preflight runs each fixed step, even without armed timers; catch-up
+repeats that cost. Three-pair armed 1,024-owner median-of-run p95:
 32.558 to 23.136 ms; paired candidate/baseline ratios 0.678–0.876.
-Other cells mixed; all twelve
-cells/regressions: M-1259.
+Other cells mixed; all twelve cells/regressions: M-1259.
 
 Each cell/run: three fresh apps × ten verified calls, four entries/nonempty
 owner; setup/verification excluded; no relationships/sidecars.
-Timers stay armed. The 1,024-owner limit is an admission cap, not a 30 Hz promise.
+Timers stay armed. The 1,024-owner cap gives no 30 Hz guarantee.
 No uniform, whole-frame/health/catch-up, throughput, allocation/RSS, original or
 client qualification follows from these public-call timings.
 
