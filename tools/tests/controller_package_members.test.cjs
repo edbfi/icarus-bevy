@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const {MEMBERS, LIMITS, inspectControllerPackageMembers: inspect, readControllerClassMetadata: readClass} = require('../controller_package_members.cjs');
+const {MEMBERS, LIMITS, inspectControllerPackageMembers: inspect, readControllerClassMetadata: readClass,
+  readControllerClassProtocolMetadata: readProtocol} = require('../controller_package_members.cjs');
 const {FOOTER_SIZE} = require('../pak_protocol_metadata.cjs');
 const {PROFILE, ZERO_VERSION_PROFILE} = require('../cooked_class_field_counts.cjs');
 const hash = (b, algorithm = 'sha1') => crypto.createHash(algorithm).update(b).digest();
@@ -250,6 +251,42 @@ test('class reader forwards only explicitly selected parser profiles', t => {
   let calls = 0;
   assert.throws(() => readClass([input(t, fixture())], () => { calls++; }, {profile: 'unknown'}));
   assert.equal(calls, 0);
+});
+
+test('opt-in controller protocol wrapper preserves verified provenance and unresolved checksum status', t => {
+  for (const [zero, profile] of [[false, PROFILE], [true, ZERO_VERSION_PROFILE]]) {
+    const payloads = classBuffers({zero}), source = input(t, fixture({compressed: false, payloads}));
+    const result = readProtocol([source], undefined, {profile});
+    assert.equal(result.profile, 'icarus-controller-class-protocol-metadata');
+    assert.equal(result.parser_profile, profile);
+    assert.equal(result.package_hashes_verified, true);
+    assert.equal(result.payload_checksums_verified, true);
+    assert.equal(result.release_qualified, false);
+    assert.deepEqual(result.local_net_properties, []);
+    assert.deepEqual(result.local_non_overriding_net_functions, []);
+    assert.equal(result.checksum_derivation.status, 'unresolved');
+    assert.deepEqual(result.buffer_digests, readClass([source], undefined, {profile}).buffer_digests);
+    assert(!Object.hasOwn(readClass([source], undefined, {profile}), 'local_net_properties'));
+  }
+});
+
+test('opt-in controller wrapper verifies checksums before callbacks and rejects mutation after decoding', t => {
+  const corrupt = fixture(); corrupt[73] ^= 1;
+  let calls = 0;
+  assert.throws(() => readProtocol([input(t, corrupt)], () => { calls++; }),
+    /^Error: Unsupported or invalid controller package metadata$/);
+  assert.equal(calls, 0);
+  const decoded = classBuffers(), bytes = fixture({outputLengths: decoded.map(buffer => buffer.length)}), source = input(t, bytes);
+  assert.throws(() => readProtocol([source], () => {
+    const output = decoded[calls++];
+    if (calls === 2) {
+      const fd = fs.openSync(source.path, 'r+');
+      try { fs.writeSync(fd, Buffer.from([bytes[73] ^ 1]), 0, 1, 73); }
+      finally { fs.closeSync(fd); }
+    }
+    return output;
+  }), /^Error: Unsupported or invalid controller package metadata$/);
+  assert.equal(calls, 2);
 });
 
 test('Oodle callbacks receive only selected block bytes and exact expected lengths', t => {

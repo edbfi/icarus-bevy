@@ -3,7 +3,7 @@
 // Inspection reads metadata only; class counting privately decodes selected members.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const {countCookedClassFields, LIMITS: CLASS_LIMITS, PROFILE, ZERO_VERSION_PROFILE} = require('./cooked_class_field_counts.cjs');
+const {countCookedClassFields, readCookedClassProtocolMetadata, LIMITS: CLASS_LIMITS, PROFILE, ZERO_VERSION_PROFILE} = require('./cooked_class_field_counts.cjs');
 const {LIMITS: PAK_LIMITS, MAX_DIRECTORY_ENTRIES, FOOTER_SIZE, parseFooter, parsePrimaryIndexWithMount,
   parseDirectoryIndex} = require('./pak_protocol_metadata.cjs');
 const MEMBERS = Object.freeze(['Icarus/Content/BP/Player/BP_IcarusPlayerControllerSurvival.uasset',
@@ -194,6 +194,13 @@ function inspectControllerPackageMembers(packages) {
 // decodeBlock(compressedBuffer, expectedOutputLength) must synchronously return
 // an exact-size Buffer. The caller owns decoder execution/time isolation.
 function readControllerClassMetadata(packages, decodeBlock, options = {}) {
+  return readControllerMetadata(packages, decodeBlock, options, false);
+}
+// Explicit opt-in to selected protocol names; keeps the count-only API private.
+function readControllerClassProtocolMetadata(packages, decodeBlock, options = {}) {
+  return readControllerMetadata(packages, decodeBlock, options, true);
+}
+function readControllerMetadata(packages, decodeBlock, options, protocol) {
   return selectControllerPackageMembers(packages, (metadata, members) => {
     check(decodeBlock === undefined || typeof decodeBlock === 'function');
     check(options && typeof options === 'object' && !Array.isArray(options));
@@ -223,10 +230,13 @@ function readControllerClassMetadata(packages, decodeBlock, options = {}) {
       }
       check(sourceAt === payload.length && outputAt === output.length); return output;
     });
-    const counts = countCookedClassFields(decoded[0], decoded[1], {
+    const reader = protocol ? readCookedClassProtocolMetadata : countCookedClassFields;
+    const counts = reader(decoded[0], decoded[1], {
       package: '/Game/BP/Player/BP_IcarusPlayerControllerSurvival',
       object_path: ['BP_IcarusPlayerControllerSurvival_C']}, {profile});
-    return {...metadata, profile: 'icarus-controller-class-metadata', payload_checksums_verified: true, ...counts};
+    return {...metadata, profile: protocol ? 'icarus-controller-class-protocol-metadata' : 'icarus-controller-class-metadata',
+      payload_checksums_verified: true, ...counts};
   });
 }
-module.exports = {MEMBERS, LIMITS, inspectControllerPackageMembers, readControllerClassMetadata};
+module.exports = {MEMBERS, LIMITS, inspectControllerPackageMembers, readControllerClassMetadata,
+  readControllerClassProtocolMetadata};
