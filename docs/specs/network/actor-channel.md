@@ -10,7 +10,20 @@ Last reconciled: 2026-11-06.
 
 Actor framing/scheduling after control admission: exports, partials, spawn/content,
 close/dormancy, relevancy/priority/readiness and visibility RPCs.
-Retrieve function addresses/operand receipts through the cited finding/evidence IDs.
+Other function bindings are in the cited finding/evidence IDs.
+
+Retained server/client bindings from the older builds:
+`AppendExportBunches` `0x14351fe30`/`0x1437b03d0`;
+`ExportNetGUID` server `0x143707e50`; `InternalLoadObject` client `0x1439af1c0`;
+`ProcessBunch` server `0x143530b30`; `UActorChannel::ReceivedBunch` server
+`0x143535c60`; `UActorChannel::SendBunch` client `0x1437b2680`;
+`StartBecomingDormant` `0x1435419d0`/`0x1437ce5b0`;
+client `SerializeOptionalValue<FVector>` `0x14399cac0`, `FRotator::NetSerialize`
+`0x141ed36b0`, `SerializeCompressedShort` `0x141eeb7d0`/`0x141ed7810`;
+`APlayerController` server open hook `0x1438384d0`;
+`FRepLayout::ReceiveCustomProperty` client `0x143b219b0`;
+max-tick-rate helper `0x143993060`/`0x143c5d520`;
+`CallPreReplication` server `0x14332f4f0`.
 
 ## Confirmed
 
@@ -28,12 +41,8 @@ Retrieve function addresses/operand receipts through the cited finding/evidence 
 - NetGUID references, export flags and checksums: F-850, F-852, F-853.
   Controller/GameState open composition: F-852, F-794; four opens after Join:
   F-784, F-804.
-- Authored bridge (F-938; [authored installation](../../runbooks/native-server.md#network-sessions-experimental)):
-  motion/hidden/damage use the AActor prefix. Ordered open blocks seed known
-  fields; opaque blocks invalidate them; superseded losses cannot revert
-  repaired fields. Flag removal requests false/false, not class defaults.
-  Schema-7/11 dormancy, replacement, native modifier state and qualification
-  limits: [bridge operations](../../runbooks/native-server.md#network-sessions-experimental).
+- Authored bridge behavior and limits: F-938 and
+  [bridge operations](../../runbooks/native-server.md#network-sessions-experimental).
 - Dynamic GUIDs assign on first serialization, by open or reference (F-794);
   components keep one GUID across connections.
 - Export repetition: F-796 (`experimental::session_open::ConnectionExports`).
@@ -51,12 +60,9 @@ Retrieve function addresses/operand receipts through the cited finding/evidence 
   F-862).
 - GameState open values: active prospect 51..67 and C015 handles 34, 35, 39,
   41, 42, 46 (F-855; arrays carry every element field, `IsCurrentlyPlaying`
-  only for connected members; `game_state_open::active_prospect_values`,
-  `ProspectInfo::for_session`); `SessionFlags` 47 (F-830;
-  `network::saved_game_state`); `LockedMissions` 50 (F-834, F-835;
-  `game_state_open::locked_missions_value`); `bIsOpenWorldProspect` 48 and
-  `bIsOutpostProspect` 49 (F-911; `network::prospect_world_flags`);
-  `RichPresenceGUID` 24 (F-912; `network::rich_presence_guid`).
+  only for connected members); `SessionFlags` 47 (F-830);
+  `LockedMissions` 50 (F-834, F-835); `bIsOpenWorldProspect` 48 and
+  `bIsOutpostProspect` 49 (F-911); `RichPresenceGUID` 24 (F-912).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   and `ConstructNetIndex` sort by `GetAllNodes` + `FName::LexicalLess`, set
   `InvalidTagNetIndex = N + 1`, `total_bits = 12`, clamped `first_segment = 12`,

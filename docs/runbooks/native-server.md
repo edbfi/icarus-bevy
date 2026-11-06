@@ -233,7 +233,7 @@ Format 2 world scope (F-916):
 `variables`), `[[world.maps]]` (`name`, `tiles`), `[[world.maps.actors]]`
 (`path`, `class`).
 
-Format 2 requires `[world]`; `[references]`: only `data_row`/`asset_path`/
+Format 2 ([example](../../tests/import_plan.rs)) requires `[world]`; `[references]`: only `data_row`/`asset_path`/
 `unclassified`. Scope actor paths/tiles to root map, variables to classes:
 exact case, ≤1,024 UTF-16 units/ref, ≤4 MiB file. Duplicate definitions/undeclared
 placement classes reject before planning. `data.pak`: no world roles (F-916).
@@ -245,5 +245,5 @@ writes refused (`world_imported: false`).
 including dropped records; RSS unbounded (F-920).
 `inspect-save --candidate-check --source prospect.json`: counts/retained charges,
 `required_decode_limits`/`remaining_headroom`; no names/values/import authority.
-Headroom guarantees no further recorder preflight. Meanings/original round trips
+Headroom cannot guarantee another recorder's preflight. Meanings/original round trips
 unvalidated; [workload](synthetic-workload.md).
