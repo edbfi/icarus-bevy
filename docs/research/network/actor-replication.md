@@ -16,10 +16,10 @@ F-1024 inert models. Payload/live bindings: U-079; no cause proof.
 Tags F-702; sources F-828/F-832.
 Replay census F-762.
 
-Matched 3.0.35 four-class native headers have a qualified 76-byte consumer-read
-extent (F-1027); totals are not replicated counts. Native ancestry, property/
-function descriptors, ordering/checksums and full profile remain unqualified;
-no repin or stock-client progress follows.
+Matched 3.0.35 selected declarations F-1028 corroborate the class-header
+offsets: 80 B declared, 76 B consumed (F-1027). Declarations do not extend the
+observed read extent. Consumer semantics, enum values, ancestry, net counts/order/checksums and
+full profile remain unqualified; no repin or client progress follows.
 
 [World managers](../../specs/network/world-managers.md): managers, quests,
 profiles/restore, modifier/temperature; automatic climate/scheduling unqualified.
@@ -35,4 +35,4 @@ UID/membership: F-943 to F-946, F-949 to F-951; loadout/backend: F-956 to F-958.
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027 index artifacts.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts.
