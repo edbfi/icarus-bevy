@@ -155,25 +155,20 @@ Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 
 ### Modifier advance costs
 
-Full capture and preflight encode run every fixed step, even without armed
-timers; catch-up repeats that cost (F-926). Release Rust 1.99.1/Bevy 0.20.0, two
-pinned EPYC 9534 CPUs, five matched pairs (three fresh apps × ten calls/cell;
-five-run median p95 ms; four entries per nonempty owner; state verified after
-each call; setup excluded; no relationships/sidecars):
+F-926: Rust 1.99.1 / Bevy 0.20.0, five pairs: charging dedup lowered nonempty
+1,024-owner p95; empty/one-owner cells were mixed (M-1021/M-1023).
 
-| State per owner | 1 owner | 32 | 256 | 1,024 |
-| --- | --- | --- | --- | --- |
-| empty | 0.055 | 0.386 | 2.754 | 11.685 |
-| indefinite | 0.043 | 0.583 | 4.716 | 18.267 |
-| armed timers | 0.056 | 0.579 | 4.400 | 18.521 |
+Current Rust 1.99.1 / Bevy 0.20.1: owned advance avoids restaging. Full
+capture/preflight runs each fixed step, even without armed timers; catch-up
+repeats that cost. Three-pair armed 1,024-owner median-of-run p95:
+32.558 to 23.136 ms; paired candidate/baseline ratios 0.678–0.876.
+Other cells mixed; all twelve cells/regressions: M-1259.
 
-1,024 owners is an admission cap, not a 30 Hz guarantee; whole-frame, health,
-catch-up, uniform speedup and RSS stay unqualified (F-926: same-borrow charging
-dedup lowered nonempty 1,024-owner p95; empty/1-owner cells were mixed).
-
-```bash
-cargo run --release --locked --example native_modifier_bench -- --seconds 120
-```
+Each cell/run: three fresh apps × ten verified calls, four entries/nonempty
+owner; setup/verification excluded; no relationships/sidecars.
+Timers stay armed. The 1,024-owner cap gives no 30 Hz guarantee.
+No uniform, whole-frame/health/catch-up, throughput, allocation/RSS, original or
+client qualification follows from these public-call timings.
 
 ## Authored C001 owners
 

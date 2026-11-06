@@ -31,8 +31,8 @@ use crate::{
         RecorderComponentRecord, RestoreBatch, prepare_owner_restore,
     },
     native_modifiers::{
-        MAX_MODIFIER_OWNERS, MAX_MODIFIER_WORLD_BYTES, MAX_WORLD_MODIFIERS, ModifierAction,
-        ModifierRequest, ModifierWorldSnapshot, OwnerModifierState, prepare_modifiers,
+        MAX_MODIFIER_OWNERS, MAX_MODIFIER_WORLD_BYTES, MAX_WORLD_MODIFIERS, ModifierRequest,
+        ModifierWorldSnapshot, OwnerModifierState, advance_captured_modifiers, prepare_modifiers,
     },
     native_relationships::{
         CompiledNativeRelationships, NativeFoundationRecord, NativeRelationshipRole,
@@ -2459,14 +2459,12 @@ pub fn advance_native_modifiers(world: &mut World, elapsed: std::time::Duration)
         .as_mut()
         .context("authored modifiers are not enabled")?;
     let elapsed_nanos = u64::try_from(elapsed.as_nanos()).context("modifier elapsed time limit")?;
-    for owner in &mut state.owners {
-        let request = ModifierRequest {
-            owner: owner.owner,
-            expected_revision: owner.revision,
-            action: ModifierAction::Advance { elapsed_nanos },
-        };
-        *owner = prepare_modifiers(owner, &request)?.apply(owner)?;
-    }
+    // These owners belong only to the detached capture. An error discards the
+    // whole candidate, including earlier owners' completed advances.
+    state.owners = std::mem::take(&mut state.owners)
+        .into_iter()
+        .map(|owner| advance_captured_modifiers(owner, elapsed_nanos))
+        .collect::<Result<Vec<_>>>()?;
     let context = world.resource::<NativeLifecycleContext>();
     state.validate(&context.lifecycle)?;
     let targets: Vec<_> = state

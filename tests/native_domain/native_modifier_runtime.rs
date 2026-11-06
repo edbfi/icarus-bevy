@@ -365,6 +365,81 @@ fn last_owner_expiration_overflow_keeps_every_timer_cache_and_revision_unchanged
 }
 
 #[test]
+fn captured_advances_match_public_prepared_tokens_over_mixed_timer_traces() {
+    for mode in 0..3 {
+        let mut app = app();
+        if mode >= 1 {
+            add(&mut app, 1, "indefinite", None, 4);
+            add(&mut app, 2, "zero", Some(0.0), -2);
+        }
+        if mode == 2 {
+            add(&mut app, 1, "short", Some(0.5), -3);
+            add(&mut app, 1, "long", Some(2.0), 8);
+            add(&mut app, 2, "other", Some(1.0), 5);
+        }
+        let mut expected = capture(app.world_mut()).unwrap();
+        for elapsed_nanos in [
+            0,
+            1,
+            33_333_333,
+            66_666_667,
+            399_999_999,
+            500_000_000,
+            u64::MAX,
+        ] {
+            for owner in &mut expected.native_modifiers.as_mut().unwrap().owners {
+                let request = ModifierRequest {
+                    owner: owner.owner,
+                    expected_revision: owner.revision,
+                    action: ModifierAction::Advance { elapsed_nanos },
+                };
+                *owner = prepare_modifiers(owner, &request)
+                    .unwrap()
+                    .apply(owner)
+                    .unwrap();
+            }
+            advance_native_modifiers(app.world_mut(), Duration::from_nanos(elapsed_nanos)).unwrap();
+            let actual = capture(app.world_mut()).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                serde_json::to_vec(&actual).unwrap(),
+                serde_json::to_vec(&expected).unwrap()
+            );
+            // Exercise the same owned-state path after persistence-shaped reload;
+            // setup must not reset surviving timers, IDs, caches or revisions.
+            app = build_app(&ServerConfig::default(), &actual).unwrap();
+        }
+    }
+}
+
+#[test]
+fn last_owner_revision_exhaustion_discards_an_earlier_staged_expiration() {
+    let mut initial = app();
+    add(&mut initial, 1, "expires_first", Some(1.0), 7);
+    add(&mut initial, 2, "still_armed", Some(2.0), 5);
+    let mut snapshot = capture(initial.world_mut()).unwrap();
+    snapshot
+        .native_modifiers
+        .as_mut()
+        .unwrap()
+        .owners
+        .last_mut()
+        .unwrap()
+        .revision = u64::MAX;
+    let mut app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+    let before = capture(app.world_mut()).unwrap();
+    let bytes = serde_json::to_vec(&before).unwrap();
+    let error = advance_native_modifiers(app.world_mut(), Duration::from_secs(1)).unwrap_err();
+    assert_eq!(error.to_string(), "modifier revision exhausted");
+    let after = capture(app.world_mut()).unwrap();
+    assert_eq!(after, before);
+    assert_eq!(serde_json::to_vec(&after).unwrap(), bytes);
+    // The exhausted revision itself remains valid while no timer can change.
+    advance_native_modifiers(app.world_mut(), Duration::ZERO).unwrap();
+    assert_eq!(capture(app.world_mut()).unwrap(), before);
+}
+
+#[test]
 fn fixed_schedule_ages_modifiers_and_latches_corrupt_disabled_owner_closed() {
     let mut app = app();
     add(&mut app, 1, "timed", Some(0.5), 7);
