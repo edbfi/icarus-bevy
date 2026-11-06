@@ -50,10 +50,10 @@ python3 tools/cargo_guard.py --hold-target -- timeout 60s target/debug/examples/
 Caller asserts archive/layout; null-map:
 `normal-little-endian-null-map-custom`. Input/report stay under `work/`;
 openat2 refuses symlinks/traversal; report exclusive/0600.
-Format-1 validation precedes outer decoding; no fallback/dispatch.
-Stdout/report: counts; stderr: fixed codes. Exit 0: nonempty, all
-conditionally decoded; 2: empty or decoder rejection; 1: usage/profile/input/
-output failure. Completeness/provenance/compatibility remain unverified; bind sync/final summary/
+No fallback/dispatch. Use a new report path per attempt; failures retain empty/partial reports.
+Stdout/report: counts; stderr: fixed codes. Exit 0: nonempty, all conditionally
+decoded; 2: empty/rejected; 1: failure (including help requests).
+Completeness/provenance/compatibility remain unverified; bind sync/final summary/
 hashes in the case.
 
 ## Readiness counts
@@ -64,12 +64,12 @@ Closed unsettled channels await even after reuse.
 `initial_open_outcomes`: configured, committed (queued), settled, awaiting_ack,
 failed, skipped, pending, deferred per controller/pawn/GameState/PlayerState/
 managers/quests. `sequences_succeeded`: no failures; else `sequences_failed`.
-Settlement requires an empty reliable queue; unrelated traffic may delay it.
+Settlement also needs a reliable-empty channel; unrelated traffic may delay it.
 `sequences_settled`: successful sequences with all opens settled.
 
 `initialisation_blockers`: incomplete players' `requests_pending_queue` and,
 after admission, `awaiting_loadout_response`/`awaiting_bestiary_response`.
-Blockers overlap; `players_*` phases partition.
+Blockers may overlap; `players_*` phases partition.
 
 `initialisation_transport`: `requests_{queued,settled,awaiting_ack}` for the
 controller request batch and `completions_{queued,settled,awaiting_ack}` for
