@@ -5,7 +5,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const {PROFILE, ZERO_VERSION_PROFILE, LIMITS, countCookedClassFields} = require('../cooked_class_field_counts.cjs');
+const {PROFILE, ZERO_VERSION_PROFILE, LIMITS, countCookedClassFields,
+  readCookedClassProtocolMetadata} = require('../cooked_class_field_counts.cjs');
 const join = parts => Buffer.concat(parts);
 const i32 = n => { const b = Buffer.alloc(4); b.writeInt32LE(n); return b; };
 const u32 = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
@@ -131,6 +132,85 @@ function zeroFixture({dependencies = [], generations = [], chunks = [], ...optio
     exportAt, preloadAt, summaryOffsets};
 }
 const fields = result => [result.local_net_property_count, result.local_non_overriding_net_function_count];
+
+test('opt-in protocol metadata preserves selected recursive descriptors without guessing checksums', () => {
+  const f = fixture({classes: [
+    {name: 'Other', props: [{name: 'UNRELATED_PROPERTY', flags: 0x20}]},
+    {name: 'BP_Target_C', tags: [{}], script: 'PRIVATE_CODE', props: [
+      {name: 'NotNet'}, {name: 'Values', nameNumber: 2, type: 'ArrayProperty', flags: 0x20n | (1n << 63n),
+        dim: 3, condition: 7, inner: {name: 'Entry', type: 'EnumProperty', ref: -6,
+          inner: {name: 'Value', type: 'ByteProperty'}}}],
+    functions: [{name: 'Send', flags: 0x40, props: [{name: 'PRIVATE_PARAMETER', flags: 0x20}]},
+      {name: 'Override', flags: 0x40, superIndex: -7, structSuper: -7}]}]});
+  const result = readCookedClassProtocolMetadata(f.uasset, f.uexp, identity);
+  assert.deepEqual(fields(result), [1, 1]);
+  const [property] = result.local_net_properties;
+  assert.deepEqual(property.name, {base: 'Values', number: 2, text: 'Values_1'});
+  assert.equal(property.property_type, 'ArrayProperty');
+  assert.equal(property.property_flags, '0x8000000000000020');
+  assert.equal(property.array_dim, 3); assert.equal(property.lifetime_condition, 7);
+  assert.equal(property.serialized_replication_index, 0);
+  assert.deepEqual(property.replication_notify, {base: 'None', number: 0, text: 'None'});
+  assert.deepEqual(property.children[0].references, [{package: '/Script/Authored', object_path: ['AuthoredParent']}]);
+  assert.deepEqual(property.children[0].children[0].references, [null]);
+  assert.equal(result.local_non_overriding_net_functions[0].name.text, 'Send');
+  assert.equal(result.checksum_derivation.status, 'unresolved');
+  assert(result.checksum_derivation.requirements.includes('qualified_runtime_property_offsets_and_order'));
+  assert.equal(result.release_qualified, false);
+  const output = JSON.stringify(result);
+  for (const secret of ['PRIVATE_', 'UNRELATED_PROPERTY', 'NotNet', 'Override'])
+    assert(!output.includes(secret));
+  assert(!Object.hasOwn(property, 'offset'));
+  assert(!Object.hasOwn(result, 'class_checksum'));
+  assert.equal(result.buffer_digests.uexp_sha256, digest(f.uexp));
+});
+
+test('opt-in protocol reader shares explicit profiles, malformed-input rejection and recursive budgets', () => {
+  const props = [{name: 'Nested', type: 'MapProperty', flags: 0x20,
+    key: {name: 'Key'}, inner: {name: 'Inner', type: 'ArrayProperty', inner: {name: 'Element'}}}];
+  for (const [f, profile] of [[fixture({classes: [{name: 'BP_Target_C', props}]}), PROFILE],
+    [zeroFixture({classes: [{name: 'BP_Target_C', props}]}), ZERO_VERSION_PROFILE]]) {
+    const read = options => readCookedClassProtocolMetadata(f.uasset, f.uexp, identity, {profile, ...options});
+    assert.equal(read().local_net_properties[0].children.length, 2);
+    fail(() => read({limits: {fields: 3}})); fail(() => read({limits: {depth: 2}}));
+    fail(() => read({profile: 'unknown'}));
+    fail(() => readCookedClassProtocolMetadata(f.uasset, f.uexp.subarray(0, 10), identity, {profile}));
+  }
+  const bad = fixture({classes: [{name: 'BP_Target_C', props: [{type: 'ObjectProperty', flags: 0x20, ref: 999}]}]});
+  fail(() => readCookedClassProtocolMetadata(bad.uasset, bad.uexp, identity));
+});
+
+test('opt-in descriptors preserve ordered class references and set and bool shapes', () => {
+  const props = [
+    {name: 'HardClass', type: 'ClassProperty', flags: 0x20, ref: -6, meta: -3},
+    {name: 'SoftClass', type: 'SoftClassProperty', flags: 0x20, ref: -3, meta: -6},
+    {name: 'Members', type: 'SetProperty', flags: 0x20, inner: {name: 'Member', type: 'NameProperty'}},
+    {name: 'Enabled', type: 'BoolProperty', flags: 0x20, size: 1, native: 1}
+  ];
+  const parent = {package: '/Script/Authored', object_path: ['AuthoredParent']};
+  const generated = {package: '/Script/Engine', object_path: ['BlueprintGeneratedClass']};
+  const descriptor = (name, property_type, overrides = {}) => ({
+    name: {base: name, number: 0, text: name}, property_type, array_dim: 1, element_size: 4,
+    property_flags: '0x0000000000000020', serialized_replication_index: 0,
+    replication_notify: {base: 'None', number: 0, text: 'None'}, lifetime_condition: 0,
+    references: [], children: [], ...overrides
+  });
+  for (const [f, profile] of [[fixture({classes: [{name: 'BP_Target_C', props}]}), PROFILE],
+    [zeroFixture({classes: [{name: 'BP_Target_C', props}]}), ZERO_VERSION_PROFILE]]) {
+    const result = readCookedClassProtocolMetadata(f.uasset, f.uexp, identity, {profile});
+    assert.deepEqual(result.local_net_properties, [
+      descriptor('HardClass', 'ClassProperty', {references: [parent, generated]}),
+      descriptor('SoftClass', 'SoftClassProperty', {references: [generated, parent]}),
+      descriptor('Members', 'SetProperty', {children: [descriptor('Member', 'NameProperty', {
+        property_flags: '0x0000000000000000'})]}),
+      descriptor('Enabled', 'BoolProperty', {element_size: 1})
+    ]);
+    assert.deepEqual(fields(result), [4, 0]);
+    const counts = count(f, identity, {profile});
+    assert.deepEqual(fields(counts), [4, 0]);
+    for (const property of props) assert(!JSON.stringify(counts).includes(property.name));
+  }
+});
 
 test('exact class selection among multiple exports preserves superclass and only emits metadata', () => {
   const f = fixture({classes: [

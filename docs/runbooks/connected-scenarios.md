@@ -68,7 +68,11 @@ counts bounded metadata prefixes. Its caller example is above
 3.0.34 zero-version header (M-1198), never as an automatic fallback. The optional `examples/protocol_oodle_decode.rs` uses pinned
 oozextract 0.5.7 only for reference decoding; callers enforce process memory,
 CPU and wall limits. No original assets ship. Retained source/count bindings:
-M-1198; bounds: F-1016.
+M-1198; bounds: F-1016. The opt-in `readControllerClassProtocolMetadata`
+returns selected property/type/flag trees and root net-function identities,
+never defaults or scripts. Runtime offsets, type spellings, struct schemas and
+super checksums remain unresolved (M-1266). Selected 3.0.35 members match
+3.0.34 (F-1026); this does not qualify its native ancestry or whole profile.
 
 ## Scenarios
 

@@ -86,7 +86,7 @@ function sameIdentity(a, b) {
     a.object_path.every((s, i) => s === b.object_path[i]);
 }
 
-function readPackage(ua, ue, selected, l, profile) {
+function readPackage(ua, ue, selected, l, profile, protocol = false) {
   const c = new Cursor(ua, l);
   // The explicit zero-version profile models the same bounded prefix without
   // treating absent version declarations as evidence of an engine version.
@@ -223,15 +223,21 @@ function readPackage(ua, ue, selected, l, profile) {
     check(depth <= l.depth); spend('fields'); const type = typeName(cursor), name = fname(cursor);
     check(!plain(name, 'None')); objectName(name.text, l);
     cursor.u32(); const dim = integer(cursor.i32(), l.arrayDim), size = integer(cursor.i32(), l.elementSize);
-    check(dim > 0 && size > 0); const flags = cursor.flags64(); cursor.u16(); fname(cursor);
-    check(cursor.u8() <= 15); // ELifetimeCondition through COND_Never; sentinels unsupported.
-    if (REFS.has(type) || type === 'ByteProperty') ref(cursor);
-    else if (type === 'ClassProperty' || type === 'SoftClassProperty') { ref(cursor); ref(cursor); }
-    else if (type === 'EnumProperty') { ref(cursor); field(cursor, depth + 1); }
+    check(dim > 0 && size > 0); const flags = cursor.flags64(), replicationIndex = cursor.u16(), notify = fname(cursor);
+    const condition = cursor.u8(); check(condition <= 15); // ELifetimeCondition through COND_Never.
+    const references = [], children = [];
+    const reference = () => { const index = ref(cursor); if (protocol) references.push(index === 0 ? null : identity(index)); };
+    if (REFS.has(type) || type === 'ByteProperty') reference();
+    else if (type === 'ClassProperty' || type === 'SoftClassProperty') { reference(); reference(); }
+    else if (type === 'EnumProperty') { reference(); children.push(field(cursor, depth + 1)); }
     else if (type === 'BoolProperty') { cursor.skip(5); check(cursor.u8() <= 1); }
-    else if (type === 'ArrayProperty' || type === 'SetProperty') field(cursor, depth + 1);
-    else if (type === 'MapProperty') { field(cursor, depth + 1); field(cursor, depth + 1); }
-    return {net: (flags & 0x20n) !== 0n, name: name.text.toLowerCase()};
+    else if (type === 'ArrayProperty' || type === 'SetProperty') children.push(field(cursor, depth + 1));
+    else if (type === 'MapProperty') { children.push(field(cursor, depth + 1)); children.push(field(cursor, depth + 1)); }
+    return {net: (flags & 0x20n) !== 0n, name: name.text.toLowerCase(), ...(protocol ? {metadata: {
+      name, property_type: type, array_dim: dim, element_size: size,
+      property_flags: '0x' + flags.toString(16).padStart(16, '0'),
+      serialized_replication_index: replicationIndex, replication_notify: notify, lifetime_condition: condition,
+      references, children: children.map(child => child.metadata)}} : {})};
   };
   const skipTags = cursor => {
     while (true) {
@@ -258,14 +264,14 @@ function readPackage(ua, ue, selected, l, profile) {
       seen.add(child); children.push(child);
     }
     const fieldCount = integer(cursor.i32(), l.fields); check(fieldCount <= l.fields - budget.fields);
-    let netProperties = 0; const fieldNames = new Set();
+    let netProperties = 0; const fieldNames = new Set(), properties = [];
     for (let i = 0; i < fieldCount; i++) {
       const property = field(cursor, 1); check(!fieldNames.has(property.name)); fieldNames.add(property.name);
-      if (property.net) netProperties++;
+      if (property.net) { netProperties++; if (protocol) properties.push(property.metadata); }
     }
     const bytecodeSize = integer(cursor.i32(), l.scriptBytes), storageSize = integer(cursor.i32(), l.scriptBytes);
     check((bytecodeSize === 0) === (storageSize === 0)); cursor.skip(storageSize);
-    return {cursor, superIndex, children, netProperties};
+    return {cursor, superIndex, children, netProperties, properties};
   };
   const ownClass = entry(selectedIndex), own = structPrefix(selectedIndex);
   check(own.superIndex === ownClass.superIndex && own.superIndex !== selectedIndex && own.superIndex !== 0);
@@ -287,7 +293,7 @@ function readPackage(ua, ue, selected, l, profile) {
   const childSet = new Set(own.children);
   // Do not silently undercount a function export omitted from the class children.
   for (let i = 0; i < exports.length; i++) if (entry(i + 1).outer === selectedIndex && isFunction(i + 1)) check(childSet.has(i + 1));
-  let netFunctions = 0;
+  let netFunctions = 0; const functions = [];
   const functionNames = new Set();
   for (const child of own.children) {
     check(isFunction(child)); const name = entry(child).name.text.toLowerCase(); check(!functionNames.has(name)); functionNames.add(name);
@@ -307,10 +313,18 @@ function readPackage(ua, ue, selected, l, profile) {
         plain(entry(next).className, 'Function'));
     }
     const flags = f.cursor.u32();
-    if ((flags & 0x40) !== 0 && f.superIndex === 0 && exportedSuper === 0) netFunctions++;
+    if ((flags & 0x40) !== 0 && f.superIndex === 0 && exportedSuper === 0) {
+      netFunctions++; if (protocol) functions.push({identity: identity(child), name: entry(child).name,
+        function_flags: '0x' + flags.toString(16).padStart(8, '0')});
+    }
   }
   return {selected_identity: identity(selectedIndex), superclass: identity(own.superIndex),
-    local_net_property_count: own.netProperties, local_non_overriding_net_function_count: netFunctions};
+    local_net_property_count: own.netProperties, local_non_overriding_net_function_count: netFunctions,
+    ...(protocol ? {local_net_properties: own.properties, local_non_overriding_net_functions: functions,
+      checksum_derivation: {status: 'unresolved', requirements: [
+        'qualified_runtime_property_offsets_and_order', 'qualified_superclass_checksum',
+        'qualified_cpp_type_spellings', 'qualified_referenced_struct_fields']},
+      release_qualified: false} : {})};
 }
 
 /**
@@ -321,6 +335,17 @@ function readPackage(ua, ue, selected, l, profile) {
  * Unparsed export tails are intentionally opaque, not claimed as validated.
  */
 function countCookedClassFields(uasset, uexp, identity, options = {}) {
+  return readCookedMetadata(uasset, uexp, identity, options, false);
+}
+
+// Explicit opt-in: property/function names and type identities are protocol
+// metadata. No defaults or script bytes escape. Serialized indices/sizes are
+// not runtime offsets or a qualified ClassChecksum; requirements remain open.
+function readCookedClassProtocolMetadata(uasset, uexp, identity, options = {}) {
+  return readCookedMetadata(uasset, uexp, identity, options, true);
+}
+
+function readCookedMetadata(uasset, uexp, identity, options, protocol) {
   try {
     check(options && typeof options === 'object' && !Array.isArray(options));
     check(Object.keys(options).every(key => key === 'limits' || key === 'profile'));
@@ -331,11 +356,11 @@ function countCookedClassFields(uasset, uexp, identity, options = {}) {
     integer(uasset.length, l.uassetBytes); integer(uexp.length, l.uexpBytes); check(uasset.length > 0 && uexp.length > 0);
     // Shared backing stores could change concurrently between parsing and digesting.
     check(!(uasset.buffer instanceof SharedArrayBuffer) && !(uexp.buffer instanceof SharedArrayBuffer));
-    const result = readPackage(uasset, uexp, selected, l, profile);
+    const result = readPackage(uasset, uexp, selected, l, profile, protocol);
     return {...result, parser_profile: profile, buffer_digests: {
       uasset_sha256: crypto.createHash('sha256').update(uasset).digest('hex'),
       uexp_sha256: crypto.createHash('sha256').update(uexp).digest('hex')}};
   } catch { throw new Error(MESSAGE); }
 }
 
-module.exports = {PROFILE, ZERO_VERSION_PROFILE, LIMITS, countCookedClassFields};
+module.exports = {PROFILE, ZERO_VERSION_PROFILE, LIMITS, countCookedClassFields, readCookedClassProtocolMetadata};
