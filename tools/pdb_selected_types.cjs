@@ -431,7 +431,12 @@ function inspectImpl(reader, options, enums = false) {
                 if (isBase) need(layout.kind === 'udt');
                 need(offset + layout.width_bytes <= definition.size_bytes);
                 charge((name === null ? 0 : name.length) + 192);
-                result.push({...(parameters ? {entry_kind: isBase ? 'base' : 'member'} : {}), ...layout, name, attributes, type_index: typeIndex, offset_bytes: offset});
+                result.push(parameters
+                    ? {entry_kind: isBase ? 'base' : 'member', ...layout,
+                        ...(layout.kind === 'pointer' && Object.hasOwn(layout, 'attributes')
+                            ? {pointer_attributes: layout.attributes} : {}),
+                        name, attributes, type_index: typeIndex, offset_bytes: offset}
+                    : {name, attributes, type_index: typeIndex, offset_bytes: offset, ...layout});
                 c.pad();
             }
         }

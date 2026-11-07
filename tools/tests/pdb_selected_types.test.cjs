@@ -112,6 +112,21 @@ test('ordinary64 pointer, modifier, enum and bitfield dependencies resolve width
     assert.equal(fields[2].enumerators_interpreted, false);
 });
 
+test('direct pointer attributes preserve legacy output and remain distinct in parameter layouts', () => {
+    const bytes = stream([record(0x1002, u32(3), u32(0x1000c)),
+        list(member('Pointer', 0x1000)), udt({fields: 0x1001, size: 8})]);
+    assert.deepEqual(inspect(bytes).selected[0].fields[0], {
+        name: 'Pointer', attributes: 0x1000c, type_index: 0x1000, offset_bytes: 0,
+        kind: 'pointer', storage_kind: 'pointer', width_bytes: 8, referent_type_index: 3,
+    });
+    const field = inspectSelectedTypes(reader(bytes), {
+        profile: PARAMETER_PROFILE, names: [TARGET],
+    }).selected[0].fields[0];
+    assert.equal(field.name, 'Pointer');
+    assert.equal(field.attributes, 3);
+    assert.equal(field.pointer_attributes, 0x1000c);
+});
+
 test('primitive64 pointers do not require standalone pointer records', () => {
     const result = inspect(stream([list(member('Pointer', 0x603)), udt({size: 8})]));
     assert.equal(result.selected[0].fields[0].width_bytes, 8);
