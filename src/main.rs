@@ -102,6 +102,16 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
+    /// Validate and apply one inventory transaction to an existing authored world.
+    ApplyNativeInventory {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// Prepare the action without publishing a generation or creating files.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Materialize only the explicitly bound, authored C001 inert fixture
     /// contract. This does not enable ordinary ICARUS save import.
     CreateC001InertFixture {
@@ -412,6 +422,71 @@ fn execute(cli: Cli) -> Result<()> {
                 json!({"event": "native_modifier_applied", "receipt": receipt,
                     "world_imported": false, "gameplay_ready": false})
             );
+            Ok(())
+        }
+        Command::ApplyNativeInventory {
+            request,
+            data_dir,
+            dry_run,
+        } => {
+            use icarus_bevy::native_inventory::{
+                InventoryActionOutcomeV1, InventoryActionRequestV1,
+            };
+            let request: InventoryActionRequestV1 =
+                read_native_action_request(&request, "inventory")?;
+            let mut store = SnapshotStore::open_existing(&data_dir)
+                .map_err(|_| anyhow::anyhow!("open existing native inventory store failed"))?;
+            let loaded = store
+                .load()
+                .map_err(|_| anyhow::anyhow!("load native inventory world failed"))?
+                .context("inventory command requires an existing committed world")?;
+            ensure!(
+                loaded.snapshot.schema_version
+                    == icarus_bevy::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS,
+                "inventory command requires authored schema 12"
+            );
+            let mut app = build_app(
+                &icarus_bevy::config::ServerConfig::default(),
+                &loaded.snapshot,
+            )
+            .map_err(|_| anyhow::anyhow!("activate native inventory world failed"))?;
+            let outcome = icarus_bevy::native_lifecycle_runtime::apply_native_inventory_action(
+                app.world_mut(),
+                &request,
+            )
+            .map_err(|_| anyhow::anyhow!("native inventory request rejected"))?;
+            let snapshot = capture(app.world_mut())
+                .map_err(|_| anyhow::anyhow!("capture native inventory world failed"))?;
+            SnapshotStore::preflight(&snapshot)
+                .map_err(|_| anyhow::anyhow!("preflight native inventory world failed"))?;
+            let revision = snapshot
+                .native_inventories
+                .as_ref()
+                .context("inventory state missing")?
+                .revision;
+            let receipt = if !dry_run && outcome == InventoryActionOutcomeV1::Applied {
+                Some(
+                    store
+                        .save(&snapshot)
+                        .map_err(|_| anyhow::anyhow!("save native inventory world failed"))?,
+                )
+            } else {
+                None
+            };
+            let event = if dry_run {
+                "native_inventory_prepared"
+            } else if receipt.is_some() {
+                "native_inventory_applied"
+            } else {
+                "native_inventory_unchanged"
+            };
+            let mut report = json!({"event":event,"dry_run":dry_run,"published":receipt.is_some(),
+                "outcome":outcome,"revision":revision,"recovered_previous":loaded.recovered_previous,
+                "world_imported":false,"gameplay_ready":false});
+            if let Some(receipt) = receipt {
+                report["receipt"] = json!(receipt);
+            }
+            println!("{report}");
             Ok(())
         }
         Command::CreateC001InertFixture {
@@ -770,6 +845,13 @@ fn open_regular_source(source: &std::path::Path) -> Result<std::fs::File> {
 fn read_native_modifier_request(
     source: &std::path::Path,
 ) -> Result<icarus_bevy::native_modifiers::ModifierRequest> {
+    read_native_action_request(source, "modifier")
+}
+
+fn read_native_action_request<T: serde::de::DeserializeOwned>(
+    source: &std::path::Path,
+    kind: &'static str,
+) -> Result<T> {
     use rustix::fs::{Mode, OFlags, open, openat};
     use std::io::Read;
 
@@ -780,7 +862,7 @@ fn read_native_modifier_request(
         flags | OFlags::DIRECTORY,
         Mode::empty(),
     )
-    .map_err(|_| anyhow::anyhow!("open modifier request directory failed"))?;
+    .map_err(|_| anyhow::anyhow!("open {kind} request directory failed"))?;
     let mut components = source
         .components()
         .filter(|component| {
@@ -793,7 +875,7 @@ fn read_native_modifier_request(
     let mut file = loop {
         let component = components
             .next()
-            .context("modifier request path is empty")?;
+            .with_context(|| format!("{kind} request path is empty"))?;
         let last = components.peek().is_none();
         let handle = openat(
             &directory,
@@ -805,37 +887,36 @@ fn read_native_modifier_request(
             },
             Mode::empty(),
         )
-        .map_err(|_| anyhow::anyhow!("open native modifier request failed"))?;
+        .map_err(|_| anyhow::anyhow!("open native {kind} request failed"))?;
         if last {
             break std::fs::File::from(handle);
         }
         directory = handle;
     };
-    let metadata = file.metadata().context("inspect native modifier request")?;
-    ensure!(
-        metadata.is_file(),
-        "modifier request must be a regular file"
-    );
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect native {kind} request"))?;
+    ensure!(metadata.is_file(), "{kind} request must be a regular file");
     ensure!(
         metadata.len() <= MAX_REQUEST_BYTES,
-        "modifier request exceeds 64 KiB limit"
+        "{kind} request exceeds 64 KiB limit"
     );
     let mut bytes = Vec::new();
     file.by_ref()
         .take(MAX_REQUEST_BYTES)
         .read_to_end(&mut bytes)
-        .context("read native modifier request")?;
+        .with_context(|| format!("read native {kind} request"))?;
     // Recheck growth without ever reading more than the 64 KiB allowance.
     ensure!(
         file.metadata()
-            .context("reinspect native modifier request")?
+            .with_context(|| format!("reinspect native {kind} request"))?
             .len()
             <= MAX_REQUEST_BYTES,
-        "modifier request exceeds 64 KiB limit"
+        "{kind} request exceeds 64 KiB limit"
     );
     // Serde diagnostics can contain caller-controlled values and field names.
     serde_json::from_slice(&bytes)
-        .map_err(|_| anyhow::anyhow!("invalid native modifier request JSON"))
+        .map_err(|_| anyhow::anyhow!("invalid native {kind} request JSON"))
 }
 
 /// Preserve a supplied envelope into a fresh native world at tick 0. The

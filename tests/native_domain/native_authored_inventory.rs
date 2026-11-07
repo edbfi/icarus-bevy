@@ -34,7 +34,7 @@ use icarus_bevy::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-fn inputs() -> (
+pub(super) fn inputs() -> (
     WorldSnapshot,
     InventoryContractsSnapshotV1,
     InitialInventoryItemsV1,
