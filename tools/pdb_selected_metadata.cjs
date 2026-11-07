@@ -6,6 +6,7 @@
 // CLI: node tools/pdb_selected_metadata.cjs --request <bounded JSON request file>
 // Request keys match run() below; results go only to an exclusively created file.
 const fs = require('node:fs');
+const path = require('node:path');
 const {isProxy} = require('node:util').types;
 const {createHash} = require('node:crypto');
 const {msf, LIMITS} = require('./pdb_public_symbols.cjs');
@@ -104,11 +105,22 @@ function run(request) {
         const output = Buffer.from(JSON.stringify({pdb_sha256: request.pdb_sha256, pdb_bytes: bytes.length,
             identity: id, metadata: result}) + '\n');
         need(output.length <= outputCap);
-        // Never follow symlinks or overwrite an existing path, including input.
-        const fd = fs.openSync(request.output_path, fs.constants.O_WRONLY | fs.constants.O_CREAT
-            | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-        try { fs.writeFileSync(fd, output); fs.fsyncSync(fd); }
-        finally { fs.closeSync(fd); }
+        // Publish only complete, synced bytes; link never replaces an existing
+        // path. The private staging directory is on the destination filesystem.
+        const staging = fs.mkdtempSync(path.join(path.dirname(request.output_path), '.selected-metadata-'));
+        const temporary = path.join(staging, 'report');
+        let published = false;
+        try {
+            const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT
+                | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+            try { fs.writeFileSync(fd, output); fs.fsyncSync(fd); }
+            finally { fs.closeSync(fd); }
+            fs.linkSync(temporary, request.output_path);
+            published = true;
+        } finally {
+            try { fs.rmSync(staging, {recursive: true, force: true}); }
+            catch (error) { if (!published) throw error; }
+        }
         return {output_bytes: output.length};
     } catch { throw Error(ERROR); }
 }

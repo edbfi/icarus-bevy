@@ -20,8 +20,9 @@ function tpi(enums = false) {
     h.writeUInt16LE(0xffff,20); h.writeUInt16LE(0xffff,22);
     return Buffer.concat([h,r]);
 }
-const caseRoot = path.resolve('work/pdb-selected-metadata-authored-tests');
-fs.mkdirSync(caseRoot, {recursive:true});
+const caseParent = path.resolve('work/pdb-selected-metadata-authored-tests');
+fs.mkdirSync(caseParent, {recursive:true});
+const caseRoot = fs.mkdtempSync(path.join(caseParent, 'run-'));
 fs.writeFileSync(path.join(caseRoot,'case.json'), JSON.stringify({state:'open',owner:'metadata-runner-tests',purpose:'Authored MSF/TPI integration fixtures only'}));
 let sequence = 0;
 function setup(enums = false) {
@@ -70,7 +71,7 @@ test('CLI stays silent on success and suppresses private paths and selectors on 
     const bad=invoke();assert.equal(bad.status,1);assert.equal(bad.stdout,'');assert.equal(bad.stderr,'selected metadata request failed\n');
     assert.equal(fs.existsSync(request.output_path),false);
 });
-test.after(()=>{fs.writeFileSync(path.join(caseRoot,'case.json'),JSON.stringify({state:'closed',owner:'metadata-runner-tests',purpose:'Authored MSF/TPI integration fixtures only'}));});
+test.after(()=>{fs.rmSync(caseRoot,{recursive:true,force:true});});
 test('API rejects accessors, proxies, symbols and sparse data without caller code execution',()=>{
     for(const mutate of [
         r=>Object.defineProperty(r,'pdb_sha256',{get(){throw Error('private getter invoked');},enumerable:true}),
@@ -82,4 +83,28 @@ test('API rejects accessors, proxies, symbols and sparse data without caller cod
     let invoked=false;const {request}=setup();
     Object.defineProperty(request,'names',{get(){invoked=true;return ['Authored'];},enumerable:true});
     rejects(request);assert.equal(invoked,false);
+});
+test('partial writes and sync failures never publish a report and permit retry',()=>{
+    for(const operation of ['writeFileSync','fsyncSync']){
+        const {dir,request}=setup(), original=fs[operation];
+        fs[operation]=(...args)=>{
+            if(operation==='writeFileSync')fs.writeSync(args[0],args[1],0,10);
+            throw Error('injected private I/O failure');
+        };
+        try{rejects(request);}finally{fs[operation]=original;}
+        assert.deepEqual(fs.readdirSync(dir),['input.pdb']);
+        run(request);
+        assert.equal(JSON.parse(fs.readFileSync(request.output_path)).metadata.profile,PROFILE);
+    }
+});
+test('cleanup failure after exclusive publication still reports success',()=>{
+    const {request}=setup(), original=fs.rmSync;
+    fs.rmSync=()=>{throw Error('injected private cleanup failure');};
+    let receipt;
+    try{receipt=run(request);}finally{fs.rmSync=original;}
+    const output=fs.readFileSync(request.output_path);
+    assert.equal(receipt.output_bytes,output.length);
+    assert.equal(JSON.parse(output).metadata.profile,PROFILE);
+    assert.throws(()=>run(request),/selected metadata request failed/);
+    assert.deepEqual(fs.readFileSync(request.output_path),output);
 });
