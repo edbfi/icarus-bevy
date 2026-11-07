@@ -180,6 +180,19 @@ modifier composition and replication are unsupported.
 Contracts/current state/authority/replay share the 64 MiB charged budget;
 this is neither an RSS nor ICARUS compatibility qualification.
 
+### Durable inventory commands
+
+F-1030. Accepts `move`, `split`, `merge`, `consume`, `place_overflow`;
+first four CLI-tested.
+
+`apply-native-inventory --request FILE --data-dir DIR [--dry-run]`: schema 12,
+regular `server.lock`; exclusive lock spans revision check to
+publication. JSON ≤64 KiB; symlink components/FIFOs reject.
+[Request example](../../config/native-inventory-request.example.json): set current
+revision, owner handle and stack ID from the manifest-selected snapshot.
+Dry runs/rejections/no-change leave store bytes/files intact. Receipts follow
+save; post-publication errors leave durability uncertain.
+
 ## Authored C001 owners
 
 `create-c001-owner-fixture`, binding mode `c001_authored_owners_v1`: lifecycle
@@ -197,21 +210,14 @@ reconstruction; restore preflight repeats reconstruction/receipt verification.
 
 ## Candidate Bool/I32 assessment
 
-Library-only `native_import::c001_variables::prepare_c001_variables` (F-929)
-pins payload, catalog/maps, recorder ordinals, UTF-16 owner/property identities,
-placements/classes and native types over every retained, losslessly typed C001
-recorder and both arrays (exact shared headers even when empty). Bindings
-assert `save_game = true`; official schema/handlers remain open (F-735, F-897).
-Independent array/element-tag/record-type/name-field/value-field names support
-multiple Bool/I32 properties and signed I32 extrema. Duplicate/incomplete
-bindings and unsupported, dropped, unavailable, non-C001 or malformed terminal
-records reject all. Limits: 16,384 owners, 64 combined properties/owner,
-1,048,576 assignments, 32 MiB charged output/temporary lookup capacity, plus
-candidate byte/element headroom, even empty (F-920). Debug/serialization redact
-details; errors expose only ordinal/category. Every assignment retains
-`UnqualifiedPropertyRestoreAndRepNotify` and never activates; no mutation,
-callbacks, publication or approval of unrelated roots, and the use gate below
-qualifies no handler here.
+Library-only [`prepare_c001_variables`](../../src/native_import/c001_variables.rs)
+(F-929) assesses typed C001 Bool/I32 against exact authored UTF-16
+owner/property/header bindings. Module docs define coverage/rejection.
+Limits: 16,384 owners, 64 properties/owner,
+1,048,576 assignments, 32 MiB charged output/lookups; candidate byte/element
+allowances apply even empty (F-920). Results retain
+`UnqualifiedPropertyRestoreAndRepNotify`: no activation, mutation, callbacks
+or publication; no official schema/handler proof (F-735, F-897).
 
 ## Authored scalar owners
 

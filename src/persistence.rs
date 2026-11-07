@@ -1102,6 +1102,29 @@ impl SnapshotStore {
         })
     }
 
+    /// Acquire the existing single-writer lock without creating or syncing any
+    /// filesystem entry. Hold this handle through inspection and publication;
+    /// opening is read-only, while an explicit later save can still write.
+    pub fn open_existing(root: &Path) -> Result<Self> {
+        ensure!(root.is_dir(), "existing data directory required");
+        let lock = OpenOptions::new()
+            .read(true)
+            .custom_flags(crate::nonblocking_flag() | rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(root.join("server.lock"))?;
+        ensure!(
+            lock.metadata()?.is_file(),
+            "server lock must be a regular file"
+        );
+        lock.try_lock()
+            .map_err(std::io::Error::from)
+            .context("data directory is already locked by another server")?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            _lock: lock,
+            verified: Mutex::new(BTreeMap::new()),
+        })
+    }
+
     fn manifest(&self) -> Result<Option<Manifest>> {
         let path = self.root.join("manifest.json");
         let bytes = match read_bounded(&path, 16 * 1024) {

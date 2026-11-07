@@ -1,0 +1,12 @@
+{
+  "expected_inventory_revision": 1,
+  "action": {
+    "type": "consume",
+    "source": {
+      "owner": { "id": 1, "incarnation": 1 },
+      "inventory": "bag",
+      "stack_id": 1
+    },
+    "amount": 1
+  }
+}
