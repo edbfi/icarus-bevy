@@ -79,7 +79,7 @@ Last reconciled: 2026-11-07
 ## Before enabling visibility dispatch or effects
 
 - Before dispatch, bind actual 612-bit payload/provenance and live
-  normal profile/layout/ops; conditional framing grants no installation
+  normal profile/layout/ops; conditional replay (F-1034) grants no installation
   (F-1020 to F-1022). Before effects, bind native bit1, D's live
   receiver/final vptr, actual delegate members and actor/channel identities;
   bind Gather Q+0xe8 source, Q+0xf0 initialization/lifetime and map owner,

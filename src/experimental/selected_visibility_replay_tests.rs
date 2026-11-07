@@ -291,3 +291,59 @@ fn uppercase_hex_is_admitted_without_weakening_tail_validation() {
     assert_eq!(run(&[upper]), run(&[lower]));
     assert!(run(&[row(8, "AB")]).is_ok());
 }
+
+#[test]
+fn matched_release_reports_consumption_and_redacted_string_lengths() {
+    let mut writer = BitWriter::new();
+    writer.write_bit(true); // present
+    writer.write_bit(true); // reuse
+    writer.write_bit(false); // visible
+    writer.write_bit(false); // string name
+    writer.write_u32(7);
+    writer.write_bytes(b"SECRET\0");
+    writer.write_u32(0);
+    let payload = Payload::from_writer(writer);
+    let hex: String = payload
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let rows = encode(&[row(payload.bit_len(), &hex)]);
+    for release in [
+        ReleaseProfile::release_3_0_34(),
+        ReleaseProfile::release_3_0_35(),
+    ] {
+        let profile = ReplayProfile::qualify(
+            &release,
+            VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
+            VisibilityRpc82Layout::NormalSingleCustomStruct,
+        )
+        .unwrap();
+        let summary = replay(rows.as_slice(), &profile).unwrap();
+        assert_eq!(summary.accepted_present, 1);
+        let detail = &summary.consumption[0];
+        assert_eq!(detail.consumed_bits, payload.bit_len());
+        assert_eq!(detail.package_name_units, Some(6));
+        assert_eq!(detail.file_name_units, Some(6));
+        let mut encoded = Vec::new();
+        summary.write_json(&mut encoded).unwrap();
+        let output = String::from_utf8(encoded).unwrap();
+        assert!(!output.contains("SECRET") && !output.contains(&hex));
+    }
+}
+
+#[test]
+fn rejected_values_report_cursor_without_publishing_partial_name_lengths() {
+    let summary = run(&[row(1, "01")]).unwrap();
+    assert_eq!(summary.rejected, 1);
+    assert_eq!(summary.consumption[0].consumed_bits, 1);
+    assert_eq!(summary.consumption[0].package_name_units, None);
+    assert_eq!(summary.consumption[0].file_name_units, None);
+    let summary = run(&[row(2, "00")]).unwrap();
+    assert_eq!(summary.rejected, 1);
+    assert_eq!(summary.consumption[0].consumed_bits, 1);
+    let summary = run(&[row(1, "00")]).unwrap();
+    assert_eq!(summary.accepted_absent, 1);
+    assert_eq!(summary.consumption[0].consumed_bits, 1);
+    assert_eq!(summary.consumption[0].package_name_units, None);
+}

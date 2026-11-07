@@ -1,6 +1,6 @@
 //! Conditional inbound visibility custom-struct decoding, with inert staging.
 //!
-//! This is a supported subset for server 26313077 / engine 17 / game 0, not
+//! This is a supported subset for servers 26313077 and 26425113 / engine 17 / game 0, not
 //! evidence that an original connection installed this profile. The caller must
 //! qualify the normal (non-backcompat), loading, error-free, little-endian
 //! reader, its null-map or qualified package-map name route, and custom struct
@@ -10,7 +10,8 @@
 //! a separate caller assertion of the named normal single-custom-struct layout;
 //! neither API guesses framing from payload bits. Exact consumption,
 //! canonical packed integers and strict strings are authored admission rules.
-//! No captured payload replay or byte compatibility is claimed.
+//! Conditional matched-build replay: F-1034. No runtime installation, visibility
+//! effects or client compatibility is claimed.
 
 use anyhow::{Context, Result, ensure};
 
@@ -47,7 +48,7 @@ impl VisibilityDecodeProfile {
     pub fn qualify(release: &ReleaseProfile, archive: VisibilityArchiveProfile) -> Result<Self> {
         ensure!(
             release.pin.app_id == DEDICATED_SERVER_APP_ID
-                && release.pin.build_id == 26_313_077
+                && matches!(release.pin.build_id, 26_313_077 | 26_425_113)
                 && release.engine_network_version == 17
                 && release.game_network_version == 0,
             "unsupported visibility release/version profile"
@@ -89,20 +90,32 @@ pub fn parse_visibility_rpc82(
     profile: &VisibilityDecodeProfile,
     layout: VisibilityRpc82Layout,
 ) -> Result<DecodedVisibilityParameter> {
-    ensure!(
-        layout == VisibilityRpc82Layout::NormalSingleCustomStruct,
-        "unqualified visibility RPC82 parameter layout unsupported"
-    );
-    validate_archive_profile(profile)?;
+    parse_visibility_rpc82_with_consumption(payload, profile, layout).0
+}
+
+/// Neutral cursor accounting; failures expose no parser text or name contents.
+pub(crate) fn parse_visibility_rpc82_with_consumption(
+    payload: &Payload,
+    profile: &VisibilityDecodeProfile,
+    layout: VisibilityRpc82Layout,
+) -> (Result<DecodedVisibilityParameter>, usize) {
     let mut reader = payload.reader();
-    if read_field(&mut reader, 1, "visibility parameter presence")? == 0 {
-        ensure!(reader.at_end(), "trailing absent visibility parameter bits");
-        return Ok(DecodedVisibilityParameter::Absent);
-    }
-    Ok(DecodedVisibilityParameter::Present(read_visibility(
-        &mut reader,
-        profile,
-    )?))
+    let result = (|| {
+        ensure!(
+            layout == VisibilityRpc82Layout::NormalSingleCustomStruct,
+            "unqualified visibility RPC82 parameter layout unsupported"
+        );
+        validate_archive_profile(profile)?;
+        if read_field(&mut reader, 1, "visibility parameter presence")? == 0 {
+            ensure!(reader.at_end(), "trailing absent visibility parameter bits");
+            return Ok(DecodedVisibilityParameter::Absent);
+        }
+        Ok(DecodedVisibilityParameter::Present(read_visibility(
+            &mut reader,
+            profile,
+        )?))
+    })();
+    (result, reader.position())
 }
 
 /// Complete custom value, preserving the reuse bit and raw name forms.

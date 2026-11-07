@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-06
+Last reconciled: 2026-11-07
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -35,3 +35,4 @@ Last reconciled: 2026-11-06
 | F-1026 | 3.0.35 controller members match qualified 3.0.34 SHA256s: five local net properties and 22 non-overriding net functions | observed | static-metadata; M-1198, M-1265, M-1264/ev_a32f404544fc | high; exact two members only; native ancestry, full field bound and release compatibility remain unqualified | U-038, U-079 | active |
 | F-1027 | 3.0.35 ConstructUClass consumes 76-byte headers; four selected classes have property/function totals 36/72, 99/233, 9/68, 4/23. The link consumer steps 16 bytes | observed | static-metadata; M-1267/ev_c1b1a6eb5ca7, M-1268 | high; totals are not net counts; descriptors, ancestry, ordering/checksums and release remain unqualified | U-038, U-079 | active |
 | F-1028 | Matched 3.0.35 PDB declares FClassParams 80 B with ClassFlags at +0x48, FPropertyParamsBase 40 B and FFunctionParams 72 B; 30 selected data-member layouts read | observed | static-metadata; M-1270/ev_5db7cb396e37, M-1271 | high; declarations only; enum values, consumer semantics, ancestry, net ordering/checksums and compatibility unqualified | U-038, U-079 | active |
+| F-1034 | Build 26425113 retains the selected conditional custom/name route; private RPC82 replay accepts one present value and consumes 612/612 bits | derived | static/replay; M-1292, M-1293, M-1294, M-1295 | bounded; explicit normal archive/layout; lengths only; no runtime-installation, Begin, effects or world-entry proof | U-079 | active |
