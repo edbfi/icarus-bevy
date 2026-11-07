@@ -191,8 +191,8 @@ State: ignored `work/runtime/`, single-writer lock, 60 s bounded-worker autosave
 of authored records/clock; no ICARUS gameplay. Domain-ID entities need positions (F-482).
 Schema 1: records/clock, 64 MiB; schema 3: plus write-once, digest-verified
 `preserved-<sha256>.bin` sidecar; schema 2 loads (F-567).
-Schemas 4–11: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
-F-931); 64 MiB + 4 KiB per generation including inline sections/sidecar reference.
+Schemas 4–12: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
+F-931, F-1029); 64 MiB + 4 KiB per generation including sections/sidecar reference.
 Preservation grants no import acceptance.
 
 Checksum/sync before atomic manifest publication; retain two generations.

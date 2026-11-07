@@ -35,9 +35,9 @@ use crate::preservation::{MAX_PRESERVED_BASE64_BYTES, SectionReference, is_sidec
 use crate::simulation::{
     EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
     SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_DOMAIN,
-    SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_MODIFIER_OWNERS, SNAPSHOT_SCHEMA_NATIVE,
-    SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED, SNAPSHOT_SCHEMA_RELATIONSHIPS,
-    WorldSnapshot,
+    SNAPSHOT_SCHEMA_INVENTORY_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
+    SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED,
+    SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
 };
 
 /// Schema 1 bound, unchanged: domain records and the clock only.
@@ -375,6 +375,45 @@ struct ModifierOwnersIn {
     native_lifecycle: LifecycleSnapshot,
     #[serde(deserialize_with = "crate::json::object")]
     native_modifiers: ModifierWorldSnapshot,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
+    native_relationships: Option<NativeRelationshipsSnapshot>,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
+    preserved_prospect: Option<SectionReference>,
+}
+
+#[derive(Serialize)]
+struct AuthoredInventoryOwnersOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    native_world: &'a NativeWorldSnapshot,
+    native_lifecycle: &'a LifecycleSnapshot,
+    native_inventory_contracts: &'a InventoryContractsSnapshotV1,
+    native_inventories: &'a InventoryStateSnapshotV1,
+    native_inventory_authority: &'a crate::native_inventory::AuthoredInventoryAuthorityV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_relationships: Option<&'a NativeRelationshipsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preserved_prospect: Option<&'a SectionReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredInventoryOwnersIn {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_world: NativeWorldSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_lifecycle: LifecycleSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_inventory_contracts: InventoryContractsSnapshotV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_inventories: InventoryStateSnapshotV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_inventory_authority: crate::native_inventory::AuthoredInventoryAuthorityV1,
     #[serde(default, deserialize_with = "crate::json::optional_object")]
     native_relationships: Option<NativeRelationshipsSnapshot>,
     #[serde(default, deserialize_with = "crate::json::optional_object")]
@@ -764,6 +803,36 @@ fn prepare_generation<O: GenerationOutput>(
     }
     // Dispatch by schema before considering an optional source sidecar.
     let output = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_INVENTORY_OWNERS => O::serialize_bounded_generation(
+            &AuthoredInventoryOwnersOut {
+                schema_version: SNAPSHOT_SCHEMA_INVENTORY_OWNERS,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_world: snapshot
+                    .native_world
+                    .as_ref()
+                    .context("native world required")?,
+                native_lifecycle: snapshot
+                    .native_lifecycle
+                    .as_ref()
+                    .context("native lifecycle required")?,
+                native_inventory_contracts: snapshot
+                    .native_inventory_contracts
+                    .as_ref()
+                    .context("inventory contracts required")?,
+                native_inventories: snapshot
+                    .native_inventories
+                    .as_ref()
+                    .context("inventory state required")?,
+                native_inventory_authority: snapshot
+                    .native_inventory_authority
+                    .as_ref()
+                    .context("inventory authority required")?,
+                native_relationships: snapshot.native_relationships.as_ref(),
+                preserved_prospect: reference.as_ref(),
+            },
+            MAX_REFERENCED_SNAPSHOT_BYTES,
+        )?,
         SNAPSHOT_SCHEMA_MODIFIER_OWNERS => O::serialize_bounded_generation(
             &ModifierOwnersOut {
                 schema_version: SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
@@ -1100,7 +1169,7 @@ impl SnapshotStore {
         if discriminators::header(bytes)? {
             ensure!(
                 bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
-                "schema 9/10/11 native snapshot exceeds its size limit"
+                "schema 9–12 native snapshot exceeds its size limit"
             );
             discriminators::authored_owners(bytes)?;
         }
@@ -1137,6 +1206,9 @@ impl SnapshotStore {
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS) => {
                 return self.decode_c001_inventory_owners(bytes);
             }
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_INVENTORY_OWNERS) => {
+                return self.decode_authored_inventory_owners(bytes);
+            }
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_MODIFIER_OWNERS) => {
                 return self.decode_modifier_owners(bytes);
             }
@@ -1161,6 +1233,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, None))
@@ -1202,6 +1275,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1244,6 +1318,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         // Validation recompiles the embedded catalog and verifies its identity
         // and every native record before this generation can be activated.
@@ -1288,6 +1363,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1376,6 +1452,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1479,6 +1556,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1525,6 +1603,59 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
+        };
+        snapshot.validate()?;
+        Ok((snapshot, reference))
+    }
+
+    fn decode_authored_inventory_owners(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        ensure!(
+            bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+            "schema 12 native snapshot exceeds its size limit"
+        );
+        // decode_generation streams every discriminator occurrence before this
+        // strict DTO or any sidecar I/O can produce a recoverable error.
+        let native = {
+            let _scope = crate::native_inventory::InventoryDecodeScope::enter();
+            serde_json::from_slice::<JsonObject<AuthoredInventoryOwnersIn>>(bytes)
+                .map_err(|error| {
+                    crate::json_parse_error("decode native snapshot fields JSON", error)
+                })?
+                .0
+        };
+        let reference = native.preserved_prospect;
+        let preserved = reference
+            .as_ref()
+            .map(|reference| {
+                reference.validate()?;
+                let encoded = read_bounded(
+                    &self.root.join(reference.sidecar_name()),
+                    reference.encoded_bytes(),
+                )?;
+                reference.decode(encoded).map(Arc::new)
+            })
+            .transpose()?;
+        let snapshot = WorldSnapshot {
+            schema_version: native.schema_version,
+            tick: native.tick,
+            entities: native.entities,
+            native_world: Some(native.native_world),
+            native_lifecycle: Some(native.native_lifecycle),
+            native_modifiers: None,
+            native_relationships: native.native_relationships,
+            preserved_prospect: preserved,
+            native_import: None,
+            native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
+            native_inventory_contracts: Some(native.native_inventory_contracts),
+            native_inventories: Some(native.native_inventories),
+            native_inventory_owner_import: None,
+            native_inventory_authority: Some(native.native_inventory_authority),
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1562,6 +1693,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -1600,6 +1732,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -1645,6 +1778,7 @@ impl SnapshotStore {
             native_inventory_contracts: Some(native.native_inventory_contracts),
             native_inventories: Some(native.native_inventories),
             native_inventory_owner_import: Some(native.native_inventory_owner_import),
+            native_inventory_authority: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -2682,7 +2816,7 @@ mod crash_consistency_tests {
         empty_worlds: usize,
         recovered_previous: usize,
         refused_orphans: usize,
-        /// Intact manifest-referenced schema-3/4/5/6/7/8/9/10/11 generations whose sidecar was
+        /// Intact manifest-referenced schema-3 through schema-12 generations whose sidecar was
         /// present with its recorded size and digest.
         referenced_sidecars: usize,
         /// Loads of a snapshot from an enclosing trace that a rewritten
@@ -3743,7 +3877,7 @@ mod crash_consistency_tests {
         state.entities.push(state.entities[0].clone());
         invalid.push(state);
         let mut state = snapshot(10);
-        state.schema_version = SNAPSHOT_SCHEMA_MODIFIER_OWNERS + 1;
+        state.schema_version = SNAPSHOT_SCHEMA_INVENTORY_OWNERS + 1;
         invalid.push(state);
         for mut state in [inert(10, 1), owners(10, 1, 2), scalar_owners(10, 1, 8)] {
             state.preserved_prospect = inert(10, 2).preserved_prospect;
@@ -4241,7 +4375,7 @@ mod crash_consistency_tests {
         }
     }
 
-    /// Every intact, manifest-referenced schema-3/4/5/6/7/8/9/10/11 generation must find its
+    /// Every intact, manifest-referenced schema-3 through schema-12 generation must find its
     /// sidecar present with the recorded size and digest, whether or not the
     /// generation is ultimately selected by recovery.
     fn referenced_sidecars(state: &DiskState, exempt: u64) -> Result<usize, String> {
@@ -4306,6 +4440,12 @@ mod crash_consistency_tests {
                 }
                 Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_MODIFIER_OWNERS) => {
                     serde_json::from_slice::<ModifierOwnersIn>(bytes)
+                        .ok()
+                        .and_then(|native| native.preserved_prospect)
+                }
+                Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_INVENTORY_OWNERS) => {
+                    let _scope = crate::native_inventory::InventoryDecodeScope::enter();
+                    serde_json::from_slice::<AuthoredInventoryOwnersIn>(bytes)
                         .ok()
                         .and_then(|native| native.preserved_prospect)
                 }
@@ -5301,6 +5441,77 @@ mod crash_consistency_tests {
                 .unwrap_err()
                 .contains("references a missing or damaged sidecar")
         );
+    }
+
+    #[test]
+    fn authored_inventory_sidecar_model_checks_optional_preservation_and_damage() {
+        use crate::native_inventory::{
+            CompiledInventoryContractsV1, InitialInventoryItemsV1, InventoryContractsV1,
+            InventoryOwnerClassV1, enable_inventory_owners,
+        };
+        for preserve in [false, true] {
+            let source = section(23);
+            let base = lifecycle(10, preserve.then_some(&source), 0);
+            let native = base.native_world.as_ref().unwrap();
+            let catalog =
+                crate::native_world::CompiledNativeCatalog::compile(native.definitions.clone())
+                    .unwrap();
+            let contracts = CompiledInventoryContractsV1::compile(
+                InventoryContractsV1 {
+                    format: 1,
+                    native_catalog_id: catalog.identity().into(),
+                    native_map: native.map.clone(),
+                    items: vec![],
+                    classes: vec![InventoryOwnerClassV1 {
+                        native_class: native.actors[0].class.clone(),
+                        inventories: vec![],
+                    }],
+                },
+                &catalog,
+            )
+            .unwrap();
+            let snapshot = enable_inventory_owners(
+                base,
+                contracts.snapshot().as_ref().clone(),
+                InitialInventoryItemsV1 { items: vec![] },
+            )
+            .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(directory.path()).unwrap();
+            store.save(&snapshot).unwrap();
+            assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot);
+            let mut disk: DiskState = fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (
+                        entry.file_name().into_string().unwrap(),
+                        fs::read(entry.path()).unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                referenced_sidecars(&disk, 0).unwrap(),
+                usize::from(preserve)
+            );
+            if preserve {
+                let name = sidecar_name(&source);
+                let original = disk.remove(&name).unwrap();
+                assert!(
+                    referenced_sidecars(&disk, 0)
+                        .unwrap_err()
+                        .contains("missing or damaged sidecar")
+                );
+                disk.insert(name.clone(), vec![0]);
+                assert!(
+                    referenced_sidecars(&disk, 0)
+                        .unwrap_err()
+                        .contains("missing or damaged sidecar")
+                );
+                disk.insert(name, original);
+                assert_eq!(referenced_sidecars(&disk, 0).unwrap(), 1);
+            }
+        }
     }
 
     #[test]

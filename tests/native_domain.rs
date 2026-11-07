@@ -13,6 +13,9 @@ mod source;
 #[path = "native_domain/foundation.rs"]
 mod foundation;
 
+#[path = "native_domain/native_authored_inventory.rs"]
+mod native_authored_inventory;
+
 #[path = "native_domain/native_c001_inventory_owner_storage.rs"]
 mod native_c001_inventory_owner_storage;
 

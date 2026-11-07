@@ -62,6 +62,8 @@ pub const SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS: u32 = 10;
 /// Independently authored owner modifiers extending the schema-7 lifecycle.
 /// This contract carries no C001 source interpretation or inventory behavior.
 pub const SNAPSHOT_SCHEMA_MODIFIER_OWNERS: u32 = 11;
+/// Independent authored stacked inventories with a reproducible initial recipe.
+pub const SNAPSHOT_SCHEMA_INVENTORY_OWNERS: u32 = 12;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -86,12 +88,12 @@ pub struct WorldSnapshot {
     #[serde(deserialize_with = "crate::json::objects")]
     pub entities: Vec<EntityRecord>,
     /// Lossless, value-opaque supplied-save state carried unchanged between
-    /// generations; required in schemas 2, 3, 5 and 8–10, optional in 4, 6, 7 and 11.
+    /// generations; required in schemas 2, 3, 5 and 8–10, optional in 4, 6, 7, 11 and 12.
     /// Shared and held compactly as its verified native encoding. Schema 5
     /// separately records its explicitly accepted authored interpretation.
     /// Serde writes the section inline under the stored `schema_version`, which is
     /// a loadable document only for schema 2; the snapshot store writes schemas
-    /// 3 through 11 itself, with a sidecar reference.
+    /// 3 through 12 itself, with a sidecar reference.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -122,6 +124,8 @@ pub struct WorldSnapshot {
     pub native_inventories: Option<InventoryStateSnapshotV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_inventory_owner_import: Option<C001InventoryOwnerImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory_authority: Option<crate::native_inventory::AuthoredInventoryAuthorityV1>,
 }
 
 impl Default for WorldSnapshot {
@@ -142,12 +146,19 @@ impl Default for WorldSnapshot {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != SNAPSHOT_SCHEMA_INVENTORY_OWNERS {
+            ensure!(
+                self.native_inventory_authority.is_none(),
+                "this snapshot schema cannot hold authored inventory authority"
+            );
+        }
         if self.schema_version != SNAPSHOT_SCHEMA_MODIFIER_OWNERS {
             ensure!(
                 self.native_modifiers.is_none(),
@@ -158,14 +169,17 @@ impl WorldSnapshot {
                 .as_ref()
                 .context("schema 11 requires modifier owner state")?;
         }
-        if self.schema_version != SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
+        if !matches!(
+            self.schema_version,
+            SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS | SNAPSHOT_SCHEMA_INVENTORY_OWNERS
+        ) {
             ensure!(
                 self.native_inventory_contracts.is_none()
                     && self.native_inventories.is_none()
                     && self.native_inventory_owner_import.is_none(),
                 "this snapshot schema cannot hold inventory owner state"
             );
-        } else {
+        } else if self.schema_version == SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
             let bytes = inventory_snapshot_allocation_bytes(
                 self.native_inventory_contracts
                     .as_ref()
@@ -202,6 +216,7 @@ impl WorldSnapshot {
                 | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
                 | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
                 | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
+                | SNAPSHOT_SCHEMA_INVENTORY_OWNERS
         ) {
             ensure!(
                 self.entities.is_empty(),
@@ -227,6 +242,31 @@ impl WorldSnapshot {
             )?;
             if let Some(modifiers) = &self.native_modifiers {
                 modifiers.validate(lifecycle)?;
+            }
+            if self.schema_version == SNAPSHOT_SCHEMA_INVENTORY_OWNERS {
+                ensure!(
+                    self.native_inventory_owner_import.is_none()
+                        && self.native_owner_import.is_none()
+                        && self.native_scalar_owner_import.is_none(),
+                    "authored inventory cannot hold source provenance"
+                );
+                let declarations = self
+                    .native_inventory_contracts
+                    .as_ref()
+                    .context("schema 12 requires inventory contracts")?;
+                let state = self
+                    .native_inventories
+                    .as_ref()
+                    .context("schema 12 requires inventory state")?;
+                let authority = self
+                    .native_inventory_authority
+                    .as_ref()
+                    .context("schema 12 requires inventory authority")?;
+                let catalog = crate::native_world::CompiledNativeCatalog::compile(
+                    native.definitions.clone(),
+                )?;
+                let compiled = CompiledInventoryContractsV1::from_snapshot(declarations, &catalog)?;
+                authority.validate(&compiled, declarations, lifecycle, state)?;
             }
             if self.schema_version == SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS {
                 ensure!(
@@ -660,6 +700,7 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
             | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
             | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
             | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
+            | SNAPSHOT_SCHEMA_INVENTORY_OWNERS
     ) {
         crate::native_lifecycle_runtime::activate_lifecycle(app.world_mut(), snapshot)?;
     } else if let Some(native) = &snapshot.native_world {
@@ -799,6 +840,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -845,6 +887,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_inventory_contracts: None,
         native_inventories: None,
         native_inventory_owner_import: None,
+        native_inventory_authority: None,
     };
     snapshot.validate()?;
     Ok(snapshot)

@@ -129,6 +129,7 @@ thread_local! {
     static DECODE_DEPTH: Cell<usize> = const { Cell::new(0) };
     static DECODE_BYTES: Cell<usize> = const { Cell::new(0) };
     static DECODE_STACKS: Cell<usize> = const { Cell::new(0) };
+    static DECODE_INITIAL_ITEMS: Cell<usize> = const { Cell::new(0) };
     static DECODE_INSTANCES: Cell<usize> = const { Cell::new(0) };
 }
 pub(crate) struct InventoryDecodeScope;
@@ -142,6 +143,7 @@ impl InventoryDecodeScope {
             if d.get() == 0 {
                 DECODE_BYTES.with(|b| b.set(0));
                 DECODE_STACKS.with(|b| b.set(0));
+                DECODE_INITIAL_ITEMS.with(|b| b.set(0));
                 DECODE_INSTANCES.with(|b| b.set(0));
             }
             d.set(d.get() + 1);
@@ -176,8 +178,9 @@ fn admit_object<E: de::Error>(name: &str) -> std::result::Result<(), E> {
         Ok(())
     };
     match name {
-        "StackV1" | "InitialInventoryItemV1" => {
-            DECODE_STACKS.with(|c| increment(c, MAX_INVENTORY_STACKS))
+        "StackV1" => DECODE_STACKS.with(|c| increment(c, MAX_INVENTORY_STACKS)),
+        "InitialInventoryItemV1" => {
+            DECODE_INITIAL_ITEMS.with(|c| increment(c, MAX_INVENTORY_STACKS))
         }
         "InventoryStateV1" => DECODE_INSTANCES.with(|c| increment(c, MAX_INVENTORY_INSTANCES)),
         _ => Ok(()),
@@ -223,7 +226,9 @@ fn finish_decode<T: Serialize + Graph, E: de::Error>(
     let limit = match name {
         "InventoryContractsV1" | "InventoryContractsSnapshotV1" => MAX_INVENTORY_CONTRACT_BYTES,
         "InventoryStateSnapshotV1" => MAX_INVENTORY_STATE_BYTES,
-        "InitialInventoryItemsV1" | "InventoryRestoreRequestV1" => MAX_INVENTORY_GRAPH_BYTES,
+        "InitialInventoryItemsV1"
+        | "InventoryRestoreRequestV1"
+        | "AuthoredInventoryAuthorityV1" => MAX_INVENTORY_GRAPH_BYTES,
         _ => return Ok(()),
     };
     encoded(value, limit).map_err(|_| E::custom("inventory object limit"))?;
@@ -394,6 +399,8 @@ dto!(InitialInventoryItemV1,65536,{pub owner:DomainId,pub inventory:String,pub r
 dto!(InventoryLiveOwnersV1,1,{pub owners:Vec<OwnerHandle>});
 dto!(InitialInventoryItemsV1,1,{pub items:Vec<InitialInventoryItemV1>});
 dto!(InventoryInitialTotalsV1,1,{pub items:Vec<ItemTotalV1>});
+// Reproducible authored baseline, independent of preserved save provenance.
+dto!(AuthoredInventoryAuthorityV1,1,{pub format:u32,pub lifecycle_id:String,pub initial_owners:InventoryLiveOwnersV1,pub initial_items:InitialInventoryItemsV1,pub initial_state_digest:String,pub initial_next_stack_id:u64,pub initial_totals:InventoryInitialTotalsV1});
 dto!(InventoryStackEndpointV1,1,{pub owner:OwnerHandle,pub inventory:String,pub stack_id:StackId});
 dto!(InventorySlotEndpointV1,1,{pub owner:OwnerHandle,pub inventory:String,pub slot:u16});
 // An explicit null slot appends one eligible next slot; a number names an
@@ -629,6 +636,32 @@ impl InventoryInitialTotalsV1 {
     pub fn validate_bounds(&self) -> Result<()> {
         graph(self)?;
         Ok(())
+    }
+}
+
+impl InitialInventoryItemsV1 {
+    pub fn load(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(crate::nonblocking_flag())
+            .open(path)
+            .map_err(|_| anyhow::anyhow!("initial inventory open failed"))?;
+        let meta = file
+            .metadata()
+            .map_err(|_| anyhow::anyhow!("initial inventory metadata failed"))?;
+        ensure!(
+            meta.is_file() && meta.len() <= MAX_INVENTORY_STATE_BYTES as u64,
+            "initial inventory regular file or size invalid"
+        );
+        let mut text = String::new();
+        file.take(MAX_INVENTORY_STATE_BYTES as u64 + 1)
+            .read_to_string(&mut text)
+            .map_err(|_| anyhow::anyhow!("initial inventory read failed"))?;
+        ensure!(
+            text.len() <= MAX_INVENTORY_STATE_BYTES,
+            "initial inventory size invalid"
+        );
+        serde_json::from_str(&text).map_err(|_| anyhow::anyhow!("initial inventory JSON invalid"))
     }
 }
 
@@ -1138,6 +1171,15 @@ pub fn prepare_initial_inventory(
     live: &InventoryLiveOwnersV1,
     items: &InitialInventoryItemsV1,
 ) -> Result<PreparedInitialInventoryV1> {
+    prepare_initial_inventory_retaining(contracts, live, items, 0)
+}
+
+fn prepare_initial_inventory_retaining(
+    contracts: &CompiledInventoryContractsV1,
+    live: &InventoryLiveOwnersV1,
+    items: &InitialInventoryItemsV1,
+    retained_bytes: usize,
+) -> Result<PreparedInitialInventoryV1> {
     input_budget(&[live, items])?;
     encoded(items, MAX_INVENTORY_GRAPH_BYTES)?;
     let handles = contracts.live(live)?;
@@ -1148,7 +1190,7 @@ pub fn prepare_initial_inventory(
         .iter()
         .map(|i| (i.key.as_str(), 0))
         .collect();
-    let mut retained = Budget::default();
+    let mut retained = Budget(retained_bytes);
     retained.add(size_of::<PreparedInitialInventoryV1>() + 128)?;
     // Final validation retains the supplied live set alongside the result.
     // Include its caller spare and reload capacity before expanding recipes.
@@ -1786,4 +1828,222 @@ pub fn prepare_inventory_restore(
         state,
         outcome: InventoryActionOutcomeV1::Applied,
     })
+}
+
+impl AuthoredInventoryAuthorityV1 {
+    pub(crate) fn allocation_bytes(&self) -> Result<usize> {
+        graph(self)
+    }
+
+    pub(crate) fn validate_current(
+        &self,
+        contracts: &CompiledInventoryContractsV1,
+        lifecycle: &crate::native_lifecycle::LifecycleSnapshot,
+        state: &InventoryStateSnapshotV1,
+    ) -> Result<()> {
+        self.allocation_bytes()?;
+        ensure!(
+            contracts.definition().native_map == lifecycle.definition.map,
+            "authored inventory map differs from lifecycle"
+        );
+        ensure!(
+            self.format == 1 && self.lifecycle_id == lifecycle.lifecycle_id,
+            "authored inventory authority identity invalid"
+        );
+        let live = authored_inventory_live_owners(lifecycle)?;
+        ensure!(
+            live == self.initial_owners,
+            "authored inventory owner identities changed"
+        );
+        ensure!(
+            valid_digest(&self.initial_state_digest)
+                && self.initial_next_stack_id > 0
+                && state.next_stack_id >= self.initial_next_stack_id,
+            "authored inventory allocator baseline invalid"
+        );
+        validate_inventory_state(contracts, state, &self.initial_totals, &live)
+    }
+
+    pub(crate) fn validate(
+        &self,
+        contracts: &CompiledInventoryContractsV1,
+        declarations: &InventoryContractsSnapshotV1,
+        lifecycle: &crate::native_lifecycle::LifecycleSnapshot,
+        state: &InventoryStateSnapshotV1,
+    ) -> Result<()> {
+        let retained = authored_inventory_allocation_bytes(declarations, state, self)?;
+        self.validate_current(contracts, lifecycle, state)?;
+        let initial = prepare_initial_inventory_retaining(
+            contracts,
+            &self.initial_owners,
+            &self.initial_items,
+            retained,
+        )?;
+        ensure!(
+            initial.initial_state_digest == self.initial_state_digest
+                && initial.state.next_stack_id == self.initial_next_stack_id
+                && initial.initial_totals == self.initial_totals,
+            "authored inventory initial receipt invalid"
+        );
+        Ok(())
+    }
+}
+
+pub(crate) fn authored_inventory_allocation_bytes(
+    contracts: &InventoryContractsSnapshotV1,
+    state: &InventoryStateSnapshotV1,
+    authority: &AuthoredInventoryAuthorityV1,
+) -> Result<usize> {
+    contracts.validate_bounds()?;
+    state.validate_bounds()?;
+    input_budget(&[contracts, state, authority])
+}
+
+fn authored_inventory_live_owners(
+    lifecycle: &crate::native_lifecycle::LifecycleSnapshot,
+) -> Result<InventoryLiveOwnersV1> {
+    ensure!(
+        lifecycle
+            .slots
+            .iter()
+            .all(|slot| slot.presence == crate::native_lifecycle::Presence::Live),
+        "authored inventory owners must all be live"
+    );
+    let mut owners: Vec<_> = lifecycle
+        .slots
+        .iter()
+        .map(|slot| OwnerHandle {
+            id: slot.id,
+            incarnation: slot.incarnation,
+        })
+        .collect();
+    owners.sort_by_key(|owner| owner.id);
+    Ok(InventoryLiveOwnersV1 { owners })
+}
+
+/// Explicit opt-in from a complete independently authored schema-7 world.
+/// The retained recipe is the conservation baseline; no save input is needed.
+pub fn enable_inventory_owners(
+    mut snapshot: crate::simulation::WorldSnapshot,
+    declarations: InventoryContractsSnapshotV1,
+    items: InitialInventoryItemsV1,
+) -> Result<crate::simulation::WorldSnapshot> {
+    ensure!(
+        snapshot.schema_version == crate::simulation::SNAPSHOT_SCHEMA_LIFECYCLE,
+        "inventory opt-in requires authored lifecycle schema 7"
+    );
+    snapshot.validate()?;
+    let native = snapshot
+        .native_world
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("inventory spatial state missing"))?;
+    let lifecycle = snapshot
+        .native_lifecycle
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("inventory lifecycle missing"))?;
+    let catalog = CompiledNativeCatalog::compile(native.definitions.clone())?;
+    let contracts = CompiledInventoryContractsV1::from_snapshot(&declarations, &catalog)?;
+    let live = authored_inventory_live_owners(lifecycle)?;
+    let retained = input_budget(&[&declarations, &items, &live])?;
+    let prepared = prepare_initial_inventory_retaining(&contracts, &live, &items, retained)?;
+    let (state, initial_totals, initial_state_digest) = prepared.into_parts();
+    let authority = AuthoredInventoryAuthorityV1 {
+        format: 1,
+        lifecycle_id: lifecycle.lifecycle_id.clone(),
+        initial_owners: live,
+        initial_items: items,
+        initial_state_digest,
+        initial_next_stack_id: state.next_stack_id,
+        initial_totals,
+    };
+    authored_inventory_allocation_bytes(&declarations, &state, &authority)?;
+    snapshot.schema_version = crate::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS;
+    snapshot.native_inventory_contracts = Some(declarations);
+    snapshot.native_inventories = Some(state);
+    snapshot.native_inventory_authority = Some(authority);
+    snapshot.validate()?;
+    Ok(snapshot)
+}
+
+#[cfg(test)]
+mod authored_authority_budget_tests {
+    use super::*;
+
+    #[test]
+    fn authority_and_current_graph_share_decode_budget_in_either_order() {
+        let owner = OwnerInventoriesV1 {
+            owner: OwnerHandle {
+                id: DomainId(1),
+                incarnation: 1,
+            },
+            inventories: (0..6)
+                .map(|index| InventoryStateV1 {
+                    key: format!("bag{index}"),
+                    slots: vec![None; 128],
+                    overflow: vec![],
+                })
+                .collect(),
+        };
+        let state = InventoryStateSnapshotV1 {
+            format: 1,
+            contract_id: "a".repeat(64),
+            revision: 1,
+            next_stack_id: 1,
+            consumed: vec![],
+            owners: vec![owner; 1900],
+        };
+        let authority = AuthoredInventoryAuthorityV1 {
+            format: 1,
+            lifecycle_id: "b".repeat(64),
+            initial_owners: InventoryLiveOwnersV1 { owners: vec![] },
+            initial_items: InitialInventoryItemsV1 {
+                items: vec![
+                    InitialInventoryItemV1 {
+                        owner: DomainId(1),
+                        inventory: "c".repeat(64),
+                        requested_slot: 0,
+                        item: "d".repeat(64),
+                        count: 1,
+                    };
+                    65536
+                ],
+            },
+            initial_state_digest: "e".repeat(64),
+            initial_next_stack_id: 1,
+            initial_totals: InventoryInitialTotalsV1 { items: vec![] },
+        };
+        // Structural budget fixtures only: semantics are covered by authored
+        // world tests. Each encoding is independently admitted, but not jointly.
+        state.validate_bounds().unwrap();
+        authority.allocation_bytes().unwrap();
+        assert!(input_budget(&[&state, &authority]).is_err());
+        let state_json = serde_json::to_string(&state).unwrap();
+        let authority_json = serde_json::to_string(&authority).unwrap();
+        serde_json::from_str::<InventoryStateSnapshotV1>(&state_json).unwrap();
+        serde_json::from_str::<AuthoredInventoryAuthorityV1>(&authority_json).unwrap();
+        #[derive(Deserialize)]
+        struct Joint {
+            #[serde(rename = "state")]
+            _state: InventoryStateSnapshotV1,
+            #[serde(rename = "authority")]
+            _authority: AuthoredInventoryAuthorityV1,
+        }
+        for json in [
+            format!("{{\"state\":{state_json},\"authority\":{authority_json}}}"),
+            format!("{{\"authority\":{authority_json},\"state\":{state_json}}}"),
+        ] {
+            {
+                let _scope = InventoryDecodeScope::enter();
+                assert!(serde_json::from_str::<Joint>(&json).is_err());
+            }
+            // A rejected joint request must release every thread-local charge.
+            serde_json::from_str::<AuthoredInventoryAuthorityV1>(&authority_json).unwrap();
+        }
+        let mut spare = authority.clone();
+        spare
+            .initial_items
+            .items
+            .reserve(2 * MAX_INVENTORY_STACKS + 5);
+        assert!(spare.allocation_bytes().is_err());
+    }
 }
