@@ -104,6 +104,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^tools/(native_field_names\.cjs|pe_candidates\.cjs|tests/(native_field_names\.test|pe_candidates_fixtures)\.cjs)$
+      - id: native-field-catalog-tests
+        name: Test bounded native field catalog joins
+        entry: node --test tools/tests/native_field_catalog.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(native_field_catalog\.cjs|native_class_params\.cjs|native_field_inputs\.cjs|native_field_names\.cjs|tests/native_field_catalog\.test\.cjs)$
       - id: pdb-procedure-range-tests
         name: Test bounded PDB declared procedure ranges
         entry: node --test --test-concurrency=1 tools/tests/pdb_procedure_ranges.test.cjs

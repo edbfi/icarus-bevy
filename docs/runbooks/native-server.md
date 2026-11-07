@@ -247,3 +247,14 @@ including dropped records; RSS unbounded (F-920).
 `required_decode_limits`/`remaining_headroom`; no names/values/import authority.
 Headroom cannot guarantee another recorder's preflight. Meanings/original round trips
 unvalidated; [workload](synthetic-workload.md).
+
+## Offline metadata tools
+
+`tools/native_field_catalog.cjs`: call `joinNativeFieldCatalog` with three
+reader reports, exported `PROFILE` and exact `options.addresses`; limits only
+lower `CAPS`. Output stays `ready: false`.
+
+`tools/pdb_selected_types.cjs`: use exported `PARAMETER_PROFILE` for bounded
+parameter layouts with bases and embedded types. Declarations do not establish
+runtime ancestry or consumers. Neither tool qualifies net order, checksums,
+release activation or compatibility.
