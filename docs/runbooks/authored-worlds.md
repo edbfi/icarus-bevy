@@ -182,15 +182,16 @@ this is neither an RSS nor ICARUS compatibility qualification.
 
 ### Durable inventory commands
 
-F-1030.
+F-1030. Accepts `move`, `split`, `merge`, `consume`, `place_overflow`;
+first four CLI-tested.
 
 `apply-native-inventory --request FILE --data-dir DIR [--dry-run]`: schema 12,
-existing regular `server.lock`; one exclusive lock spans revision check to
-publication. JSON ≤64 KiB; request symlink components/FIFOs reject.
+regular `server.lock`; exclusive lock spans revision check to
+publication. JSON ≤64 KiB; symlink components/FIFOs reject.
 [Request example](../../config/native-inventory-request.example.json): set current
-revision, owner handle and stack ID. Dry runs, rejections and no-change actions
-write no store bytes/files. Receipt follows successful save; a save error may
-follow publication, leaving durability uncertain.
+revision, owner handle and stack ID from the manifest-selected snapshot.
+Dry runs/rejections/no-change leave store bytes/files intact. Receipts follow
+save; post-publication errors leave durability uncertain.
 
 ## Authored C001 owners
 
@@ -211,8 +212,8 @@ reconstruction; restore preflight repeats reconstruction/receipt verification.
 
 Library-only [`prepare_c001_variables`](../../src/native_import/c001_variables.rs)
 (F-929) assesses typed C001 Bool/I32 against exact authored UTF-16
-owner/property/header bindings. The linked typed contract defines complete
-coverage and rejection rules. Limits: 16,384 owners, 64 properties/owner,
+owner/property/header bindings. Module docs define coverage/rejection.
+Limits: 16,384 owners, 64 properties/owner,
 1,048,576 assignments, 32 MiB charged output/lookups; candidate byte/element
 allowances apply even empty (F-920). Results retain
 `UnqualifiedPropertyRestoreAndRepNotify`: no activation, mutation, callbacks

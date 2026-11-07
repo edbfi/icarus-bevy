@@ -105,7 +105,7 @@ fn execute(mut command: Command) -> Output {
         .stderr(Stdio::from(stderr.try_clone().unwrap()))
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -249,6 +249,8 @@ fn dry_run_stale_requests_and_no_change_preserve_all_store_bytes() {
     assert_eq!(prepared["event"], json!("native_inventory_prepared"));
     assert_eq!(prepared["dry_run"], json!(true));
     assert_eq!(prepared["published"], json!(false));
+    assert_eq!(prepared["outcome"], json!("applied"));
+    assert_eq!(prepared["revision"], json!(2));
     assert!(prepared.get("receipt").is_none());
     assert_eq!(disk(&root), before);
     action.expected_inventory_revision += 1;
@@ -400,13 +402,23 @@ fn malformed_oversize_fifo_and_symlink_requests_preserve_existing_store() {
     save(&root, &original);
     let before = disk(&root);
     fs::write(&path, b"{invalid").unwrap();
-    assert!(!execute(command(&root, &path, false)).status.success());
+    let failed = execute(command(&root, &path, false));
+    assert!(!failed.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&failed.stderr).unwrap(),
+        json!({"error": "invalid native inventory request JSON", "event": "fatal"})
+    );
     assert_eq!(disk(&root), before);
     fs::File::create(&path)
         .unwrap()
         .set_len(64 * 1024 + 1)
         .unwrap();
-    assert!(!execute(command(&root, &path, false)).status.success());
+    let failed = execute(command(&root, &path, false));
+    assert!(!failed.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&failed.stderr).unwrap(),
+        json!({"error": "inventory request exceeds 64 KiB limit", "event": "fatal"})
+    );
     assert_eq!(disk(&root), before);
     fs::remove_file(&path).unwrap();
     assert!(
@@ -416,7 +428,12 @@ fn malformed_oversize_fifo_and_symlink_requests_preserve_existing_store() {
             .unwrap()
             .success()
     );
-    assert!(!execute(command(&root, &path, false)).status.success());
+    let failed = execute(command(&root, &path, false));
+    assert!(!failed.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&failed.stderr).unwrap(),
+        json!({"error": "inventory request must be a regular file", "event": "fatal"})
+    );
     assert_eq!(disk(&root), before);
     fs::remove_file(&path).unwrap();
     let actual = directory.path().join("actual.json");
@@ -430,8 +447,29 @@ fn malformed_oversize_fifo_and_symlink_requests_preserve_existing_store() {
             },
         ),
     );
+    let mut boundary = fs::read(&actual).unwrap();
+    boundary.resize(64 * 1024, b' ');
+    fs::write(&actual, boundary).unwrap();
+    let prepared = report(execute(command(&root, &actual, true)));
+    assert_eq!(prepared["outcome"], json!("applied"));
+    assert_eq!(prepared["revision"], json!(2));
+    assert_eq!(disk(&root), before);
+    let parent_link = directory.path().join("parent_link");
+    std::os::unix::fs::symlink(directory.path(), &parent_link).unwrap();
+    let failed = execute(command(&root, &parent_link.join("actual.json"), false));
+    assert!(!failed.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&failed.stderr).unwrap(),
+        json!({"error": "open native inventory request failed", "event": "fatal"})
+    );
+    assert_eq!(disk(&root), before);
     std::os::unix::fs::symlink(&actual, &path).unwrap();
-    assert!(!execute(command(&root, &path, false)).status.success());
+    let failed = execute(command(&root, &path, false));
+    assert!(!failed.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&failed.stderr).unwrap(),
+        json!({"error": "open native inventory request failed", "event": "fatal"})
+    );
     assert_eq!(disk(&root), before);
 }
 

@@ -839,15 +839,15 @@ fn open_regular_source(source: &std::path::Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
-/// Request inputs are bounded independently of the saved world. Resolve each
-/// component through an opened directory so intermediate symlinks are refused
-/// too. NONBLOCK prevents a FIFO from stalling before the handle's type check.
 fn read_native_modifier_request(
     source: &std::path::Path,
 ) -> Result<icarus_bevy::native_modifiers::ModifierRequest> {
     read_native_action_request(source, "modifier")
 }
 
+/// Request inputs are bounded independently of the saved world. Resolve each
+/// component through an opened directory so intermediate symlinks are refused
+/// too. NONBLOCK prevents a FIFO from stalling before the handle's type check.
 fn read_native_action_request<T: serde::de::DeserializeOwned>(
     source: &std::path::Path,
     kind: &'static str,
