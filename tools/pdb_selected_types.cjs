@@ -15,6 +15,7 @@
 const {isSharedArrayBuffer} = require('node:util').types;
 
 const PROFILE = 'tpi_v80_exact_udt_data_members_v1';
+const PARAMETER_PROFILE = 'tpi_v80_exact_parameter_layouts_v1';
 const ENUM_PROFILE = 'tpi_v80_exact_enum_values_v1';
 // Enum extension layout checked against the primary sources:
 // https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/TypeRecordMapping.cpp
@@ -55,7 +56,7 @@ function settings(options, enums = false) {
     need(plain(options));
     need(Reflect.ownKeys(options).every(key => typeof key === 'string'
         && ['profile', 'names', 'limits'].includes(key)));
-    need(Object.hasOwn(options, 'profile') && options.profile === (enums ? ENUM_PROFILE : PROFILE) && Object.hasOwn(options, 'names'));
+    need(Object.hasOwn(options, 'profile') && (enums ? options.profile === ENUM_PROFILE : [PROFILE, PARAMETER_PROFILE].includes(options.profile)) && Object.hasOwn(options, 'names'));
     const caps = enums ? ENUM_CAPS : CAPS;
     const limits = {...caps};
     if (options.limits !== undefined) {
@@ -186,6 +187,7 @@ function inspectSelectedEnums(reader, options) {
 
 function inspectImpl(reader, options, enums = false) {
     const {limits, names} = settings(options, enums);
+    const parameters = !enums && options.profile === PARAMETER_PROFILE;
     need(reader && Number.isSafeInteger(reader.size) && reader.size >= 56
         && reader.size <= limits.stream_bytes && typeof reader.read === 'function');
     const streamSize = reader.size;
@@ -351,6 +353,46 @@ function inspectImpl(reader, options, enums = false) {
             need(base.storage_kind === 'integer' && base.kind !== 'bitfield');
             result = {kind: 'enum', storage_kind: 'integer', width_bytes: base.width_bytes,
                 underlying_type_index: underlying, signed: base.signed, enumerators_interpreted: false};
+        } else if (parameters && entry.leaf === 0x1503) {
+            const element = c.u32(), indexType = c.u32(), size = c.numeric();
+            validReference(indexType);
+            need(SIMPLE.has(indexType) && SIMPLE.get(indexType).storage_kind === 'integer');
+            const name = text(c.name(), limits.name_bytes, true), base = width(element, depth + 1);
+            need(size > 0 && size <= limits.udt_bytes && size % base.width_bytes === 0);
+            result = {kind: 'array', storage_kind: 'array', width_bytes: size,
+                element_type_index: element, index_type_index: indexType, name,
+                element_count: size / base.width_bytes};
+        } else if (parameters && [LEAF.CLASS, LEAF.STRUCTURE].includes(entry.leaf)) {
+            const parsed = tag(entry.bytes);
+            let resolved = index;
+            if (parsed.flags & 0x80) {
+                need(parsed.count === 0 && parsed.fieldList === 0 && parsed.size === 0
+                    && parsed.derived === 0 && parsed.vshape === 0);
+                if (parsed.unique !== null) text(parsed.unique, limits.unique_name_bytes);
+                const matches = [];
+                let matchingCandidates = 0;
+                for (let target = begin; target < end; target++) {
+                    const candidate = record(target);
+                    if (candidate.leaf !== entry.leaf) continue;
+                    if (!candidateName(candidate.bytes).equals(parsed.name)) continue;
+                    need(++matchingCandidates <= limits.candidates);
+                    const value = tag(candidate.bytes);
+                    if (!(value.flags & 0x80)) {
+                        need((value.unique === null) === (parsed.unique === null)
+                            && (value.unique === null || value.unique.equals(parsed.unique)));
+                        matches.push(target);
+                    }
+                }
+                need(matches.length === 1); resolved = matches[0];
+                result = {...width(resolved, depth + 1), resolved_type_index: resolved};
+            } else {
+                need(parsed.derived === 0 && parsed.vshape === 0 && parsed.size > 0 && parsed.size <= limits.udt_bytes);
+                const definition = {field_list: parsed.fieldList, declared_member_count: parsed.count, size_bytes: parsed.size};
+                result = {kind: 'udt', storage_kind: 'udt', width_bytes: parsed.size,
+                    name: text(parsed.name, limits.name_bytes), fields: fields(definition, depth + 1)};
+                if (parsed.unique !== null) text(parsed.unique, limits.unique_name_bytes);
+            }
+            c.at = c.bytes.length;
         } else need(false);
         c.finish();
         visiting.delete(index);
@@ -360,7 +402,8 @@ function inspectImpl(reader, options, enums = false) {
     }
 
     let fieldsTotal = 0;
-    function fields(definition) {
+    function fields(definition, depth = 0) {
+        need(depth <= limits.depth);
         const result = [], seenLists = new Set();
         let next = definition.field_list;
         if (next === 0) { need(definition.declared_member_count === 0); return result; }
@@ -379,20 +422,36 @@ function inspectImpl(reader, options, enums = false) {
                     c.finish(); // continuation must be terminal in this list
                     break;
                 }
-                need(kind === LEAF.MEMBER && ++fieldsTotal <= limits.fields);
+                need((kind === LEAF.MEMBER || (parameters && kind === 0x1400)) && ++fieldsTotal <= limits.fields);
                 const attributes = c.u16(), typeIndex = c.u32(), offset = c.numeric();
                 need((attributes & ~3) === 0);
-                const name = text(c.name(), limits.name_bytes, true);
-                const layout = width(typeIndex);
+                const isBase = kind === 0x1400;
+                const name = isBase ? null : text(c.name(), limits.name_bytes, true);
+                const layout = width(typeIndex, depth);
+                if (isBase) need(layout.kind === 'udt');
                 need(offset + layout.width_bytes <= definition.size_bytes);
-                charge(name.length + 192);
-                result.push({name, attributes, type_index: typeIndex, offset_bytes: offset, ...layout});
+                charge((name === null ? 0 : name.length) + 192);
+                result.push(parameters
+                    ? {entry_kind: isBase ? 'base' : 'member', ...layout,
+                        ...(layout.kind === 'pointer' && Object.hasOwn(layout, 'attributes')
+                            ? {pointer_attributes: layout.attributes} : {}),
+                        name, attributes, type_index: typeIndex, offset_bytes: offset}
+                    : {name, attributes, type_index: typeIndex, offset_bytes: offset, ...layout});
                 c.pad();
             }
         }
         // This profile admits only data members plus continuation metadata.
         // No guessed overload/base/member-count relationship is necessary.
         need(result.length === definition.declared_member_count);
+        if (parameters) {
+            for (let i = 0; i < result.length; i++) for (let j = 0; j < i; j++) {
+                const a = result[i], b = result[j];
+                const disjoint = a.offset_bytes >= b.offset_bytes + b.width_bytes || b.offset_bytes >= a.offset_bytes + a.width_bytes;
+                const bits = a.kind === 'bitfield' && b.kind === 'bitfield' && a.offset_bytes === b.offset_bytes
+                    && a.width_bytes === b.width_bytes && (a.bit_offset >= b.bit_offset + b.bit_size || b.bit_offset >= a.bit_offset + a.bit_size);
+                need(disjoint || bits);
+            }
+        }
         return result;
     }
     // Enum values are declaration metadata, not runtime flag meanings. Only
@@ -458,8 +517,32 @@ function inspectImpl(reader, options, enums = false) {
         return {name: selection.name, ...definition, forward_declarations: selection.declarations,
             ...(enums ? enumValues(definition) : {fields: fields(definition)})};
     });
+    if (parameters) {
+        let expanded = 0;
+        function flatten(layout, path, offset, output, depth = 0) {
+            need(depth <= limits.depth && ++expanded <= limits.fields);
+            if (layout.kind === 'modifier') {
+                flatten(width(layout.modified_type_index), path, offset, output, depth + 1);
+            } else if (layout.kind === 'udt') {
+                for (const field of layout.fields) flatten(field,
+                    [...path, field.entry_kind === 'base' ? {base_type_index: field.type_index} : field.name],
+                    offset + field.offset_bytes, output, depth + 1);
+            } else if (layout.kind === 'array') {
+                const element = width(layout.element_type_index);
+                for (let i = 0; i < layout.element_count; i++) flatten(element, [...path, i],
+                    offset + i * element.width_bytes, output, depth + 1);
+            } else {
+                charge(192 + JSON.stringify(path).length);
+                output.push({path, offset_bytes: offset, width_bytes: layout.width_bytes});
+            }
+        }
+        for (const definition of selected) {
+            definition.flattened_fields = [];
+            flatten({kind: 'udt', fields: definition.fields}, [], 0, definition.flattened_fields);
+        }
+    }
     const result = {
-        profile: enums ? ENUM_PROFILE : PROFILE, version: 20040203, header_bytes: 56,
+        profile: enums ? ENUM_PROFILE : parameters ? PARAMETER_PROFILE : PROFILE, version: 20040203, header_bytes: 56,
         type_index_begin: begin, type_index_end: end, records_framed: count,
         record_bytes: recordBytes, selected,
         dependent_types: [...memo].sort(([left], [right]) => left - right)
@@ -477,12 +560,23 @@ function inspectImpl(reader, options, enums = false) {
         ] : [
             'Caller must bind immutable stream reads, input hashes and matching provenance.',
             'Only selected modern class/struct data members and supported width dependencies are interpreted.',
-            'Inheritance, methods, external type servers, unions and incremental hash adjustments are unsupported.',
+            parameters
+                ? 'Only nonvirtual bases and fixed arrays are expanded; methods, virtual bases, unions and external type servers are unsupported.'
+                : 'Inheritance, methods, external type servers, unions and incremental hash adjustments are unsupported.',
             'Pointer referent semantics and enum enumerators remain opaque; declarations do not prove native consumer behavior.',
         ],
     };
-    need(Buffer.byteLength(JSON.stringify(result)) <= limits.output_bytes);
+    // Parameter layouts share memoized subtrees. Bound serialization visits before
+    // a repeated dependency graph can expand into an enormous temporary string.
+    let serializationUnits = 0;
+    const boundedReplacer = parameters ? (key, value) => {
+        serializationUnits += 1 + Buffer.byteLength(key)
+            + (typeof value === 'string' ? Buffer.byteLength(value) : 0);
+        need(serializationUnits <= limits.output_bytes);
+        return value;
+    } : undefined;
+    need(Buffer.byteLength(JSON.stringify(result, boundedReplacer)) <= limits.output_bytes);
     return result;
 }
 
-module.exports = {inspectSelectedTypes, PROFILE, CAPS, inspectSelectedEnums, ENUM_PROFILE, ENUM_CAPS};
+module.exports = {PARAMETER_PROFILE, inspectSelectedTypes, PROFILE, CAPS, inspectSelectedEnums, ENUM_PROFILE, ENUM_CAPS};

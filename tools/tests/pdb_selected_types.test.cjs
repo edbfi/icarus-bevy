@@ -112,6 +112,21 @@ test('ordinary64 pointer, modifier, enum and bitfield dependencies resolve width
     assert.equal(fields[2].enumerators_interpreted, false);
 });
 
+test('direct pointer attributes preserve legacy output and remain distinct in parameter layouts', () => {
+    const bytes = stream([record(0x1002, u32(3), u32(0x1000c)),
+        list(member('Pointer', 0x1000)), udt({fields: 0x1001, size: 8})]);
+    assert.deepEqual(inspect(bytes).selected[0].fields[0], {
+        name: 'Pointer', attributes: 0x1000c, type_index: 0x1000, offset_bytes: 0,
+        kind: 'pointer', storage_kind: 'pointer', width_bytes: 8, referent_type_index: 3,
+    });
+    const field = inspectSelectedTypes(reader(bytes), {
+        profile: PARAMETER_PROFILE, names: [TARGET],
+    }).selected[0].fields[0];
+    assert.equal(field.name, 'Pointer');
+    assert.equal(field.attributes, 3);
+    assert.equal(field.pointer_attributes, 0x1000c);
+});
+
 test('primitive64 pointers do not require standalone pointer records', () => {
     const result = inspect(stream([list(member('Pointer', 0x603)), udt({size: 8})]));
     assert.equal(result.selected[0].fields[0].width_bytes, 8);
@@ -366,4 +381,96 @@ test('enum lower-only aggregate enumerator/output limits preserve complete admis
     fails(()=>enumInspect(multiple,{enumerators:1},[ENUM_NAME,'Other']));
     for(const limits of [{enumerators:4097},{enumerators:-1},{enumerators:1.5},{candidates:0},{output_bytes:0}])fails(()=>enumInspect(bytes,limits));
     fails(()=>inspectSelectedEnums(reader(bytes),{profile:PROFILE,names:[ENUM_NAME]}));
+});
+
+const {PARAMETER_PROFILE} = require('../pdb_selected_types.cjs');
+const parameterInspect = (bytes, limits = {}) => inspectSelectedTypes(reader(bytes), {
+    profile: PARAMETER_PROFILE, names: [TARGET], limits,
+});
+const baseEntry = (type, offset = 0) => padded(Buffer.concat([u16(0x1400), u16(3), u32(type), u16(offset)]));
+test('parameter profile preserves bases, nested arrays and separate flattened paths', () => {
+    const bytes = stream([list(member('Value')), udt({name: 'Base'}),
+        record(0x1503, u32(0x1001), u32(0x75), u16(8), z('')),
+        list(baseEntry(0x1001), member('Items', 0x1002, 4)), udt({fields: 0x1003, count: 2, size: 12})]);
+    const value = parameterInspect(bytes).selected[0];
+    assert.equal(value.fields[0].entry_kind, 'base');
+    assert.equal(value.fields[1].element_count, 2);
+    assert.deepEqual(value.flattened_fields.map(x => x.offset_bytes), [0, 4, 8]);
+    fails(() => inspect(bytes));
+    fails(() => parameterInspect(bytes, {dependencies: 1}));
+    fails(() => parameterInspect(bytes, {depth: 0}));
+    fails(() => parameterInspect(bytes, {fields: 3}));
+});
+test('parameter profile rejects overlap, virtual bases, cycles and fractional arrays', () => {
+    fails(() => parameterInspect(stream([list(member('A'), member('B')), udt({count: 2})])));
+    fails(() => parameterInspect(stream([list(Buffer.concat([u16(0x1401), Buffer.alloc(18)])), udt()])));
+    fails(() => parameterInspect(stream([list(member('Self', 0x1001)), udt()])));
+    fails(() => parameterInspect(stream([record(0x1503, u32(0x75), u32(0x75), u16(5), z('')),
+        list(member('Bad', 0x1000)), udt({fields: 0x1001, size: 8})])));
+});
+
+test('parameter multilevel bases and dependency continuations retain absolute paths', () => {
+    const bytes = stream([
+        list(member('First'), continuation(0x1001)), list(member('Second', 0x75, 4)),
+        udt({name: 'Root', count: 2, size: 8}),
+        list(baseEntry(0x1002), member('Middle', 0x75, 8)),
+        udt({name: 'Middle', fields: 0x1003, count: 2, size: 12}),
+        list(baseEntry(0x1004, 4), continuation(0x1006)), list(member('Last', 0x75, 16)),
+        udt({fields: 0x1005, count: 2, size: 20}),
+    ]);
+    const result = parameterInspect(bytes);
+    assert.deepEqual(result.selected[0].flattened_fields, [
+        {path: [{base_type_index: 0x1004}, {base_type_index: 0x1002}, 'First'], offset_bytes: 4, width_bytes: 4},
+        {path: [{base_type_index: 0x1004}, {base_type_index: 0x1002}, 'Second'], offset_bytes: 8, width_bytes: 4},
+        {path: [{base_type_index: 0x1004}, 'Middle'], offset_bytes: 12, width_bytes: 4},
+        {path: ['Last'], offset_bytes: 16, width_bytes: 4},
+    ]);
+    assert.equal(parameterInspect(bytes, {dependencies: 2, fields: 7, continuations: 2}).selected.length, 1);
+    fails(() => parameterInspect(bytes, {dependencies: 1}));
+    fails(() => parameterInspect(bytes, {fields: 6}));
+    fails(() => parameterInspect(bytes, {continuations: 1}));
+});
+
+const forwardDependencyFixture = (forward = {}, extras = []) => stream([
+    udt({name: 'Dependency', fields: 0, count: 0, size: 0, flags: 0x80, unique: 'AuthoredDependency', ...forward}),
+    list(member('Value')), udt({name: 'Dependency', fields: 0x1001, unique: 'AuthoredDependency'}),
+    list(baseEntry(0x1000)), udt({fields: 0x1003}), ...extras,
+]);
+test('parameter dependency forwards require one exact complete definition and valid declaration', () => {
+    const result = parameterInspect(forwardDependencyFixture(), {dependencies: 2, candidates: 2});
+    assert.equal(result.selected[0].fields[0].resolved_type_index, 0x1002);
+    assert.deepEqual(result.selected[0].flattened_fields[0].path, [{base_type_index: 0x1000}, 'Value']);
+    fails(() => parameterInspect(forwardDependencyFixture(), {dependencies: 1}));
+    fails(() => parameterInspect(forwardDependencyFixture(), {candidates: 1}));
+    for (const forward of [{count: 1}, {fields: 0x1001}, {size: 4}, {unique: 'Mismatch'}]) {
+        fails(() => parameterInspect(forwardDependencyFixture(forward)));
+    }
+    fails(() => parameterInspect(forwardDependencyFixture({}, [udt({name: 'Dependency', fields: 0x1001, unique: 'AuthoredDependency'})])));
+    fails(() => parameterInspect(stream([udt({name: 'Dependency', fields: 0, count: 0, size: 0, flags: 0x80}),
+        list(baseEntry(0x1000)), udt({fields: 0x1001})])));
+});
+
+test('parameter modifier aggregates expand and repeated arrays obey expansion bounds', () => {
+    const bytes = stream([list(member('Value')), udt({name: 'Element'}),
+        record(0x1001, u32(0x1001), u16(1)),
+        record(0x1503, u32(0x1002), u32(0x75), u16(8), z('')),
+        list(member('Items', 0x1003)), udt({fields: 0x1004, size: 8})]);
+    assert.deepEqual(parameterInspect(bytes).selected[0].flattened_fields, [
+        {path: ['Items', 0, 'Value'], offset_bytes: 0, width_bytes: 4},
+        {path: ['Items', 1, 'Value'], offset_bytes: 4, width_bytes: 4},
+    ]);
+    assert.equal(parameterInspect(bytes, {fields: 8, dependencies: 3}).selected.length, 1);
+    fails(() => parameterInspect(bytes, {fields: 7}));
+    fails(() => parameterInspect(bytes, {dependencies: 2}));
+    fails(() => parameterInspect(bytes, {depth: 3}));
+});
+
+test('parameter shared dependencies retain exact output and retained-byte admission', () => {
+    const bytes = forwardDependencyFixture();
+    const result = parameterInspect(bytes);
+    const outputBytes = Buffer.byteLength(JSON.stringify(result));
+    assert.deepEqual(parameterInspect(bytes, {output_bytes: outputBytes}), result);
+    fails(() => parameterInspect(bytes, {output_bytes: outputBytes - 1}));
+    assert.deepEqual(parameterInspect(bytes, {retained_bytes: result.charged_retained_bytes}), result);
+    fails(() => parameterInspect(bytes, {retained_bytes: result.charged_retained_bytes - 1}));
 });
