@@ -254,7 +254,11 @@ unvalidated; [workload](synthetic-workload.md).
 reader reports, exported `PROFILE` and exact `options.addresses`; limits only
 lower `CAPS`. Output stays `ready: false`.
 
-`tools/pdb_selected_types.cjs`: use exported `PARAMETER_PROFILE` for bounded
-parameter layouts with bases and embedded types. Declarations do not establish
-runtime ancestry or consumers. Neither tool qualifies net order, checksums,
-release activation or compatibility.
+`tools/pdb_selected_types.cjs`: exported `PARAMETER_PROFILE` reads bounded
+parameter/base/embedded declarations. No runtime ancestry/consumers, net order,
+checksums, activation or compatibility qualification.
+
+`node tools/pdb_selected_metadata.cjs --request request.json`: JSON binds
+PDB path/size/SHA-256, GUID/age, profile/names and output path.
+Exclusive mode-0600 publication follows complete writes and sync; failures
+are redacted. Caps only lower limits.
