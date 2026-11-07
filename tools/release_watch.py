@@ -14,6 +14,7 @@ The project version is composed as both observed server builds log it (F-683):
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -32,6 +33,8 @@ PIN = Path(__file__).resolve().parents[1] / "config/release.toml"
 EXIT_BEHIND = 3
 SHIPPING_EXE_REL = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
 DEFAULT_TAGS_INI_REL = Path("Icarus/Config/DefaultGameplayTags.ini")
+DEFAULT_TAGS_PAK_REL = Path("Icarus/Content/Paks/pakchunk0-WindowsServer.pak")
+PAK_METADATA_READER = Path(__file__).resolve().with_name("pak_protocol_metadata.cjs")
 
 
 class Arguments(argparse.Namespace):
@@ -122,12 +125,47 @@ def parse_ini_tags(ini_text: str) -> tuple[int, int]:
     """Count declared GameplayTagList tags in DefaultGameplayTags.ini and the
     number of unique ASCII-case-folded nodes after dot-prefix expansion."""
     declared = [match[1] for match in re.finditer(r'Tag="([^"]+)"', ini_text)]
+    return count_tag_nodes(declared)
+
+
+def count_tag_nodes(declared: list[str]) -> tuple[int, int]:
     expanded: set[str] = set()
     for tag in declared:
         parts = tag.split(".")
         for end in range(1, len(parts) + 1):
             expanded.add(".".join(parts[:end]).lower())
     return len(declared), len(expanded)
+
+
+def install_tag_counts(install: Path) -> tuple[int, int]:
+    """Use a loose INI when present, otherwise inspect its packed member.
+
+    The existing pak reader verifies the sampled digest before and after the
+    read and only exposes protocol configuration, never gameplay table values.
+    """
+    ini_path = install / DEFAULT_TAGS_INI_REL
+    if ini_path.is_file():
+        return parse_ini_tags(ini_path.read_text(encoding="utf-8", errors="replace"))
+    pak_path = install / DEFAULT_TAGS_PAK_REL
+    with pak_path.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    result = subprocess.run(
+        ["node", str(PAK_METADATA_READER), "--path", str(pak_path), "--sha256", digest],
+        capture_output=True, text=True, timeout=180, check=True,
+    )
+    report = json_object(parse_json(result.stdout))
+    if report.get("source_sha256") != digest or report.get("hashes_verified") is not True:
+        raise ValueError("packed gameplay tags source verification failed")
+    configuration = json_object(report.get("declared_configuration"))
+    values = configuration.get("tag_names")
+    if not isinstance(values, list):
+        raise ValueError("packed gameplay tags must be a list")
+    tags: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or not value.isascii() or not all(value.split(".")):
+            raise ValueError("packed gameplay tag must be a nonempty ASCII dotted name")
+        tags.append(value)
+    return count_tag_nodes(tags)
 
 
 def inspect_install(install: Path) -> InstallProfile:
@@ -138,10 +176,7 @@ def inspect_install(install: Path) -> InstallProfile:
         raise FileNotFoundError(f"missing shipping executable: {exe_path}")
     with exe_path.open("rb") as handle:
         sections = pe_section_raw_sizes(handle.read(4096))
-    ini_path = install / DEFAULT_TAGS_INI_REL
-    if not ini_path.is_file():
-        raise FileNotFoundError(f"missing gameplay tags ini: {ini_path}")
-    ini_tags, ini_nodes = parse_ini_tags(ini_path.read_text(encoding="utf-8", errors="replace"))
+    ini_tags, ini_nodes = install_tag_counts(install)
     return InstallProfile(
         build_id=build,
         project_version=version,

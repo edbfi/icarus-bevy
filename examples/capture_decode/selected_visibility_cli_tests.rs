@@ -109,7 +109,8 @@ fn valid_cli_writes_only_neutral_counts_and_keeps_completion_unverified() {
     let release = temp.path().join("release.toml");
     fs::write(
         &release,
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/release.toml")),
+        // This replay is qualified for 3.0.34 independently of the current pin.
+        "[release]\napp_id = 2089300\nbuild_id = 26313077\nproject_version = \"3.0.34.159385-rel-DangerousHorizons\"\nnetwork_checksum = 4087436304\n",
     )
     .unwrap();
     let row = serde_json::json!({

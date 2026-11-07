@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-06.
+Last reconciled: 2026-11-07.
 
 ## Scope
 
@@ -27,6 +27,8 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
 
 ## Confirmed
 
+- 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
+  Legacy row indices do not transfer.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7

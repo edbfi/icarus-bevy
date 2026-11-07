@@ -301,6 +301,10 @@ pub enum RepCommand {
     /// `FRowHandle` (`0x143f8a530`, F-705), for properties typed directly as
     /// `FRowHandle` (`HasNetSerializer == true`).
     RowHandle,
+    /// Release-specific row-index byte widths, indexed by table ID.
+    RowHandleWithWidths {
+        widths: Vec<u8>,
+    },
     /// `FStatPairRepState` (`0x141c10c50` -> `0x1417df1a0`, F-705), the element
     /// struct of `FStatsRepArray` (`UIcarusStatContainer::ReplicatedStatArray`).
     StatPairRepState,
@@ -372,6 +376,46 @@ pub fn icarus_row_handle_width_bytes(table_index: u16) -> Result<u8> {
     } else {
         Ok(1)
     }
+}
+
+/// Apply a release's row-table widths to generic row handles, including arrays.
+/// Existing profiled commands are replaced too, so rebinding never retains a stale profile.
+pub fn apply_row_handle_widths(layout: &mut [RepCommand], widths: &[u8]) -> Result<()> {
+    validate_row_handle_widths(widths)?;
+    for command in layout {
+        match command {
+            RepCommand::RowHandle | RepCommand::RowHandleWithWidths { .. } => {
+                *command = RepCommand::RowHandleWithWidths {
+                    widths: widths.to_vec(),
+                };
+            }
+            RepCommand::DynamicArray { element } => apply_row_handle_widths(element, widths)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_row_handle_widths(widths: &[u8]) -> Result<()> {
+    ensure!(
+        !widths.is_empty() && widths.len() < usize::from(ICARUS_ROW_HANDLE_NONE),
+        "row handle registry must contain 1..65535 tables"
+    );
+    ensure!(
+        widths.iter().all(|width| matches!(width, 0 | 1 | 2 | 4)),
+        "row handle widths must be 0, 1, 2 or 4 bytes"
+    );
+    Ok(())
+}
+
+fn profiled_row_handle_width(widths: &[u8], table_index: u16) -> Result<u8> {
+    if table_index == ICARUS_ROW_HANDLE_NONE {
+        return Ok(0);
+    }
+    widths
+        .get(usize::from(table_index))
+        .copied()
+        .with_context(|| format!("unknown row handle data table index {table_index}"))
 }
 
 /// Replicated `FRowHandle` (`0x143f8a530`, F-705): a 2-byte data-table index and,
@@ -1242,6 +1286,8 @@ fn validate_layout_at(layout: &[RepCommand], limits: &RepLayoutLimits, depth: us
                     "layout handle {handle}: tag count width must be 1 to 8"
                 );
             }
+            RepCommand::RowHandleWithWidths { widths } => validate_row_handle_widths(widths)
+                .with_context(|| format!("layout handle {handle}"))?,
             RepCommand::DynamicArray { element } => {
                 validate_layout_at(element, limits, depth + 1)
                     .with_context(|| format!("layout handle {handle}"))?;
@@ -1386,8 +1432,16 @@ pub(super) fn write_u64(writer: &mut BitWriter, value: u64, order: ByteOrder) {
 /// index in `order`, followed by 0, 1, 2 or 4 row-index bytes according to
 /// [`icarus_row_handle_width_bytes`].
 pub fn read_row_handle(reader: &mut BitReader<'_>, order: ByteOrder) -> Result<RowHandle> {
+    read_row_handle_with(reader, order, icarus_row_handle_width_bytes)
+}
+
+fn read_row_handle_with(
+    reader: &mut BitReader<'_>,
+    order: ByteOrder,
+    width_for: impl FnOnce(u16) -> Result<u8>,
+) -> Result<RowHandle> {
     let table_index = read_u16(reader, order, "row handle table index")?;
-    let width = icarus_row_handle_width_bytes(table_index)?;
+    let width = width_for(table_index)?;
     let row_index = match width {
         0 => None,
         1 => Some(read_field(reader, 8, "row handle 1-byte row index")?),
@@ -1412,7 +1466,16 @@ pub fn write_row_handle(
     handle: &RowHandle,
     order: ByteOrder,
 ) -> Result<()> {
-    let width = icarus_row_handle_width_bytes(handle.table_index)?;
+    write_row_handle_with(writer, handle, order, icarus_row_handle_width_bytes)
+}
+
+fn write_row_handle_with(
+    writer: &mut BitWriter,
+    handle: &RowHandle,
+    order: ByteOrder,
+    width_for: impl FnOnce(u16) -> Result<u8>,
+) -> Result<()> {
+    let width = width_for(handle.table_index)?;
     match (width, handle.row_index) {
         (0, None) => write_u16(writer, handle.table_index, order),
         (0, Some(_)) => bail!("zero-width row handle cannot carry a row index"),
@@ -2091,6 +2154,12 @@ pub(super) fn read_value(
         RepCommand::RowHandle => {
             RepValue::RowHandle(read_row_handle(reader, order).context("row handle item")?)
         }
+        RepCommand::RowHandleWithWidths { widths } => RepValue::RowHandle(
+            read_row_handle_with(reader, order, |index| {
+                profiled_row_handle_width(widths, index)
+            })
+            .context("row handle item")?,
+        ),
         RepCommand::StatPairRepState => RepValue::StatPairRepState(
             read_stat_pair_rep_state(reader).context("stat pair rep state item")?,
         ),
@@ -2364,6 +2433,12 @@ pub(super) fn write_value(
         }
         (RepCommand::RowHandle, RepValue::RowHandle(row)) => {
             write_row_handle(writer, row, order).context("row handle item")?;
+        }
+        (RepCommand::RowHandleWithWidths { widths }, RepValue::RowHandle(row)) => {
+            write_row_handle_with(writer, row, order, |index| {
+                profiled_row_handle_width(widths, index)
+            })
+            .context("row handle item")?;
         }
         (RepCommand::StatPairRepState, RepValue::StatPairRepState(stat)) => {
             write_stat_pair_rep_state(writer, stat);

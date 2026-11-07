@@ -72,9 +72,9 @@ Last reconciled: 2026-11-07
   are bound in `experimental` (F-688, F-710 to F-714, F-729, F-740; U-014, U-037,
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
-  addresses and assumptions do not transfer automatically. 3.0.35 intake and
-  selected cooked/native metadata and declarations (F-1025 to F-1028) do not
-  qualify consumer semantics or its full profile, or permit repinning.
+  addresses and assumptions do not transfer automatically. The 3.0.35 pin's
+  tags, selected class profiles and row registry are qualified (F-1031 to
+  F-1033); connected behavior and visibility bindings still need qualification.
 
 ## Before enabling visibility dispatch or effects
 
