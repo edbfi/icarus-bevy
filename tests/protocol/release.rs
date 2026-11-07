@@ -35,7 +35,7 @@ fn the_tracked_pin_is_consistent() {
     assert_eq!(pin.network_checksum, network_checksum(&pin.project_version));
 
     let profile = ReleaseProfile::load(&path).unwrap();
-    assert_eq!(profile, ReleaseProfile::release_3_0_34());
+    assert_eq!(profile, ReleaseProfile::release_3_0_35());
 }
 
 #[test]
@@ -76,6 +76,90 @@ fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
+    let profile = ReleaseProfile::release_3_0_35();
+    profile.validate().unwrap();
+    assert_eq!(profile.pin.build_id, 26_425_113);
+    assert_eq!(profile.pin.network_checksum, 1_299_872_271);
+    assert_eq!(profile.tags.data_table_tag_count, 130);
+    assert_eq!(profile.tags.ini_tag_count, 1_932);
+    assert_eq!(profile.tags.unique_node_count, 2_346);
+    assert_eq!(profile.tags.net_index_hash, 0xbf0f_c0d8);
+    let previous = ReleaseProfile::release_3_0_34();
+    assert_eq!(profile.tags.total_bits, previous.tags.total_bits);
+    assert_eq!(
+        profile.tags.effective_first_segment,
+        previous.tags.effective_first_segment
+    );
+    assert_eq!(profile.tags.container_bits, previous.tags.container_bits);
+    assert_eq!(profile.player_controller, previous.player_controller);
+    assert_eq!(profile.player_state, previous.player_state);
+    assert_eq!(profile.game_state, previous.game_state);
+    assert_eq!(profile.pawn, previous.pawn);
+    assert_eq!(profile.managers, previous.managers);
+    assert_eq!(profile.class_net_cache, previous.class_net_cache);
+    assert_eq!(profile.row_handles.table_count, 296);
+    assert_eq!(profile.row_handles.zero_row_tables, [63, 166, 183]);
+    assert_eq!(profile.row_handles.row_width_bytes(63).unwrap(), 0);
+    assert_eq!(profile.row_handles.row_width_bytes(30).unwrap(), 2);
+    assert_eq!(profile.row_handles.row_width_bytes(295).unwrap(), 1);
+    assert!(profile.row_handles.row_width_bytes(296).is_err());
+    let parsed = ReleaseProfile::parse(
+        "[release]\napp_id = 2089300\nbuild_id = 26425113\nproject_version = \"3.0.35.159586-rel-DangerousHorizons\"\nnetwork_checksum = 1299872271\n",
+    ).unwrap();
+    assert_eq!(parsed, profile);
+    assert_eq!(
+        PeerLabConfig::default()
+            .with_release_profile(&profile)
+            .local_network_version,
+        Some(1_299_872_271)
+    );
+    assert!(
+        profile
+            .quest_open_base_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn release_row_widths_bind_trait_layouts_and_can_be_rebound() {
+    use icarus_bevy::experimental::rep_layout::RepCommand;
+    fn count_rows(layout: &[RepCommand], profiled: bool) -> usize {
+        layout
+            .iter()
+            .map(|command| match command {
+                RepCommand::RowHandle => {
+                    assert!(!profiled, "new release retained a legacy row codec");
+                    1
+                }
+                RepCommand::RowHandleWithWidths { widths } => {
+                    assert!(profiled);
+                    assert_eq!(widths.len(), 296);
+                    assert_eq!(widths[63], 0);
+                    assert_eq!(widths[30], 2);
+                    1
+                }
+                RepCommand::DynamicArray { element } => count_rows(element, profiled),
+                _ => 0,
+            })
+            .sum()
+    }
+    let profile = ReleaseProfile::release_3_0_35();
+    let original = icarus_bevy::experimental::rep_layout::trait_component_rep_layout();
+    let mut layout = original.clone();
+    profile.apply_row_handle_profile(&mut layout).unwrap();
+    assert_eq!(count_rows(&layout, true), 1);
+    let mut nested = vec![RepCommand::DynamicArray { element: layout }];
+    let previous = ReleaseProfile::release_3_0_34();
+    previous.apply_row_handle_profile(&mut nested).unwrap();
+    assert_eq!(nested, vec![RepCommand::DynamicArray { element: original }]);
+    assert_eq!(count_rows(&nested, false), 1);
+    profile.apply_row_handle_profile(&mut nested).unwrap();
+    assert_eq!(count_rows(&nested, true), 1);
 }
 
 #[test]

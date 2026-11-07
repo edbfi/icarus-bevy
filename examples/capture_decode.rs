@@ -445,7 +445,7 @@ fn block_values_json(
     profile: &ReleaseProfile,
 ) -> Result<Value> {
     let codec = rep_codec();
-    let (layout, item, bound) = match schema {
+    let (mut layout, mut item, bound) = match schema {
         "UIcarusStatContainer" => (
             actor_component_rep_layout(),
             Some(vec![RepCommand::StatPairRepState]),
@@ -456,8 +456,12 @@ fn block_values_json(
             Some(inventory_slot_commands(profile.tags.tag_encoding())),
             profile.class_net_cache.inventory,
         ),
-        _ => (schema_commands(schema, profile), None, 0),
+        _ => (schema_commands(schema, profile)?, None, 0),
     };
+    profile.apply_row_handle_profile(&mut layout)?;
+    if let Some(commands) = &mut item {
+        profile.apply_row_handle_profile(commands)?;
+    }
     let mut reader = block.payload.reader();
     let properties = if block.has_rep_layout {
         stream_json(&read_rep_properties(&mut reader, &layout, &codec)?)
@@ -757,13 +761,13 @@ fn classify_subobject_schema(
     Some(TargetSchema::RepLayout(schema))
 }
 
-fn schema_commands(schema: &str, profile: &ReleaseProfile) -> Vec<RepCommand> {
+fn schema_commands(schema: &str, profile: &ReleaseProfile) -> Result<Vec<RepCommand>> {
     let loc = MovementLevel::Whole;
     let char_loc = MovementLevel::Hundredths;
     let vel = MovementLevel::Whole;
     let rot = RotationLevel::Bytes;
     let tag_encoding = profile.tags.tag_encoding();
-    match schema {
+    let mut commands = match schema {
         "AIcarusPlayerControllerSurvival" => {
             icarus_player_controller_survival_rep_layout(loc, vel, rot, tag_encoding)
         }
@@ -857,7 +861,9 @@ fn schema_commands(schema: &str, profile: &ReleaseProfile) -> Vec<RepCommand> {
         "UGeneticsComponent" => genetics_component_rep_layout(),
         "BP_ShelteredComponent_C" => bp_sheltered_component_rep_layout(),
         _ => unreachable!(),
-    }
+    };
+    profile.apply_row_handle_profile(&mut commands)?;
+    Ok(commands)
 }
 
 type RpcParameterLookup = fn(u32) -> Option<Vec<RpcParameter>>;
@@ -888,7 +894,7 @@ fn replay_rep_layout_and_rpc_block(
     codec: &RepLayoutCodec,
     profile: &ReleaseProfile,
 ) -> Result<(usize, usize, bool)> {
-    let commands = schema_commands(schema_name, profile);
+    let commands = schema_commands(schema_name, profile)?;
     let mut reader = payload.reader();
     let mut writer = BitWriter::new();
     let prop_entries = if has_rep_layout {
@@ -907,13 +913,18 @@ fn replay_rep_layout_and_rpc_block(
             .with_context(|| format!("unexpected trailing field headers on {schema_name}"))?;
         while !reader.at_end() {
             let header = read_field_header(&mut reader, index_bound, codec.limits.max_opaque_bits)?;
-            let params = lookup(header.index).with_context(|| {
+            let mut params = lookup(header.index).with_context(|| {
                 format!(
                     "unknown {schema_name} RPC field index {} ({} bits)",
                     header.index,
                     header.payload.bit_len()
                 )
             })?;
+            for parameter in &mut params {
+                if let RpcParameter::Value(commands) = parameter {
+                    profile.apply_row_handle_profile(commands)?;
+                }
+            }
             let args = parse_rpc_payload(&header.payload, &params, codec)
                 .with_context(|| format!("{schema_name} RPC field index {}", header.index))?;
             let reencoded_rpc = encode_rpc_payload(&params, &args, codec)?;
@@ -939,7 +950,8 @@ fn replay_stat_container_block(
     codec: &RepLayoutCodec,
     profile: &ReleaseProfile,
 ) -> Result<(usize, usize, bool)> {
-    let layout = actor_component_rep_layout();
+    let mut layout = actor_component_rep_layout();
+    profile.apply_row_handle_profile(&mut layout)?;
     let item_layout = FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]);
     let mut reader = payload.reader();
     let mut writer = BitWriter::new();
@@ -997,9 +1009,12 @@ fn replay_inventory_block(
     codec: &RepLayoutCodec,
     profile: &ReleaseProfile,
 ) -> Result<(usize, usize, bool)> {
-    let layout = inventory_rep_layout();
+    let mut layout = inventory_rep_layout();
+    profile.apply_row_handle_profile(&mut layout)?;
     let tag_encoding = profile.tags.tag_encoding();
-    let item_layout = FastArrayItemLayout::Delta(inventory_slot_commands(tag_encoding));
+    let mut slot_commands = inventory_slot_commands(tag_encoding);
+    profile.apply_row_handle_profile(&mut slot_commands)?;
+    let item_layout = FastArrayItemLayout::Delta(slot_commands);
     let mut reader = payload.reader();
     let mut writer = BitWriter::new();
     let prop_entries = if has_rep_layout {
@@ -1056,7 +1071,8 @@ fn replay_ui_projection_mount_status_block(
     codec: &RepLayoutCodec,
     profile: &ReleaseProfile,
 ) -> Result<(usize, bool)> {
-    let layout = bp_ui_projection_component_mount_status_rep_layout();
+    let mut layout = bp_ui_projection_component_mount_status_rep_layout();
+    profile.apply_row_handle_profile(&mut layout)?;
     let mut reader = payload.reader();
     let mut writer = BitWriter::new();
     let prop_entries = if has_rep_layout {
@@ -2086,7 +2102,7 @@ impl<'a> Decoder<'a> {
                                 let commands = schema_commands(
                                     "AIcarusPlayerControllerSurvival",
                                     &self.profile,
-                                );
+                                )?;
                                 let mut reader = block.payload.reader();
                                 read_rep_properties(&mut reader, &commands, &rep_codec()).map(
                                     |stream| {
@@ -2126,11 +2142,11 @@ impl<'a> Decoder<'a> {
                                 schema_commands("AIcarusPlayerControllerSurvival", &self.profile)
                             }
                             BlockTarget::SubObject { .. } => {
-                                icarus_bevy::experimental::rep_layout::actor_component_rep_layout()
+                                Ok(icarus_bevy::experimental::rep_layout::actor_component_rep_layout())
                             }
                         };
                         let entries = block.has_rep_layout.then(|| {
-                            read_rep_properties(&mut block.payload.reader(), &commands, &rep_codec())
+                            commands.and_then(|commands| read_rep_properties(&mut block.payload.reader(), &commands, &rep_codec()))
                                 .map(|stream| {
                                     stream
                                         .entries
@@ -2509,7 +2525,7 @@ impl<'a> Decoder<'a> {
                 && matches!(block.target, BlockTarget::Actor)
                 && let Some((schema_name, _)) = replayed
             {
-                let commands = schema_commands(schema_name, &self.profile);
+                let commands = schema_commands(schema_name, &self.profile)?;
                 let entries =
                     read_rep_properties(&mut block.payload.reader(), &commands, &rep_codec())
                         .map(|stream| {

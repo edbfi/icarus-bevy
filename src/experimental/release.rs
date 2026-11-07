@@ -70,6 +70,8 @@ pub const TAG_NET_INDEX_HASH_3_0_31: u32 = 0xdc78_0a27;
 pub const TAG_NET_INDEX_HASH_3_0_32: u32 = 0x6d0f_676f;
 /// Qualified gameplay-tag net-index hash for server 26313077 (3.0.34).
 pub const TAG_NET_INDEX_HASH_3_0_34: u32 = 0x28cb_0f35;
+/// Derived gameplay-tag net-index hash for server 26425113 (3.0.35).
+pub const TAG_NET_INDEX_HASH_3_0_35: u32 = 0xbf0f_c0d8;
 
 /// The string the engine hashes into the Hello network version.
 pub fn network_version_string(project_version: &str) -> String {
@@ -262,14 +264,12 @@ impl ReleaseClassNetCacheBounds {
 /// Per-release `FRowHandle::NetSerialize` (`0x143f8a530`, F-705) table-width
 /// profile from `SetupTables`.
 ///
-/// Descriptive release-qualification metadata validated against the static
-/// `SetupTables` oracle; the low-level `rep_layout` `FRowHandle` reader and
-/// writer currently consult `ICARUS_*_ROW_TABLES` directly rather than taking a
-/// runtime [`ReleaseRowHandleProfile`].
+/// Release-specific row widths applied to replication layouts. The standalone
+/// low-level reader and writer retain their historical default registry.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseRowHandleProfile {
-    /// Total static data-table names registered in `SetupTables` (`293`, F-705).
+    /// Total static data-table names registered in `SetupTables`.
     pub table_count: u16,
     /// Sorted table indices whose packaged `DataTable` has 0 rows (0-byte row index).
     pub zero_row_tables: Vec<u16>,
@@ -289,6 +289,18 @@ impl Default for ReleaseRowHandleProfile {
 }
 
 impl ReleaseRowHandleProfile {
+    /// Public server 26425113 registry and packaged row-count widths.
+    pub fn release_3_0_35() -> Self {
+        Self {
+            table_count: 296,
+            zero_row_tables: vec![63, 166, 183],
+            two_byte_row_tables: vec![
+                0, 30, 55, 65, 66, 75, 82, 86, 94, 114, 136, 137, 138, 150, 154, 179, 180, 204,
+                210, 212, 218, 233, 237, 240, 251, 255, 257, 281,
+            ],
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.table_count >= 1 && self.table_count < ICARUS_ROW_HANDLE_NONE,
@@ -1086,8 +1098,28 @@ impl ReleaseProfile {
         profile
     }
 
+    /// Release metadata for public server 26425113 (3.0.35).
+    /// Retained class identities and layouts match the previous profile;
+    /// this does not establish stock-client gameplay compatibility.
+    pub fn release_3_0_35() -> Self {
+        let mut profile = Self::release_3_0_34();
+        let project_version = "3.0.35.159586-rel-DangerousHorizons".to_owned();
+        profile.pin = ReleasePin {
+            app_id: DEDICATED_SERVER_APP_ID,
+            build_id: 26_425_113,
+            network_checksum: network_checksum(&project_version),
+            project_version,
+        };
+        profile.tags.ini_tag_count = 1_932;
+        profile.tags.unique_node_count = 2_346;
+        profile.tags.net_index_hash = TAG_NET_INDEX_HASH_3_0_35;
+        profile.row_handles = ReleaseRowHandleProfile::release_3_0_35();
+        profile
+    }
+
     /// Built-in tag profile for a qualified build ID (`25793607`/`25793767` for
-    /// 3.0.31, `25956137` for 3.0.32, `26313077` for 3.0.34). Other build IDs
+    /// 3.0.31, `25956137` for 3.0.32, `26313077` for 3.0.34,
+    /// `26425113` for 3.0.35). Other build IDs
     /// require an explicit `[tags]` section so a weekly pin update cannot
     /// silently inherit an older build's tag metadata.
     fn default_tags_for_build(build_id: u64) -> Result<ReleaseTagProfile> {
@@ -1095,6 +1127,7 @@ impl ReleaseProfile {
             25_793_607 | 25_793_767 => Ok(Self::release_3_0_31().tags),
             25_956_137 => Ok(Self::release_3_0_32().tags),
             26_313_077 => Ok(Self::release_3_0_34().tags),
+            26_425_113 => Ok(Self::release_3_0_35().tags),
             _ => bail!(
                 "no built-in tag profile for build_id {build_id}; supply an explicit [tags] section"
             ),
@@ -1107,7 +1140,7 @@ impl ReleaseProfile {
         build_id: u64,
     ) -> Option<ReleasePlayerControllerProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
                 Some(ReleasePlayerControllerProfile::icarus_survival())
             }
             _ => None,
@@ -1118,7 +1151,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_player_state_for_build(build_id: u64) -> Option<ReleasePlayerStateProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
                 Some(ReleasePlayerStateProfile::icarus_survival())
             }
             _ => None,
@@ -1129,7 +1162,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_managers_for_build(build_id: u64) -> Option<ReleaseManagersProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
                 Some(ReleaseManagersProfile::icarus_survival())
             }
             _ => None,
@@ -1140,7 +1173,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_game_state_for_build(build_id: u64) -> Option<ReleaseGameStateProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
                 Some(ReleaseGameStateProfile::icarus_survival())
             }
             _ => None,
@@ -1153,6 +1186,7 @@ impl ReleaseProfile {
         match build_id {
             25_793_607 | 25_793_767 | 25_956_137 => Some(ReleasePawnProfile::icarus_survival()),
             26_313_077 => Self::release_3_0_34().pawn,
+            26_425_113 => Self::release_3_0_35().pawn,
             _ => None,
         }
     }
@@ -1196,7 +1230,13 @@ impl ReleaseProfile {
             None => Self::default_tags_for_build(parsed.release.build_id)?,
         };
         let class_net_cache = parsed.class_net_cache.unwrap_or_default();
-        let row_handles = parsed.row_handles.unwrap_or_default();
+        let row_handles = parsed.row_handles.unwrap_or_else(|| {
+            if parsed.release.build_id == 26_425_113 {
+                ReleaseRowHandleProfile::release_3_0_35()
+            } else {
+                ReleaseRowHandleProfile::default()
+            }
+        });
         let player_controller = parsed
             .player_controller
             .or_else(|| Self::default_player_controller_for_build(parsed.release.build_id));
@@ -1229,6 +1269,40 @@ impl ReleaseProfile {
         Ok(profile)
     }
 
+    /// Apply this release's row-handle registry to a layout, including nested arrays.
+    pub fn apply_row_handle_profile(
+        &self,
+        layout: &mut [super::rep_layout::RepCommand],
+    ) -> Result<()> {
+        self.row_handles.validate()?;
+        if self.row_handles == ReleaseRowHandleProfile::default() {
+            fn restore_legacy(layout: &mut [super::rep_layout::RepCommand]) {
+                use super::rep_layout::RepCommand;
+                for command in layout {
+                    match command {
+                        RepCommand::RowHandleWithWidths { .. } => *command = RepCommand::RowHandle,
+                        RepCommand::DynamicArray { element } => restore_legacy(element),
+                        _ => {}
+                    }
+                }
+            }
+            restore_legacy(layout);
+            return Ok(());
+        }
+        let widths = (0..self.row_handles.table_count)
+            .map(|index| self.row_handles.row_width_bytes(index))
+            .collect::<Result<Vec<_>>>()?;
+        super::rep_layout::apply_row_handle_widths(layout, &widths)
+    }
+
+    fn row_layout(
+        &self,
+        mut layout: Vec<super::rep_layout::RepCommand>,
+    ) -> Result<Vec<super::rep_layout::RepCommand>> {
+        self.apply_row_handle_profile(&mut layout)?;
+        Ok(layout)
+    }
+
     /// The PlayerController open plan for the map package of `map_url` and a
     /// server-chosen spawn location, or `None` without `[player_controller]`.
     /// Rep layouts are the statically observed `AIcarusPlayerControllerSurvival`
@@ -1244,13 +1318,13 @@ impl ReleaseProfile {
         };
         Ok(Some(PlayerControllerOpenPlan {
             profile: player_controller.session_profile(map_level_chain(map_url)?),
-            actor_layout: icarus_player_controller_survival_rep_layout(
+            actor_layout: self.row_layout(icarus_player_controller_survival_rep_layout(
                 MovementLevel::Whole,
                 MovementLevel::Whole,
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
-            ),
-            component_layout: actor_component_rep_layout(),
+            ))?,
+            component_layout: self.row_layout(actor_component_rep_layout())?,
             engine_net_version: self.engine_network_version,
             spawn_location,
             channel_index: PLAYER_CONTROLLER_CHANNEL_INDEX,
@@ -1268,11 +1342,11 @@ impl ReleaseProfile {
         Ok(Some(PlayerStateOpenPlan {
             archetype: session_segments(&player_state.archetype),
             level: map_level_chain(map_url)?,
-            layout: bp_icarus_player_state_rep_layout(
+            layout: self.row_layout(bp_icarus_player_state_rep_layout(
                 MovementLevel::Whole,
                 MovementLevel::Whole,
                 RotationLevel::Bytes,
-            ),
+            ))?,
             engine_net_version: self.engine_network_version,
             channel_index: PLAYER_STATE_CHANNEL_INDEX,
         }))
@@ -1335,13 +1409,13 @@ impl ReleaseProfile {
         }
         Ok(Some(QuestOpenBasePlan {
             level: map_level_chain(map_url)?,
-            layout: quest_rep_layout(
+            layout: self.row_layout(quest_rep_layout(
                 MovementLevel::Whole,
                 MovementLevel::Whole,
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
-            ),
-            actor_state_layout: actor_state_rep_layout(),
+            ))?,
+            actor_state_layout: self.row_layout(actor_state_rep_layout())?,
             stat_container_checksum: managers.stat_container_checksum,
             actor_state_checksum: managers.actor_state_checksum,
             engine_net_version: self.engine_network_version,
@@ -1359,18 +1433,18 @@ impl ReleaseProfile {
             RotationLevel::Bytes,
         );
         let tags = self.tags.tag_encoding();
-        let icarus_components = || {
-            vec![
+        let icarus_components = || -> Result<Vec<ManagerComponent>> {
+            Ok(vec![
                 ManagerComponent::stat_container(
                     managers.stat_container_checksum,
                     Some(STAT_CONTAINER_HANDLE),
                 ),
                 ManagerComponent::actor_state(
                     managers.actor_state_checksum,
-                    actor_state_rep_layout(),
+                    self.row_layout(actor_state_rep_layout())?,
                     BTreeMap::from([(ACTOR_STATE_CURRENT_BIOME, RepValue::Byte(0))]),
                 ),
-            ]
+            ])
         };
         let plan = |archetype: &[ReleasePathSegment], layout, components| ManagerOpenPlan {
             archetype: session_segments(archetype),
@@ -1390,32 +1464,38 @@ impl ReleaseProfile {
                 ManagerSlot::Quest,
                 plan(
                     &managers.quest_manager,
-                    quest_manager_rep_layout(location, velocity, rotation, tags),
-                    icarus_components(),
+                    self.row_layout(quest_manager_rep_layout(location, velocity, rotation, tags))?,
+                    icarus_components()?,
                 ),
             ),
             (
                 ManagerSlot::WorldTalent,
                 plan(
                     &managers.world_talent_manager,
-                    world_talent_manager_rep_layout(location, velocity, rotation, tags),
-                    icarus_components(),
+                    self.row_layout(world_talent_manager_rep_layout(
+                        location, velocity, rotation, tags,
+                    ))?,
+                    icarus_components()?,
                 ),
             ),
             (
                 ManagerSlot::Radiation,
                 plan(
                     &managers.radiation_manager,
-                    radiation_manager_rep_layout(location, velocity, rotation, tags),
-                    icarus_components(),
+                    self.row_layout(radiation_manager_rep_layout(
+                        location, velocity, rotation, tags,
+                    ))?,
+                    icarus_components()?,
                 ),
             ),
             (
                 ManagerSlot::PlayerHistory,
                 plan(
                     &managers.player_history_tracker,
-                    player_history_tracker_rep_layout(location, velocity, rotation, tags),
-                    icarus_components(),
+                    self.row_layout(player_history_tracker_rep_layout(
+                        location, velocity, rotation, tags,
+                    ))?,
+                    icarus_components()?,
                 ),
             ),
             (
@@ -1426,7 +1506,7 @@ impl ReleaseProfile {
                     location: Some(FLOD_SPAWN_LOCATION),
                     ..plan(
                         &managers.flod,
-                        flod_rep_layout(location, velocity, rotation),
+                        self.row_layout(flod_rep_layout(location, velocity, rotation))?,
                         Vec::new(),
                     )
                 },
@@ -1435,7 +1515,7 @@ impl ReleaseProfile {
                 ManagerSlot::Disaster,
                 plan(
                     &managers.disaster_controller,
-                    actor_rep_layout(location, velocity, rotation),
+                    self.row_layout(actor_rep_layout(location, velocity, rotation))?,
                     vec![ManagerComponent::stat_container(
                         managers.stat_container_checksum,
                         None,
@@ -1450,12 +1530,14 @@ impl ReleaseProfile {
             let container = ManagerOpenPlan {
                 inventories: Some(ManagerInventories {
                     handle: CONTAINER_INVENTORIES_HANDLE,
-                    blocks: self.pawn_content_plan(pawn),
+                    blocks: self.pawn_content_plan(pawn)?,
                     inventories: Vec::new(),
                 }),
                 ..plan(
                     &managers.inventory_container_manager,
-                    inventory_container_manager_rep_layout(location, velocity, rotation, tags),
+                    self.row_layout(inventory_container_manager_rep_layout(
+                        location, velocity, rotation, tags,
+                    ))?,
                     Vec::new(),
                 )
             };
@@ -1488,12 +1570,12 @@ impl ReleaseProfile {
                 dialogue_system: ReleaseGameStateProfile::component(&game_state.dialogue_system),
                 weather: ReleaseGameStateProfile::component(&game_state.weather),
             },
-            layout: icarus_game_state_survival_rep_layout(
+            layout: self.row_layout(icarus_game_state_survival_rep_layout(
                 MovementLevel::Whole,
                 MovementLevel::Whole,
                 RotationLevel::Bytes,
-            ),
-            weather_layout: weather_manager_component_rep_layout(),
+            ))?,
+            weather_layout: self.row_layout(weather_manager_component_rep_layout())?,
             engine_net_version: self.engine_network_version,
         }))
     }
@@ -1524,31 +1606,31 @@ impl ReleaseProfile {
             stat_container,
             actor_state,
             inventory_component,
-            layout: bp_icarus_player_character_survival_rep_layout_for_version(
+            layout: self.row_layout(bp_icarus_player_character_survival_rep_layout_for_version(
                 MovementLevel::Hundredths,
                 MovementLevel::Whole,
                 RotationLevel::Bytes,
                 self.tags.tag_encoding(),
                 pawn.layout_version,
-            ),
+            ))?,
             layout_version: pawn.layout_version,
-            content: self.pawn_content_plan(pawn),
+            content: self.pawn_content_plan(pawn)?,
             engine_net_version: self.engine_network_version,
         }))
     }
 
     /// The pawn's content-block identifiers and layouts, which the
     /// InventoryContainerManager's inventories share (F-866).
-    fn pawn_content_plan(&self, pawn: &ReleasePawnProfile) -> PawnContentPlan {
-        PawnContentPlan {
-            component_layout: actor_component_rep_layout(),
-            character_state_layout: player_character_state_rep_layout(),
+    fn pawn_content_plan(&self, pawn: &ReleasePawnProfile) -> Result<PawnContentPlan> {
+        Ok(PawnContentPlan {
+            component_layout: self.row_layout(actor_component_rep_layout())?,
+            character_state_layout: self.row_layout(player_character_state_rep_layout())?,
             inventory_class: session_segments(&pawn.inventory_class),
-            inventory_layout: inventory_rep_layout(),
-            slot_layout: inventory_slot_commands(self.tags.tag_encoding()),
+            inventory_layout: self.row_layout(inventory_rep_layout())?,
+            slot_layout: self.row_layout(inventory_slot_commands(self.tags.tag_encoding()))?,
             stat_container_bound: self.class_net_cache.stat_container,
             inventory_bound: self.class_net_cache.inventory,
-        }
+        })
     }
 
     /// Load and validate a release profile from disk.

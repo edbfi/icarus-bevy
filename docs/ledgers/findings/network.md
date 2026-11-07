@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-04
+Last reconciled: 2026-11-07
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -131,3 +131,6 @@ Last reconciled: 2026-11-04
 | F-982 | Native run sends each restored inventory's CurrentWeight ahead of its slots as RecalculateWeight gives it (F-933): for record 2 all six equal run init-03's final weights (reached over two updates); non-bag linked inventories add nothing | measured | authored-test, runtime-capture; M-1110, M-1115 | high; loopback; carry-weight stats 0; linked bags unsent | U-069 | active |
 | F-992 | GUID-tagged replay separates 5,779 modifier updates across five objects: two count down, one increases 90 times, one reaches zero; decoder aggregates match the retained report | observed | runtime-capture; M-1110, M-1128 | high; 3.0.32 probe; arrival times only; increase trigger and destruction unproved | U-069 | active |
 | F-1001 | Public build 26313077 (3.0.34.159385) changes 19 of 435 files (EXE, PDB, data.pak, all 7 content paks...) and adds 9; declared tags rise 1,889 -> 1,921, so tag indices and release metadata need re-derivation before the pin moves | observed | static-bytes; M-1152 | high; inventories and tag config only | U-038 | active |
+| F-1031 | Build 26425113 has 130 data-table tags, 1932 INI tags and 2346 expanded nodes; retained F-702 algorithm yields hash 0xbf0fc0d8 | derived | protocol-metadata; M-1279/ev_39e22a4c71cc, M-1279/ev_2541834aeb03, M-1280 | bounded; widths 12/0/6; tag metadata only, no class-profile or client qualification | U-038 | active |
+| F-1032 | Build 26425113 retains selected 3.0.34 class identities/layouts: 42 native classes, 5881 CRC inputs, 24 field layers and 25 cooked classes compare equal; cache bounds retained | derived | static-metadata; M-1281, M-1282, M-1283, M-1284, M-1285 | bounded; protocol fields only, no stock-client gameplay or quest-open qualification | U-038, U-079 | active |
+| F-1033 | Build 26425113 publishes 296 ordered row tables; 26313077 has 295. Current widths: 3 zero-byte, 28 two-byte, remaining one-byte; legacy 293-table indices do not transfer | observed | static-registry, row-counts; M-1286/ev_652dcdcc0721, M-1287, M-1288/ev_e16dd4ed5146, M-1289, M-1290 | bounded; protocol indices/counts only; no gameplay values or client qualification | U-038 | active |

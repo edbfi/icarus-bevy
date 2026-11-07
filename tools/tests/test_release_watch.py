@@ -1,14 +1,18 @@
 """Release-pin tracking and weekly diff regressions; never runs SteamCMD."""
 
 import json
+import hashlib
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tools.release_watch import (
     Arguments,
     diff_installs,
+    install_tag_counts,
     manifest_build,
     network_checksum,
     parse_ini_tags,
@@ -67,6 +71,55 @@ def _synthetic_pe_header(sections: list[tuple[bytes, int]]) -> bytes:
 
 
 class ReleaseWatchTests(unittest.TestCase):
+    def test_packed_tags_and_loose_ini_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pak = root / "Icarus/Content/Paks/pakchunk0-WindowsServer.pak"
+            pak.parent.mkdir(parents=True)
+            _ = pak.write_bytes(b"authored stand-in for the mocked pak reader")
+            digest = hashlib.sha256(pak.read_bytes()).hexdigest()
+            report = {"source_sha256": digest, "hashes_verified": True,
+                      "declared_configuration": {"tag_names": ["Authored.One", "authored.Two"]}}
+            result = subprocess.CompletedProcess(["node"], 0, json.dumps(report), "")
+            with patch("tools.release_watch.subprocess.run", return_value=result) as reader:
+                self.assertEqual(install_tag_counts(root), (2, 3))
+                reader.assert_called_once_with(
+                    ["node", str(Path(__file__).resolve().parents[1] / "pak_protocol_metadata.cjs"),
+                     "--path", str(pak), "--sha256", digest],
+                    capture_output=True, text=True, timeout=180, check=True,
+                )
+            ini = root / "Icarus/Config/DefaultGameplayTags.ini"
+            ini.parent.mkdir(parents=True)
+            _ = ini.write_text('+GameplayTagList=(Tag="Fixture.Only")\n')
+            with patch("tools.release_watch.subprocess.run", side_effect=AssertionError("unexpected pak read")):
+                self.assertEqual(install_tag_counts(root), (1, 2))
+
+    def test_packed_tags_fail_closed_on_reader_failure_or_invalid_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pak = root / "Icarus/Content/Paks/pakchunk0-WindowsServer.pak"
+            pak.parent.mkdir(parents=True)
+            _ = pak.write_bytes(b"authored fixture")
+            digest = hashlib.sha256(pak.read_bytes()).hexdigest()
+            valid = {"source_sha256": digest, "hashes_verified": True,
+                     "declared_configuration": {"tag_names": ["Authored.One"]}}
+            bad_reports: list[object] = [
+                {**valid, "source_sha256": "0" * 64},
+                {**valid, "hashes_verified": False},
+                {**valid, "declared_configuration": {"tag_names": "not-a-list"}},
+                {**valid, "declared_configuration": {"tag_names": [3]}},
+                {**valid, "declared_configuration": {"tag_names": ["Bad..Name"]}},
+            ]
+            for report in bad_reports:
+                result = subprocess.CompletedProcess(["node"], 0, json.dumps(report), "")
+                with self.subTest(report=report), patch("tools.release_watch.subprocess.run", return_value=result):
+                    with self.assertRaises(ValueError):
+                        _ = install_tag_counts(root)
+            for error in [subprocess.CalledProcessError(1, "node"), subprocess.TimeoutExpired("node", 180)]:
+                with self.subTest(error=error), patch("tools.release_watch.subprocess.run", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        _ = install_tag_counts(root)
+
     def test_checksums_agree_with_the_observed_and_derived_values(self) -> None:
         self.assertEqual(network_checksum("1.0.0"), 1447163286)
         self.assertEqual(network_checksum("3.0.30.158174-rel-DangerousHorizons"), 1379612455)
@@ -155,7 +208,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_tracked_pin_matches_the_renderer(self) -> None:
         tracked = Path(__file__).resolve().parents[2] / "config/release.toml"
-        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.34.159385-rel-DangerousHorizons"))
+        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.35.159586-rel-DangerousHorizons"))
 
 
 if __name__ == "__main__":

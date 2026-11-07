@@ -2039,3 +2039,119 @@ fn native_and_cooked_blueprint_actor_and_component_layouts_round_trip() {
         beacon_stream
     );
 }
+
+#[test]
+fn release_row_handle_widths_change_wire_size_without_changing_legacy_codec() {
+    use icarus_bevy::experimental::rep_layout::apply_row_handle_widths;
+    let legacy = vec![RepCommand::RowHandle, RepCommand::Bool];
+    let mut profiled = legacy.clone();
+    let mut widths = vec![1; 296];
+    widths[1] = 2;
+    widths[294] = 0;
+    widths[295] = 4;
+    apply_row_handle_widths(&mut profiled, &widths).unwrap();
+    let short = stream(vec![
+        entry(
+            1,
+            RepValue::RowHandle(RowHandle {
+                table_index: 1,
+                row_index: Some(42),
+            }),
+        ),
+        entry(2, RepValue::Bool(true)),
+    ]);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let codec = codec(17, false, order);
+        let old_payload = encode_property_stream(&short, &legacy, &codec).unwrap();
+        let new_payload = encode_property_stream(&short, &profiled, &codec).unwrap();
+        assert_eq!(new_payload.bit_len(), old_payload.bit_len() + 8);
+        assert_eq!(
+            parse_property_stream(&new_payload, &profiled, &codec).unwrap(),
+            short
+        );
+        for (index, row) in [
+            (293, Some(42)),
+            (294, None),
+            (295, Some(70_000)),
+            (u16::MAX, None),
+        ] {
+            let value = stream(vec![entry(
+                1,
+                RepValue::RowHandle(RowHandle {
+                    table_index: index,
+                    row_index: row,
+                }),
+            )]);
+            let encoded = encode_property_stream(&value, &profiled, &codec).unwrap();
+            assert_eq!(
+                parse_property_stream(&encoded, &profiled, &codec).unwrap(),
+                value
+            );
+            if index != u16::MAX {
+                assert!(encode_property_stream(&value, &legacy, &codec).is_err());
+            }
+        }
+        let out_of_range = stream(vec![entry(
+            1,
+            RepValue::RowHandle(RowHandle {
+                table_index: 296,
+                row_index: Some(1),
+            }),
+        )]);
+        assert!(encode_property_stream(&out_of_range, &profiled, &codec).is_err());
+        let wider = [RepCommand::RowHandleWithWidths {
+            widths: vec![1; 297],
+        }];
+        let encoded = encode_property_stream(&out_of_range, &wider, &codec).unwrap();
+        assert!(parse_property_stream(&encoded, &profiled, &codec).is_err());
+    }
+    assert_eq!(icarus_row_handle_width_bytes(1).unwrap(), 1);
+    assert!(icarus_row_handle_width_bytes(293).is_err());
+}
+
+#[test]
+fn release_row_handle_widths_bind_nested_arrays_and_reject_invalid_profiles() {
+    use icarus_bevy::experimental::rep_layout::apply_row_handle_widths;
+    let mut layout = vec![RepCommand::DynamicArray {
+        element: vec![RepCommand::RowHandle],
+    }];
+    let original = layout.clone();
+    assert!(apply_row_handle_widths(&mut layout, &[3]).is_err());
+    assert_eq!(layout, original);
+    assert!(apply_row_handle_widths(&mut layout, &[]).is_err());
+    apply_row_handle_widths(&mut layout, &[0, 2]).unwrap();
+    let nested = stream(vec![entry(
+        1,
+        RepValue::DynamicArray(RepArray {
+            count: 1,
+            stream: stream(vec![entry(
+                1,
+                RepValue::RowHandle(RowHandle {
+                    table_index: 1,
+                    row_index: Some(512),
+                }),
+            )]),
+        }),
+    )]);
+    assert!(encode_property_stream(&nested, &original, &plain()).is_err());
+    let encoded = encode_property_stream(&nested, &layout, &plain()).unwrap();
+    assert_eq!(
+        parse_property_stream(&encoded, &layout, &plain()).unwrap(),
+        nested
+    );
+    assert_eq!(
+        layout,
+        vec![RepCommand::DynamicArray {
+            element: vec![RepCommand::RowHandleWithWidths { widths: vec![0, 2] }]
+        }]
+    );
+    apply_row_handle_widths(&mut layout, &[1]).unwrap();
+    assert_eq!(
+        layout,
+        vec![RepCommand::DynamicArray {
+            element: vec![RepCommand::RowHandleWithWidths { widths: vec![1] }]
+        }]
+    );
+    let invalid = [RepCommand::RowHandleWithWidths { widths: vec![3] }];
+    assert!(encode_property_stream(&stream(vec![]), &invalid, &plain()).is_err());
+}

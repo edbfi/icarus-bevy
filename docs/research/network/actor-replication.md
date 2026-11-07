@@ -13,13 +13,12 @@ Bounds/RPCs/opens F-1015/F-1016/F-1019/F-1017.
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models. Payload/live bindings: U-079; no cause proof.
 
-Tags F-702; sources F-828/F-832.
-Replay census F-762.
+Tags F-702/F-1031; sources F-828/F-832.
+Replay F-762.
 
-Matched 3.0.35 selected declarations F-1028 corroborate the class-header
-offsets: 80 B declared, 76 B consumed (F-1027). Declarations do not extend the
-observed read extent. Consumer semantics, enum values, ancestry, net counts/order/checksums and
-full profile remain unqualified; no repin or client progress follows.
+The 3.0.35 pin has qualified tags (F-1031), retained class profiles/bounds
+(F-1032) and a changed row registry (F-1033). Native layouts F-1027/F-1028
+remain distinct from live bindings; no client progress follows.
 
 [World managers](../../specs/network/world-managers.md): managers, quests,
 profiles/restore, modifier/temperature; automatic climate/scheduling unqualified.
