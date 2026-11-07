@@ -191,6 +191,102 @@ fn initializer_is_source_free_and_refuses_implicit_reactivation() {
 }
 
 #[test]
+fn equal_sized_maps_cannot_substitute_inventory_owner_classes() {
+    let (original, original_contracts, items) = inputs();
+    let mut definition = original.native_world.as_ref().unwrap().definitions.clone();
+    let mut other_class = definition.classes[0].clone();
+    other_class.key = "other_box".into();
+    definition.classes.push(other_class);
+    let mut other_map = definition.maps[0].clone();
+    other_map.key = "other_map".into();
+    for placement in &mut other_map.placements {
+        placement.class = "other_box".into();
+    }
+    definition.maps.push(other_map);
+    let catalog = Arc::new(CompiledNativeCatalog::compile(definition).unwrap());
+    let base = |map: &str| {
+        let mut definition = original
+            .native_lifecycle
+            .as_ref()
+            .unwrap()
+            .definition
+            .clone();
+        definition.native_catalog_id = catalog.identity().into();
+        definition.map = map.into();
+        let lifecycle = CompiledNativeLifecycle::compile(definition, &catalog).unwrap();
+        prepare_lifecycle_world(
+            prepare_authored_world(Arc::clone(&catalog), map)
+                .unwrap()
+                .initial_snapshot(),
+            &lifecycle,
+        )
+        .unwrap()
+        .into_snapshot()
+    };
+    let target = base("map");
+    let other = base("other_map");
+    assert!(
+        target.native_lifecycle.as_ref().unwrap().slots
+            == other.native_lifecycle.as_ref().unwrap().slots
+    );
+    let mut definition = original_contracts.definition;
+    definition.native_catalog_id = catalog.identity().into();
+    definition.native_map = "other_map".into();
+    definition.classes[0].native_class = "other_box".into();
+    let contracts = CompiledInventoryContractsV1::compile(definition, &catalog).unwrap();
+    let contracts = contracts.snapshot().as_ref().clone();
+    assert!(enable_inventory_owners(target.clone(), contracts.clone(), items.clone()).is_err());
+
+    // Every receipt is valid for the other map. Equal owner IDs/incarnations
+    // cannot make its class-specific contracts applicable to the target map.
+    let valid_other = enable_inventory_owners(other, contracts, items).unwrap();
+    let mut forged = valid_other.clone();
+    forged.native_world = target.native_world;
+    forged.native_lifecycle = target.native_lifecycle;
+    forged
+        .native_inventory_authority
+        .as_mut()
+        .unwrap()
+        .lifecycle_id = forged
+        .native_lifecycle
+        .as_ref()
+        .unwrap()
+        .lifecycle_id
+        .clone();
+    assert!(forged.validate().is_err());
+    assert!(SnapshotStore::preflight(&forged).is_err());
+    assert!(build_app(&ServerConfig::default(), &forged).is_err());
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = SnapshotStore::open(directory.path()).unwrap();
+    store.save(&valid_other).unwrap();
+    drop(store);
+    let path = directory.path().join("snapshot-1.json");
+    let mut wire: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    wire["native_world"] = serde_json::to_value(&forged.native_world).unwrap();
+    wire["native_lifecycle"] = serde_json::to_value(&forged.native_lifecycle).unwrap();
+    wire["native_inventory_authority"] =
+        serde_json::to_value(&forged.native_inventory_authority).unwrap();
+    let bytes = serde_json::to_vec(&wire).unwrap();
+    fs::write(path, &bytes).unwrap();
+    let path = directory.path().join("manifest.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["current"]["sha256"] = json!(
+        Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(
+        SnapshotStore::open(directory.path())
+            .unwrap()
+            .load()
+            .is_err()
+    );
+}
+
+#[test]
 fn independent_baseline_tampering_rejects_before_activation() {
     let original = encoded(&initial());
     for (pointer, replacement) in [

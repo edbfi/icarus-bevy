@@ -1843,6 +1843,10 @@ impl AuthoredInventoryAuthorityV1 {
     ) -> Result<()> {
         self.allocation_bytes()?;
         ensure!(
+            contracts.definition().native_map == lifecycle.definition.map,
+            "authored inventory map differs from lifecycle"
+        );
+        ensure!(
             self.format == 1 && self.lifecycle_id == lifecycle.lifecycle_id,
             "authored inventory authority identity invalid"
         );

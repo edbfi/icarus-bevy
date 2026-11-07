@@ -158,7 +158,7 @@ Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 F-926/M-1259: owned advance avoids restaging; full capture/preflight still
 runs each fixed step, even without armed timers. Catch-up repeats that cost.
 Costs scale with world size; the 1,024-owner cap gives no 30 Hz guarantee.
-[Measurements and limits](../research/foundation/foundation.md#current-answer).
+[Measured costs and limits](../research/foundation/foundation.md#current-answer).
 
 ## Independent inventories
 
@@ -175,7 +175,8 @@ opaque preservation and foundation relationships compose. Immutable authority
 pins the lifecycle, owner handles, recipe, initial totals/digest and allocator
 floor. Full admission replays that recipe; runtime capture checks the loaded
 activation. Actions/queries below apply; reload retains consumption and IDs.
-Owner replacement/restore, modifier composition and replication are unsupported.
+Creation may restore schema 7 first; schema-12 owner restore/replacement,
+modifier composition and replication are unsupported.
 Contracts/current state/authority/replay share the 64 MiB charged budget;
 this is neither an RSS nor ICARUS compatibility qualification.
 

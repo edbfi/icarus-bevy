@@ -1169,7 +1169,7 @@ impl SnapshotStore {
         if discriminators::header(bytes)? {
             ensure!(
                 bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
-                "schema 9/10/11 native snapshot exceeds its size limit"
+                "schema 9–12 native snapshot exceeds its size limit"
             );
             discriminators::authored_owners(bytes)?;
         }
@@ -2816,7 +2816,7 @@ mod crash_consistency_tests {
         empty_worlds: usize,
         recovered_previous: usize,
         refused_orphans: usize,
-        /// Intact manifest-referenced schema-3/4/5/6/7/8/9/10/11 generations whose sidecar was
+        /// Intact manifest-referenced schema-3 through schema-12 generations whose sidecar was
         /// present with its recorded size and digest.
         referenced_sidecars: usize,
         /// Loads of a snapshot from an enclosing trace that a rewritten
@@ -4375,7 +4375,7 @@ mod crash_consistency_tests {
         }
     }
 
-    /// Every intact, manifest-referenced schema-3/4/5/6/7/8/9/10/11 generation must find its
+    /// Every intact, manifest-referenced schema-3 through schema-12 generation must find its
     /// sidecar present with the recorded size and digest, whether or not the
     /// generation is ultimately selected by recovery.
     fn referenced_sidecars(state: &DiskState, exempt: u64) -> Result<usize, String> {
@@ -4440,6 +4440,12 @@ mod crash_consistency_tests {
                 }
                 Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_MODIFIER_OWNERS) => {
                     serde_json::from_slice::<ModifierOwnersIn>(bytes)
+                        .ok()
+                        .and_then(|native| native.preserved_prospect)
+                }
+                Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_INVENTORY_OWNERS) => {
+                    let _scope = crate::native_inventory::InventoryDecodeScope::enter();
+                    serde_json::from_slice::<AuthoredInventoryOwnersIn>(bytes)
                         .ok()
                         .and_then(|native| native.preserved_prospect)
                 }
@@ -5435,6 +5441,77 @@ mod crash_consistency_tests {
                 .unwrap_err()
                 .contains("references a missing or damaged sidecar")
         );
+    }
+
+    #[test]
+    fn authored_inventory_sidecar_model_checks_optional_preservation_and_damage() {
+        use crate::native_inventory::{
+            CompiledInventoryContractsV1, InitialInventoryItemsV1, InventoryContractsV1,
+            InventoryOwnerClassV1, enable_inventory_owners,
+        };
+        for preserve in [false, true] {
+            let source = section(23);
+            let base = lifecycle(10, preserve.then_some(&source), 0);
+            let native = base.native_world.as_ref().unwrap();
+            let catalog =
+                crate::native_world::CompiledNativeCatalog::compile(native.definitions.clone())
+                    .unwrap();
+            let contracts = CompiledInventoryContractsV1::compile(
+                InventoryContractsV1 {
+                    format: 1,
+                    native_catalog_id: catalog.identity().into(),
+                    native_map: native.map.clone(),
+                    items: vec![],
+                    classes: vec![InventoryOwnerClassV1 {
+                        native_class: native.actors[0].class.clone(),
+                        inventories: vec![],
+                    }],
+                },
+                &catalog,
+            )
+            .unwrap();
+            let snapshot = enable_inventory_owners(
+                base,
+                contracts.snapshot().as_ref().clone(),
+                InitialInventoryItemsV1 { items: vec![] },
+            )
+            .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(directory.path()).unwrap();
+            store.save(&snapshot).unwrap();
+            assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot);
+            let mut disk: DiskState = fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (
+                        entry.file_name().into_string().unwrap(),
+                        fs::read(entry.path()).unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                referenced_sidecars(&disk, 0).unwrap(),
+                usize::from(preserve)
+            );
+            if preserve {
+                let name = sidecar_name(&source);
+                let original = disk.remove(&name).unwrap();
+                assert!(
+                    referenced_sidecars(&disk, 0)
+                        .unwrap_err()
+                        .contains("missing or damaged sidecar")
+                );
+                disk.insert(name.clone(), vec![0]);
+                assert!(
+                    referenced_sidecars(&disk, 0)
+                        .unwrap_err()
+                        .contains("missing or damaged sidecar")
+                );
+                disk.insert(name, original);
+                assert_eq!(referenced_sidecars(&disk, 0).unwrap(), 1);
+            }
+        }
     }
 
     #[test]

@@ -19,13 +19,14 @@ rejection: F-482. [Operations](../../runbooks/native-server.md).
 Independent schema-12 inventories: F-1029; source-free authority, CLI and
 transaction/reload checks; no restoration or replication.
 
-Authored persistence/lifecycle: schemas 4–10 (F-919, F-922, F-923, F-927),
+Authored persistence/lifecycle: schemas 4–12 (F-919, F-922, F-923, F-927),
 exclusions (F-928), schema-11 timers/cache/authority (F-931).
 [Procedures/limits](../../runbooks/authored-worlds.md).
 
 Bool/I32 limits/exclusions: F-929, runbook. Schema-7/8/9 preflight/schema-11
 modifier costs: F-926; owned advance avoids restaging, full preflight remains.
-Armed 1,024-owner call p95 fell in three pairs; other cells mixed (M-1259).
+Armed 1,024-owner median-of-run p95: 32.558 to 23.136 ms; three paired
+ratios 0.678–0.876 (M-1259). Other cells mixed.
 No full-frame, throughput, uniform or RSS proof.
 
 Faults/redaction: F-239, F-671, F-870, F-880, F-423. Load/restarts (F-871),
@@ -58,6 +59,7 @@ F-878/F-731 (U-034 resolved). Original fixity/export/entry-map/exchange:
 F-265/F-266/F-268/F-253; unrun launcher: F-252; expired runtime windows: F-218.
 
 Authored bridge costs: debug idle F-939; release idle F-941; joined peers F-952.
+M-1060 debug medians: 38.74–40.25 to 29.08–32.08 ms; p95 exceeds 33.333 ms.
 Matched whole-binary comparisons qualified cheaper 1,024-actor release idle
 and joined-peer runs; small cells overlap and some debug p95 exceed a frame.
 Frozen-frame decisions replay in M-1088. Binary layout, fixed mode order and
