@@ -1056,6 +1056,34 @@ pub struct SnapshotStore {
     verified: Mutex<BTreeMap<String, Committed>>,
 }
 
+impl Drop for SnapshotStore {
+    fn drop(&mut self) {
+        // Linux flock ownership follows the open file description. A concurrent
+        // fork can briefly retain a duplicate even with close-on-exec set.
+        // Release ownership explicitly rather than waiting for its last close.
+        let _ = self._lock.unlock();
+    }
+}
+
+#[cfg(test)]
+mod lock_lifetime_tests {
+    use super::SnapshotStore;
+
+    #[test]
+    fn dropping_owner_releases_lock_while_duplicate_description_survives() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = SnapshotStore::open(directory.path()).unwrap();
+        let duplicate = owner._lock.try_clone().unwrap();
+        assert!(SnapshotStore::open(directory.path()).is_err());
+        drop(owner);
+        let successor = SnapshotStore::open_existing(directory.path()).unwrap();
+        drop(duplicate);
+        assert!(SnapshotStore::open(directory.path()).is_err());
+        drop(successor);
+        SnapshotStore::open(directory.path()).unwrap();
+    }
+}
+
 impl SnapshotStore {
     /// Validate and count the exact bounded generation representation without
     /// allocating its outer byte buffer or opening, reading or modifying any
