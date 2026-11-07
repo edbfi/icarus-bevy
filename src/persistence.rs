@@ -35,9 +35,9 @@ use crate::preservation::{MAX_PRESERVED_BASE64_BYTES, SectionReference, is_sidec
 use crate::simulation::{
     EntityRecord, SNAPSHOT_SCHEMA_C001_INERT, SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
     SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_DOMAIN,
-    SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_MODIFIER_OWNERS, SNAPSHOT_SCHEMA_NATIVE,
-    SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED, SNAPSHOT_SCHEMA_RELATIONSHIPS,
-    WorldSnapshot,
+    SNAPSHOT_SCHEMA_INVENTORY_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
+    SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PRESERVED, SNAPSHOT_SCHEMA_REFERENCED,
+    SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
 };
 
 /// Schema 1 bound, unchanged: domain records and the clock only.
@@ -375,6 +375,45 @@ struct ModifierOwnersIn {
     native_lifecycle: LifecycleSnapshot,
     #[serde(deserialize_with = "crate::json::object")]
     native_modifiers: ModifierWorldSnapshot,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
+    native_relationships: Option<NativeRelationshipsSnapshot>,
+    #[serde(default, deserialize_with = "crate::json::optional_object")]
+    preserved_prospect: Option<SectionReference>,
+}
+
+#[derive(Serialize)]
+struct AuthoredInventoryOwnersOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    native_world: &'a NativeWorldSnapshot,
+    native_lifecycle: &'a LifecycleSnapshot,
+    native_inventory_contracts: &'a InventoryContractsSnapshotV1,
+    native_inventories: &'a InventoryStateSnapshotV1,
+    native_inventory_authority: &'a crate::native_inventory::AuthoredInventoryAuthorityV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_relationships: Option<&'a NativeRelationshipsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preserved_prospect: Option<&'a SectionReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredInventoryOwnersIn {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_world: NativeWorldSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_lifecycle: LifecycleSnapshot,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_inventory_contracts: InventoryContractsSnapshotV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_inventories: InventoryStateSnapshotV1,
+    #[serde(deserialize_with = "crate::json::object")]
+    native_inventory_authority: crate::native_inventory::AuthoredInventoryAuthorityV1,
     #[serde(default, deserialize_with = "crate::json::optional_object")]
     native_relationships: Option<NativeRelationshipsSnapshot>,
     #[serde(default, deserialize_with = "crate::json::optional_object")]
@@ -764,6 +803,36 @@ fn prepare_generation<O: GenerationOutput>(
     }
     // Dispatch by schema before considering an optional source sidecar.
     let output = match snapshot.schema_version {
+        SNAPSHOT_SCHEMA_INVENTORY_OWNERS => O::serialize_bounded_generation(
+            &AuthoredInventoryOwnersOut {
+                schema_version: SNAPSHOT_SCHEMA_INVENTORY_OWNERS,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_world: snapshot
+                    .native_world
+                    .as_ref()
+                    .context("native world required")?,
+                native_lifecycle: snapshot
+                    .native_lifecycle
+                    .as_ref()
+                    .context("native lifecycle required")?,
+                native_inventory_contracts: snapshot
+                    .native_inventory_contracts
+                    .as_ref()
+                    .context("inventory contracts required")?,
+                native_inventories: snapshot
+                    .native_inventories
+                    .as_ref()
+                    .context("inventory state required")?,
+                native_inventory_authority: snapshot
+                    .native_inventory_authority
+                    .as_ref()
+                    .context("inventory authority required")?,
+                native_relationships: snapshot.native_relationships.as_ref(),
+                preserved_prospect: reference.as_ref(),
+            },
+            MAX_REFERENCED_SNAPSHOT_BYTES,
+        )?,
         SNAPSHOT_SCHEMA_MODIFIER_OWNERS => O::serialize_bounded_generation(
             &ModifierOwnersOut {
                 schema_version: SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
@@ -1137,6 +1206,9 @@ impl SnapshotStore {
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS) => {
                 return self.decode_c001_inventory_owners(bytes);
             }
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_INVENTORY_OWNERS) => {
+                return self.decode_authored_inventory_owners(bytes);
+            }
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_MODIFIER_OWNERS) => {
                 return self.decode_modifier_owners(bytes);
             }
@@ -1161,6 +1233,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, None))
@@ -1202,6 +1275,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1244,6 +1318,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         // Validation recompiles the embedded catalog and verifies its identity
         // and every native record before this generation can be activated.
@@ -1288,6 +1363,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1376,6 +1452,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1479,6 +1556,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1525,6 +1603,59 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
+        };
+        snapshot.validate()?;
+        Ok((snapshot, reference))
+    }
+
+    fn decode_authored_inventory_owners(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(WorldSnapshot, Option<SectionReference>)> {
+        ensure!(
+            bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
+            "schema 12 native snapshot exceeds its size limit"
+        );
+        // decode_generation streams every discriminator occurrence before this
+        // strict DTO or any sidecar I/O can produce a recoverable error.
+        let native = {
+            let _scope = crate::native_inventory::InventoryDecodeScope::enter();
+            serde_json::from_slice::<JsonObject<AuthoredInventoryOwnersIn>>(bytes)
+                .map_err(|error| {
+                    crate::json_parse_error("decode native snapshot fields JSON", error)
+                })?
+                .0
+        };
+        let reference = native.preserved_prospect;
+        let preserved = reference
+            .as_ref()
+            .map(|reference| {
+                reference.validate()?;
+                let encoded = read_bounded(
+                    &self.root.join(reference.sidecar_name()),
+                    reference.encoded_bytes(),
+                )?;
+                reference.decode(encoded).map(Arc::new)
+            })
+            .transpose()?;
+        let snapshot = WorldSnapshot {
+            schema_version: native.schema_version,
+            tick: native.tick,
+            entities: native.entities,
+            native_world: Some(native.native_world),
+            native_lifecycle: Some(native.native_lifecycle),
+            native_modifiers: None,
+            native_relationships: native.native_relationships,
+            preserved_prospect: preserved,
+            native_import: None,
+            native_owner_import: None,
+            native_scalar_contracts: None,
+            native_scalar_owner_import: None,
+            native_inventory_contracts: Some(native.native_inventory_contracts),
+            native_inventories: Some(native.native_inventories),
+            native_inventory_owner_import: None,
+            native_inventory_authority: Some(native.native_inventory_authority),
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1562,6 +1693,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -1600,6 +1732,7 @@ impl SnapshotStore {
             native_inventory_contracts: None,
             native_inventories: None,
             native_inventory_owner_import: None,
+            native_inventory_authority: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -1645,6 +1778,7 @@ impl SnapshotStore {
             native_inventory_contracts: Some(native.native_inventory_contracts),
             native_inventories: Some(native.native_inventories),
             native_inventory_owner_import: Some(native.native_inventory_owner_import),
+            native_inventory_authority: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -3743,7 +3877,7 @@ mod crash_consistency_tests {
         state.entities.push(state.entities[0].clone());
         invalid.push(state);
         let mut state = snapshot(10);
-        state.schema_version = SNAPSHOT_SCHEMA_MODIFIER_OWNERS + 1;
+        state.schema_version = SNAPSHOT_SCHEMA_INVENTORY_OWNERS + 1;
         invalid.push(state);
         for mut state in [inert(10, 1), owners(10, 1, 2), scalar_owners(10, 1, 8)] {
             state.preserved_prospect = inert(10, 2).preserved_prospect;

@@ -1140,6 +1140,7 @@ pub fn prepare_owner_restore(
         native_inventory_contracts: None,
         native_inventories: None,
         native_inventory_owner_import: None,
+        native_inventory_authority: None,
         native_modifiers: modifiers,
     };
     if !staged.already_completed {

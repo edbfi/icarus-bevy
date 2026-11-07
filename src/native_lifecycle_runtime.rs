@@ -87,6 +87,11 @@ pub struct NativeInventoryContractsState(pub Arc<InventoryContractsSnapshotV1>);
 #[derive(Resource, Clone)]
 pub struct C001InventoryOwnerImportState(pub Arc<C001InventoryOwnerImportMetadataV1>);
 
+#[derive(Resource, Clone)]
+pub struct AuthoredInventoryAuthorityState(
+    pub Arc<crate::native_inventory::AuthoredInventoryAuthorityV1>,
+);
+
 /// Inventory values have exactly one authority, on the registered live owner.
 #[derive(Component, Clone)]
 struct InventoryOwnerState {
@@ -125,6 +130,7 @@ enum SourceMode {
     Owners,
     ScalarOwners,
     InventoryOwners,
+    AuthoredInventoryOwners,
     ModifierOwners,
 }
 
@@ -135,8 +141,12 @@ impl SourceMode {
             Self::Owners => SNAPSHOT_SCHEMA_C001_OWNERS,
             Self::ScalarOwners => SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS,
             Self::InventoryOwners => SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS,
+            Self::AuthoredInventoryOwners => crate::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS,
             Self::ModifierOwners => SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
         }
+    }
+    fn has_inventory(self) -> bool {
+        matches!(self, Self::InventoryOwners | Self::AuthoredInventoryOwners)
     }
 }
 
@@ -166,7 +176,25 @@ struct Definitions {
     inventory_contracts: Option<CompiledInventoryContractsV1>,
     inventory_snapshot: Option<Arc<InventoryContractsSnapshotV1>>,
     inventory_imported: Option<Arc<C001InventoryOwnerImportMetadataV1>>,
+    inventory_authority: Option<Arc<crate::native_inventory::AuthoredInventoryAuthorityV1>>,
     inventory_pinned_bytes: usize,
+}
+
+impl Definitions {
+    fn inventory_metadata_bytes(&self) -> Result<usize> {
+        match (&self.inventory_imported, &self.inventory_authority) {
+            (Some(metadata), None) => metadata.allocation_bytes(),
+            (None, Some(authority)) => authority.allocation_bytes(),
+            _ => anyhow::bail!("inventory authority missing or ambiguous"),
+        }
+    }
+    fn inventory_totals(&self) -> Result<&crate::native_inventory::InventoryInitialTotalsV1> {
+        match (&self.inventory_imported, &self.inventory_authority) {
+            (Some(metadata), None) => Ok(&metadata.inventory_initial.initial_totals),
+            (None, Some(authority)) => Ok(&authority.initial_totals),
+            _ => anyhow::bail!("inventory authority missing or ambiguous"),
+        }
+    }
 }
 
 /// Private fields prevent callers from updating a registry independently of its
@@ -320,7 +348,8 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
             && !world.contains_resource::<NativeScalarOwnerContractsState>()
             && !world.contains_resource::<C001ScalarOwnerImportState>()
             && !world.contains_resource::<NativeInventoryContractsState>()
-            && !world.contains_resource::<C001InventoryOwnerImportState>(),
+            && !world.contains_resource::<C001InventoryOwnerImportState>()
+            && !world.contains_resource::<AuthoredInventoryAuthorityState>(),
         "world contains unexpected lifecycle resources"
     );
     // Resolve from this world on every call: even a previously unregistered
@@ -338,6 +367,7 @@ pub(crate) fn ensure_no_lifecycle_state(world: &World) -> Result<()> {
         world.component_id::<ScalarOwnerDerived>(),
         world.component_id::<NativeInventoryContractsState>(),
         world.component_id::<C001InventoryOwnerImportState>(),
+        world.component_id::<AuthoredInventoryAuthorityState>(),
         world.component_id::<InventoryOwnerState>(),
         world.component_id::<ModifierOwnerState>(),
     ];
@@ -598,7 +628,7 @@ fn validate_current_values(
     inventories: Option<&InventoryStateSnapshotV1>,
 ) -> Result<()> {
     ensure!(
-        definitions.mode == SourceMode::InventoryOwners || inventories.is_none(),
+        definitions.mode.has_inventory() || inventories.is_none(),
         "legacy source mode has inventory state"
     );
     if let Some(contracts) = &definitions.scalar_contracts {
@@ -617,7 +647,7 @@ fn validate_current_values(
                     .as_deref()
                     .context("scalar contracts missing")?,
             )?,
-        SourceMode::InventoryOwners => {
+        SourceMode::InventoryOwners | SourceMode::AuthoredInventoryOwners => {
             ensure!(
                 lifecycle
                     .slots
@@ -630,10 +660,6 @@ fn validate_current_values(
                 .inventory_contracts
                 .as_ref()
                 .context("inventory contracts missing")?;
-            let metadata = definitions
-                .inventory_imported
-                .as_deref()
-                .context("inventory provenance missing")?;
             let bytes = inventory_snapshot_allocation_bytes(
                 definitions
                     .inventory_snapshot
@@ -641,7 +667,7 @@ fn validate_current_values(
                     .context("inventory declarations missing")?,
                 state,
             )?
-            .checked_add(metadata.allocation_bytes()?)
+            .checked_add(definitions.inventory_metadata_bytes()?)
             .context("inventory allocation overflow")?;
             ensure!(
                 bytes <= MAX_INVENTORY_GRAPH_BYTES,
@@ -650,22 +676,27 @@ fn validate_current_values(
             validate_inventory_state(
                 contracts,
                 state,
-                &metadata.inventory_initial.initial_totals,
+                definitions.inventory_totals()?,
                 &live_inventory_owners(lifecycle),
             )?;
-            metadata.validate_current_state(
-                native,
-                lifecycle,
-                definitions
-                    .scalar_snapshot
-                    .as_deref()
-                    .context("scalar contracts missing")?,
-                definitions
-                    .inventory_snapshot
-                    .as_deref()
-                    .context("inventory declarations missing")?,
-                state,
-            )?;
+            if let Some(authority) = &definitions.inventory_authority {
+                authority.validate_current(contracts, lifecycle, state)?;
+            }
+            if let Some(metadata) = &definitions.inventory_imported {
+                metadata.validate_current_state(
+                    native,
+                    lifecycle,
+                    definitions
+                        .scalar_snapshot
+                        .as_deref()
+                        .context("scalar contracts missing")?,
+                    definitions
+                        .inventory_snapshot
+                        .as_deref()
+                        .context("inventory declarations missing")?,
+                    state,
+                )?;
+            }
         }
         _ => ensure!(inventories.is_none(), "unexpected inventory state"),
     }
@@ -745,7 +776,9 @@ fn stage(snapshot: &WorldSnapshot, definitions: &Arc<Definitions>) -> Result<Sta
     ensure!(
         snapshot.native_inventory_contracts.as_ref() == definitions.inventory_snapshot.as_deref()
             && snapshot.native_inventory_owner_import.as_ref()
-                == definitions.inventory_imported.as_deref(),
+                == definitions.inventory_imported.as_deref()
+            && snapshot.native_inventory_authority.as_ref()
+                == definitions.inventory_authority.as_deref(),
         "inventory contracts or provenance differ from loaded activation"
     );
     validate_current_values(
@@ -950,7 +983,9 @@ fn insert_actor(world: &mut World, entity: Entity, actor: StagedActor) {
 pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) -> Result<()> {
     if matches!(
         snapshot.schema_version,
-        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+        SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
+            | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
+            | crate::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS
     ) {
         SnapshotStore::preflight(snapshot)?;
     } else {
@@ -964,6 +999,7 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
                 | SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS
                 | SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS
                 | SNAPSHOT_SCHEMA_MODIFIER_OWNERS
+                | crate::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS
         ),
         "lifecycle schema required"
     );
@@ -983,11 +1019,12 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
         SNAPSHOT_SCHEMA_C001_OWNERS => SourceMode::Owners,
         SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS => SourceMode::ScalarOwners,
         SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS => SourceMode::InventoryOwners,
+        crate::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS => SourceMode::AuthoredInventoryOwners,
         SNAPSHOT_SCHEMA_MODIFIER_OWNERS => SourceMode::ModifierOwners,
         _ => unreachable!("validated lifecycle schema"),
     };
     // Admit the joint borrowed graph before any declaration/provenance clone.
-    let inventory_pinned_bytes = if mode == SourceMode::InventoryOwners {
+    let inventory_pinned_bytes = if mode.has_inventory() {
         let declarations = snapshot
             .native_inventory_contracts
             .as_ref()
@@ -996,11 +1033,14 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
             .native_inventories
             .as_ref()
             .context("inventory state missing")?;
-        let metadata = snapshot
-            .native_inventory_owner_import
-            .as_ref()
-            .context("inventory provenance missing")?;
-        let metadata_bytes = metadata.allocation_bytes()?;
+        let metadata_bytes = match (
+            &snapshot.native_inventory_owner_import,
+            &snapshot.native_inventory_authority,
+        ) {
+            (Some(metadata), None) => metadata.allocation_bytes()?,
+            (None, Some(authority)) => authority.allocation_bytes()?,
+            _ => anyhow::bail!("inventory authority missing or ambiguous"),
+        };
         let bytes = inventory_snapshot_allocation_bytes(declarations, state)?
             .checked_add(metadata_bytes)
             .context("inventory allocation overflow")?;
@@ -1068,6 +1108,10 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
             .native_inventory_owner_import
             .as_ref()
             .map(|metadata| Arc::new(metadata.clone())),
+        inventory_authority: snapshot
+            .native_inventory_authority
+            .as_ref()
+            .map(|v| Arc::new(v.clone())),
         catalog,
         lifecycle: compiled,
         relationships,
@@ -1110,6 +1154,9 @@ pub(crate) fn activate_lifecycle(world: &mut World, snapshot: &WorldSnapshot) ->
     }
     if let Some(metadata) = &definitions.inventory_imported {
         world.insert_resource(C001InventoryOwnerImportState(Arc::clone(metadata)));
+    }
+    if let Some(authority) = &definitions.inventory_authority {
+        world.insert_resource(AuthoredInventoryAuthorityState(Arc::clone(authority)));
     }
     let mut live = BTreeMap::new();
     for actor in staged.actors {
@@ -1195,7 +1242,7 @@ fn capture_inventories(
     context: &NativeLifecycleContext,
 ) -> Result<Option<InventoryStateSnapshotV1>> {
     let definitions = &context.definitions;
-    if definitions.mode != SourceMode::InventoryOwners {
+    if !definitions.mode.has_inventory() {
         ensure!(
             context.inventory.is_none(),
             "legacy world has inventory header"
@@ -1365,6 +1412,18 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
     );
     ensure!(
         match (
+            world.get_resource::<AuthoredInventoryAuthorityState>(),
+            &definitions.inventory_authority
+        ) {
+            (None, None) => true,
+            (Some(actual), Some(expected)) =>
+                Arc::ptr_eq(&actual.0, expected) || actual.0 == *expected,
+            _ => false,
+        },
+        "authored inventory authority differs from loaded activation"
+    );
+    ensure!(
+        match (
             world.get_resource::<NativeScalarOwnerContractsState>(),
             &definitions.scalar_snapshot
         ) {
@@ -1481,6 +1540,15 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
                 "unregistered inventory provenance"
             );
         }
+        if let Some(actual) = entity.get::<AuthoredInventoryAuthorityState>() {
+            ensure!(
+                !entity.contains::<bevy::ecs::entity_disabling::Disabled>()
+                    && world
+                        .get_resource::<AuthoredInventoryAuthorityState>()
+                        .is_some_and(|resource| std::ptr::eq(actual, resource)),
+                "unregistered authored inventory authority"
+            );
+        }
         if entity.contains::<ModifierOwnerState>() {
             ensure!(
                 definitions.mode == SourceMode::ModifierOwners
@@ -1490,8 +1558,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         }
         if entity.contains::<InventoryOwnerState>() {
             ensure!(
-                definitions.mode == SourceMode::InventoryOwners
-                    && expected_entities.contains(&entity.id()),
+                definitions.mode.has_inventory() && expected_entities.contains(&entity.id()),
                 "unregistered inventory owner state"
             );
         }
@@ -1761,6 +1828,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         native_scalar_owner_import: definitions.scalar_imported.as_deref().cloned(),
         native_inventory_contracts: definitions.inventory_snapshot.as_deref().cloned(),
         native_inventory_owner_import: definitions.inventory_imported.as_deref().cloned(),
+        native_inventory_authority: definitions.inventory_authority.as_deref().cloned(),
         native_inventories: inventories,
         native_modifiers: modifiers,
         preserved_prospect: world
@@ -1942,12 +2010,7 @@ pub fn apply_native_inventory_action(
             .native_inventories
             .as_ref()
             .context("inventory state missing")?,
-        &definitions
-            .inventory_imported
-            .as_ref()
-            .context("inventory provenance missing")?
-            .inventory_initial
-            .initial_totals,
+        definitions.inventory_totals()?,
         &live_inventory_owners(
             snapshot
                 .native_lifecycle

@@ -82,6 +82,12 @@ enum Command {
         /// extending schema 7). No C001 import or official semantics are implied.
         #[arg(long, requires = "lifecycle")]
         modifiers: bool,
+        /// Independently authored inventory declarations (schema 12).
+        #[arg(long, requires_all = ["lifecycle", "inventory_items"], conflicts_with = "modifiers")]
+        inventory_contracts: Option<PathBuf>,
+        /// Bounded JSON initial-item recipe; owner IDs follow authored placement order.
+        #[arg(long, requires = "inventory_contracts")]
+        inventory_items: Option<PathBuf>,
         #[arg(long)]
         data_dir: PathBuf,
         /// Validate and report counts without opening the destination store.
@@ -280,6 +286,8 @@ fn execute(cli: Cli) -> Result<()> {
             lifecycle,
             restore,
             modifiers,
+            inventory_contracts,
+            inventory_items,
             data_dir,
             dry_run,
         } => {
@@ -325,6 +333,26 @@ fn execute(cli: Cli) -> Result<()> {
                 .then(|| icarus_bevy::native_modifiers::enable_modifier_owners(snapshot.clone()))
                 .transpose()?;
             let snapshot = with_modifiers.as_ref().unwrap_or(snapshot);
+            let with_inventory = inventory_contracts
+                .map(|path| {
+                    use icarus_bevy::native_inventory::{
+                        CompiledInventoryContractsV1, InitialInventoryItemsV1,
+                        enable_inventory_owners,
+                    };
+                    let contracts = CompiledInventoryContractsV1::load(&path, &catalog)?;
+                    let items = InitialInventoryItemsV1::load(
+                        inventory_items
+                            .as_ref()
+                            .context("inventory recipe required")?,
+                    )?;
+                    enable_inventory_owners(
+                        snapshot.clone(),
+                        contracts.snapshot().as_ref().clone(),
+                        items,
+                    )
+                })
+                .transpose()?;
+            let snapshot = with_inventory.as_ref().unwrap_or(snapshot);
             SnapshotStore::preflight(snapshot)?;
             let actors = prepared.snapshot().actors.len();
             let live_actors = snapshot.native_lifecycle.as_ref().map(|lifecycle| {

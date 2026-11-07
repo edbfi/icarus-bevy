@@ -20,7 +20,7 @@ no official geometry/layout/stat/row meaning, physics/navigation, callbacks,
 replication, general C001/D01/C009 restore, client/save compatibility or
 ICARUS performance/RSS qualification; `world_imported`/`gameplay_ready` stay
 false and `import-save` stays closed.
-Definitions/contracts/bindings/metadata: 4 MiB each unless noted. Schemas 4–11:
+Definitions/contracts/bindings/metadata: 4 MiB each unless noted. Schemas 4–12:
 64 MiB + 4 KiB generation including sections/sidecar reference. Earlier adapters
 retain acceptance; older schemas reject new fields, even null.
 Runtime calls validate membership, contexts/generations, indices and
@@ -155,20 +155,29 @@ Limits: 1,024 live owners, 64 entries/owner, 16 contributions/definition,
 
 ### Modifier advance costs
 
-F-926: Rust 1.99.1 / Bevy 0.20.0, five pairs: charging dedup lowered nonempty
-1,024-owner p95; empty/one-owner cells were mixed (M-1021/M-1023).
+F-926/M-1259: owned advance avoids restaging; full capture/preflight still
+runs each fixed step, even without armed timers. Catch-up repeats that cost.
+Costs scale with world size; the 1,024-owner cap gives no 30 Hz guarantee.
+[Measurements and limits](../research/foundation/foundation.md#current-answer).
 
-Current Rust 1.99.1 / Bevy 0.20.1: owned advance avoids restaging. Full
-capture/preflight runs each fixed step, even without armed timers; catch-up
-repeats that cost. Three-pair armed 1,024-owner median-of-run p95:
-32.558 to 23.136 ms; paired candidate/baseline ratios 0.678–0.876.
-Other cells mixed; all twelve cells/regressions: M-1259.
+## Independent inventories
 
-Each cell/run: three fresh apps × ten verified calls, four entries/nonempty
-owner; setup/verification excluded; no relationships/sidecars.
-Timers stay armed. The 1,024-owner cap gives no 30 Hz guarantee.
-No uniform, whole-frame/health/catch-up, throughput, allocation/RSS, original or
-client qualification follows from these public-call timings.
+Schema 12 extends authored lifecycle 7 (F-1029) via `enable_inventory_owners` or
+`create-native-world --lifecycle lifecycle.json --inventory-contracts inventory.json
+--inventory-items items.json` plus the usual catalog/map/destination flags.
+`--dry-run` validates before destination access. Modifiers cannot compose.
+Contracts use the item/class/inventory definitions below; initial JSON is
+`{"items":[{"owner":1,"inventory":"bag","requested_slot":0,"item":"wood","count":3}]}`.
+Owner IDs follow authored placements; the recipe must be regular JSON ≤16 MiB.
+
+All slots must be live. No source or scalar interpretation is needed; optional
+opaque preservation and foundation relationships compose. Immutable authority
+pins the lifecycle, owner handles, recipe, initial totals/digest and allocator
+floor. Full admission replays that recipe; runtime capture checks the loaded
+activation. Actions/queries below apply; reload retains consumption and IDs.
+Owner replacement/restore, modifier composition and replication are unsupported.
+Contracts/current state/authority/replay share the 64 MiB charged budget;
+this is neither an RSS nor ICARUS compatibility qualification.
 
 ## Authored C001 owners
 

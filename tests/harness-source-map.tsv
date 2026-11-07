@@ -120,3 +120,4 @@ typed_value	tests/typed_value.rs	save_format	tests/save_format/typed_value.rs	ty
 visibility	tests/visibility.rs	replication_domain	tests/replication_domain/visibility.rs	visibility::	in-process
 visibility_state	tests/visibility_state.rs	replication_domain	tests/replication_domain/visibility_state.rs	visibility_state::	in-process
 visibility_gather	tests/visibility_gather.rs	replication_domain	tests/replication_domain/visibility_gather.rs	visibility_gather::	in-process
+native_authored_inventory	tests/native_authored_inventory.rs	native_domain	tests/native_domain/native_authored_inventory.rs	native_authored_inventory::	in-process
