@@ -10,20 +10,6 @@ Last reconciled: 2026-11-08.
 
 Actor framing/scheduling after control admission: exports, partials, spawn/content,
 close/dormancy, relevancy/priority/readiness and visibility RPCs.
-Other function bindings are in the cited finding/evidence IDs.
-
-Retained server/client bindings from the older builds:
-`AppendExportBunches` `0x14351fe30`/`0x1437b03d0`;
-`ExportNetGUID` server `0x143707e50`; `InternalLoadObject` client `0x1439af1c0`;
-`ProcessBunch` server `0x143530b30`; `UActorChannel::ReceivedBunch` server
-`0x143535c60`; `UActorChannel::SendBunch` client `0x1437b2680`;
-`StartBecomingDormant` `0x1435419d0`/`0x1437ce5b0`;
-client `SerializeOptionalValue<FVector>` `0x14399cac0`, `FRotator::NetSerialize`
-`0x141ed36b0`, `SerializeCompressedShort` `0x141eeb7d0`/`0x141ed7810`;
-`APlayerController` server open hook `0x1438384d0`;
-`FRepLayout::ReceiveCustomProperty` client `0x143b219b0`;
-max-tick-rate helper `0x143993060`/`0x143c5d520`;
-`CallPreReplication` server `0x14332f4f0`.
 
 ## Confirmed
 
@@ -36,11 +22,12 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
   boundaries, not client handler execution. Matched requested subobject
   identity/outer and receiver object/outer/direction/RPC-flag gates: F-1041;
   configured identity/framing agree.
-- Live reliable partials precede atomic domain parsing (F-1043): 64 parts,
-  64 KiB per assembly, 16 assemblies/256 KiB retained payload per peer;
-  unchanged domain cap 8 KiB per block. These are native defensive limits.
-  Exports/must-map/open/close/paused parts fail closed. Capture remains independent;
-  completed assembly is not parsed RPC or stock-client progress.
+- Matched receive framing has no independent content-block cap (F-1046).
+  Constructed partials use a 64 KiB executable default, overridden to 128 KiB
+  by shipped configuration (F-1047). Native assembly/block envelopes follow
+  that setting; fragment-count and peer budgets remain defensive (F-1043).
+  CharacterProfile parameter/handler guards: F-1048. F-1049's RPC identity
+  remains unknown; completion proves no RPC identity or stock-client progress.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
