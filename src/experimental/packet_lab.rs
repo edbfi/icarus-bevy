@@ -313,10 +313,13 @@ pub struct ReceiveSummary {
     /// Bunches on unknown or closing actor channels, acknowledged and ignored.
     pub ignored_bunches: usize,
     pub actor_bunches: usize,
-    /// Unsupported actor forms or reliable queue overflow, counted and dropped.
+    /// Unsupported forms, reliable queue overflow, or refused partial parts.
     pub actor_bunches_dropped: usize,
+    /// Reliable partial parts released in order, excluding duplicate arrivals.
     pub actor_partial_parts: usize,
+    /// Complete bodies constructed, before domain validation or application.
     pub actor_partial_completed: usize,
+    /// Partial refusals and interruptions of pending assemblies.
     pub actor_partial_rejected: usize,
     pub actor_duplicate_reliable: usize,
     pub actor_queued_reliable: usize,

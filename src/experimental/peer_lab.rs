@@ -724,11 +724,13 @@ pub struct PeerLabStats {
     pub player_controller_open_errors: u64,
     /// Actor bunches on unopened/closing channels or outside this peer's controller.
     pub actor_bunches_ignored: u64,
-    /// Unsupported actor bunch forms or reliable queue overflow.
+    /// Unsupported forms, reliable queue overflow, or refused partial parts.
     pub actor_bunches_dropped: u64,
-    /// Ordered reliable partial parts, constructed wholes and refusal events.
+    /// Reliable partial parts released in order, excluding duplicate arrivals.
     pub actor_partial_parts: u64,
+    /// Complete bodies constructed, before domain validation or application.
     pub actor_partial_completed: u64,
+    /// Partial refusals and interruptions of pending assemblies.
     pub actor_partial_rejected: u64,
     /// Malformed controller content blocks, field headers or RPC parameters.
     pub actor_bunches_malformed: u64,
