@@ -3192,7 +3192,8 @@ fn exchange_profiles_servicing(
                             continue;
                         };
                         for bunch in packet.bunches {
-                            if bunch.header.channel_index != 2
+                            if bunch.header.channel_index
+                                != icarus_bevy::experimental::session_open::PLAYER_CONTROLLER_CHANNEL_INDEX
                                 || bunch.header.open
                                 || bunch.header.has_package_map_exports
                                 || bunch.header.partial
@@ -3220,7 +3221,7 @@ fn exchange_profiles_servicing(
                                     let field =
                                         icarus_bevy::experimental::rep_rpc::read_field_header(
                                             &mut reader,
-                                            183,
+                                            icarus_bevy::experimental::rep_rpc::BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
                                             65536,
                                         )
                                         .unwrap();

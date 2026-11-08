@@ -757,7 +757,8 @@ pub struct PeerLabStats {
     pub profile_character_failures: u64,
     /// Unsolicited, wrong-phase or repeated profile responses.
     pub profile_responses_ignored: u64,
-    /// Sessions removed on retry exhaustion, vanished PlayerState or exchange error.
+    /// Sessions removed on retry exhaustion, vanished PlayerState or exchange
+    /// error, including a friends-list query (F-1051) that cannot reach transport.
     pub profile_players_failed: u64,
     /// Composition/framing refusals; drainable capacity waits for ACK/NAK progress.
     pub profile_exchange_errors: u64,
@@ -5459,8 +5460,10 @@ impl PeerLab {
         }
     }
 
-    /// Matched AddConnectedPlayer queries every registered controller (F-1051).
-    /// Coalesce unsent queries; reliable transport repairs admitted requests.
+    /// Matched AddConnectedPlayer adds a player, then queries every registered
+    /// player's controller (F-1051). Registration follows Begin, so the native
+    /// registered set is the peers with a recorded character slot. Coalesce
+    /// unsent queries; reliable transport repairs admitted requests.
     fn query_connected_friends(&mut self) {
         for entry in self.peers.values_mut() {
             if entry.character_slot.is_some() {

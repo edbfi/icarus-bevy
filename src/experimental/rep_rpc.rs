@@ -377,7 +377,7 @@ pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
 pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
 
 /// Parameterless `APlayerController::ServerShortTimeout` on the pinned
-/// Survival PlayerController (3.0.34 identity qualification: F-1019).
+/// Survival PlayerController (3.0.34 identity qualification: F-1052).
 /// Recognition alone grants no timeout behavior.
 pub const SERVER_SHORT_TIMEOUT_FIELD_INDEX: u32 = 78;
 
