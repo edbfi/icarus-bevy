@@ -67,7 +67,8 @@ use super::packet::{
     split_termination, write_packet,
 };
 use super::sequencing::{
-    MAX_QUEUED_RELIABLE, PacketSequencer, ReliableChannel, ReliableReceive, SEQUENCE_MASK,
+    MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, MAX_QUEUED_RELIABLE, PacketSequencer,
+    PartialBunchReassembler, PartialReceive, ReliableChannel, ReliableReceive, SEQUENCE_MASK,
     SendCapacityError, max_single_bunch_size_bits, split_outgoing_bunch, wire_reliable_sequence,
 };
 use super::session_open::ACTOR_CHANNEL_NAME_INDEX;
@@ -79,6 +80,10 @@ pub const DEFAULT_SENT_CAPACITY: usize = 256;
 /// Lab choice: bunches accepted per datagram; one more fails the datagram.
 /// Outgoing datagrams carry at most this many bunches as well.
 pub const DEFAULT_MAX_BUNCHES_PER_PACKET: usize = 32;
+/// Native defensive bounds, not claims of original-engine equivalence.
+pub const MAX_ACTOR_PARTIAL_ASSEMBLIES: usize = 16;
+pub const MAX_ACTOR_PARTIAL_PARTS: usize = 64;
+pub const MAX_ACTOR_PARTIAL_BYTES_PER_PEER: usize = 256 * 1024;
 /// Lab choice: unacknowledged outgoing reliable control bunches one peer may
 /// hold; sending another fails without a state change. Matches
 /// `UControlChannel::SendBunch` (`0x1437ca030`) `NumOutRec < 255` (`0xff`)
@@ -308,8 +313,14 @@ pub struct ReceiveSummary {
     /// Bunches on unknown or closing actor channels, acknowledged and ignored.
     pub ignored_bunches: usize,
     pub actor_bunches: usize,
-    /// Unsupported actor forms or reliable queue overflow, counted and dropped.
+    /// Unsupported forms, reliable queue overflow, or refused partial parts.
     pub actor_bunches_dropped: usize,
+    /// Reliable partial parts released in order, excluding duplicate arrivals.
+    pub actor_partial_parts: usize,
+    /// Complete bodies constructed, before domain validation or application.
+    pub actor_partial_completed: usize,
+    /// Partial refusals and interruptions of pending assemblies.
+    pub actor_partial_rejected: usize,
     pub actor_duplicate_reliable: usize,
     pub actor_queued_reliable: usize,
     /// Reliable control bunches already delivered or already queued; dropped.
@@ -371,6 +382,11 @@ struct StagedControl {
     messages: Vec<Decoded>,
 }
 
+struct ActorPartial {
+    reassembler: PartialBunchReassembler,
+    retained_bits: usize,
+}
+
 /// One peer's packet state, seeded from its handshake cookie.
 ///
 /// Errors before the sequence gate (malformed or unsupported datagrams) leave
@@ -386,6 +402,7 @@ pub struct LabPeer {
     /// Actor channels this peer opened, by channel index: their reliable
     /// wire bunches, retained unchanged for resend until acked.
     actors: BTreeMap<u32, ReliableChannel<Bunch>>,
+    actor_partials: BTreeMap<u32, ActorPartial>,
     /// Naked out-bunches awaiting resend, oldest first.
     resend: VecDeque<Resend>,
     /// The control channel's close bunch: its reliable sequence and reason.
@@ -444,6 +461,7 @@ impl LabPeer {
             sequencer,
             control,
             actors: BTreeMap::new(),
+            actor_partials: BTreeMap::new(),
             resend: VecDeque::new(),
             control_close: None,
             closing_actors: std::collections::BTreeSet::new(),
@@ -679,6 +697,9 @@ impl LabPeer {
             ignored_bunches: bunches.len() - control_bunches,
             actor_bunches: 0,
             actor_bunches_dropped: 0,
+            actor_partial_parts: 0,
+            actor_partial_completed: 0,
+            actor_partial_rejected: 0,
             actor_duplicate_reliable: 0,
             actor_queued_reliable: self.actors.values().map(ReliableChannel::queued_len).sum(),
             duplicate_reliable: 0,
@@ -725,6 +746,7 @@ impl LabPeer {
                     summary.released_actor_channels.push(index);
                     self.closing_actors.remove(&index);
                     self.actors.remove(&index);
+                    self.actor_partials.remove(&index);
                     *self.no_free_actor_channel_from.get_mut() = u32::MAX;
                     self.resend.retain(
                         |entry| !matches!(entry, Resend::Actor(channel, _) if *channel == index),
@@ -796,20 +818,17 @@ impl LabPeer {
             // Overflow is a bounded lab drop, not the control path's peer failure.
             match channel.receive_reliable(raw, bunch) {
                 Ok(ReliableReceive::Delivered(bunches)) => {
-                    for bunch in bunches {
+                    // The channel has already reconstructed wrap and drained
+                    // consecutive queued values. Recover each released value
+                    // from its final progress, not its raw ten-bit wire field.
+                    let before = i64::from(channel.in_reliable()) - bunches.len() as i64;
+                    for (offset, bunch) in bunches.into_iter().enumerate() {
                         if let Some(tap) = capture.as_deref_mut() {
                             tap.observe_released(&bunch, Some(releasing_packet_sequence));
                         }
-                        let header = &bunch.header;
-                        if header.partial
-                            || header.has_package_map_exports
-                            || header.has_must_be_mapped_guids
-                            || header.open
-                            || header.close
-                            || header.paused
+                        if let Some(bunch) =
+                            self.complete_actor_bunch(bunch, before + offset as i64 + 1, summary)
                         {
-                            summary.actor_bunches_dropped += 1;
-                        } else {
                             delivered.push(bunch);
                         }
                     }
@@ -824,6 +843,86 @@ impl LabPeer {
         }
         summary.actor_queued_reliable = self.actors.values().map(ReliableChannel::queued_len).sum();
         (delivered, accepted)
+    }
+
+    /// Construct only supported reliable actor bodies. Capture sees the wire
+    /// parts independently; no prefix reaches the domain until completion.
+    fn complete_actor_bunch(
+        &mut self,
+        bunch: Bunch,
+        sequence: i64,
+        summary: &mut ReceiveSummary,
+    ) -> Option<Bunch> {
+        let h = &bunch.header;
+        let index = h.channel_index;
+        if h.partial {
+            summary.actor_partial_parts += 1;
+        }
+        let unsupported = h.has_package_map_exports
+            || h.has_must_be_mapped_guids
+            || h.open
+            || h.close
+            || h.paused;
+        if unsupported {
+            let interrupted = self.actor_partials.remove(&index).is_some();
+            summary.actor_partial_rejected += usize::from(h.partial || interrupted);
+            summary.actor_bunches_dropped += 1;
+            return None;
+        }
+        if !h.partial {
+            summary.actor_partial_rejected +=
+                usize::from(self.actor_partials.remove(&index).is_some());
+            return Some(bunch);
+        }
+        let prior = self.actor_partials.get(&index);
+        let retained = prior.map_or(0, |p| p.retained_bits);
+        let parts = prior
+            .and_then(|p| p.reassembler.parts_in_progress())
+            .unwrap_or(0);
+        let total: usize = self.actor_partials.values().map(|p| p.retained_bits).sum();
+        let next = retained.saturating_add(bunch.payload.bit_len());
+        let refused = (!h.partial_initial && prior.is_none())
+            || (h.partial_initial && prior.is_some())
+            || (prior.is_none() && self.actor_partials.len() >= MAX_ACTOR_PARTIAL_ASSEMBLIES)
+            || parts >= MAX_ACTOR_PARTIAL_PARTS
+            || next > MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES * 8
+            || total.saturating_sub(retained).saturating_add(next)
+                > MAX_ACTOR_PARTIAL_BYTES_PER_PEER * 8;
+        if refused {
+            self.actor_partials.remove(&index);
+            summary.actor_partial_rejected += 1;
+            summary.actor_bunches_dropped += 1;
+            return None;
+        }
+        let partial = self
+            .actor_partials
+            .entry(index)
+            .or_insert_with(|| ActorPartial {
+                reassembler: PartialBunchReassembler::new(),
+                retained_bits: 0,
+            });
+        match partial.reassembler.receive_part(
+            sequence,
+            h,
+            &bunch.payload,
+            Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+        ) {
+            Ok(PartialReceive::Incomplete { .. }) => {
+                partial.retained_bits = next;
+                None
+            }
+            Ok(PartialReceive::Complete { bunch, .. }) => {
+                self.actor_partials.remove(&index);
+                summary.actor_partial_completed += 1;
+                Some(bunch)
+            }
+            Ok(PartialReceive::IgnoredUnreliableInitial) | Err(_) => {
+                self.actor_partials.remove(&index);
+                summary.actor_partial_rejected += 1;
+                summary.actor_bunches_dropped += 1;
+                None
+            }
+        }
     }
 
     fn deliver(
@@ -1041,6 +1140,7 @@ impl LabPeer {
             let assigned = channel.send_reliable(packet_id, close)?;
             ensure!(assigned == sequence, "outgoing reliable sequence mismatch");
             self.closing_actors.insert(index);
+            self.actor_partials.remove(&index);
             Ok(())
         })();
         self.fail_on_error(recorded)?;
@@ -1760,6 +1860,136 @@ impl LabPeer {
             );
         }
         self.actors.insert(index, channel);
+        self.actor_partials.remove(&index);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod actor_partial_budget_tests {
+    use super::*;
+
+    fn fixture() -> (LabPeer, ReceiveSummary) {
+        let config = PacketLabConfig::new(BunchLimits {
+            max_channels: 32,
+            max_packet_bytes: 1024,
+            max_string_units: 64,
+        });
+        let mut peer = LabPeer::from_cookie(&[0; COOKIE_BYTES], config).unwrap();
+        let client = PacketSequencer::new(0, 0, 16).unwrap();
+        let bytes = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &config.packet,
+        )
+        .unwrap();
+        let summary = peer.receive(&bytes).unwrap().summary;
+        (peer, summary)
+    }
+
+    fn part(channel: u32, initial: bool, final_part: bool, bytes: usize) -> Bunch {
+        let mut writer = BitWriter::new();
+        writer.write_bytes(&vec![0; bytes]);
+        Bunch {
+            header: BunchHeader {
+                control: false,
+                open: false,
+                close: false,
+                close_reason: None,
+                paused: false,
+                reliable: true,
+                channel_index: channel,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: true,
+                reliable_sequence_raw: Some(1),
+                partial_initial: initial,
+                partial_final: final_part,
+                channel_name: None,
+            },
+            payload: Payload::from_writer(writer),
+        }
+    }
+
+    #[test]
+    fn live_partial_memory_limits_refuse_before_append_and_release_rejected_state() {
+        // Direct assembly boundary tests allow large authored parts, independently
+        // of the stricter datagram size and domain content-block limits.
+        let (mut peer, mut summary) = fixture();
+        assert!(
+            peer.complete_actor_bunch(part(1, true, false, 65_536), 1, &mut summary)
+                .is_none()
+        );
+        assert!(
+            peer.complete_actor_bunch(part(1, false, true, 1), 2, &mut summary)
+                .is_none()
+        );
+        assert!(peer.actor_partials.is_empty());
+        assert_eq!(summary.actor_partial_rejected, 1);
+        assert!(
+            peer.complete_actor_bunch(part(1, true, false, 1), 3, &mut summary)
+                .is_none()
+        );
+        assert!(
+            peer.complete_actor_bunch(part(1, false, true, 1), 4, &mut summary)
+                .is_some()
+        );
+
+        let (mut peer, mut summary) = fixture();
+        for channel in 1..=MAX_ACTOR_PARTIAL_ASSEMBLIES as u32 {
+            assert!(
+                peer.complete_actor_bunch(part(channel, true, false, 1), 1, &mut summary)
+                    .is_none()
+            );
+        }
+        assert_eq!(peer.actor_partials.len(), MAX_ACTOR_PARTIAL_ASSEMBLIES);
+        assert!(
+            peer.complete_actor_bunch(part(17, true, false, 1), 1, &mut summary)
+                .is_none()
+        );
+        assert_eq!(peer.actor_partials.len(), MAX_ACTOR_PARTIAL_ASSEMBLIES);
+        assert_eq!(summary.actor_partial_rejected, 1);
+        assert!(
+            peer.complete_actor_bunch(part(1, false, true, 1), 2, &mut summary)
+                .is_some()
+        );
+        assert!(
+            peer.complete_actor_bunch(part(17, true, true, 1), 2, &mut summary)
+                .is_some()
+        );
+
+        let (mut peer, mut summary) = fixture();
+        for channel in 1..=4 {
+            assert!(
+                peer.complete_actor_bunch(part(channel, true, false, 65_536), 1, &mut summary)
+                    .is_none()
+            );
+        }
+        let retained: usize = peer.actor_partials.values().map(|p| p.retained_bits).sum();
+        assert_eq!(retained, MAX_ACTOR_PARTIAL_BYTES_PER_PEER * 8);
+        assert!(
+            peer.complete_actor_bunch(part(5, true, false, 1), 1, &mut summary)
+                .is_none()
+        );
+        assert_eq!(summary.actor_partial_rejected, 1);
+        assert_eq!(
+            peer.actor_partials
+                .values()
+                .map(|p| p.retained_bits)
+                .sum::<usize>(),
+            retained
+        );
+        assert!(
+            peer.complete_actor_bunch(part(1, false, true, 0), 2, &mut summary)
+                .is_some()
+        );
+        assert!(
+            peer.complete_actor_bunch(part(5, true, true, 1), 2, &mut summary)
+                .is_some()
+        );
     }
 }

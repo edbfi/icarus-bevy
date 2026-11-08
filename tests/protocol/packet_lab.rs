@@ -746,6 +746,106 @@ fn incoming_actor(channel: u32, sequence: u32, marker: u8) -> Bunch {
     bunch
 }
 
+fn incoming_part(channel: u32, sequence: u32, initial: bool, final_part: bool) -> Bunch {
+    let mut bunch = incoming_actor(channel, sequence, sequence as u8);
+    bunch.header.partial = true;
+    bunch.header.partial_initial = initial;
+    bunch.header.partial_final = final_part;
+    bunch
+}
+
+#[test]
+fn live_actor_partials_release_once_after_gapfill_and_preserve_other_channels() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    for channel in [2, 3] {
+        peer.reliable_actor_open(&actor_open_bunch(channel, &[1]), &[])
+            .unwrap();
+    }
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let final_part = incoming_part(2, first + 1, false, true);
+    let (packet, _) = client.send(vec![
+        final_part.clone(),
+        final_part.clone(),
+        incoming_actor(3, first, 9),
+    ]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_duplicate_reliable, 1);
+    assert_eq!(received.summary().actor_partial_parts, 0);
+    assert_eq!(received.actor_bunches(), &[incoming_actor(3, first, 9)]);
+    let initial = incoming_part(2, first, true, false);
+    let (packet, _) = client.send(vec![initial.clone()]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_parts, 2);
+    assert_eq!(received.summary().actor_partial_completed, 1);
+    let completed = &received.actor_bunches()[0];
+    assert!(!completed.header.partial);
+    let mut expected = BitWriter::new();
+    expected.write_bytes(initial.payload.bytes());
+    expected.write_bytes(final_part.payload.bytes());
+    assert_eq!(completed.payload, Payload::from_writer(expected));
+    let (packet, _) = client.send(vec![final_part]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_duplicate_reliable, 1);
+    assert!(received.actor_bunches().is_empty());
+}
+
+#[test]
+fn live_actor_partials_reject_repeated_initial_and_unsupported_middle_then_recover() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    peer.reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let mut sequence = first;
+    for flag in 0..5 {
+        let mut middle = incoming_part(2, sequence + 1, false, false);
+        match flag {
+            0 => middle.header.has_package_map_exports = true,
+            1 => middle.header.has_must_be_mapped_guids = true,
+            2 => {
+                middle.header.open = true;
+                middle.header.control = true;
+            }
+            3 => {
+                middle.header.close = true;
+                middle.header.control = true;
+                middle.header.close_reason = Some(0);
+            }
+            _ => middle.header.paused = true,
+        }
+        let (packet, _) = client.send(vec![
+            incoming_part(2, sequence, true, false),
+            middle,
+            incoming_part(2, sequence + 2, false, true),
+        ]);
+        let received = peer.receive(&packet).unwrap();
+        assert!(
+            received.actor_bunches().is_empty(),
+            "unsupported flag {flag}"
+        );
+        assert_eq!(received.summary().actor_partial_rejected, 2);
+        sequence += 3;
+    }
+    let (packet, _) = client.send(vec![
+        incoming_part(2, sequence, true, false),
+        incoming_part(2, sequence + 1, true, false),
+        incoming_part(2, sequence + 2, false, true),
+    ]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_rejected, 2);
+    assert!(received.actor_bunches().is_empty());
+    sequence += 3;
+    let (packet, _) = client.send(vec![
+        incoming_part(2, sequence, true, false),
+        incoming_part(2, sequence + 1, false, true),
+    ]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_completed, 1);
+    assert_eq!(received.actor_bunches().len(), 1);
+    assert!(!peer.is_failed());
+}
+
 #[test]
 fn actor_receive_orders_duplicates_and_isolates_channels() {
     let mut peer = peer();
@@ -815,7 +915,11 @@ fn actor_receive_drops_unsupported_forms_without_reliable_gaps() {
     unsupported.push(valid.clone());
     let (packet, _) = client.send(unsupported);
     let received = peer.receive(&packet).unwrap();
-    assert_eq!(received.summary().actor_bunches_dropped, 6);
+    // The supported initial is retained, then the export form rejects its
+    // assembly. Only the five unsupported wire forms count as dropped bunches.
+    assert_eq!(received.summary().actor_bunches_dropped, 5);
+    assert_eq!(received.summary().actor_partial_parts, 1);
+    assert_eq!(received.summary().actor_partial_rejected, 1);
     assert_eq!(received.actor_bunches(), &[valid]);
     assert!(!peer.is_failed());
 }
@@ -1933,5 +2037,179 @@ fn reliable_actor_sends_classify_channel_pressure_without_committing() {
     assert_eq!(multipart.to_string(), "reliable actor window is full");
     assert_eq!(format!("{peer:?}"), before);
     assert_eq!(peer.sequencer().out_packet_id(), next);
+    assert!(!peer.is_failed());
+}
+#[test]
+fn live_actor_partial_gapfill_crosses_raw_sequence_wrap() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    peer.reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    // Exercise the real transport reconstruction; do not mutate its counters.
+    let warmup: Vec<_> = (first..1023)
+        .map(|sequence| incoming_actor(2, sequence, 7))
+        .collect();
+    for batch in warmup.chunks(20) {
+        let (packet, _) = client.send(batch.to_vec());
+        assert_eq!(peer.receive(&packet).unwrap().actor_bunches(), batch);
+    }
+    let initial = incoming_part(2, 1023, true, false);
+    let final_part = incoming_part(2, 1024, false, true);
+    assert_eq!(final_part.header.reliable_sequence_raw, Some(0));
+    let (packet, _) = client.send(vec![final_part.clone()]);
+    assert!(peer.receive(&packet).unwrap().actor_bunches().is_empty());
+    let (packet, _) = client.send(vec![initial.clone()]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_completed, 1);
+    let mut expected = BitWriter::new();
+    expected.write_bytes(initial.payload.bytes());
+    expected.write_bytes(final_part.payload.bytes());
+    assert_eq!(received.actor_bunches().len(), 1);
+    assert_eq!(
+        received.actor_bunches()[0].payload,
+        Payload::from_writer(expected)
+    );
+    let (packet, _) = client.send(vec![final_part, incoming_actor(2, 1025, 9)]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_duplicate_reliable, 1);
+    assert_eq!(received.actor_bunches(), &[incoming_actor(2, 1025, 9)]);
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn live_actor_partial_unreliable_interleave_preserves_but_reliable_whole_interrupts() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    peer.reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let initial = incoming_part(2, first, true, false);
+    let final_part = incoming_part(2, first + 1, false, true);
+    let mut unreliable = incoming_actor(2, 0, 0xee);
+    unreliable.header.reliable = false;
+    unreliable.header.reliable_sequence_raw = None;
+    unreliable.header.channel_name = None;
+    let (packet, _) = client.send(vec![initial.clone(), unreliable, final_part.clone()]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_completed, 1);
+    let mut expected = BitWriter::new();
+    expected.write_bytes(initial.payload.bytes());
+    expected.write_bytes(final_part.payload.bytes());
+    assert_eq!(received.actor_bunches().len(), 1);
+    assert_eq!(
+        received.actor_bunches()[0].payload,
+        Payload::from_writer(expected)
+    );
+    let whole = incoming_actor(2, first + 3, 0x55);
+    let (packet, _) = client.send(vec![
+        incoming_part(2, first + 2, true, false),
+        whole.clone(),
+        incoming_part(2, first + 4, false, true),
+    ]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.actor_bunches(), &[whole]);
+    assert_eq!(received.summary().actor_partial_completed, 0);
+    let (packet, _) = client.send(vec![
+        incoming_part(2, first + 5, true, false),
+        incoming_part(2, first + 6, false, true),
+    ]);
+    assert_eq!(
+        peer.receive(&packet)
+            .unwrap()
+            .summary()
+            .actor_partial_completed,
+        1
+    );
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn live_actor_partial_part_limit_rejection_does_not_poison_channel() {
+    use icarus_bevy::experimental::packet_lab::MAX_ACTOR_PARTIAL_PARTS;
+    let mut peer = peer();
+    let mut client = Client::new();
+    peer.reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let parts: Vec<_> = (0..=MAX_ACTOR_PARTIAL_PARTS)
+        .map(|offset| {
+            incoming_part(
+                2,
+                first + offset as u32,
+                offset == 0,
+                offset == MAX_ACTOR_PARTIAL_PARTS,
+            )
+        })
+        .collect();
+    let mut rejected = 0;
+    for batch in parts.chunks(20) {
+        let (packet, _) = client.send(batch.to_vec());
+        let received = peer.receive(&packet).unwrap();
+        assert!(received.actor_bunches().is_empty());
+        assert_eq!(received.summary().actor_partial_completed, 0);
+        rejected += received.summary().actor_partial_rejected;
+    }
+    assert_eq!(rejected, 1);
+    // The refused part still consumes its reliable position. A fresh assembly
+    // at the next position succeeds without replaying the refused body.
+    let next = first + MAX_ACTOR_PARTIAL_PARTS as u32 + 1;
+    let initial = incoming_part(2, next, true, false);
+    let final_part = incoming_part(2, next + 1, false, true);
+    let (packet, _) = client.send(vec![initial.clone(), final_part.clone()]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_completed, 1);
+    let mut expected = BitWriter::new();
+    expected.write_bytes(initial.payload.bytes());
+    expected.write_bytes(final_part.payload.bytes());
+    assert_eq!(
+        received.actor_bunches()[0].payload,
+        Payload::from_writer(expected)
+    );
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn live_actor_partial_close_ack_and_channel_reuse_cannot_retain_old_prefix() {
+    let mut peer = peer();
+    let mut client = Client::new();
+    let open = actor_open_bunch(2, &[1]);
+    let opened = peer.reliable_actor_open(&open, &[]).unwrap();
+    accept_header(&mut client, &opened);
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let (packet, _) = client.send(vec![incoming_part(2, first, true, false)]);
+    assert!(peer.receive(&packet).unwrap().actor_bunches().is_empty());
+    let close = peer.reliable_actor_close(2, 0).unwrap();
+    let (packet, _) = client.send(vec![incoming_part(2, first + 1, false, true)]);
+    assert!(peer.receive(&packet).unwrap().actor_bunches().is_empty());
+    accept_header(&mut client, &close);
+    let (ack, _) = client.send(vec![]);
+    assert_eq!(
+        peer.receive(&ack)
+            .unwrap()
+            .summary()
+            .released_actor_channels,
+        [2]
+    );
+    let reopened = peer.reliable_actor_open(&open, &[]).unwrap();
+    accept_header(&mut client, &reopened);
+    // Reopening resets incoming reliable progress to the connection seed.
+    // An orphan final at that next position must not revive the old prefix.
+    let (packet, _) = client.send(vec![incoming_part(2, first, false, true)]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_rejected, 1);
+    assert!(received.actor_bunches().is_empty());
+    let initial = incoming_part(2, first + 1, true, false);
+    let final_part = incoming_part(2, first + 2, false, true);
+    let (packet, _) = client.send(vec![initial.clone(), final_part.clone()]);
+    let received = peer.receive(&packet).unwrap();
+    assert_eq!(received.summary().actor_partial_completed, 1);
+    let mut expected = BitWriter::new();
+    expected.write_bytes(initial.payload.bytes());
+    expected.write_bytes(final_part.payload.bytes());
+    assert_eq!(
+        received.actor_bunches()[0].payload,
+        Payload::from_writer(expected)
+    );
     assert!(!peer.is_failed());
 }

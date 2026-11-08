@@ -27,18 +27,20 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
 
 ## Confirmed
 
-- Dedicated state/predicate and possession restart chain: F-1036. The selected
-  subclass reaches the base ClientRestart producer. Its dedicated local-controller
-  predicate returns false; shared-code presence proves no stock-client execution.
-- Native explicit RestartPawn sends field40 with the opened pawn GUID after
-  controller/pawn reliable settlement; frozen matched capture omitted it (F-1037).
-  Restart-only capture observed Begin124 and a UserProfile wait (F-1038),
-  without initialized players or world entry.
+- State/predicate and possession restart chain: F-1036. Dedicated predicate
+  false does not prove stock-client execution.
+- Restart reaches Begin/UserProfile wait. Private headers show configured
+  BackendProxy traffic in four parts, without RPC identity/world entry (F-1038).
 - Matched UserProfile request/identifier/backend callback guards: F-1039.
   Public phases F-1040 and opt-in private headers F-1042 separate observation
   boundaries, not client handler execution. Matched requested subobject
   identity/outer and receiver object/outer/direction/RPC-flag gates: F-1041;
-  configured identity/framing agree, with no established native routing defect.
+  configured identity/framing agree.
+- Live reliable partials precede atomic domain parsing (F-1043): 64 parts,
+  64 KiB per assembly, 16 assemblies/256 KiB retained payload per peer;
+  unchanged domain cap 8 KiB per block. These are native defensive limits.
+  Exports/must-map/open/close/paused parts fail closed. Capture remains independent;
+  completed assembly is not parsed RPC or stock-client progress.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.

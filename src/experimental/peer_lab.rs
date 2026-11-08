@@ -724,8 +724,14 @@ pub struct PeerLabStats {
     pub player_controller_open_errors: u64,
     /// Actor bunches on unopened/closing channels or outside this peer's controller.
     pub actor_bunches_ignored: u64,
-    /// Unsupported actor bunch forms or reliable queue overflow.
+    /// Unsupported forms, reliable queue overflow, or refused partial parts.
     pub actor_bunches_dropped: u64,
+    /// Reliable partial parts released in order, excluding duplicate arrivals.
+    pub actor_partial_parts: u64,
+    /// Complete bodies constructed, before domain validation or application.
+    pub actor_partial_completed: u64,
+    /// Partial refusals and interruptions of pending assemblies.
+    pub actor_partial_rejected: u64,
     /// Malformed controller content blocks, field headers or RPC parameters.
     pub actor_bunches_malformed: u64,
     pub actor_duplicate_reliable: u64,
@@ -5244,6 +5250,18 @@ impl PeerLab {
                             .stats
                             .actor_bunches_dropped
                             .saturating_add(summary.actor_bunches_dropped as u64);
+                        self.stats.actor_partial_parts = self
+                            .stats
+                            .actor_partial_parts
+                            .saturating_add(summary.actor_partial_parts as u64);
+                        self.stats.actor_partial_completed = self
+                            .stats
+                            .actor_partial_completed
+                            .saturating_add(summary.actor_partial_completed as u64);
+                        self.stats.actor_partial_rejected = self
+                            .stats
+                            .actor_partial_rejected
+                            .saturating_add(summary.actor_partial_rejected as u64);
                         self.stats.actor_duplicate_reliable = self
                             .stats
                             .actor_duplicate_reliable
@@ -11733,7 +11751,7 @@ mod tests {
         }
 
         #[test]
-        fn private_capture_reassembles_ordered_parts_without_enabling_partial_dispatch() {
+        fn private_capture_and_live_dispatch_reassemble_independently_once() {
             use super::super::super::{
                 selected_rpc_capture::PrivateRpc82Capture, sequencing::split_outgoing_bunch,
             };
@@ -11806,15 +11824,192 @@ mod tests {
             }
             assert_eq!(lab.finish_private_rpc82_capture().unwrap().incomplete, 0);
             assert_eq!(lab.stats.actor_duplicate_reliable, 1);
-            assert_eq!(lab.stats.actor_bunches_dropped, 2);
-            assert_eq!(lab.stats.controller_fields_ignored, 0);
-            assert!(
+            assert_eq!(lab.stats.actor_bunches_dropped, 0);
+            assert_eq!(lab.stats.actor_partial_completed, 1);
+            assert_eq!(lab.stats.controller_fields_ignored, 1);
+            assert_eq!(
                 lab.controller_field_diagnostics(address)
                     .unwrap()
                     .entries
-                    .is_empty()
+                    .len(),
+                1
             );
             assert!(lab.has_peer(address));
+        }
+
+        #[test]
+        fn fragmented_authored_user_profile_dispatches_once_after_complete_atomic_parse() {
+            use super::super::super::{
+                probe_initialise::authored_user_profile,
+                rep_rpc::backend_profile_response_parameters, sequencing::split_outgoing_bunch,
+            };
+            for failure in 0..3 {
+                let malformed_tail = failure != 0;
+                let mut lab = prospect_refresh_lab();
+                let (socket, address, mut client) = controller_peer(&mut lab);
+                let backend = lab.peers[&address].backend_proxy.unwrap();
+                let engine = lab
+                    .player_controller_open
+                    .as_ref()
+                    .unwrap()
+                    .engine_net_version;
+                let codec = RepLayoutCodec {
+                    actor: actor_codec(engine, lab.config.packet.codec.order),
+                    checksums: false,
+                    limits: Default::default(),
+                };
+                let mut values = vec![RpcItem::Value(RepValue::Bool(true))];
+                let mut profile = authored_user_profile().unwrap();
+                profile[0] =
+                    RpcItem::Value(RepValue::Str(ArchiveText::text(&"A".repeat(2000)).unwrap()));
+                values.extend(profile);
+                let response = encode_rpc_payload(
+                    &backend_profile_response_parameters(false),
+                    &[RpcArgument::Sent(values)],
+                    &codec,
+                )
+                .unwrap();
+                let valid = client_actor_body(
+                    &lab,
+                    vec![field_block(
+                        subobject(backend),
+                        BACKEND_PROXY_FIELD_INDEX_BOUND,
+                        &[(RESPONSE_GET_USER_PROFILE, response)],
+                    )],
+                );
+                let payload = if malformed_tail {
+                    let mut writer = BitWriter::new();
+                    let mut reader = valid.reader();
+                    while reader.remaining() > 0 {
+                        writer.write_bit(reader.read_bit());
+                    }
+                    if failure == 1 {
+                        // A valid RPC prefix followed by a truncated content
+                        // header must not apply the staged response.
+                        writer.write_bit(true);
+                    } else {
+                        // Transport permits 64KiB; domain content blocks retain
+                        // their stricter 8KiB cap. Relax only the authored writer
+                        // to create a body the unchanged domain must reject.
+                        let mut oversized = BitWriter::new();
+                        for _ in 0..65_537 {
+                            oversized.write_bit(false);
+                        }
+                        let mut writing_codec = codec.actor;
+                        writing_codec.limits.max_payload_bits = 65_537;
+                        super::super::super::actor_channel::write_content_block(
+                            &mut writer,
+                            &ContentBlock {
+                                has_rep_layout: false,
+                                target: subobject(backend),
+                                payload: Payload::from_writer(oversized),
+                            },
+                            &writing_codec,
+                        )
+                        .unwrap();
+                    }
+                    Payload::from_writer(writer)
+                } else {
+                    valid.clone()
+                };
+                let first = client.initial_reliable().1 + 1;
+                let whole = Bunch {
+                    header: BunchHeader {
+                        control: false,
+                        open: false,
+                        close: false,
+                        close_reason: None,
+                        paused: false,
+                        reliable: true,
+                        channel_index: lab.peers[&address].player_controller_channel.unwrap(),
+                        has_package_map_exports: false,
+                        has_must_be_mapped_guids: false,
+                        partial: false,
+                        reliable_sequence_raw: Some(wire_reliable_sequence(first)),
+                        partial_initial: false,
+                        partial_final: false,
+                        channel_name: Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX)),
+                    },
+                    payload,
+                };
+                let parts = split_outgoing_bunch(&whole, &[], 7000, Some(64 * 1024)).unwrap();
+                assert!(parts.len() >= 3);
+                // Final-first queues; gapfill completes exactly once. A repeat
+                // of the final reliable value must never redispatch the RPC.
+                let mut order = vec![parts.last().unwrap().clone()];
+                order.extend(parts[..parts.len() - 1].iter().cloned());
+                order.push(parts.last().unwrap().clone());
+                for (index, part) in order.into_iter().enumerate() {
+                    let bytes = write_packet(
+                        &Packet {
+                            magic: 0,
+                            header: client.header().unwrap(),
+                            info: None,
+                            bunches: vec![part],
+                        },
+                        &lab.config.packet.packet,
+                    )
+                    .unwrap();
+                    client.commit().unwrap();
+                    receive_authored_at(&mut lab, &socket, &bytes, Instant::now());
+                    if index < parts.len() - 1 {
+                        assert_eq!(lab.stats.profile_user_responses_recognized, 0);
+                    }
+                }
+                assert_eq!(lab.stats.actor_partial_completed, 1);
+                assert_eq!(lab.stats.actor_duplicate_reliable, 1);
+                assert_eq!(
+                    lab.stats.profile_user_responses_recognized,
+                    u64::from(!malformed_tail)
+                );
+                // No request was outstanding: successful parsing reaches the
+                // existing phase guard, without profile publication or world claims.
+                assert_eq!(
+                    lab.stats.profile_responses_ignored,
+                    u64::from(!malformed_tail)
+                );
+                assert_eq!(lab.stats.profile_user_responses_received, 0);
+                if malformed_tail {
+                    assert_eq!(
+                        lab.controller_field_diagnostics(address)
+                            .unwrap()
+                            .malformed_bunches,
+                        1
+                    );
+                    // The failed complete body does not poison the next sequence.
+                    let recovery = split_outgoing_bunch(
+                        &Bunch {
+                            header: BunchHeader {
+                                reliable_sequence_raw: Some(wire_reliable_sequence(
+                                    first + parts.len() as u32,
+                                )),
+                                ..whole.header
+                            },
+                            payload: valid,
+                        },
+                        &[],
+                        7000,
+                        Some(64 * 1024),
+                    )
+                    .unwrap();
+                    for part in recovery {
+                        let bytes = write_packet(
+                            &Packet {
+                                magic: 0,
+                                header: client.header().unwrap(),
+                                info: None,
+                                bunches: vec![part],
+                            },
+                            &lab.config.packet.packet,
+                        )
+                        .unwrap();
+                        client.commit().unwrap();
+                        receive_authored_at(&mut lab, &socket, &bytes, Instant::now());
+                    }
+                    assert_eq!(lab.stats.profile_user_responses_recognized, 1);
+                    assert_eq!(lab.stats.profile_responses_ignored, 1);
+                }
+            }
         }
 
         #[test]
