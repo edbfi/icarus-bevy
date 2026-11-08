@@ -82,8 +82,8 @@ pub const DEFAULT_SENT_CAPACITY: usize = 256;
 pub const DEFAULT_MAX_BUNCHES_PER_PACKET: usize = 32;
 /// Native defensive bounds, not claims of original-engine equivalence.
 pub const MAX_ACTOR_PARTIAL_ASSEMBLIES: usize = 16;
-// A 128 KiB body needs 138 ordinary 953-byte fragments. This independent
-// defensive count bound also limits empty/tiny fragments; bytes remain charged.
+/// A 128 KiB body needs 138 ordinary 953-byte fragments. This independent
+/// defensive count bound also limits empty/tiny fragments; bytes remain charged.
 pub const MAX_ACTOR_PARTIAL_PARTS: usize = 256;
 pub const MAX_ACTOR_PARTIAL_BYTES_PER_PEER: usize = 256 * 1024;
 /// Lab choice: unacknowledged outgoing reliable control bunches one peer may

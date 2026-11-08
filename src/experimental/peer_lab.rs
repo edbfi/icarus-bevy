@@ -11913,7 +11913,8 @@ mod tests {
         fn fragmented_authored_user_profile_dispatches_once_after_complete_atomic_parse() {
             use super::super::super::{
                 probe_initialise::authored_user_profile,
-                rep_rpc::backend_profile_response_parameters, sequencing::split_outgoing_bunch,
+                rep_rpc::backend_profile_response_parameters,
+                sequencing::{MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, split_outgoing_bunch},
             };
             for failure in 0..2 {
                 let malformed_tail = failure != 0;
@@ -11956,8 +11957,9 @@ mod tests {
                     while reader.remaining() > 0 {
                         writer.write_bit(reader.read_bit());
                     }
-                    // A valid response larger than the former 8 KiB cap
-                    // still applies only after the whole body validates.
+                    // A stray bit after a response larger than the former
+                    // 8 KiB cap starts a truncated content header, so the
+                    // whole body fails without applying the response.
                     writer.write_bit(true);
                     Payload::from_writer(writer)
                 } else {
@@ -11983,7 +11985,13 @@ mod tests {
                     },
                     payload,
                 };
-                let parts = split_outgoing_bunch(&whole, &[], 7000, Some(64 * 1024)).unwrap();
+                let parts = split_outgoing_bunch(
+                    &whole,
+                    &[],
+                    7000,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+                .unwrap();
                 assert!(parts.len() >= 3);
                 // Final-first queues; gapfill completes exactly once. A repeat
                 // of the final reliable value must never redispatch the RPC.
@@ -12045,7 +12053,7 @@ mod tests {
                         },
                         &[],
                         7000,
-                        Some(64 * 1024),
+                        Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
                     )
                     .unwrap();
                     for part in recovery {
