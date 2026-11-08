@@ -48,7 +48,7 @@ Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 `--flod-tile-count` (0). Startup: 1–32 actions, default none.
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
 Password unvalidated: no real passwords.
-Diagnostics: [network readiness](network-readiness.md) (F-1040).
+Diagnostics: [network readiness](network-readiness.md) (F-1045).
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
