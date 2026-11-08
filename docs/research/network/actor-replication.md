@@ -15,10 +15,8 @@ F-1024 inert models; F-1034 replay. Bindings/cause: U-079.
 
 State/restart F-1036; fragmented BackendProxy baseline
 F-1038. Request/binding guards F-1039/F-1041; diagnostics F-1045/F-1042.
-Live assembly F-1043 and measured profile progress F-1044 move the wait to
-CharacterProfile (U-079). Body rejection diagnostics F-1045 retain native bounds;
-the malformed cause and second completion remain unidentified. Capture loss
-limits absence claims; world entry and compatibility remain unproved.
+Assembly F-1043 and progress F-1044 move the wait to CharacterProfile;
+malformed cause unknown (U-079).
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
