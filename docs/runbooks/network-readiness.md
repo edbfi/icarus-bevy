@@ -10,8 +10,18 @@ stderr progress JSON, stdout final pre-shutdown counts.
 
 `controller_fields` (final: `controller_fields_before_shutdown`): ≤64 target/
 index/bit-count/disposition/count rows per peer/aggregate, plus overflow/malformed
-counts; no payloads/identities. Removal drops rows. Recognition is not application;
+counts and `unknown_subobject_blocks`; no payloads/identities. Removal drops rows. Recognition is not application;
 malformed tails apply nothing; overflow prevents absence claims.
+
+`sessions.profile_{user,character}_responses_recognized` counts parsed profile
+calls applied after whole-bunch validation, including failure/wrong-phase calls.
+Wrong phase also increments `profile_responses_ignored`; malformed bunches apply
+no calls. `profile_{user,character}_publications_deferred` counts publication
+attempts retained behind drainable transport pressure; retries add no ingress.
+Existing `profile_{user,character}_responses_received` counts successful
+PlayerState publication admission, not RPC ingress. A zero count alone cannot
+prove no response. Unknown-subobject blocks are unattributed skipped blocks,
+not identified profile traffic (F-1040).
 
 ### Private selected RPC82 capture
 
