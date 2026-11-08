@@ -94,7 +94,8 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   `ProcessBunch` and `UActorChannel::ReplicateActor` call
   `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor`,
   1-B `uint8 NetPlayerIndex` (`+0x3d4`) on `APlayerController`.
-  ReplicateActor flags, lifecycle filters and dormancy: F-751/F-845/F-849.
+  ReplicateActor matches across builds (F-761); dormant CleanUp F-710;
+  StartBecomingDormant and flag detail: M-748.
 - Content blocks (F-644, F-703 to F-709, F-846, F-849): a client's sub-object
   block carries no stably-named bit or class after its reference (F-972).
   F-849 framing feeds
