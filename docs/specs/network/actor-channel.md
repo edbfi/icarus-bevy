@@ -17,8 +17,15 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
 
 - State/predicate and possession restart chain: F-1036. Dedicated predicate
   false does not prove stock-client execution.
-- Restart reaches Begin/UserProfile wait. Private headers show configured
-  BackendProxy traffic in four parts, without RPC identity/world entry (F-1049).
+- Retry admits both profiles and initialises, with transport settled; friends
+  and finalisation remain absent at Preparing geometry (F-1050).
+- Official AddConnectedPlayer queries every registered controller via reliable
+  parameterless ClientQueryForFriendsList (118); success/failure callbacks
+  send ServerFriendsListUpdated (126). Native Begin queues that query,
+  coalesces pressure, repairs loss and waits for an actual response (F-1051).
+  ACKs alone do not establish friends readiness or UI/world progress.
+- Field66 acknowledges possession; configured Backend field86 requests account
+  flag synchronization through the client. Neither is a visibility ACK (F-1052).
 - Matched UserProfile request/identifier/backend callback guards: F-1039.
   Public phases F-1045 and opt-in private headers F-1042 separate observation
   boundaries, not client handler execution. Matched requested subobject
@@ -28,8 +35,8 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   Constructed partials use a 64 KiB executable default, overridden to 128 KiB
   by shipped configuration (F-1047). Native assembly/block envelopes follow
   that setting; fragment-count and peer budgets remain defensive (F-1043).
-  CharacterProfile parameter/handler guards: F-1048. F-1049's RPC identity
-  remains unknown; completion proves no RPC identity or stock-client progress.
+  CharacterProfile parameter/handler guards: F-1048; connected admission
+  follows F-1050. Recognition is not independent wire identity proof.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
@@ -87,25 +94,7 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   `ProcessBunch` and `UActorChannel::ReplicateActor` call
   `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor`,
   1-B `uint8 NetPlayerIndex` (`+0x3d4`) on `APlayerController`.
-  - `ReplicateActor` exits early on `Closing && ResendAllDataState == 0`,
-    `bIsReplicatingActor` (`+0x88 & 0x4`), `bActorIsPendingKill` (`+0x88 & 0x20`),
-    `RF_PendingKill | RF_Unreachable` in `GUObjectArray` (sets `+0x88 |= 0x20`,
-    releases `ActorReplicator` `+0x90`), opened `OpenPacketId.First != -1` with
-    ready levels and `vtable[+0x300]()`, or `FOutBunch::IsError()`.
-  - It sets `FReplicationFlags` (`bNetOwner`; `bNetInitial` when
-    `OpenPacketId.First == -1 || ResendAllDataState != 0` unless
-    `ResendAllDataState == 2 && bSpawnedForReplay` `+0x30 & 0x2000`;
-    `bNetSimulated`, `bRepPhysics`, `bReplay`), downgrades `RemoteRole`
-    `ROLE_AutonomousProxy (2)` to `ROLE_SimulatedProxy (1)` while `!bNetOwner`,
-    calls `SerializeNewActor`/`OnSerializeNewActor` on
-    `bNetInitial && SpawnAcked` (`+0x30 & 0x1000`), runs `ReplicateProperties`,
-    `ReplicateSubobjects` and stale-subobject deletions (`ResendAllDataState == 0`),
-    sends iff bits were written, sets `LastUpdateTime = Driver->ElapsedTime`
-    (`+0x80`) and clears `bForceCompareProperties` (`+0x88 &= ~2`).
-  - `StartBecomingDormant` sets
-    `bPendingDormancy = 1` across `ReplicationMap` (`+0xa0`); `bClose` with
-    `CloseReason == 1` (`ChannelCloseReason::Dormancy`) sets
-    `NetDormancy = DORM_DormantAll` (`2`) in `CleanUp` and keeps the actor.
+  ReplicateActor flags, lifecycle filters and dormancy: F-751/F-845/F-849.
 - Content blocks (F-644, F-703 to F-709, F-846, F-849): a client's sub-object
   block carries no stably-named bit or class after its reference (F-972).
   F-849 framing feeds
@@ -185,8 +174,8 @@ scheduling or stock-client qualification.
 ## Open questions
 
 - U-079: live visibility bindings/effects and client profile execution remain
-  unqualified; conditional payload replay F-1034 and header instrumentation
-  F-1042 supply neither.
+  unqualified; F-1034/F-1042 supply neither. Friends-query qualification
+  F-1051 does not clear them.
 
 - Authenticated runtime relevancy and priority exercise (U-038).
 
@@ -194,4 +183,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232; earlier observations: cited findings.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330; earlier observations: cited findings.

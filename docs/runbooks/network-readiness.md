@@ -84,6 +84,10 @@ decoded; 2: empty/rejected; 1: failure (including help requests).
 Completeness/provenance/compatibility remain unverified; bind sync/final summary/
 hashes in the case.
 
+`sessions.friends_list_queries_queued`: reliable field118 admissions, including
+requeries when another player begins. It is not client execution.
+`friends_lists_received` and `players_finalised` remain separate (F-1051).
+
 ## Readiness counts
 
 Receipts latch positive ACKs on open/nonclosing channels until removal.
