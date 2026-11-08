@@ -146,7 +146,9 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
   CallPreReplication; prioritization handles owner expiry and dormancy.
   RelevantTime and force-frame rules remain F-788/F-851. Saturation, startup
   level initialization and tear-off affect replication/close; no runtime
-  relevancy/priority qualification follows (U-038).
+  relevancy/priority qualification follows (U-038). Numeric thresholds and
+  defaults remain in the source-bound constants/comments in
+  [actor_channel.rs](../../../src/experimental/actor_channel.rs).
 - GameState updates (F-805, F-807): ~30 Hz unreliable actor blocks (component
   blocks may follow) carry changed `TimeOfDay` (38), 0.1 s
   `ReplicatedWorldTimeSeconds` (19), whole-second `LevelTimeElapsedSec` (46),

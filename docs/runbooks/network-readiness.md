@@ -10,11 +10,13 @@ stderr progress JSON, stdout final pre-shutdown counts.
 
 `controller_fields` (final: `controller_fields_before_shutdown`): ≤64 target/
 index/bit-count/disposition/count rows per peer/aggregate, plus overflow/malformed
-counts and `unknown_subobject_blocks`; no payloads/identities. Removal drops rows. Recognition is not application;
-malformed tails apply nothing; overflow prevents absence claims.
+counts and `unknown_subobject_blocks`; no payloads/identities. Removal drops
+rows. Recognition is not application; malformed tails apply nothing; overflow
+prevents absence claims.
 
 `sessions.profile_{user,character}_responses_recognized` counts parsed profile
-calls applied after whole-bunch validation, including failure/wrong-phase calls.
+calls dispatched after whole-bunch validation, including failure/wrong-phase
+calls.
 Wrong phase also increments `profile_responses_ignored`; malformed bunches apply
 no calls. `profile_{user,character}_publications_deferred` counts publication
 attempts retained behind drainable transport pressure; retries add no ingress.
