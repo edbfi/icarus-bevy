@@ -16,15 +16,17 @@ use super::{
     packet::Bunch,
     peer_lab::validate_controller_capture,
     rep_rpc::read_field_header,
-    sequencing::{PartialBunchReassembler, PartialReceive},
+    sequencing::{MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive},
 };
 
 pub const MAX_OBSERVATIONS: usize = 16;
 pub const MAX_FIELD_BYTES: usize = 8 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 /// Separate transient framing budget; no whole bunch is persisted.
-const MAX_BUNCH_BYTES: usize = 16 * 1024;
+const MAX_BUNCH_BYTES: usize = MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES;
 const MAX_ASSEMBLIES: usize = 16;
+// Preserve the former 16 * 16 KiB aggregate transient payload allowance.
+const MAX_ASSEMBLY_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Default, Debug, Serialize)]
 pub struct CaptureCounts {
@@ -257,6 +259,12 @@ impl CaptureTap<'_> {
             if !self.sink.assemblies.contains_key(&key)
                 && self.sink.assemblies.len() >= MAX_ASSEMBLIES
             {
+                self.sink.drop_observation();
+                return;
+            }
+            let retained: usize = self.sink.assemblies.values().map(|s| s.retained_bits).sum();
+            if retained.saturating_add(bunch.payload.bit_len()) > MAX_ASSEMBLY_BYTES * 8 {
+                self.sink.assemblies.remove(&key);
                 self.sink.drop_observation();
                 return;
             }

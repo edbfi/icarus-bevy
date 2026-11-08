@@ -556,3 +556,70 @@ fn header_selection_reuses_exact_output_observation_and_partial_memory_caps() {
     assert_eq!(sink.counts().dropped, 1);
     assert_eq!(sink.finish().incomplete, 1);
 }
+
+#[test]
+fn header_selection_accepts_measured_length_without_persisting_payload() {
+    let mut output = tempfile::tempfile().unwrap();
+    let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+    let wire = header_wire(999, bits(131_729));
+    let (first, last) = parts(&wire);
+    tap(&mut sink).observe(&first);
+    assert_eq!(sink.counts().observations, 0);
+    tap(&mut sink).observe(&last);
+    assert_eq!(sink.finish().incomplete, 0);
+    assert_eq!(sink.counts().retained_payload_bits, 0);
+    let records = rows(&mut output);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["block_payload_bits"], 131_729);
+    assert!(records[0].get("payload_hex").is_none());
+}
+
+#[test]
+fn header_selection_assembly_envelope_accepts_equality_and_refuses_excess() {
+    let limit = 131_072 * 8;
+    let overhead = header_wire(999, bits(limit - 64)).payload.bit_len() - (limit - 64);
+    for count in [limit - 1, limit, limit + 1] {
+        let mut output = tempfile::tempfile().unwrap();
+        let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+        let wire = header_wire(999, bits(count - overhead));
+        assert_eq!(wire.payload.bit_len(), count);
+        let (first, last) = parts(&wire);
+        tap(&mut sink).observe(&first);
+        tap(&mut sink).observe(&last);
+        let accepted = count <= limit;
+        assert_eq!(sink.counts().observations, u64::from(accepted));
+        assert_eq!(sink.counts().dropped, u64::from(!accepted));
+        assert_eq!(sink.counts().pending_assemblies, 0);
+        assert_eq!(rows(&mut output).len(), usize::from(accepted));
+    }
+}
+
+#[test]
+fn header_selection_preserves_aggregate_transient_budget() {
+    for retained_bytes in [262_143, 262_144, 262_145] {
+        let mut sink = PrivateRpc82Capture::from_header_file(tempfile::tempfile().unwrap());
+        for (connection, bytes) in [(1, 131_072), (2, 131_071), (3, retained_bytes - 262_143)] {
+            if bytes == 0 {
+                continue;
+            }
+            let mut wire = header_wire(999, bits(1));
+            wire.payload = bits(bytes * 8);
+            wire.header.partial = true;
+            wire.header.partial_initial = true;
+            let mut observer = tap(&mut sink);
+            observer.connection_ordinal = connection;
+            observer.observe(&wire);
+        }
+        let accepted = retained_bytes <= 262_144;
+        assert_eq!(sink.counts().dropped, u64::from(!accepted));
+        assert_eq!(
+            sink.assemblies
+                .values()
+                .map(|s| s.retained_bits)
+                .sum::<usize>(),
+            if accepted { retained_bytes } else { 262_143 } * 8
+        );
+        assert_eq!(sink.counts().observations, 0);
+        assert_eq!(sink.finish().incomplete, 1);
+    }
+}

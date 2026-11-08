@@ -82,7 +82,9 @@ pub const DEFAULT_SENT_CAPACITY: usize = 256;
 pub const DEFAULT_MAX_BUNCHES_PER_PACKET: usize = 32;
 /// Native defensive bounds, not claims of original-engine equivalence.
 pub const MAX_ACTOR_PARTIAL_ASSEMBLIES: usize = 16;
-pub const MAX_ACTOR_PARTIAL_PARTS: usize = 64;
+/// A 128 KiB body needs 138 ordinary 953-byte fragments. This independent
+/// defensive count bound also limits empty/tiny fragments; bytes remain charged.
+pub const MAX_ACTOR_PARTIAL_PARTS: usize = 256;
 pub const MAX_ACTOR_PARTIAL_BYTES_PER_PEER: usize = 256 * 1024;
 /// Lab choice: unacknowledged outgoing reliable control bunches one peer may
 /// hold; sending another fails without a state change. Matches
@@ -92,8 +94,8 @@ pub const MAX_PENDING_RELIABLE: usize = MAX_QUEUED_RELIABLE;
 /// `MaxPacketHandlerBits` behind `MAX_SINGLE_BUNCH_SIZE_BITS = 7,625` for
 /// `MaxPacket = 1024` (F-709); the lab writes no handler bits itself.
 pub const PACKET_HANDLER_BITS: u32 = 2;
-/// `NetMaxConstructedPartialBunchSizeBytes` default (`64` KiB, F-709).
-pub const MAX_CONSTRUCTED_BUNCH_BYTES: usize = 65_536;
+/// Matched shipped `NetMaxConstructedPartialBunchSizeBytes` (F-1047).
+pub const MAX_CONSTRUCTED_BUNCH_BYTES: usize = MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES;
 
 /// Resends carried by one assembled datagram, with their wire bunches.
 type Resends = Vec<(Resend, Bunch)>;
@@ -1916,13 +1918,43 @@ mod actor_partial_budget_tests {
     }
 
     #[test]
+    fn live_partial_byte_bound_accepts_equality_and_refuses_before_append() {
+        for bytes in [131_071, 131_072, 131_073] {
+            let (mut peer, mut summary) = fixture();
+            // A retained initial chunk plus the final byte exercises the
+            // append preflight and cleanup, independently of datagram size.
+            assert!(
+                peer.complete_actor_bunch(part(1, true, false, bytes - 1), 1, &mut summary)
+                    .is_none()
+            );
+            let complete = peer.complete_actor_bunch(part(1, false, true, 1), 2, &mut summary);
+            if bytes <= 131_072 {
+                assert_eq!(complete.unwrap().payload.bit_len(), bytes * 8);
+                assert_eq!(summary.actor_partial_rejected, 0);
+            } else {
+                assert!(complete.is_none());
+                assert_eq!(summary.actor_partial_rejected, 1);
+            }
+            assert!(peer.actor_partials.is_empty());
+            assert!(
+                peer.complete_actor_bunch(part(1, true, true, 1), 3, &mut summary)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
     fn live_partial_memory_limits_refuse_before_append_and_release_rejected_state() {
         // Direct assembly boundary tests allow large authored parts, independently
         // of the stricter datagram size and domain content-block limits.
         let (mut peer, mut summary) = fixture();
         assert!(
-            peer.complete_actor_bunch(part(1, true, false, 65_536), 1, &mut summary)
-                .is_none()
+            peer.complete_actor_bunch(
+                part(1, true, false, MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                1,
+                &mut summary
+            )
+            .is_none()
         );
         assert!(
             peer.complete_actor_bunch(part(1, false, true, 1), 2, &mut summary)

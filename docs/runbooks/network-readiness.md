@@ -40,7 +40,8 @@ Persist only controller-channel actor field 82 after reliable ordering/duplicate
 suppression and whole-bunch validation: malformed tails publish no prefix.
 Length is not a filter (including 612 bits); retain the first payload within
 ceilings: 16 observations, 8 KiB/field, 256 KiB encoded JSON/hex/newlines charged
-exactly during staging. Transient reassembly: ≤16 assemblies × 16 KiB.
+exactly during staging. Transient reassembly: 128 KiB/assembly, 16 assemblies,
+256 KiB aggregate (F-1042).
 Packets/unrelated values are never persisted; exports/must-map/open/close/paused
 bunches are unsupported.
 

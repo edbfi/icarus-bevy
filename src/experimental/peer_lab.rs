@@ -10625,10 +10625,10 @@ mod tests {
                     .active_prospect
                     .as_mut()
                     .unwrap()
-                    .insert(56, RepValue::Str(ArchiveText::new(&[65; 9_000]).unwrap()));
+                    .insert(56, RepValue::Str(ArchiveText::new(&[256; 65_535]).unwrap()));
                 (handle::ACTIVE_PROSPECT, status_values, prospect)
             } else {
-                status.current_host_player_name = vec![66; 9_000];
+                status.current_host_player_name = vec![256; 65_535];
                 (handle::NETWORKING_STATUS, prospect, status_values)
             };
             let earlier = Instant::now() - Duration::from_secs(2);
@@ -10989,7 +10989,7 @@ mod tests {
         assert!(lab.complete_prospect_member_spawn(other_slot).unwrap());
         let before = lab.game_state_open.as_ref().unwrap().clone();
         let guids = format!("{:?}", lab.guid_cache);
-        for bad_name in [vec![0], vec![65; 65_536], vec![65; 8_190]] {
+        for bad_name in [vec![0], vec![65; 65_536], vec![256; 65_535]] {
             let mut invalid = member.clone();
             invalid.user_id = "UNIQUE".encode_utf16().collect();
             invalid.account_name = bad_name;
@@ -11222,17 +11222,17 @@ mod tests {
             },
             // Each string fits the actor block; their combined bytes do not.
             ProspectInfo {
-                prospect_id: vec![65; 4_500],
-                lobby_name: vec![66; 4_500],
+                prospect_id: vec![65; 65_535],
+                lobby_name: vec![66; 65_535],
                 ..Default::default()
             },
             ProspectInfo {
-                associated_members: vec![AssociatedMember::default(); 512],
+                associated_members: vec![AssociatedMember::default(); 8_193],
                 ..Default::default()
             },
-            // ASCII text fits 8 KiB, but its framing exceeds the actor block.
+            // Wide text fits 128 KiB, but its framing exceeds the actor block.
             ProspectInfo {
-                lobby_name: vec![65; 8_190],
+                lobby_name: vec![256; 65_535],
                 ..Default::default()
             },
         ] {
@@ -11294,7 +11294,7 @@ mod tests {
     fn prospect_refresh_rejects_combined_dynamic_open_without_publishing() {
         use super::super::{archive::ByteOrder, prospect_info::ProspectInfo};
         let large = ProspectInfo {
-            lobby_name: vec![65; 7_000],
+            lobby_name: vec![256; 50_000],
             elapsed_time: 9,
             ..Default::default()
         };
@@ -11304,7 +11304,7 @@ mod tests {
             .unwrap();
         let mut lab = prospect_refresh_lab();
         let mut status = NetworkingStatus::local(600.0);
-        status.current_host_player_name = vec![66; 2_000];
+        status.current_host_player_name = vec![256; 20_000];
         lab.enable_networking_status(status).unwrap();
         // The dynamic status alone also fits, with a small current prospect.
         lab.refresh_active_prospect(&ProspectInfo {
@@ -11343,7 +11343,7 @@ mod tests {
                 before.channel_index,
                 order,
             )
-            .expect_err("the combined actor content block exceeds 65,536 bits");
+            .expect_err("the combined actor content block exceeds 128 KiB");
             assert!(format!("{error:#}").contains("payload bit limit"));
         }
         assert!(lab.refresh_active_prospect(&large).is_err());
@@ -11913,9 +11913,10 @@ mod tests {
         fn fragmented_authored_user_profile_dispatches_once_after_complete_atomic_parse() {
             use super::super::super::{
                 probe_initialise::authored_user_profile,
-                rep_rpc::backend_profile_response_parameters, sequencing::split_outgoing_bunch,
+                rep_rpc::backend_profile_response_parameters,
+                sequencing::{MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, split_outgoing_bunch},
             };
-            for failure in 0..3 {
+            for failure in 0..2 {
                 let malformed_tail = failure != 0;
                 let mut lab = prospect_refresh_lab();
                 let (socket, address, mut client) = controller_peer(&mut lab);
@@ -11932,8 +11933,9 @@ mod tests {
                 };
                 let mut values = vec![RpcItem::Value(RepValue::Bool(true))];
                 let mut profile = authored_user_profile().unwrap();
-                profile[0] =
-                    RpcItem::Value(RepValue::Str(ArchiveText::text(&"A".repeat(2000)).unwrap()));
+                profile[0] = RpcItem::Value(RepValue::Str(
+                    ArchiveText::text(&"A".repeat(10000)).unwrap(),
+                ));
                 values.extend(profile);
                 let response = encode_rpc_payload(
                     &backend_profile_response_parameters(false),
@@ -11955,31 +11957,10 @@ mod tests {
                     while reader.remaining() > 0 {
                         writer.write_bit(reader.read_bit());
                     }
-                    if failure == 1 {
-                        // A valid RPC prefix followed by a truncated content
-                        // header must not apply the staged response.
-                        writer.write_bit(true);
-                    } else {
-                        // Transport permits 64KiB; domain content blocks retain
-                        // their stricter 8KiB cap. Relax only the authored writer
-                        // to create a body the unchanged domain must reject.
-                        let mut oversized = BitWriter::new();
-                        for _ in 0..65_537 {
-                            oversized.write_bit(false);
-                        }
-                        let mut writing_codec = codec.actor;
-                        writing_codec.limits.max_payload_bits = 65_537;
-                        super::super::super::actor_channel::write_content_block(
-                            &mut writer,
-                            &ContentBlock {
-                                has_rep_layout: false,
-                                target: subobject(backend),
-                                payload: Payload::from_writer(oversized),
-                            },
-                            &writing_codec,
-                        )
-                        .unwrap();
-                    }
+                    // A stray bit after a response larger than the former
+                    // 8 KiB cap starts a truncated content header, so the
+                    // whole body fails without applying the response.
+                    writer.write_bit(true);
                     Payload::from_writer(writer)
                 } else {
                     valid.clone()
@@ -12004,7 +11985,13 @@ mod tests {
                     },
                     payload,
                 };
-                let parts = split_outgoing_bunch(&whole, &[], 7000, Some(64 * 1024)).unwrap();
+                let parts = split_outgoing_bunch(
+                    &whole,
+                    &[],
+                    7000,
+                    Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
+                )
+                .unwrap();
                 assert!(parts.len() >= 3);
                 // Final-first queues; gapfill completes exactly once. A repeat
                 // of the final reliable value must never redispatch the RPC.
@@ -12050,12 +12037,9 @@ mod tests {
                     );
                     let body = lab.controller_field_diagnostics(address).unwrap();
                     assert_eq!(body.body_parse_failures, 1);
-                    assert_eq!(body.block_payload_limit_rejections, u64::from(failure == 2));
+                    assert_eq!(body.block_payload_limit_rejections, 0);
                     assert_eq!(body.block_payload_length_rejections, 0);
-                    assert_eq!(
-                        body.max_rejected_block_payload_bits,
-                        if failure == 2 { 65_537 } else { 0 }
-                    );
+                    assert_eq!(body.max_rejected_block_payload_bits, 0);
                     // The failed complete body does not poison the next sequence.
                     let recovery = split_outgoing_bunch(
                         &Bunch {
@@ -12069,7 +12053,7 @@ mod tests {
                         },
                         &[],
                         7000,
-                        Some(64 * 1024),
+                        Some(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES),
                     )
                     .unwrap();
                     for part in recovery {
@@ -12095,6 +12079,8 @@ mod tests {
         #[test]
         fn body_rejection_diagnostics_distinguish_available_oversize_from_bad_declaration() {
             use super::super::super::actor_channel::ContentBlockPayloadReadError;
+            let limit = actor_codec(17, ByteOrder::Little).limits.max_payload_bits;
+            let above = u32::try_from(limit + 1).unwrap();
             let mut omitted = BitWriter::new();
             omitted.write_bit(false);
             let valid = encode_actor_bunch_body(
@@ -12109,7 +12095,7 @@ mod tests {
                 &actor_codec(17, ByteOrder::Little),
             )
             .unwrap();
-            for (declared, available) in [(65_537_u32, 65_537_usize), (65_537, 0), (16, 0)] {
+            for (declared, available) in [(above, limit + 1), (above, 0), (16, 0)] {
                 let mut writer = BitWriter::new();
                 let mut prefix = valid.reader();
                 while prefix.remaining() > 0 {
@@ -12134,13 +12120,13 @@ mod tests {
                 let rejection = error
                     .downcast_ref::<ContentBlockPayloadReadError>()
                     .unwrap();
-                if declared > 65_536 {
+                if declared as usize > limit {
                     assert_eq!(
                         *rejection,
                         ContentBlockPayloadReadError::Limit {
                             declared_bits: declared as usize,
                             available_bits: available,
-                            limit_bits: 65_536,
+                            limit_bits: limit,
                         }
                     );
                     assert_eq!(

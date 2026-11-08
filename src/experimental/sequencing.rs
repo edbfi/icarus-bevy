@@ -32,8 +32,11 @@ pub const RELIABLE_HALF_RANGE: u32 = RELIABLE_SEQUENCE_LIMIT / 2;
 pub const MAX_QUEUED_RELIABLE: usize = 255;
 /// Maximum constructed partial bunch size enforced on a non-client receiver
 /// (`NetMaxConstructedPartialBunchSizeBytes` at `0x146056454`,
-/// `UChannel::ReceivedNextBunch` `0x1437c5500`, F-710).
-pub const MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES: usize = 65_536;
+/// `UChannel::ReceivedNextBunch` `0x1437c5500`, F-710). Matched 26425113:
+/// global `0x145f73cac`, receive comparison `0x14355a549..0x14355a562`
+/// rounds bits up to bytes and accepts equality. The executable default is
+/// 65,536 bytes; shipped DefaultEngine.ini overrides it to 131,072 (F-1047).
+pub const MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES: usize = 131_072;
 /// Fixed packet + bunch header/trailer bit overhead subtracted from
 /// `Connection->MaxPacket * 8 - Connection->MaxPacketHandlerBits` in
 /// `UChannel::SendBunch` (`0x1437c9690` line 82) and

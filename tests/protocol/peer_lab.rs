@@ -3585,7 +3585,7 @@ fn authored_motion_sends_complete_quantized_changes_and_rejects_invalid_attempts
         assert_eq!(format!("{:?}", lab(&app).guid_cache()), before_guid);
         let mut oversized = spec.clone();
         let mut writer = BitWriter::new();
-        writer.write_bytes(&vec![0; 8193]); // Above the actor block's 65,536-bit cap.
+        writer.write_bytes(&vec![0; 131_073]); // Above the shipped 128 KiB envelope.
         oversized
             .blocks
             .push(icarus_bevy::experimental::actor_channel::ContentBlock {
