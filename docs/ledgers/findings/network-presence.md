@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-07
+Last reconciled: 2026-11-08
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -36,3 +36,8 @@ Last reconciled: 2026-11-07
 | F-1027 | 3.0.35 ConstructUClass consumes 76-byte headers; four selected classes have property/function totals 36/72, 99/233, 9/68, 4/23. The link consumer steps 16 bytes | observed | static-metadata; M-1267/ev_c1b1a6eb5ca7, M-1268 | high; totals are not net counts; descriptors, ancestry, ordering/checksums and release remain unqualified | U-038, U-079 | active |
 | F-1028 | Matched 3.0.35 PDB declares FClassParams 80 B with ClassFlags at +0x48, FPropertyParamsBase 40 B and FFunctionParams 72 B; 30 selected data-member layouts read | observed | static-metadata; M-1270/ev_5db7cb396e37, M-1271 | high; declarations only; enum values, consumer semantics, ancestry, net ordering/checksums and compatibility unqualified | U-038, U-079 | active |
 | F-1034 | Build 26425113 retains the selected conditional custom/name route; private RPC82 replay accepts one present value and consumes 612/612 bits | derived | static/replay; M-1292, M-1293, M-1294, M-1295 | bounded; explicit normal archive/layout; lengths only; no runtime-installation, Begin, effects or world-entry proof | U-079 | active |
+| F-1036 | Matched dedicated Begin caller follows state/local-controller guards; possession subclass reaches ClientRestart producer | derived | static-flow; M-1299, M-1300, M-1301/ev_03170a6ccf0a, M-1301/ev_7e88c77d047a | high; dedicated local predicate false; no client execution or visibility cause | U-038, U-079 | active |
+| F-1037 | Frozen matched capture sent no configured controller startup actions; existing RestartPawn sends field40 after pawn/controller ACK | measured | source/capture; M-1293, M-1302 | high; omitted restart is a candidate; ACK is not execution or world entry | U-038, U-079 | active |
+| F-1038 | Matched restart-only capture recognized Begin124 and awaited UserProfile; initialization/world entry remained incomplete | observed | bounded-capture; M-1303, M-1304 | high; request socket-send1, publication-admitted0; no per-request ACK or absent-ingress proof; UI geometry wait | U-038, U-079 | active |
+| F-1039 | Matched dedicated UserProfile handler guards in-flight request, derives owner PlayerState ID, activates backend callback and clears request before response | derived | static-flow; M-1305/ev_7b6b53388405, M-1305/ev_9cdabfdf1d1e, M-1305/ev_9b76f8da0441 | high; field25 signature/bound retained F-1032; no client execution or framing defect established | U-079 | active |
+| F-1040 | Profile diagnostics separate parsed response application, phase rejection, deferred publication and admitted publication; unknown subobject blocks counted without identity | measured | authored-test; M-1308 | high; bounded counters only; unknown blocks are not identified as profile traffic; no handler or world-entry proof | U-079 | active |

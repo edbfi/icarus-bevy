@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-07.
+Last reconciled: 2026-11-08.
 
 ## Scope
 
@@ -26,6 +26,17 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
 `CallPreReplication` server `0x14332f4f0`.
 
 ## Confirmed
+
+- Dedicated state/predicate and possession restart chain: F-1036. The selected
+  subclass reaches the base ClientRestart producer. Its dedicated local-controller
+  predicate returns false; shared-code presence proves no stock-client execution.
+- Native explicit RestartPawn sends field40 with the opened pawn GUID after
+  controller/pawn reliable settlement; frozen matched capture omitted it (F-1037).
+  Restart-only capture observed Begin124 and a UserProfile wait (F-1038),
+  without initialized players or world entry.
+- Matched UserProfile request/identifier/backend callback guards: F-1039.
+  Counter phases and unknown-subobject aggregate: F-1040; these diagnose
+  validation/application/publication boundaries, not client handler execution.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
@@ -126,61 +137,18 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
   `FQuat`, `FPlane`, `FDateTime`, `FTimespan`, `FRotator`, `FUniqueNetIdRepl`,
   `FStatPairRepState`, `FVector_NetQuantize*`, `FRepMovement`, `FHitResult`).
 - Server relevancy, priority, tick rate and replication stages match across
-  builds (F-761; server addresses in F-745, F-748, F-749, F-751; client bindings in the cited evidence):
-  - `IsNetRelevantFor`: `AActor`, `APawn`,
-    `APlayerController`, `AOnlineBeacon` (`GetNetConnection` equality if `bOnlyRelevantToOwner`, else
-    `Class == RealViewer->Class`), and `IsWithinNetRelevancyDistance`.
-  - `GetNetPriority`: `AActor` (`4.0` `ViewTarget`/`Instigator`
-    boost precedes `!bHidden && RootComponent`), `APlayerController`, `AMatineeActor` (adds
-    `1.0 - CreationTime / WorldTime` when `InChannel == nullptr`).
-  - `UGameEngine::GetMaxTickRate` clamps `NetServerMaxTickRate`
-    to `[1, 1000]` before the rate helper (`DefaultEngine.ini`:
-    `NetServerMaxTickRate=30`, `MaxClientRate` and `MaxInternetClientRate`
-    `750000`, `ConfiguredInternetSpeed=640000`, `ConfiguredLanSpeed=912000`,
-    `ConnectionTimeout` and `InitialConnectTimeout` `360.0`,
-    `ResolutionConnectionTimeout=120.0`).
-  - `UNetConnection::IsNetReady`:
-    `Saturate` sets `QueuedBits = -SendBuffer.GetNumBits()`; ready iff
-    `QueuedBits + SendBuffer.GetNumBits() <= 0` or within `+0x1ba0`.
-    `UChannel::IsNetReady`:
-    `NumOutRec < 255` and connection ready.
-  - `UNetDriver::ServerReplicateActors` increments
-    `ReplicationFrame` (`+0x420`), runs `PrepConnections`, sets
-    `ServerTickTime = (MaxTickRate <= 0.0) ? DeltaSeconds : 1.0 / MaxTickRate`
-    and `bCPUSaturated = (MaxTickRate > 0.0 && DeltaSeconds > 1.2 * ServerTickTime)`,
-    runs `BuildConsiderList`, then per connection `PrioritizeActors`,
-    `ProcessPrioritizedActors` and inlined `MarkRelevantActors`, rotating
-    `ClientConnections` left by `NumClientsToTick` when `< ClientConnections.Num()`.
-  - `PrepConnections` throttles `NumClientsToTick`; ready iff
-    `ViewTarget != nullptr && State == USOCK_Open (3) && ElapsedTime - LastReceiveTime < 1.5`.
-  - `BuildConsiderList` removes
-    `PendingKill`, `ROLE_None` and initialized `bNetStartup && DORM_Initial (4)`,
-    skips mismatched `NetDriverName` or future `NextUpdateTime`, lerps
-    `OptimalNetUpdateDelta` from `1 / NetUpdateFrequency` to
-    `max(1 / MinNetUpdateFrequency, 1 / NetUpdateFrequency)` by
-    `clamp((LastNetUpdateDelta - 2.0) * 0.2, 0.0, 1.0)` when `LastNetUpdateDelta > 2.0`
-    (`MinNetUpdateFrequency = 2.0` if `0.0`), updates `NextUpdateTime`/`LastNetUpdateTime`
-    when `!bPendingNetUpdate`, clears it and calls `CallPreReplication`.
-  - `PrioritizeActors` closes
-    expired `bOnlyRelevantToOwner` channels (`CloseReason = 3`), calls
-    `StartBecomingDormant` on `DORM_DormantAll (2)` / `DORM_DormantPartial (3)`,
-    uses `SpawnPrioritySeconds` without a channel else `ElapsedTime - LastUpdateTime`, rounds via
-    `cvtss2si` on `2 * (65536.0 * p) + 0.5` then `>> 1`,
-    and truncates `DestroyedStartupOrDormantActors` via `cvttss2si`
-    after `0.2` (`dot < 0 && dist_sq > 4M`) or `0.4` (`dot < 0 && dist_sq > 250k`,
-    or `dot >= 0 && dist_sq > 9,998,244`).
-  - `ProcessPrioritizedActors`
-    checks `IsNetReady(0)`, sends `SendDestructionInfo`, applies F-788's
-    `RelevantTime` rule and F-851's `ForceRelevantFrame` rule, delays unopenable
-    `< 1.0` Hz actors by `0.2 * srands()`, replicates until saturation, and
-    closes irrelevant/torn-off channels when
-    `has_channel && (!actor_level_initialized || !actor_is_net_startup)`
-    (`CloseReason` `4` on `bTearOff`, else `3`).
-  - Inlined `MarkRelevantActors`
-    sets `bPendingNetUpdate` when `Channel != nullptr && ElapsedTime - Channel->RelevantTime <= 1.0`
-    or `IsActorRelevantToConnection` (refreshing a channel's `RelevantTime` per
-    F-788), then applies F-851's `ForceRelevantFrame` and `LastProcessedFrame`
-    updates.
+  the older builds (F-761; selected server bindings F-745/F-748/F-749/F-751).
+  Actor/Pawn/Controller/Beacon relevancy and Actor/Controller/Matinee priority
+  remain distinct. Driver stages are PrepConnections, BuildConsiderList,
+  PrioritizeActors, ProcessPrioritizedActors and inlined MarkRelevantActors.
+  Readiness checks connection state, viewer, recent receive time and channel
+  capacity. Consideration filters lifecycle/driver/timing state before
+  CallPreReplication; prioritization handles owner expiry and dormancy.
+  RelevantTime and force-frame rules remain F-788/F-851. Saturation, startup
+  level initialization and tear-off affect replication/close; no runtime
+  relevancy/priority qualification follows (U-038). Numeric thresholds and
+  defaults remain in the source-bound constants/comments in
+  [actor_channel.rs](../../../src/experimental/actor_channel.rs).
 - GameState updates (F-805, F-807): ~30 Hz unreliable actor blocks (component
   blocks may follow) carry changed `TimeOfDay` (38), 0.1 s
   `ReplicatedWorldTimeSeconds` (19), whole-second `LevelTimeElapsedSec` (46),

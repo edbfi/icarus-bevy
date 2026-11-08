@@ -5,7 +5,7 @@ Checkpoint: [findings](ledgers/findings/), [unknowns](ledgers/unknowns.md),
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-11-06
+Last reconciled: 2026-11-08
 
 ## Summary
 
@@ -39,4 +39,4 @@ Digests: [foundation](research/foundation/foundation.md) and
 4. Network bounds F-841/F-975/F-1015/F-1016; restore F-973/F-976 to F-993; ticks/publication F-995 to F-1000. Next: environment/timing/callbacks U-069; new players F-947, refresh U-070, quests U-076, stock-client scenarios U-038/U-052.
 5. Replication replay/scheduling F-762/F-761, lifecycle/costs F-938/F-939/F-941/F-952. Rotation awaits qualification. Next: properties/poses U-025, physics, velocity and stock-client behavior. [Protocol](specs/network/actor-channel.md); [configuration](runbooks/native-server.md#network-sessions-experimental).
 6. Reliability F-1029/F-1030/F-872/F-873/F-875/F-833/F-932/M-1055/F-877. Next: wall-clock holds/controller receipts and physical power loss U-035; no ICARUS performance proof F-871.
-7. The 3.0.35 pin's tags, class profiles and row registry are qualified (F-1031 to F-1033). Matched visibility replay consumes the retained field (F-1034). Next: live bindings/effects and seed/FLOD/trait/RPC gaps (U-038/U-079); Begin remains absent. [Visibility](specs/network/visibility-state.md); [gates](gates.md).
+7. The 3.0.35 pin's tags, class profiles and row registry are qualified (F-1031 to F-1033). Matched visibility replay consumes the retained field (F-1034). Restart observed Begin but awaits UserProfile publication (F-1038). Next: client handler/identity/backend execution and live visibility bindings/effects (F-1039; U-038/U-079). [Visibility](specs/network/visibility-state.md); [gates](gates.md).

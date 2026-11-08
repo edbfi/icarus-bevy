@@ -734,9 +734,16 @@ pub struct PeerLabStats {
     pub initialisation_slots_recorded: u64,
     /// Slot -1, absent/failed PlayerState or a repeated call; pending opens retain Begin.
     pub initialisation_calls_ignored: u64,
+    /// Parsed profile calls dispatched after complete controller-bunch validation.
+    /// Includes unsuccessful and wrong-phase responses; excludes parse rejection.
+    pub profile_user_responses_recognized: u64,
+    pub profile_character_responses_recognized: u64,
+    /// Publication attempts retained behind drainable transport pressure.
+    pub profile_user_publications_deferred: u64,
+    pub profile_character_publications_deferred: u64,
     pub profile_user_requests_sent: u64,
     pub profile_character_requests_sent: u64,
-    /// Successful responses accepted while their request was outstanding.
+    /// Successful response publications admitted to reliable PlayerState transport.
     pub profile_user_responses_received: u64,
     pub profile_character_responses_received: u64,
     /// Unsuccessful outstanding responses (separate retry budgets, limit 3).
@@ -938,6 +945,13 @@ pub struct SessionCounts {
     pub player_controller_opens_sent: u64,
     pub initialisation_slots_recorded: u64,
     pub initialisation_calls_ignored: u64,
+    /// Parsed profile calls dispatched after complete controller-bunch validation.
+    /// Includes unsuccessful and wrong-phase responses; excludes parse rejection.
+    pub profile_user_responses_recognized: u64,
+    pub profile_character_responses_recognized: u64,
+    /// Publication attempts retained behind drainable transport pressure.
+    pub profile_user_publications_deferred: u64,
+    pub profile_character_publications_deferred: u64,
     pub profile_user_requests_sent: u64,
     pub profile_character_requests_sent: u64,
     pub profile_user_responses_received: u64,
@@ -1457,6 +1471,8 @@ pub struct ControllerFieldDiagnostics {
     pub entries: Vec<ControllerFieldSummary>,
     pub overflow: u64,
     pub malformed_bunches: u64,
+    /// Content blocks skipped because their subobject GUID is not permitted.
+    pub unknown_subobject_blocks: u64,
 }
 
 impl ControllerFieldDiagnostics {
@@ -1694,6 +1710,8 @@ fn controller_initialisation_calls(
                     .iter()
                     .position(|guid| *guid == Some(object.guid))
                 else {
+                    diagnostics.unknown_subobject_blocks =
+                        diagnostics.unknown_subobject_blocks.saturating_add(1);
                     continue;
                 };
                 (
@@ -4568,6 +4586,14 @@ impl PeerLab {
             player_controller_opens_sent: self.stats.player_controller_opens_sent,
             initialisation_slots_recorded: self.stats.initialisation_slots_recorded,
             initialisation_calls_ignored: self.stats.initialisation_calls_ignored,
+            profile_user_responses_recognized: self.stats.profile_user_responses_recognized,
+            profile_character_responses_recognized: self
+                .stats
+                .profile_character_responses_recognized,
+            profile_user_publications_deferred: self.stats.profile_user_publications_deferred,
+            profile_character_publications_deferred: self
+                .stats
+                .profile_character_publications_deferred,
             profile_user_requests_sent: self.stats.profile_user_requests_sent,
             profile_character_requests_sent: self.stats.profile_character_requests_sent,
             profile_user_responses_received: self.stats.profile_user_responses_received,
@@ -4673,6 +4699,9 @@ impl PeerLab {
         for peer in self.peers.values() {
             let diagnostics = &peer.controller_field_diagnostics;
             totals.overflow = totals.overflow.saturating_add(diagnostics.overflow);
+            totals.unknown_subobject_blocks = totals
+                .unknown_subobject_blocks
+                .saturating_add(diagnostics.unknown_subobject_blocks);
             totals.malformed_bunches = totals
                 .malformed_bunches
                 .saturating_add(diagnostics.malformed_bunches);
@@ -5299,6 +5328,14 @@ impl PeerLab {
                 }
             };
             if channel.is_some_and(|channel| transport_capacity_can_drain(entry, error, channel)) {
+                if let PendingProfileExchange::Publish(kind, _) = &pending {
+                    bump(match kind {
+                        ProfileKind::User => &mut self.stats.profile_user_publications_deferred,
+                        ProfileKind::Character => {
+                            &mut self.stats.profile_character_publications_deferred
+                        }
+                    });
+                }
                 entry.pending_profile_exchange = Some(pending);
                 entry.profile_exchange_retry_ready = false;
                 return;
@@ -5429,6 +5466,12 @@ impl PeerLab {
                 bump(&mut self.stats.friends_lists_received);
             }
             ControllerCall::Profile(response) => {
+                bump(match response.kind {
+                    ProfileKind::User => &mut self.stats.profile_user_responses_recognized,
+                    ProfileKind::Character => {
+                        &mut self.stats.profile_character_responses_recognized
+                    }
+                });
                 if entry.profiles.outstanding != Some(response.kind) {
                     bump(&mut self.stats.profile_responses_ignored);
                     return;
@@ -10255,6 +10298,107 @@ mod tests {
     }
 
     #[test]
+    fn parsed_user_response_survives_publication_pressure_without_reapplication() {
+        let mut lab = prospect_refresh_lab();
+        lab.config.packet.sent_capacity = 8;
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        let state_channel = lab.game_state_open.as_ref().unwrap().channel_index;
+        let profile = ReleaseProfile::release_3_0_32();
+        lab.enable_player_state_open(
+            profile
+                .player_state_open_plan(PeerLabAdmission::default().map_url)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        // Reuse the fixture's real settled actor transport for publication;
+        // this test concerns pressure and phase transitions, not actor spawn.
+        lab.game_state_open = None;
+        assert!(lab.send_player_controller_open(address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.player_state_channel = Some(state_channel);
+        entry.player = Some(RegisteredPlayer {
+            player_id: 1,
+            name_units: "AUTHORED-PROFILE-PRESSURE".encode_utf16().collect(),
+        });
+        entry.character_slot = Some(17);
+        entry.profiles.outstanding = Some(ProfileKind::User);
+        let capacity = entry.peer.config().sent_capacity;
+        for _ in 0..capacity {
+            let datagram = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&datagram, address));
+        }
+        let empty_array = || {
+            RepValue::DynamicArray(super::super::rep_layout::RepArray {
+                count: 0,
+                stream: super::super::rep_layout::PropertyStream {
+                    entries: vec![],
+                    terminator_checksum: None,
+                },
+            })
+        };
+        lab.controller_call(
+            address,
+            ControllerCall::Profile(ProfileResponse {
+                kind: ProfileKind::User,
+                success: true,
+                values: vec![
+                    RepValue::Str(ArchiveText::text("authored").unwrap()),
+                    empty_array(),
+                    empty_array(),
+                    empty_array(),
+                    RepValue::Int(0),
+                    RepValue::Int(0),
+                ],
+            }),
+        );
+        assert_eq!(lab.stats.profile_user_responses_recognized, 1);
+        assert_eq!(lab.stats.profile_user_publications_deferred, 1);
+        assert_eq!(lab.stats.profile_user_responses_received, 0);
+        assert_eq!(lab.readiness_counts().players_awaiting_user_profile, 1);
+        assert!(matches!(
+            lab.peers[&address].pending_profile_exchange,
+            Some(PendingProfileExchange::Publish(ProfileKind::User, _))
+        ));
+        for _ in 0..4 {
+            lab.retry_pending_profile_exchanges();
+        }
+        assert_eq!(lab.stats.profile_user_publications_deferred, 1);
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        lab.retry_pending_profile_exchanges();
+        assert_eq!(lab.stats.profile_user_responses_received, 1);
+        assert_eq!(lab.stats.profile_user_responses_recognized, 1);
+        assert_eq!(lab.stats.profile_character_requests_sent, 1);
+        for _ in 0..4 {
+            lab.retry_pending_profile_exchanges();
+        }
+        assert_eq!(lab.stats.profile_user_responses_received, 1);
+        assert_eq!(lab.stats.profile_character_requests_sent, 1);
+        // A late duplicate is observed but cannot publish or advance again.
+        lab.controller_call(
+            address,
+            ControllerCall::Profile(ProfileResponse {
+                kind: ProfileKind::User,
+                success: true,
+                values: vec![],
+            }),
+        );
+        assert_eq!(lab.stats.profile_user_responses_recognized, 2);
+        assert_eq!(lab.stats.profile_responses_ignored, 1);
+        assert_eq!(lab.stats.profile_user_responses_received, 1);
+        let counts = lab.session_counts();
+        assert_eq!(counts.profile_user_responses_recognized, 2);
+        assert_eq!(counts.profile_user_publications_deferred, 1);
+    }
+
+    #[test]
     fn an_outstanding_profile_response_fails_a_peer_without_player_state() {
         let mut lab = prospect_refresh_lab();
         let (_socket, address, _client) = acked_game_state_peer(&mut lab);
@@ -11504,6 +11648,10 @@ mod tests {
             assert_eq!(actual.entries, expected.entries);
             assert_eq!(actual.overflow, expected.overflow);
             assert_eq!(actual.malformed_bunches, expected.malformed_bunches);
+            assert_eq!(
+                actual.unknown_subobject_blocks,
+                expected.unknown_subobject_blocks
+            );
         }
 
         #[test]
@@ -11670,6 +11818,74 @@ mod tests {
         }
 
         #[test]
+        fn malformed_profile_and_unknown_target_do_not_dispatch_profile_calls() {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let entry = &lab.peers[&address];
+            let backend = entry.backend_proxy.unwrap();
+            let components = [entry.backend_proxy, entry.player_data, entry.bestiary];
+            let unknown = (2..)
+                .find(|guid| !components.contains(&Some(*guid)))
+                .unwrap();
+            // Identical malformed parameter bits on an unknown target must be
+            // skipped, while the permitted target must diagnose parse failure.
+            let payload = client_actor_body(
+                &lab,
+                vec![
+                    field_block(
+                        subobject(unknown),
+                        BACKEND_PROXY_FIELD_INDEX_BOUND,
+                        &[(RESPONSE_GET_USER_PROFILE, empty_payload())],
+                    ),
+                    field_block(
+                        subobject(backend),
+                        BACKEND_PROXY_FIELD_INDEX_BOUND,
+                        &[(RESPONSE_GET_USER_PROFILE, empty_payload())],
+                    ),
+                ],
+            );
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+            assert_eq!(diagnostics.unknown_subobject_blocks, 1);
+            assert_eq!(diagnostics.malformed_bunches, 1);
+            assert!(
+                diagnostics
+                    .entries
+                    .iter()
+                    .any(|entry| entry.index == RESPONSE_GET_USER_PROFILE
+                        && entry.disposition == ControllerFieldDisposition::Malformed)
+            );
+            assert_eq!(lab.stats.profile_user_responses_recognized, 0);
+            assert_eq!(lab.stats.profile_user_responses_received, 0);
+            assert_eq!(lab.stats.profile_responses_ignored, 0);
+            assert!(lab.has_peer(address));
+            assert_eq!(lab.controller_field_totals().unknown_subobject_blocks, 1);
+            // An omitted response struct is valid and retains Success=false.
+            // With no request outstanding it is recognized, then phase-rejected.
+            let mut writer = BitWriter::new();
+            writer.write_bit(false);
+            let payload = client_actor_body(
+                &lab,
+                vec![field_block(
+                    subobject(backend),
+                    BACKEND_PROXY_FIELD_INDEX_BOUND,
+                    &[(RESPONSE_GET_USER_PROFILE, Payload::from_writer(writer))],
+                )],
+            );
+            receive_controller_payload(
+                &mut lab,
+                &socket,
+                &mut client,
+                wire_reliable_sequence(raw + 1),
+                payload,
+            );
+            assert_eq!(lab.stats.profile_user_responses_recognized, 1);
+            assert_eq!(lab.stats.profile_responses_ignored, 1);
+            assert_eq!(lab.stats.profile_user_responses_received, 0);
+        }
+
+        #[test]
         fn short_timeout_layout_requires_exactly_empty_parameters() {
             let parameters =
                 player_controller_rpc_parameters(SERVER_SHORT_TIMEOUT_FIELD_INDEX).unwrap();
@@ -11742,6 +11958,7 @@ mod tests {
             receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
             let diagnostics = lab.controller_field_diagnostics(address).unwrap();
             assert_eq!(diagnostics.entries.len(), 3);
+            assert_eq!(diagnostics.unknown_subobject_blocks, 1);
             assert_eq!(diagnostics.malformed_bunches, 0);
             assert_eq!(diagnostics.overflow, 0);
             let recognized = diagnostics
@@ -12054,6 +12271,7 @@ mod tests {
                     ControllerFieldDisposition::Ignored,
                 );
                 diagnostics.malformed_bunches = u64::MAX;
+                diagnostics.unknown_subobject_blocks = u64::MAX;
                 assert_eq!(diagnostics.entries.len(), 64);
                 assert_eq!(diagnostics.overflow, u64::MAX);
             }
@@ -12062,6 +12280,7 @@ mod tests {
             assert!(totals.entries.iter().all(|entry| entry.count == u64::MAX));
             assert_eq!(totals.overflow, u64::MAX);
             assert_eq!(totals.malformed_bunches, u64::MAX);
+            assert_eq!(totals.unknown_subobject_blocks, u64::MAX);
             let value = serde_json::to_value(&totals).unwrap();
             let mut keys: Vec<_> = value
                 .as_object()
@@ -12070,7 +12289,15 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             keys.sort_unstable();
-            assert_eq!(keys, ["entries", "malformed_bunches", "overflow"]);
+            assert_eq!(
+                keys,
+                [
+                    "entries",
+                    "malformed_bunches",
+                    "overflow",
+                    "unknown_subobject_blocks"
+                ]
+            );
             for entry in value["entries"].as_array().unwrap() {
                 let mut keys: Vec<_> = entry
                     .as_object()
