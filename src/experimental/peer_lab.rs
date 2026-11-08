@@ -775,6 +775,8 @@ pub struct PeerLabStats {
     pub players_initialised: u64,
     /// Controllers' `ServerFriendsListUpdated` calls accepted (F-973).
     pub friends_lists_received: u64,
+    /// Friends-list requests admitted to reliable controller transport (F-1051).
+    pub friends_list_queries_queued: u64,
     /// Completed players finalised once every joined controller sent its
     /// friends list (F-973).
     pub players_finalised: u64,
@@ -976,6 +978,8 @@ pub struct SessionCounts {
     pub initialisation_answers_ignored: u64,
     pub players_initialised: u64,
     pub friends_lists_received: u64,
+    /// Friends-list requests admitted to reliable controller transport (F-1051).
+    pub friends_list_queries_queued: u64,
     pub players_finalised: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
@@ -1531,6 +1535,8 @@ impl ControllerFieldDiagnostics {
 }
 
 struct PeerEntry {
+    friends_query_pending: bool,
+    friends_query_retry_ready: bool,
     initialisation_request_receipt: InitialisationReceipt,
     initialisation_completion_receipt: InitialisationReceipt,
     controller_field_diagnostics: ControllerFieldDiagnostics,
@@ -4665,6 +4671,7 @@ impl PeerLab {
             initialisation_answers_ignored: self.stats.initialisation_answers_ignored,
             players_initialised: self.stats.players_initialised,
             friends_lists_received: self.stats.friends_lists_received,
+            friends_list_queries_queued: self.stats.friends_list_queries_queued,
             players_finalised: self.stats.players_finalised,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
@@ -5037,6 +5044,8 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        friends_query_pending: false,
+                        friends_query_retry_ready: false,
                         controller_field_diagnostics: ControllerFieldDiagnostics::default(),
                         auth_request: None,
                         auth_identity: None,
@@ -5199,6 +5208,9 @@ impl PeerLab {
                             }
                             if let Some(pending) = &mut entry.initial_opens {
                                 pending.retry_ready = true;
+                            }
+                            if entry.friends_query_pending {
+                                entry.friends_query_retry_ready = true;
                             }
                             if entry.pending_profile_exchange.is_some() {
                                 entry.profile_exchange_retry_ready = true;
@@ -5447,6 +5459,90 @@ impl PeerLab {
         }
     }
 
+    /// Matched AddConnectedPlayer queries every registered controller (F-1051).
+    /// Coalesce unsent queries; reliable transport repairs admitted requests.
+    fn query_connected_friends(&mut self) {
+        for entry in self.peers.values_mut() {
+            if entry.character_slot.is_some() {
+                entry.friends_query_pending = true;
+                entry.friends_query_retry_ready = true;
+            }
+        }
+        self.retry_friends_queries();
+    }
+
+    fn retry_friends_queries(&mut self) {
+        let ready: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                (entry.friends_query_pending
+                    && std::mem::take(&mut entry.friends_query_retry_ready))
+                .then_some(*address)
+            })
+            .collect();
+        for address in ready {
+            let sent = (|| {
+                let plan = self
+                    .player_controller_open
+                    .as_ref()
+                    .context("no controller plan")?;
+                let entry = self
+                    .peers
+                    .get_mut(&address)
+                    .context("no friends-query peer")?;
+                let channel = entry
+                    .player_controller_channel
+                    .context("no controller channel")?;
+                let codec = RepLayoutCodec {
+                    actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+                    checksums: false,
+                    limits: Default::default(),
+                };
+                let mut writer = super::packet::BitWriter::new();
+                write_field_header(
+                    &mut writer,
+                    &FieldHeader {
+                        index: 118,
+                        payload: encode_rpc_payload(&[], &[], &codec)?,
+                    },
+                    self.controller_startup_bound,
+                )?;
+                let payload = encode_actor_bunch_body(
+                    &ActorBunchBody {
+                        spawn: None,
+                        blocks: vec![ContentBlock {
+                            has_rep_layout: false,
+                            target: BlockTarget::Actor,
+                            payload: Payload::from_writer(writer),
+                        }],
+                    },
+                    &codec.actor,
+                )?;
+                let datagram = entry.peer.reliable_actor_bunch(channel, payload)?;
+                entry.friends_query_pending = false;
+                entry.profiles.friend_ids_ready = false;
+                bump(&mut self.stats.friends_list_queries_queued);
+                Ok::<_, anyhow::Error>(datagram)
+            })();
+            match sent {
+                Ok(datagram) => {
+                    self.send(&datagram, address);
+                }
+                Err(error) => {
+                    let drainable = self.peers.get(&address).is_some_and(|entry| {
+                        entry.player_controller_channel.is_some_and(|channel| {
+                            transport_capacity_can_drain(entry, &error, channel)
+                        })
+                    });
+                    if !drainable {
+                        self.fail_profile_exchange(address);
+                    }
+                }
+            }
+        }
+    }
+
     fn request_profile(&mut self, address: SocketAddrV4, kind: ProfileKind) {
         let sent = (|| {
             let plan = self
@@ -5532,6 +5628,7 @@ impl PeerLab {
                 }
                 entry.character_slot = Some(slot);
                 bump(&mut self.stats.initialisation_slots_recorded);
+                self.query_connected_friends();
                 self.request_profile(address, ProfileKind::User);
             }
             ControllerCall::FriendsList => {
@@ -5826,11 +5923,10 @@ impl PeerLab {
     /// finalises; then each completed player finalises once, which restores
     /// a returning pawn and adds a new player to History.
     fn finalise_connected_players(&mut self) {
-        if self
-            .peers
-            .values()
-            .any(|entry| entry.player.is_some() && !entry.profiles.friend_ids_ready)
-        {
+        if self.peers.values().any(|entry| {
+            entry.player.is_some()
+                && (entry.friends_query_pending || !entry.profiles.friend_ids_ready)
+        }) {
             return;
         }
         let ready: Vec<SocketAddrV4> = self
@@ -7299,6 +7395,7 @@ impl PeerLab {
         self.retry_control_replies();
         self.retry_initial_opens();
         self.retry_controller_startup();
+        self.retry_friends_queries();
         self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
@@ -8754,6 +8851,159 @@ mod tests {
         assert_eq!(lab.stats.player_state_opens_sent, 1);
         assert_eq!(lab.stats.pawn_opens_sent, 1);
         (lab, socket, address, client)
+    }
+
+    #[test]
+    fn friends_query_begin_fanout_is_reliable_empty_and_requires_real_reply() {
+        use super::super::{
+            actor_channel::read_actor_bunch_body,
+            packet::{Receiver, read_packet},
+        };
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        let engine = lab
+            .player_controller_open
+            .as_ref()
+            .unwrap()
+            .engine_net_version;
+        let codec = RepLayoutCodec {
+            actor: actor_codec(engine, super::super::archive::ByteOrder::Little),
+            checksums: false,
+            limits: Default::default(),
+        };
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.character_slot = Some(3);
+        entry.profiles.completed = false;
+        entry.profiles.friend_ids_ready = true;
+        // A fresh controller's Begin must requery an existing connected player.
+        let (second_socket, second_address, mut second_client) = acked_game_state_peer(&mut lab);
+        let login = lab.peers[&address].login_unique_id.clone();
+        let second = lab.peers.get_mut(&second_address).unwrap();
+        second.login_unique_id = login;
+        second.connection_id = Some(2);
+        second.player = Some(RegisteredPlayer {
+            player_id: 2,
+            name_units: vec![],
+        });
+        let state = lab.game_state_open.take();
+        assert!(lab.send_player_controller_open(second_address));
+        lab.game_state_open = state;
+        ack_startup_packets(&mut lab, &second_socket, &mut second_client);
+        let entry = lab.peers.get_mut(&second_address).unwrap();
+        entry.player = Some(RegisteredPlayer {
+            player_id: 2,
+            name_units: vec![],
+        });
+        assert!(entry.character_slot.is_none());
+        assert!(
+            entry
+                .player_state_channel
+                .is_some_and(|c| entry.peer.has_actor_channel(c))
+        );
+        if !lab.peers[&address]
+            .peer
+            .sequencer()
+            .notify()
+            .sent_records()
+            .is_empty()
+        {
+            ack_startup_packets(&mut lab, &socket, &mut client);
+        }
+        lab.peers.get_mut(&address).unwrap().profiles.completed = true;
+        lab.controller_call(second_address, ControllerCall::Begin(4));
+        assert_eq!(lab.stats.friends_list_queries_queued, 2);
+        let mut bytes = [0; 2048];
+        let n = socket.peek(&mut bytes).unwrap();
+        let packet = read_packet(
+            &bytes[..n],
+            &super::super::packet::PacketConfig {
+                receiver: Receiver::Client,
+                ..lab.config.packet.packet
+            },
+        )
+        .unwrap();
+        assert_eq!(packet.bunches.len(), 1);
+        let bunch = &packet.bunches[0];
+        assert!(bunch.header.reliable);
+        assert_eq!(
+            Some(bunch.header.channel_index),
+            lab.peers[&address].player_controller_channel
+        );
+        let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor).unwrap();
+        assert_eq!(body.blocks.len(), 1);
+        assert_eq!(body.blocks[0].target, BlockTarget::Actor);
+        let mut reader = body.blocks[0].payload.reader();
+        let field = read_field_header(&mut reader, lab.controller_startup_bound, 1024).unwrap();
+        assert!(reader.at_end());
+        assert_eq!(field.index, 118);
+        assert_eq!(field.payload.bit_len(), 0);
+        assert!(!lab.peers[&address].profiles.friend_ids_ready);
+        // Transport settlement supplies no client friends-list response.
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 0);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.controller_call(second_address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 1);
+        lab.controller_call(second_address, ControllerCall::Begin(4));
+        lab.retry_friends_queries();
+        assert_eq!(lab.stats.friends_list_queries_queued, 2);
+        lab.shutdown();
+    }
+
+    #[test]
+    fn friends_query_pressure_retries_once_and_disconnect_discards_pending() {
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.character_slot = Some(3);
+        entry.profiles.completed = true;
+        entry.profiles.friend_ids_ready = true;
+        for _ in 0..entry.peer.config().sent_capacity {
+            let datagram = entry.peer.ack_packet().unwrap();
+            lab.socket.send_to(&datagram, address).unwrap();
+            let mut bytes = [0; 2048];
+            let n = socket.recv(&mut bytes).unwrap();
+            let packet = super::super::packet::read_packet(
+                &bytes[..n],
+                &super::super::packet::PacketConfig {
+                    receiver: super::super::packet::Receiver::Client,
+                    ..lab.config.packet.packet
+                },
+            )
+            .unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        lab.query_connected_friends();
+        assert!(lab.peers[&address].friends_query_pending);
+        assert_eq!(lab.stats.friends_list_queries_queued, 0);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 0);
+        for _ in 0..3 {
+            lab.retry_friends_queries();
+        }
+        assert_eq!(lab.stats.friends_list_queries_queued, 0);
+        let bytes = super::super::packet::write_packet(
+            &super::super::packet::Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        socket.send(&bytes).unwrap();
+        lab.poll();
+        lab.retry_friends_queries();
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+        assert!(!lab.peers[&address].friends_query_pending);
+        assert!(!lab.peers[&address].profiles.friend_ids_ready);
+        lab.retry_friends_queries();
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+        lab.remove_peer(address).unwrap();
+        lab.retry_friends_queries();
+        assert_eq!(lab.peers.len(), 0);
     }
 
     fn queue_initialisation_phase(lab: &mut PeerLab, address: SocketAddrV4, completion: bool) {

@@ -3140,16 +3140,109 @@ fn send_character_slot_with(
             },
         )
         .unwrap();
+    let replies = client.collect(Duration::from_secs(2), 32).unwrap();
     if send_friends_list {
+        // The query is queued by Begin; respond after its delivery.
         send_friends_list_updated(client, profile_net_version);
     }
-    let replies = client.collect(Duration::from_secs(2), 32).unwrap();
     assert!(replies.acked.contains(&packet_id));
     replies
         .replies
         .into_iter()
         .map(|reply| reply.bytes)
         .collect()
+}
+
+/// Service existing authored clients while a newcomer triggers official-style
+/// friends-list refresh. Idle test handles otherwise cannot answer RPC118.
+fn exchange_profiles_servicing(
+    client: &mut ProbeClient,
+    engine: u32,
+    requested: i32,
+    slot: i32,
+    others: Vec<ProbeClient>,
+) -> (Vec<Vec<u8>>, Vec<ProbeClient>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let stop = AtomicBool::new(false);
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    thread::scope(|scope| {
+        let guard = Stop(&stop);
+        let mut workers = Vec::new();
+        for mut other in others {
+            let stop = &stop;
+            workers.push(scope.spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+                    let replies = other.collect(Duration::from_millis(40), 32).unwrap();
+                    let codec =
+                        icarus_bevy::experimental::probe_initialise::initialise_codec(engine);
+                    for reply in replies.replies {
+                        let Ok(packet) = icarus_bevy::experimental::packet::read_packet(
+                            &reply.bytes,
+                            &PacketConfig {
+                                receiver: PacketReceiver::Client,
+                                ..probe_config().packet
+                            },
+                        ) else {
+                            continue;
+                        };
+                        for bunch in packet.bunches {
+                            if bunch.header.channel_index != 2
+                                || bunch.header.open
+                                || bunch.header.has_package_map_exports
+                                || bunch.header.partial
+                            {
+                                continue;
+                            }
+                            let Ok(body) =
+                                icarus_bevy::experimental::actor_channel::read_actor_bunch_body(
+                                    &mut bunch.payload.reader(),
+                                    false,
+                                    &codec.actor,
+                                )
+                            else {
+                                continue;
+                            };
+                            for block in body.blocks {
+                                if block.target
+                                    != icarus_bevy::experimental::actor_channel::BlockTarget::Actor
+                                    || block.has_rep_layout
+                                {
+                                    continue;
+                                }
+                                let mut reader = block.payload.reader();
+                                while !reader.at_end() {
+                                    let field =
+                                        icarus_bevy::experimental::rep_rpc::read_field_header(
+                                            &mut reader,
+                                            183,
+                                            65536,
+                                        )
+                                        .unwrap();
+                                    if field.index == 118 {
+                                        assert_eq!(field.payload.bit_len(), 0);
+                                        send_friends_list_updated(&mut other, engine);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                other
+            }));
+        }
+        let result = exchange_profiles(client, engine, requested, slot);
+        drop(guard);
+        (
+            result,
+            workers.into_iter().map(|w| w.join().unwrap()).collect(),
+        )
+    })
 }
 
 /// Finish the native exchange using the component GUIDs in its requests.
@@ -3160,12 +3253,21 @@ fn exchange_profiles(
     requested_slot: i32,
     profile_slot: i32,
 ) -> Vec<Vec<u8>> {
+    let replies = send_character_slot(client, engine, requested_slot);
+    exchange_profiles_from(client, engine, requested_slot, profile_slot, replies)
+}
+
+fn exchange_profiles_from(
+    client: &mut ProbeClient,
+    engine: u32,
+    requested_slot: i32,
+    profile_slot: i32,
+    replies: Vec<Vec<u8>>,
+) -> Vec<Vec<u8>> {
     use icarus_bevy::experimental::{
-        actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
-        archive::ByteOrder,
+        actor_channel::{BlockTarget, read_actor_bunch_body},
         packet::{BitWriter, Payload, read_packet},
         probe_client::ProbeProfileResponse,
-        rep_layout::RepLayoutCodec,
         rep_rpc::{
             BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
             CLIENT_REQUEST_GET_CHARACTER_PROFILE, CLIENT_REQUEST_GET_USER_PROFILE,
@@ -3173,18 +3275,7 @@ fn exchange_profiles(
         },
         session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
     };
-    let codec = RepLayoutCodec {
-        actor: ActorChannelCodec {
-            engine_net_version: engine,
-            exports_enabled: false,
-            has_level: true,
-            order: ByteOrder::Little,
-            limits: Default::default(),
-        },
-        checksums: false,
-        limits: Default::default(),
-    };
-    let replies = send_character_slot(client, engine, requested_slot);
+    let codec = icarus_bevy::experimental::probe_initialise::initialise_codec(engine);
     let request = |replies: &[Vec<u8>], expected| {
         for bytes in replies {
             for bunch in read_packet(
@@ -3705,6 +3796,14 @@ fn player_history_pressure_coalesces_appends_and_converges_after_ack_and_reconne
         app.world().resource::<PeerLab>().stats().players_finalised,
         0
     );
+    let ((mut blocked, healthy, healthy_requests), _) = with_server(&mut app, move || {
+        let mut healthy = healthy;
+        let requests = send_character_slot_with(&mut healthy, engine, 4, false);
+        blocked.collect(Duration::from_millis(100), 32).unwrap();
+        send_friends_list_updated(&mut blocked, engine);
+        blocked.collect(Duration::from_millis(100), 32).unwrap();
+        (blocked, healthy, requests)
+    });
     let connection = app.world().resource::<PeerLab>().joined_connections()[0];
     let pressure_actor = 42;
     assert!(
@@ -3780,7 +3879,8 @@ fn player_history_pressure_coalesces_appends_and_converges_after_ack_and_reconne
         let mut healthy = healthy;
         // FriendsList finalises A, then these answers finalise B. Both History
         // revisions must remain deliverable while A has no outgoing capacity.
-        let updates = exchange_profiles(&mut healthy, engine, 4, 4);
+        send_friends_list_updated(&mut healthy, engine);
+        let updates = exchange_profiles_from(&mut healthy, engine, 4, 4, healthy_requests);
         (healthy, updates)
     });
     assert_eq!(counts(&app).player_history_appends, 2);
@@ -4536,10 +4636,11 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
     assert_eq!(counts(&app).returning_pawn_updates_sent, 0);
     assert_eq!(counts(&app).returning_pawn_update_gaps, 0);
     assert_eq!(counts(&app).returning_pawn_update_errors, 0);
-    let ((second, second_open, restored), _) = with_server(&mut app, move || {
+    let ((second, second_open, restored, first), _) = with_server(&mut app, move || {
         let (mut client, bytes) = join_pinned_open(address, pinned, 7);
-        let restored = exchange_profiles(&mut client, engine, 5, 3);
-        (client, bytes, restored)
+        let (restored, mut others) =
+            exchange_profiles_servicing(&mut client, engine, 5, 3, vec![first]);
+        (client, bytes, restored, others.pop().unwrap())
     });
     assert_eq!(
         sent_pawn_uid(&profile, &second_open),
@@ -4561,10 +4662,12 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
 
     // A live session holds the character; another session with the same
     // login cannot take it again.
-    let ((third, third_reply), _) = with_server(&mut app, move || {
+    let ((third, third_reply, first, second), _) = with_server(&mut app, move || {
         let (mut client, _) = join_pinned_open(address, pinned, 7);
-        let reply = exchange_profiles(&mut client, engine, 3, 3);
-        (client, reply)
+        let (reply, mut others) =
+            exchange_profiles_servicing(&mut client, engine, 3, 3, vec![first, second]);
+        let second = others.pop().unwrap();
+        (client, reply, others.pop().unwrap(), second)
     });
     assert_eq!(pawn_uid_update(&profile, &third_reply), None);
     assert_eq!(
@@ -4582,10 +4685,11 @@ fn returning_pawns_retake_their_saved_uid_once_per_live_session() {
         third.close().unwrap();
     });
     assert_eq!(claimed(&app), [FIRST_NATIVE_OBJECT_ID, 70_001]);
-    let ((fourth, reply), _) = with_server(&mut app, move || {
+    let ((fourth, reply, first), _) = with_server(&mut app, move || {
         let (mut client, _) = join_pinned_open(address, pinned, 7);
-        let reply = exchange_profiles(&mut client, engine, 3, 3);
-        (client, reply)
+        let (reply, mut others) =
+            exchange_profiles_servicing(&mut client, engine, 3, 3, vec![first]);
+        (client, reply, others.pop().unwrap())
     });
     assert_eq!(pawn_uid_update(&profile, &reply), Some(70_001));
     assert_eq!(
@@ -4654,11 +4758,12 @@ fn returning_pawns_never_share_a_saved_uid_across_duplicate_records() {
     let mut updates = Vec::new();
     let mut clients = Vec::new();
     for _ in 0..3 {
-        let ((client, reply), _) = with_server(&mut app, move || {
+        let ((client, reply, others), _) = with_server(&mut app, move || {
             let (mut client, _) = join_pinned_open(address, pinned, 7);
-            let reply = exchange_profiles(&mut client, engine, 3, 3);
-            (client, reply)
+            let (reply, others) = exchange_profiles_servicing(&mut client, engine, 3, 3, clients);
+            (client, reply, others)
         });
+        clients = others;
         updates.push(pawn_uid_update(&profile, &reply));
         clients.push(client);
     }
@@ -5735,6 +5840,13 @@ struct ModifierTimeFixture {
     connection: u32,
 }
 
+type ModifierPeer = (
+    ProbeClient,
+    UdpSocket,
+    icarus_bevy::experimental::probe_initialise::ActorChannelTracker,
+    std::collections::BTreeMap<i32, icarus_bevy::experimental::actor_channel::BlockTarget>,
+);
+
 impl ModifierTimeFixture {
     fn new() -> Self {
         Self::with_temperature(Default::default())
@@ -5821,13 +5933,22 @@ impl ModifierTimeFixture {
         icarus_bevy::experimental::probe_initialise::ActorChannelTracker,
         std::collections::BTreeMap<i32, icarus_bevy::experimental::actor_channel::BlockTarget>,
     ) {
+        Self::join_servicing(app, address, profile, Vec::new()).0
+    }
+
+    fn join_servicing(
+        app: &mut App,
+        address: SocketAddr,
+        profile: &ReleaseProfile,
+        others: Vec<ProbeClient>,
+    ) -> (ModifierPeer, Vec<ProbeClient>) {
         use icarus_bevy::experimental::{
             probe_initialise::{ActorChannelTracker, initialise_codec},
             rep_layout::RepValue,
         };
         let version = profile.pin.network_checksum;
         let engine = profile.engine_network_version;
-        let ((client, socket, packets), _) = with_server(app, move || {
+        let ((client, socket, packets, others), _) = with_server(app, move || {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
             socket.connect(address).unwrap();
             let mut client =
@@ -5851,8 +5972,9 @@ impl ModifierTimeFixture {
                 .into_iter()
                 .map(|reply| reply.bytes)
                 .collect();
-            packets.extend(exchange_profiles(&mut client, engine, 3, 3));
-            (client, socket, packets)
+            let (updates, others) = exchange_profiles_servicing(&mut client, engine, 3, 3, others);
+            packets.extend(updates);
+            (client, socket, packets, others)
         });
         let mut tracker = ActorChannelTracker::new(
             PacketConfig {
@@ -5873,7 +5995,7 @@ impl ModifierTimeFixture {
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(targets.len(), 2);
-        (client, socket, tracker, targets)
+        ((client, socket, tracker, targets), others)
     }
 
     fn decode(

@@ -576,6 +576,7 @@ pub fn icarus_character_rpc_parameters(field_index: u32) -> Option<Vec<RpcParame
 /// - `62`: `APlayerController::ClientUpdateMultipleLevelsStreamingStatus(LevelStatuses: TArray<FUpdateLevelStreamingLevelStatus>)`;
 /// - `63`: `APlayerController::ClientVoiceHandshakeComplete()`;
 /// - `78`: `APlayerController::ServerShortTimeout()`;
+/// - `118`: `AIcarusPlayerController::ClientQueryForFriendsList()` (F-1051);
 /// - `124`: `AIcarusPlayerController::Server_BeginPlayerInitialisation(ChrSlot: int32)`
 ///   (F-951 / controller net fields; client-to-server, reliable).
 pub fn player_controller_rpc_parameters(field_index: u32) -> Option<Vec<RpcParameter>> {
@@ -588,7 +589,7 @@ pub fn player_controller_rpc_parameters(field_index: u32) -> Option<Vec<RpcParam
             Some(vec![RpcParameter::Value(vec![RepCommand::Int])])
         }
         21 => Some(vec![RpcParameter::Bool]),
-        23 | 54 | 63 | SERVER_SHORT_TIMEOUT_FIELD_INDEX => Some(vec![]),
+        23 | 54 | 63 | 118 | SERVER_SHORT_TIMEOUT_FIELD_INDEX => Some(vec![]),
         40 | 49 => Some(vec![RpcParameter::Value(vec![RepCommand::Object])]),
         46 => Some(vec![RpcParameter::Value(vec![RepCommand::NetworkName])]),
         51 => Some(vec![
