@@ -593,7 +593,7 @@ fn partial_bunch_reassembler_handles_exports_alignment_and_final_flags() {
     assert_eq!(bunch.payload.bit_len(), 27);
     assert_eq!(bunch.payload.bytes(), &[0xaa, 0xbb, 0xcc, 0b101]);
 
-    // Server cap (MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES = 65_536) is enforced when supplied.
+    // Server cap (MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES = 131_072) is enforced when supplied.
     let mut capped = PartialBunchReassembler::new();
     let init = partial_header(true, true, false);
     assert!(

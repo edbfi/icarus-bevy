@@ -1800,7 +1800,7 @@ fn update_datagram_failures_leave_the_state_unchanged() {
         (
             4,
             bits_payload((MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES + 1) * 8),
-            "over 64 KiB",
+            "over 128 KiB",
         ),
         (5, bits_payload(8), "channel not open"),
     ];
@@ -1820,12 +1820,12 @@ fn update_datagram_failures_leave_the_state_unchanged() {
     assert_eq!(sent.len(), 3);
     assert_eq!(peer.pending_resends(), 0);
 
-    // The 64 KiB bound itself is sent: 69 consecutive datagrams.
+    // The shipped 128 KiB bound itself is sent: 138 consecutive datagrams.
     let mut roomy = update_peer(256);
     let first_id = roomy.sequencer().out_packet_id();
     let payload = bits_payload(MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES * 8);
     let sent = roomy.actor_update_datagrams(4, payload.clone()).unwrap();
-    assert_eq!(sent.len(), 69);
+    assert_eq!(sent.len(), 138);
     assert!(
         sent.iter()
             .enumerate()
@@ -2166,6 +2166,41 @@ fn live_actor_partial_part_limit_rejection_does_not_poison_channel() {
         received.actor_bunches()[0].payload,
         Payload::from_writer(expected)
     );
+    assert!(!peer.is_failed());
+}
+
+#[test]
+fn live_actor_partial_accepts_shipped_limit_in_normal_datagrams() {
+    use icarus_bevy::experimental::sequencing::split_outgoing_bunch;
+    let mut peer = peer();
+    let mut client = Client::new();
+    // This test sends 138 packets without peer traffic returning ACKs.
+    let (incoming, outgoing) = client_cookie_seeds(&COOKIE);
+    client.sequencer = PacketSequencer::new(incoming, outgoing, 256).unwrap();
+    let opened = peer
+        .reliable_actor_open(&actor_open_bunch(2, &[1]), &[])
+        .unwrap();
+    accept_header(&mut client, &opened);
+    let first = peer.sequencer().initial_reliable().0 + 1;
+    let mut whole = incoming_part(2, first, true, true);
+    whole.header.partial = false;
+    whole.header.partial_initial = false;
+    whole.header.partial_final = false;
+    whole.payload = bits_payload(131_072 * 8);
+    let parts = split_outgoing_bunch(&whole, &[], 7_625, Some(131_072)).unwrap();
+    assert_eq!(parts.len(), 138);
+    for (index, part) in parts.into_iter().enumerate() {
+        let (packet, _) = client.send(vec![part]);
+        let received = peer.receive(&packet).unwrap();
+        if index < 137 {
+            assert!(received.actor_bunches().is_empty());
+            assert_eq!(received.summary().actor_partial_completed, 0);
+        } else {
+            assert_eq!(received.summary().actor_partial_completed, 1);
+            assert_eq!(received.actor_bunches()[0].payload, whole.payload);
+        }
+        assert_eq!(received.summary().actor_partial_rejected, 0);
+    }
     assert!(!peer.is_failed());
 }
 

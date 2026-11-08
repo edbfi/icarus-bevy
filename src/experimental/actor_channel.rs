@@ -118,12 +118,14 @@ pub const DEFAULT_INITIAL_CONNECT_TIMEOUT_SECONDS: f32 = 360.0;
 /// (`[/Script/OnlineSubsystemUtils.IpNetDriver]`, F-745).
 pub const DEFAULT_RESOLUTION_CONNECTION_TIMEOUT_SECONDS: f32 = 120.0;
 
-/// Research resource policy; the original bounds are unknown.
+/// Resource policy. F-1046 qualifies payload framing; other caps are defensive.
 #[derive(Clone, Copy, Debug)]
 pub struct ActorChannelLimits {
     /// Content blocks accepted per bunch body.
     pub max_blocks: usize,
-    /// Opaque payload bits accepted per content block.
+    /// Opaque payload bits accepted per content block. The default uses the
+    /// matched server's constructed partial-bunch envelope (F-1047); the
+    /// original has no independent content-block cap (F-1046).
     pub max_payload_bits: usize,
     /// Declared path-string units, including the terminator.
     pub max_path_units: usize,
@@ -158,7 +160,7 @@ impl Default for ActorChannelLimits {
     fn default() -> Self {
         Self {
             max_blocks: 1024,
-            max_payload_bits: 65_536,
+            max_payload_bits: super::sequencing::MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES * 8,
             max_path_units: 1024,
         }
     }

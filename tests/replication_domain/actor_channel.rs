@@ -852,6 +852,40 @@ fn trailing_bits_fail() {
 }
 
 #[test]
+fn default_content_payload_envelope_accepts_equality_and_refuses_excess_or_truncation() {
+    let plain = codec(17, false, false);
+    // Independently pinned to the matched receive default, not derived from
+    // the implementation under test. Framing consumes additional bunch bits.
+    let limit = 131_072 * 8;
+    assert_eq!(plain.limits.max_payload_bits, limit);
+    for count in [65_535, 65_536, 65_537, 131_729, limit - 1, limit, limit + 1] {
+        let mut writer = BitWriter::new();
+        writer.write_bit(false);
+        writer.write_bit(true);
+        packed(&mut writer, count as u32);
+        for bit in 0..count {
+            writer.write_bit(bit % 3 == 0);
+        }
+        let fixture = bits(&writer);
+        let decoded = read_content_block(&mut reader(&fixture), &plain);
+        if count <= limit {
+            let block = decoded.unwrap();
+            assert_eq!(block.payload.bit_len(), count);
+            let mut encoded = BitWriter::new();
+            write_content_block(&mut encoded, &block, &plain).unwrap();
+            assert_eq!(bits(&encoded), fixture);
+        } else {
+            assert!(decoded.is_err());
+            let mut permissive = plain;
+            permissive.limits.max_payload_bits = count;
+            let block = read_content_block(&mut reader(&fixture), &permissive).unwrap();
+            assert!(write_content_block(&mut BitWriter::new(), &block, &plain).is_err());
+        }
+        assert!(read_content_block(&mut prefix(&fixture, fixture.1 - 1), &plain).is_err());
+    }
+}
+
+#[test]
 fn limits_are_enforced() {
     let (fixture, _, body) = body_fixture();
     let mut small = codec(13, false, false);
