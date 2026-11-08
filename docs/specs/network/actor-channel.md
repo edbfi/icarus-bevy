@@ -32,7 +32,7 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
 - Restart reaches Begin/UserProfile wait. Private headers show configured
   BackendProxy traffic in four parts, without RPC identity/world entry (F-1038).
 - Matched UserProfile request/identifier/backend callback guards: F-1039.
-  Public phases F-1040 and opt-in private headers F-1042 separate observation
+  Public phases F-1045 and opt-in private headers F-1042 separate observation
   boundaries, not client handler execution. Matched requested subobject
   identity/outer and receiver object/outer/direction/RPC-flag gates: F-1041;
   configured identity/framing agree.

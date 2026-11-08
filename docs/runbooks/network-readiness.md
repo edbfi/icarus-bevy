@@ -1,6 +1,6 @@
 # Network readiness diagnostics
 
-[Setup](native-server.md#network-sessions-experimental). F-1040: no client
+[Setup](native-server.md#network-sessions-experimental). F-1045: no client
 execution, spawn, geometry or world-readiness proof.
 
 ## Probe output
@@ -12,7 +12,10 @@ stderr progress JSON, stdout final pre-shutdown counts.
 index/bit-count/disposition/count rows per peer/aggregate, plus overflow/malformed
 counts and `unknown_subobject_blocks`; no payloads/identities. Removal drops
 rows. Recognition is not application; malformed tails apply nothing; overflow
-prevents absence claims.
+prevents absence claims. Body failures: `body_parse_failures`; above cap with
+bits present: `block_payload_limit_rejections`, largest in
+`max_rejected_block_payload_bits`; past available bits:
+`block_payload_length_rejections` (F-1045).
 
 `sessions.profile_{user,character}_responses_recognized` counts parsed profile
 calls dispatched after whole-bunch validation, including failure/wrong-phase
@@ -23,7 +26,7 @@ attempts retained behind drainable transport pressure; retries add no ingress.
 Existing `profile_{user,character}_responses_received` counts successful
 PlayerState publication admission, not RPC ingress. A zero count alone cannot
 prove no response. Unknown-subobject blocks are unattributed skipped blocks,
-not identified profile traffic (F-1040).
+not identified profile traffic (F-1045).
 
 ### Private selected RPC82 capture
 
