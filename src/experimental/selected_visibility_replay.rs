@@ -13,7 +13,7 @@ use crate::experimental::{
     selected_rpc_capture::{MAX_FIELD_BYTES, MAX_OBSERVATIONS, MAX_OUTPUT_BYTES},
     visibility::{
         DecodedVisibilityParameter, VisibilityArchiveProfile, VisibilityDecodeProfile,
-        VisibilityRpc82Layout, parse_visibility_rpc82,
+        VisibilityRpc82Layout, parse_visibility_rpc82_with_consumption,
     },
 };
 
@@ -92,6 +92,16 @@ struct Record {
     payload_hex: String,
 }
 
+/// Only counts are retained. Missing lengths are unknown, including hardcoded names.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ConsumptionSummary {
+    pub ordinal: u64,
+    pub payload_bits: usize,
+    pub consumed_bits: usize,
+    pub package_name_units: Option<usize>,
+    pub file_name_units: Option<usize>,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ReplaySummary {
     pub format: u8,
@@ -99,6 +109,7 @@ pub struct ReplaySummary {
     pub accepted_present: u64,
     pub accepted_absent: u64,
     pub rejected: u64,
+    pub consumption: Vec<ConsumptionSummary>,
     pub capture_complete_verified: bool,
     pub replay_finished: bool,
     pub provenance_verified: bool,
@@ -163,6 +174,7 @@ pub fn replay(input: impl Read, profile: &ReplayProfile) -> Result<ReplaySummary
         accepted_present: 0,
         accepted_absent: 0,
         rejected: 0,
+        consumption: Vec::with_capacity(records.len()),
         capture_complete_verified: false,
         replay_finished: true,
         provenance_verified: false,
@@ -170,11 +182,26 @@ pub fn replay(input: impl Read, profile: &ReplayProfile) -> Result<ReplaySummary
     };
     for record in records {
         let payload = payload(&record);
-        match parse_visibility_rpc82(
+        let (result, consumed_bits) = parse_visibility_rpc82_with_consumption(
             &payload,
             &profile.decode,
             VisibilityRpc82Layout::NormalSingleCustomStruct,
-        ) {
+        );
+        let (package_name_units, file_name_units) = match &result {
+            Ok(DecodedVisibilityParameter::Present(value)) => (
+                value.package_name.summary().units,
+                value.file_name.summary().units,
+            ),
+            _ => (None, None),
+        };
+        summary.consumption.push(ConsumptionSummary {
+            ordinal: record.ordinal,
+            payload_bits: record.payload_bits,
+            consumed_bits,
+            package_name_units,
+            file_name_units,
+        });
+        match result {
             Ok(DecodedVisibilityParameter::Absent) => summary.accepted_absent += 1,
             Ok(DecodedVisibilityParameter::Present(_)) => summary.accepted_present += 1,
             Err(_) => summary.rejected += 1,

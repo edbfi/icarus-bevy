@@ -11,7 +11,7 @@ Actor opens, codecs, relevancy and readiness after admission.
 Bounds/RPCs/opens F-1015/F-1016/F-1019/F-1017.
 [Visibility](../../specs/network/visibility-state.md): F-1020 wire, F-1021 staging,
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
-F-1024 inert models. Payload/live bindings: U-079; no cause proof.
+F-1024 inert models; F-1034 replay. Live bindings/cause: U-079.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.

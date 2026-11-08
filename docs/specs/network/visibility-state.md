@@ -2,8 +2,8 @@
 
 ## Status
 
-Experimental: server 26313077, F-1020/F-1023; authored F-1021/F-1024.
-Last reconciled: 2026-11-06.
+Experimental: servers 26313077/26425113, F-1020/F-1023/F-1034; authored F-1021/F-1024.
+Last reconciled: 2026-11-07.
 
 ## Scope
 
@@ -65,6 +65,8 @@ RPC82 framing and local handler/cache paths.
   detached JS tests are proposal-only (M-1243).
 
 ## Candidate
+
+F-1034: conditional matched-build replay; consumed bits and name lengths only.
 
 F-1021: atomic exact-consumption staging; canonical packed ints, strict strings,
 65,536-unit cap; explicit outer assertion preserves absence. RPC78: empty only.
