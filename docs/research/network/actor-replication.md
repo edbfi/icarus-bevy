@@ -13,11 +13,10 @@ Bounds/RPCs/opens F-1015/F-1016/F-1019/F-1017.
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay. Live bindings/cause: U-079.
 
-Dedicated state/predicate and restart producer chain: F-1036. Frozen matched
-capture omitted configured startup actions (F-1037). A restart-only run observed
-Begin and a UserProfile wait, without world entry (F-1038). Matched request guards
-and callback routes are F-1039; diagnostic phase distinctions are F-1040. No
-client handler execution or framing defect follows from static bodies.
+State/restart chain F-1036; omitted startup baseline F-1037; Begin/UserProfile
+wait without world entry F-1038. Request guards F-1039, public diagnostics
+F-1040, subobject/receiver binding F-1041 and private headers F-1042 establish
+no live client handler execution.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
@@ -40,4 +39,4 @@ UID/membership: F-943 to F-946, F-949 to F-951; loadout/backend: F-956 to F-958.
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1308.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1314.

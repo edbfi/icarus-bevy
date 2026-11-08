@@ -1,6 +1,6 @@
 # Network readiness diagnostics
 
-[Setup](native-server.md#network-sessions-experimental). F-1012: no client
+[Setup](native-server.md#network-sessions-experimental). F-1040: no client
 execution, spawn, geometry or world-readiness proof.
 
 ## Probe output
@@ -41,14 +41,26 @@ exactly during staging. Transient reassembly: ≤16 assemblies × 16 KiB.
 Packets/unrelated values are never persisted; exports/must-map/open/close/paused
 bunches are unsupported.
 
-Private JSONL: bit count/masked-tail hex, neutral ordinals/channel, elapsed ms,
-engine/order, reliable/partial/reassembly metadata and bunch-relative block/
-field/payload spans; no datagram/fragment offsets or presence framing.
-Keep release/executable hashes in the case; never publish raw contents.
+RPC82 JSONL retains masked-tail hex, ordinals/channel/time, engine/order,
+reassembly metadata and bunch/field/payload spans; no datagram/fragment offsets
+or presence assertion. Keep executable/release hashes and files private.
 
-Capture counts expose pending assemblies, drops, malformed input, write errors
-and `incomplete`: 1 until final sync, or after loss, unfinished assembly/error.
-Write errors fail after shutdown; a partial final JSONL row is incomplete.
+Counts include assemblies/drops/malformed/write errors. `incomplete` stays 1
+before final sync or after loss, unfinished assembly/error. Partial final rows
+are incomplete; write failures fail after shutdown.
+
+### Private controller subobject headers
+
+`--private-controller-headers-output work/<case>/headers.jsonl` selects the
+same private sink/bounds, excluding the RPC82 option. Actor-only blocks consume
+no budget. JSONL retains GUID plus configured-component relation, header spans
+(including packed payload length), flags and payload length; no payloads, names
+or field indices. Client-to-server class/stable fields are null: absent on wire.
+Raw packet sequence identifies the receive releasing the reliable queue, not
+original arrival. First/final raw reliable sequences and release elapsed time
+retain that distinction for reassembly; offsets are complete-bunch-relative.
+Public `private_controller_headers_capture` contains counts only; retained
+payload bits stay zero (F-1042). Keep files private and bind executable/release.
 
 ### Offline selected RPC82 replay
 

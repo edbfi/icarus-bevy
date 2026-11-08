@@ -96,8 +96,11 @@ impl AuthoredWorld {
 #[command(about = "Bounded Steam-authenticated native game listener; compatibility unproven")]
 struct Options {
     /// PRIVATE selected actor RPC82 JSONL, exclusively created under checkout work/.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "private_controller_headers_output")]
     private_rpc82_output: Option<PathBuf>,
+    /// PRIVATE controller subobject headers only; no payloads or field identities.
+    #[arg(long, conflicts_with = "private_rpc82_output")]
+    private_controller_headers_output: Option<PathBuf>,
     /// Explicit experimental controller calls, in flag order; at most 32.
     #[arg(long, value_enum)]
     controller_startup: Vec<StartupAction>,
@@ -194,10 +197,16 @@ fn main() -> Result<()> {
     };
     advert.validate()?;
     // Must fail before sockets, TLS, Steam initialization, or authentication.
-    let private_capture = native_join_capture::prepare(
-        options.private_rpc82_output.as_deref(),
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("work"),
-    )?;
+    let header_capture = options.private_controller_headers_output.is_some();
+    let work_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("work");
+    let private_capture = if header_capture {
+        native_join_capture::prepare_headers(
+            options.private_controller_headers_output.as_deref(),
+            &work_root,
+        )?
+    } else {
+        native_join_capture::prepare(options.private_rpc82_output.as_deref(), &work_root)?
+    };
     let query = UdpSocket::bind(options.query_bind).context("bind query listener")?;
     let tls = Tls::from_native_roots()?;
     let http = net::http_agent(&tls, &HttpTimeouts::default());
@@ -283,7 +292,11 @@ fn main() -> Result<()> {
         if now >= next_progress {
             let lab = app.world().resource::<PeerLab>();
             let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"stats":lab.stats(),"compatibility_proven":false});
-            native_join_capture::add_counts(&mut progress, lab.private_rpc82_capture_counts());
+            native_join_capture::add_counts(
+                &mut progress,
+                lab.private_rpc82_capture_counts(),
+                header_capture,
+            );
             output_error = emit_progress(&progress).err();
             // Schedule from now: slow updates never create a catch-up burst.
             next_progress = now + progress_interval;
@@ -320,7 +333,7 @@ fn main() -> Result<()> {
         reason
     };
     let mut summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"controller_fields_before_shutdown":controller_fields,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
-    native_join_capture::add_counts(&mut summary, private_capture);
+    native_join_capture::add_counts(&mut summary, private_capture, header_capture);
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &summary)?;
     writeln!(&mut stdout)?;
@@ -340,6 +353,34 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_header_selection_is_opt_in_and_excludes_payload_capture() {
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(default.private_controller_headers_output.is_none());
+        assert!(default.private_rpc82_output.is_none());
+        let selected = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--private-controller-headers-output",
+            "work/authored/headers.jsonl",
+        ])
+        .unwrap();
+        assert!(selected.private_controller_headers_output.is_some());
+        assert!(
+            Options::try_parse_from([
+                "probe",
+                "--name",
+                "Authored",
+                "--private-controller-headers-output",
+                "work/authored/headers.jsonl",
+                "--private-rpc82-output",
+                "work/authored/payload.jsonl",
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn startup_flags_preserve_order_and_reject_invalid_plans_before_networking() {

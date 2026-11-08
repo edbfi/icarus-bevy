@@ -35,8 +35,10 @@ max-tick-rate helper `0x143993060`/`0x143c5d520`;
   Restart-only capture observed Begin124 and a UserProfile wait (F-1038),
   without initialized players or world entry.
 - Matched UserProfile request/identifier/backend callback guards: F-1039.
-  Counter phases and unknown-subobject aggregate: F-1040; these diagnose
-  validation/application/publication boundaries, not client handler execution.
+  Public phases F-1040 and opt-in private headers F-1042 separate observation
+  boundaries, not client handler execution. Matched requested subobject
+  identity/outer and receiver object/outer/direction/RPC-flag gates: F-1041;
+  configured identity/framing agree, with no established native routing defect.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
@@ -191,8 +193,9 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
-- U-079: actual 612-bit RPC82 payload, live profile/layout/ops and
-  callbacks; M-1207 retains only count, so original consumption is untested.
+- U-079: live visibility bindings/effects and client profile execution remain
+  unqualified; conditional payload replay F-1034 and header instrumentation
+  F-1042 supply neither.
 
 - Authenticated runtime relevancy and priority exercise (U-038).
 

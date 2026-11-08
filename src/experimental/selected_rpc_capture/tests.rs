@@ -362,3 +362,197 @@ fn writer_selected_absent_payload_replays_without_source_completion_claim() {
     assert!(!summary.provenance_verified);
     assert!(!summary.compatibility_proven);
 }
+
+fn header_wire(guid: u32, payload: Payload) -> Bunch {
+    bunch(vec![ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::SubObject {
+            object: NetGuidRef::plain(guid),
+            class: SubObjectClass::ClientSent,
+        },
+        payload,
+    }])
+}
+
+#[test]
+fn header_selection_persists_only_explicit_header_metadata() {
+    let mut output = tempfile::tempfile().unwrap();
+    let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+    let mut writer = BitWriter::new();
+    for byte in b"AUTHORED_PAYLOAD_MUST_NEVER_APPEAR" {
+        for bit in 0..8 {
+            writer.write_bit(byte & (1 << bit) != 0);
+        }
+    }
+    // Unknown objects are still structurally framed, with opaque body bytes.
+    let wire = header_wire(999, Payload::from_writer(writer));
+    tap(&mut sink).observe_released(&wire, Some(321));
+    let records = rows(&mut output);
+    let record = &records[0];
+    let mut keys: Vec<_> = record
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    let mut expected = vec![
+        "format",
+        "selection",
+        "observation_phase",
+        "offset_origin",
+        "ordinal",
+        "connection_ordinal",
+        "channel",
+        "release_elapsed_ms",
+        "releasing_packet_sequence",
+        "first_reliable_sequence_raw",
+        "final_reliable_sequence_raw",
+        "engine_net_version",
+        "archive_byte_order",
+        "reassembled",
+        "parts",
+        "bunch_payload_bits",
+        "block_index",
+        "header_offset_bits",
+        "header_length_bits",
+        "block_payload_offset_bits",
+        "block_payload_bits",
+        "has_rep_layout",
+        "subobject_guid",
+        "expected_component",
+        "stably_named",
+        "class_guid",
+    ];
+    expected.sort_unstable();
+    assert_eq!(keys, expected);
+    assert_eq!(record["observation_phase"], "reliable_queue_release");
+    assert_eq!(record["releasing_packet_sequence"], 321);
+    assert_eq!(record["release_elapsed_ms"], 23);
+    assert_eq!(record["subobject_guid"], 999);
+    assert_eq!(record["expected_component"], "unknown");
+    assert!(record["stably_named"].is_null());
+    assert!(record["class_guid"].is_null());
+    assert_eq!(record["header_offset_bits"], 0);
+    assert_eq!(
+        record["header_length_bits"],
+        record["block_payload_offset_bits"]
+    );
+    assert_eq!(
+        record["block_payload_offset_bits"].as_u64().unwrap()
+            + record["block_payload_bits"].as_u64().unwrap(),
+        wire.payload.bit_len() as u64
+    );
+    assert!(
+        !serde_json::to_string(&records)
+            .unwrap()
+            .contains("AUTHORED_PAYLOAD")
+    );
+    assert_eq!(sink.finish().retained_payload_bits, 0);
+    assert_eq!(sink.counts().incomplete, 0);
+    // Actor-only traffic consumes neither observations nor drop budget.
+    let mut sink = PrivateRpc82Capture::from_header_file(tempfile::tempfile().unwrap());
+    tap(&mut sink).observe(&bunch(vec![block(BlockTarget::Actor, 82, bits(612))]));
+    assert_eq!(sink.finish().observations, 0);
+    assert_eq!(sink.counts().dropped, 0);
+    for (guid, expected) in [(5, "backend_proxy"), (7, "player_data"), (9, "bestiary")] {
+        let mut file = tempfile::tempfile().unwrap();
+        let mut sink = PrivateRpc82Capture::from_header_file(file.try_clone().unwrap());
+        let mut observer = tap(&mut sink);
+        observer.components = [Some(5), Some(7), Some(9)];
+        observer.observe(&header_wire(guid, bits(0)));
+        let row = rows(&mut file).remove(0);
+        assert_eq!(row["expected_component"], expected);
+        assert!(row["releasing_packet_sequence"].is_null());
+    }
+}
+
+#[test]
+fn header_selection_reassembles_only_queue_released_parts_and_suppresses_duplicates() {
+    use crate::experimental::sequencing::{ReliableChannel, ReliableReceive};
+    let mut output = tempfile::tempfile().unwrap();
+    let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+    let (first, last) = parts(&header_wire(999, bits(612)));
+    let mut queue = ReliableChannel::new(0, 0);
+    // The final part arrived earlier, but is released by the later gap fill.
+    assert!(matches!(
+        queue.receive_reliable(2, last.clone()).unwrap(),
+        ReliableReceive::Queued
+    ));
+    assert!(rows(&mut output).is_empty());
+    let ReliableReceive::Delivered(released) = queue.receive_reliable(1, first).unwrap() else {
+        panic!("gap fill");
+    };
+    for part in released {
+        tap(&mut sink).observe_released(&part, Some(101));
+    }
+    assert!(matches!(
+        queue.receive_reliable(2, last).unwrap(),
+        ReliableReceive::Duplicate
+    ));
+    let records = rows(&mut output);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["parts"], 2);
+    assert_eq!(records[0]["reassembled"], true);
+    assert_eq!(records[0]["releasing_packet_sequence"], 101);
+    assert_eq!(records[0]["first_reliable_sequence_raw"], 1);
+    assert_eq!(records[0]["final_reliable_sequence_raw"], 2);
+    assert_eq!(sink.finish().incomplete, 0);
+}
+
+#[test]
+fn header_selection_malformed_tail_suppresses_all_prefix_even_when_fragmented() {
+    for fragmented in [false, true] {
+        let mut output = tempfile::tempfile().unwrap();
+        let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+        let mut wire = header_wire(999, bits(100));
+        let mut writer = BitWriter::new();
+        let mut reader = wire.payload.reader();
+        for _ in 0..wire.payload.bit_len() {
+            writer.write_bit(reader.read_bit());
+        }
+        writer.write_bit(true); // incomplete next block header
+        wire.payload = Payload::from_writer(writer);
+        if fragmented {
+            let (first, last) = parts(&wire);
+            tap(&mut sink).observe(&first);
+            tap(&mut sink).observe(&last);
+        } else {
+            tap(&mut sink).observe(&wire);
+        }
+        assert!(rows(&mut output).is_empty());
+        assert_eq!(sink.finish().malformed, 1);
+        assert_eq!(sink.counts().incomplete, 1);
+    }
+}
+
+#[test]
+fn header_selection_reuses_exact_output_observation_and_partial_memory_caps() {
+    let output = tempfile::tempfile().unwrap();
+    let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+    for _ in 0..MAX_OBSERVATIONS + 1 {
+        tap(&mut sink).observe(&header_wire(999, bits(1)));
+    }
+    assert_eq!(sink.counts().observations, MAX_OBSERVATIONS as u64);
+    assert_eq!(sink.counts().dropped, 1);
+    assert_eq!(sink.counts().retained_payload_bits, 0);
+    assert_eq!(sink.counts().output_bytes, output.metadata().unwrap().len());
+    assert!(sink.counts().output_bytes <= MAX_OUTPUT_BYTES as u64);
+    let mut output = tempfile::tempfile().unwrap();
+    let mut sink = PrivateRpc82Capture::from_header_file(output.try_clone().unwrap());
+    sink.counts.output_bytes = MAX_OUTPUT_BYTES as u64 - 1;
+    tap(&mut sink).observe(&header_wire(999, bits(1)));
+    assert!(rows(&mut output).is_empty());
+    assert_eq!(sink.counts().observations, 0);
+    assert_eq!(sink.counts().dropped, 1);
+    let (first, _) = parts(&header_wire(999, bits(612)));
+    let mut sink = PrivateRpc82Capture::from_header_file(tempfile::tempfile().unwrap());
+    for connection in 1..=MAX_ASSEMBLIES as u32 + 1 {
+        let mut observer = tap(&mut sink);
+        observer.connection_ordinal = connection;
+        observer.observe(&first);
+    }
+    assert_eq!(sink.counts().pending_assemblies, MAX_ASSEMBLIES as u64);
+    assert_eq!(sink.counts().dropped, 1);
+    assert_eq!(sink.finish().incomplete, 1);
+}
