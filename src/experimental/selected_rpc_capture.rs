@@ -1,4 +1,5 @@
-//! Explicitly installed PRIVATE actor-field-82 observation. No RPC dispatch.
+//! Explicitly selected PRIVATE actor-field-82 or subobject-header observation.
+//! Both modes share bounded staging, validation, ordered delivery and file I/O.
 //!
 //! Only the sink serializes raw values. Debug and public status expose counts.
 //! Offsets are relative to the complete (possibly reassembled) bunch payload,
@@ -42,11 +43,19 @@ struct Assembly {
     partial: PartialBunchReassembler,
     sequence: i64,
     retained_bits: usize,
+    first_reliable_sequence_raw: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+enum CaptureSelection {
+    ActorField82,
+    ControllerSubobjectHeaders,
 }
 
 /// Concrete file sink: callers cannot install an observer callback. I/O errors
 /// only disable capture; they never propagate into network delivery.
 pub struct PrivateRpc82Capture {
+    selection: CaptureSelection,
     file: File,
     counts: CaptureCounts,
     assemblies: BTreeMap<(u32, u32), Assembly>,
@@ -100,6 +109,37 @@ struct Record {
     payload_hex: String,
 }
 
+#[derive(Serialize)]
+struct HeaderRecord {
+    format: u8,
+    selection: &'static str,
+    observation_phase: &'static str,
+    offset_origin: &'static str,
+    ordinal: u64,
+    connection_ordinal: u32,
+    channel: u32,
+    release_elapsed_ms: u64,
+    releasing_packet_sequence: Option<u16>,
+    first_reliable_sequence_raw: Option<u32>,
+    final_reliable_sequence_raw: Option<u32>,
+    engine_net_version: u32,
+    archive_byte_order: &'static str,
+    reassembled: bool,
+    parts: usize,
+    bunch_payload_bits: usize,
+    block_index: usize,
+    header_offset_bits: usize,
+    header_length_bits: usize,
+    block_payload_offset_bits: usize,
+    block_payload_bits: usize,
+    has_rep_layout: bool,
+    subobject_guid: u32,
+    expected_component: &'static str,
+    // These fields are absent from client-to-server subobject headers.
+    stably_named: Option<bool>,
+    class_guid: Option<u32>,
+}
+
 struct StagedRecord {
     encoded: Vec<u8>,
     payload_bits: usize,
@@ -110,11 +150,21 @@ impl PrivateRpc82Capture {
     /// startup. Kept separate to allow authored write-failure tests.
     pub fn from_file(file: File) -> Self {
         Self {
+            selection: CaptureSelection::ActorField82,
             file,
             counts: CaptureCounts::default(),
             assemblies: BTreeMap::new(),
             failed: false,
             finished: false,
+        }
+    }
+
+    /// Select only validated client-to-server subobject headers. This uses the
+    /// same private sink, budgets, validation, and finalization as field capture.
+    pub fn from_header_file(file: File) -> Self {
+        Self {
+            selection: CaptureSelection::ControllerSubobjectHeaders,
+            ..Self::from_file(file)
         }
     }
 
@@ -174,7 +224,16 @@ impl PrivateRpc82Capture {
 impl CaptureTap<'_> {
     /// Called only after the reliable queue releases a whole bunch/part in
     /// channel order. Ordinary transport rejection/dispatch stays unchanged.
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, bunch: &Bunch) {
+        self.observe_released(bunch, None);
+    }
+
+    pub(crate) fn observe_released(
+        &mut self,
+        bunch: &Bunch,
+        releasing_packet_sequence: Option<u16>,
+    ) {
         if bunch.header.channel_index != self.channel || self.sink.failed || self.sink.finished {
             return;
         }
@@ -205,6 +264,7 @@ impl CaptureTap<'_> {
                 partial: PartialBunchReassembler::new(),
                 sequence: 0,
                 retained_bits: 0,
+                first_reliable_sequence_raw: h.reliable_sequence_raw,
             });
             if state.retained_bits.saturating_add(bunch.payload.bit_len()) > MAX_BUNCH_BYTES * 8 {
                 self.sink.assemblies.remove(&key);
@@ -222,8 +282,16 @@ impl CaptureTap<'_> {
             );
             match result {
                 Ok(PartialReceive::Complete { bunch, parts, .. }) => {
+                    let first_reliable_sequence_raw = state.first_reliable_sequence_raw;
                     self.sink.assemblies.remove(&key);
-                    self.complete(&bunch, parts, true);
+                    self.complete(
+                        &bunch,
+                        parts,
+                        true,
+                        releasing_packet_sequence,
+                        first_reliable_sequence_raw,
+                        h.reliable_sequence_raw,
+                    );
                 }
                 Ok(
                     PartialReceive::Incomplete { .. } | PartialReceive::IgnoredUnreliableInitial,
@@ -237,11 +305,26 @@ impl CaptureTap<'_> {
             if self.sink.assemblies.remove(&key).is_some() {
                 self.sink.drop_observation();
             }
-            self.complete(bunch, 1, false);
+            self.complete(
+                bunch,
+                1,
+                false,
+                releasing_packet_sequence,
+                h.reliable_sequence_raw,
+                h.reliable_sequence_raw,
+            );
         }
     }
 
-    fn complete(&mut self, bunch: &Bunch, parts: usize, partial: bool) {
+    fn complete(
+        &mut self,
+        bunch: &Bunch,
+        parts: usize,
+        partial: bool,
+        releasing_packet_sequence: Option<u16>,
+        first_reliable_sequence_raw: Option<u32>,
+        final_reliable_sequence_raw: Option<u32>,
+    ) {
         // Validate all blocks AND recognized fields before publishing any prefix.
         // The validator stages calls and discards them: capture grants no dispatch.
         if !validate_controller_capture(
@@ -253,7 +336,18 @@ impl CaptureTap<'_> {
             self.sink.counts.malformed = self.sink.counts.malformed.saturating_add(1);
             return;
         }
-        let Ok(records) = self.stage(bunch, parts, partial) else {
+        let staged = match self.sink.selection {
+            CaptureSelection::ActorField82 => self.stage(bunch, parts, partial),
+            CaptureSelection::ControllerSubobjectHeaders => self.stage_headers(
+                bunch,
+                parts,
+                partial,
+                releasing_packet_sequence,
+                first_reliable_sequence_raw,
+                final_reliable_sequence_raw,
+            ),
+        };
+        let Ok(records) = staged else {
             self.sink.counts.malformed = self.sink.counts.malformed.saturating_add(1);
             return;
         };
@@ -288,6 +382,98 @@ impl CaptureTap<'_> {
             self.sink.counts.observations += 1;
             self.sink.counts.retained_payload_bits += bits;
         }
+    }
+
+    fn stage_headers(
+        &mut self,
+        bunch: &Bunch,
+        parts: usize,
+        partial: bool,
+        releasing_packet_sequence: Option<u16>,
+        first_reliable_sequence_raw: Option<u32>,
+        final_reliable_sequence_raw: Option<u32>,
+    ) -> anyhow::Result<Vec<StagedRecord>> {
+        let codec = ActorChannelCodec {
+            engine_net_version: self.engine_net_version,
+            exports_enabled: false,
+            has_level: true,
+            order: self.order,
+            limits: ActorChannelLimits::default(),
+        };
+        let mut reader = bunch.payload.reader();
+        let mut records = Vec::new();
+        let mut remaining_bytes =
+            (MAX_OUTPUT_BYTES as u64).saturating_sub(self.sink.counts.output_bytes);
+        let mut block_index = 0;
+        while !reader.at_end() {
+            let block_start = reader.position();
+            let block = read_client_content_block(&mut reader, &codec)?;
+            let payload_start = reader.position() - block.payload.bit_len();
+            let index = block_index;
+            block_index += 1;
+            let BlockTarget::SubObject { object, .. } = block.target else {
+                continue;
+            };
+            if records.len()
+                >= MAX_OBSERVATIONS.saturating_sub(self.sink.counts.observations as usize)
+            {
+                self.sink.drop_observation();
+                continue;
+            }
+            let expected_component = match self
+                .components
+                .iter()
+                .position(|guid| *guid == Some(object.guid))
+            {
+                Some(0) => "backend_proxy",
+                Some(1) => "player_data",
+                Some(2) => "bestiary",
+                _ => "unknown",
+            };
+            let record = HeaderRecord {
+                format: 1,
+                selection: "controller_subobject_headers",
+                observation_phase: "reliable_queue_release",
+                offset_origin: "complete_bunch_payload",
+                ordinal: self.sink.counts.observations + records.len() as u64 + 1,
+                connection_ordinal: self.connection_ordinal,
+                channel: self.channel,
+                release_elapsed_ms: self.elapsed_ms,
+                releasing_packet_sequence,
+                first_reliable_sequence_raw,
+                final_reliable_sequence_raw,
+                engine_net_version: self.engine_net_version,
+                archive_byte_order: match self.order {
+                    ByteOrder::Little => "little",
+                    ByteOrder::Big => "big",
+                },
+                reassembled: partial,
+                parts,
+                bunch_payload_bits: bunch.payload.bit_len(),
+                block_index: index,
+                header_offset_bits: block_start,
+                header_length_bits: payload_start - block_start,
+                block_payload_offset_bits: payload_start,
+                block_payload_bits: block.payload.bit_len(),
+                has_rep_layout: block.has_rep_layout,
+                subobject_guid: object.guid,
+                expected_component,
+                stably_named: None,
+                class_guid: None,
+            };
+            let mut encoded = serde_json::to_vec(&record)?;
+            encoded.push(b'\n');
+            if encoded.len() as u64 > remaining_bytes {
+                self.sink.drop_observation();
+                continue;
+            }
+            remaining_bytes -= encoded.len() as u64;
+            records.push(StagedRecord {
+                encoded,
+                payload_bits: 0,
+            });
+        }
+        Ok(records)
     }
 
     fn stage(

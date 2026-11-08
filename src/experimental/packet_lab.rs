@@ -754,7 +754,8 @@ impl LabPeer {
         }
         let delivered = self.deliver(staged, &mut summary);
         let messages = self.fail_on_error(delivered)?;
-        let (actor_bunches, actors_accepted) = self.deliver_actors(bunches, &mut summary, capture);
+        let (actor_bunches, actors_accepted) =
+            self.deliver_actors(bunches, &mut summary, capture, header.sequence);
         let acked = self.sequencer.ack_seq(received.sequence, actors_accepted);
         self.fail_on_error(acked)?;
         summary.queued_reliable = self.control.queued_len();
@@ -771,6 +772,7 @@ impl LabPeer {
         bunches: Vec<Bunch>,
         summary: &mut ReceiveSummary,
         mut capture: Option<&mut super::selected_rpc_capture::CaptureTap<'_>>,
+        releasing_packet_sequence: u16,
     ) -> (Vec<Bunch>, bool) {
         let mut delivered = Vec::new();
         let mut accepted = true;
@@ -796,7 +798,7 @@ impl LabPeer {
                 Ok(ReliableReceive::Delivered(bunches)) => {
                     for bunch in bunches {
                         if let Some(tap) = capture.as_deref_mut() {
-                            tap.observe(&bunch);
+                            tap.observe_released(&bunch, Some(releasing_packet_sequence));
                         }
                         let header = &bunch.header;
                         if header.partial

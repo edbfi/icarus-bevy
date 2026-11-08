@@ -62,9 +62,9 @@ fn private_selected_capture_path_preflight_and_count_only_summary() -> Result<()
     assert!(running.as_object().unwrap().values().all(Value::is_u64));
     assert_eq!(running["incomplete"], 1);
     let mut disabled_summary = json!({"event": "authored"});
-    private_native_capture::add_counts(&mut disabled_summary, None);
+    private_native_capture::add_counts(&mut disabled_summary, None, false);
     assert_eq!(disabled_summary, json!({"event": "authored"}));
-    private_native_capture::add_counts(&mut disabled_summary, Some(sink.counts()));
+    private_native_capture::add_counts(&mut disabled_summary, Some(sink.counts()), false);
     assert_eq!(disabled_summary["private_rpc82_capture"], running);
     assert_eq!(sink.finish().incomplete, 0);
     assert_eq!(fs::metadata(output)?.len(), 0);

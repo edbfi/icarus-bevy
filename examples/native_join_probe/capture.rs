@@ -7,19 +7,32 @@ use icarus_bevy::experimental::selected_rpc_capture::PrivateRpc82Capture;
 pub fn add_counts(
     summary: &mut serde_json::Value,
     counts: Option<icarus_bevy::experimental::selected_rpc_capture::CaptureCounts>,
+    headers: bool,
 ) {
     if let Some(counts) = counts {
-        summary["private_rpc82_capture"] = serde_json::json!(counts);
+        summary[if headers {
+            "private_controller_headers_capture"
+        } else {
+            "private_rpc82_capture"
+        }] = serde_json::json!(counts);
     }
 }
 
 pub fn prepare(output: Option<&Path>, work_root: &Path) -> Result<Option<PrivateRpc82Capture>> {
-    prepare_impl(output, work_root, || {})
+    prepare_impl(output, work_root, false, || {})
+}
+
+pub fn prepare_headers(
+    output: Option<&Path>,
+    work_root: &Path,
+) -> Result<Option<PrivateRpc82Capture>> {
+    prepare_impl(output, work_root, true, || {})
 }
 
 fn prepare_impl(
     output: Option<&Path>,
     work_root: &Path,
+    headers: bool,
     before_create: impl FnOnce(),
 ) -> Result<Option<PrivateRpc82Capture>> {
     let Some(output) = output else {
@@ -64,14 +77,36 @@ fn prepare_impl(
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
     )
     .context("exclusive private capture creation failed")?;
-    Ok(Some(PrivateRpc82Capture::from_file(std::fs::File::from(
-        file,
-    ))))
+    let file = std::fs::File::from(file);
+    Ok(Some(if headers {
+        PrivateRpc82Capture::from_header_file(file)
+    } else {
+        PrivateRpc82Capture::from_file(file)
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_file_is_private_exclusive_and_public_summary_contains_counts_only() -> Result<()> {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let root = tempfile::tempdir()?;
+        let work = root.path().join("work");
+        fs::create_dir(&work)?;
+        let path = work.join("headers.jsonl");
+        let mut capture = prepare_headers(Some(&path), &work)?.unwrap();
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+        assert!(prepare_headers(Some(&path), &work).is_err());
+        let mut summary = serde_json::json!({});
+        add_counts(&mut summary, Some(capture.finish()), true);
+        assert!(summary.get("private_controller_headers_capture").is_some());
+        assert!(summary.get("private_rpc82_capture").is_none());
+        assert!(!summary.to_string().contains("guid"));
+        assert!(fs::read(&path)?.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn private_capture_refuses_parent_replaced_after_root_binding() -> Result<()> {
@@ -84,7 +119,7 @@ mod tests {
         fs::create_dir_all(&parent)?;
         fs::create_dir(&outside)?;
         let output = parent.join("selected.jsonl");
-        let result = prepare_impl(Some(&output), &work, || {
+        let result = prepare_impl(Some(&output), &work, false, || {
             fs::rename(&parent, &moved).unwrap();
             symlink(&outside, &parent).unwrap();
         });
