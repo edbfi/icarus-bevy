@@ -14,7 +14,7 @@ F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay. Bindings/cause: U-079.
 
 State/restart F-1036; fragmented BackendProxy baseline
-F-1038. Request/binding guards F-1039/F-1041; diagnostics F-1045/F-1042.
+F-1049. Request/binding guards F-1039/F-1041; diagnostics F-1045/F-1042.
 Assembly F-1043 and progress F-1049 move the wait to CharacterProfile.
 Matched payload/partial bounds F-1046/F-1047 qualify larger native envelopes;
 CharacterProfile guards F-1048 do not identify the rejected RPC (F-1049; U-079).

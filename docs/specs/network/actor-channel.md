@@ -10,13 +10,15 @@ Last reconciled: 2026-11-08.
 
 Actor framing/scheduling after control admission: exports, partials, spawn/content,
 close/dormancy, relevancy/priority/readiness and visibility RPCs.
+Function bindings are in the cited finding/evidence IDs; older-build
+addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
 
 ## Confirmed
 
 - State/predicate and possession restart chain: F-1036. Dedicated predicate
   false does not prove stock-client execution.
 - Restart reaches Begin/UserProfile wait. Private headers show configured
-  BackendProxy traffic in four parts, without RPC identity/world entry (F-1038).
+  BackendProxy traffic in four parts, without RPC identity/world entry (F-1049).
 - Matched UserProfile request/identifier/backend callback guards: F-1039.
   Public phases F-1045 and opt-in private headers F-1042 separate observation
   boundaries, not client handler execution. Matched requested subobject
