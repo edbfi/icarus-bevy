@@ -1477,6 +1477,15 @@ pub struct ControllerFieldDiagnostics {
     pub entries: Vec<ControllerFieldSummary>,
     pub overflow: u64,
     pub malformed_bunches: u64,
+    /// Whole actor-body failures before any field dispatch, including native limits.
+    pub body_parse_failures: u64,
+    /// Declared block length exceeds the native cap but fits available payload.
+    /// This establishes a limit rejection, not a legitimate RPC or profile.
+    pub block_payload_limit_rejections: u64,
+    /// Declared length exceeds available bits, whether or not also above the cap.
+    pub block_payload_length_rejections: u64,
+    /// Maximum declared length among cap rejections with that many bits available.
+    pub max_rejected_block_payload_bits: u64,
     /// Content blocks skipped because their subobject GUID is not permitted.
     pub unknown_subobject_blocks: u64,
 }
@@ -1700,7 +1709,45 @@ fn controller_initialisation_calls(
     diagnostics: &mut ControllerFieldDiagnostics,
 ) -> Result<(Vec<ControllerCall>, usize)> {
     let actor = actor_codec(engine_net_version, order);
-    let body = read_client_actor_bunch_body(&mut payload.reader(), &actor)?;
+    let body = match read_client_actor_bunch_body(&mut payload.reader(), &actor) {
+        Ok(body) => body,
+        Err(error) => {
+            diagnostics.body_parse_failures = diagnostics.body_parse_failures.saturating_add(1);
+            if let Some(rejection) =
+                error.downcast_ref::<super::actor_channel::ContentBlockPayloadReadError>()
+            {
+                match *rejection {
+                    super::actor_channel::ContentBlockPayloadReadError::Limit {
+                        declared_bits,
+                        available_bits,
+                        limit_bits,
+                    } if declared_bits <= available_bits => {
+                        debug_assert!(declared_bits > limit_bits);
+                        diagnostics.block_payload_limit_rejections =
+                            diagnostics.block_payload_limit_rejections.saturating_add(1);
+                        diagnostics.max_rejected_block_payload_bits = diagnostics
+                            .max_rejected_block_payload_bits
+                            .max(declared_bits as u64);
+                    }
+                    super::actor_channel::ContentBlockPayloadReadError::Limit {
+                        declared_bits,
+                        available_bits,
+                        ..
+                    }
+                    | super::actor_channel::ContentBlockPayloadReadError::Truncated {
+                        declared_bits,
+                        available_bits,
+                    } => {
+                        debug_assert!(declared_bits > available_bits);
+                        diagnostics.block_payload_length_rejections = diagnostics
+                            .block_payload_length_rejections
+                            .saturating_add(1);
+                    }
+                }
+            }
+            return Err(error);
+        }
+    };
     let codec = RepLayoutCodec {
         actor,
         checksums: false,
@@ -4711,6 +4758,18 @@ impl PeerLab {
             totals.malformed_bunches = totals
                 .malformed_bunches
                 .saturating_add(diagnostics.malformed_bunches);
+            totals.body_parse_failures = totals
+                .body_parse_failures
+                .saturating_add(diagnostics.body_parse_failures);
+            totals.block_payload_limit_rejections = totals
+                .block_payload_limit_rejections
+                .saturating_add(diagnostics.block_payload_limit_rejections);
+            totals.block_payload_length_rejections = totals
+                .block_payload_length_rejections
+                .saturating_add(diagnostics.block_payload_length_rejections);
+            totals.max_rejected_block_payload_bits = totals
+                .max_rejected_block_payload_bits
+                .max(diagnostics.max_rejected_block_payload_bits);
             for entry in &diagnostics.entries {
                 totals.record_count(
                     entry.target,
@@ -11666,6 +11725,19 @@ mod tests {
             assert_eq!(actual.entries, expected.entries);
             assert_eq!(actual.overflow, expected.overflow);
             assert_eq!(actual.malformed_bunches, expected.malformed_bunches);
+            assert_eq!(actual.body_parse_failures, expected.body_parse_failures);
+            assert_eq!(
+                actual.block_payload_limit_rejections,
+                expected.block_payload_limit_rejections
+            );
+            assert_eq!(
+                actual.block_payload_length_rejections,
+                expected.block_payload_length_rejections
+            );
+            assert_eq!(
+                actual.max_rejected_block_payload_bits,
+                expected.max_rejected_block_payload_bits
+            );
             assert_eq!(
                 actual.unknown_subobject_blocks,
                 expected.unknown_subobject_blocks
@@ -11976,6 +12048,14 @@ mod tests {
                             .malformed_bunches,
                         1
                     );
+                    let body = lab.controller_field_diagnostics(address).unwrap();
+                    assert_eq!(body.body_parse_failures, 1);
+                    assert_eq!(body.block_payload_limit_rejections, u64::from(failure == 2));
+                    assert_eq!(body.block_payload_length_rejections, 0);
+                    assert_eq!(
+                        body.max_rejected_block_payload_bits,
+                        if failure == 2 { 65_537 } else { 0 }
+                    );
                     // The failed complete body does not poison the next sequence.
                     let recovery = split_outgoing_bunch(
                         &Bunch {
@@ -12009,6 +12089,96 @@ mod tests {
                     assert_eq!(lab.stats.profile_user_responses_recognized, 1);
                     assert_eq!(lab.stats.profile_responses_ignored, 1);
                 }
+            }
+        }
+
+        #[test]
+        fn body_rejection_diagnostics_distinguish_available_oversize_from_bad_declaration() {
+            use super::super::super::actor_channel::ContentBlockPayloadReadError;
+            let mut omitted = BitWriter::new();
+            omitted.write_bit(false);
+            let valid = encode_actor_bunch_body(
+                &ActorBunchBody {
+                    spawn: None,
+                    blocks: vec![field_block(
+                        subobject(5),
+                        BACKEND_PROXY_FIELD_INDEX_BOUND,
+                        &[(RESPONSE_GET_USER_PROFILE, Payload::from_writer(omitted))],
+                    )],
+                },
+                &actor_codec(17, ByteOrder::Little),
+            )
+            .unwrap();
+            for (declared, available) in [(65_537_u32, 65_537_usize), (65_537, 0), (16, 0)] {
+                let mut writer = BitWriter::new();
+                let mut prefix = valid.reader();
+                while prefix.remaining() > 0 {
+                    writer.write_bit(prefix.read_bit());
+                }
+                writer.write_bit(false); // no rep layout
+                writer.write_bit(true); // actor block, no object identity
+                writer.write_int_packed(declared);
+                for _ in 0..available {
+                    writer.write_bit(false);
+                }
+                let mut diagnostics = ControllerFieldDiagnostics::default();
+                let error = controller_initialisation_calls(
+                    &Payload::from_writer(writer),
+                    17,
+                    ByteOrder::Little,
+                    [Some(5), None, None],
+                    &mut diagnostics,
+                )
+                .err()
+                .unwrap();
+                let rejection = error
+                    .downcast_ref::<ContentBlockPayloadReadError>()
+                    .unwrap();
+                if declared > 65_536 {
+                    assert_eq!(
+                        *rejection,
+                        ContentBlockPayloadReadError::Limit {
+                            declared_bits: declared as usize,
+                            available_bits: available,
+                            limit_bits: 65_536,
+                        }
+                    );
+                    assert_eq!(
+                        rejection.to_string(),
+                        "content block payload exceeds the payload bit limit"
+                    );
+                } else {
+                    assert_eq!(
+                        *rejection,
+                        ContentBlockPayloadReadError::Truncated {
+                            declared_bits: declared as usize,
+                            available_bits: available,
+                        }
+                    );
+                    assert_eq!(
+                        rejection.to_string(),
+                        "content block payload exceeds the bunch"
+                    );
+                }
+                assert_eq!(diagnostics.body_parse_failures, 1);
+                assert_eq!(
+                    diagnostics.block_payload_limit_rejections,
+                    u64::from(available > 0)
+                );
+                assert_eq!(
+                    diagnostics.block_payload_length_rejections,
+                    u64::from(available == 0)
+                );
+                assert_eq!(
+                    diagnostics.max_rejected_block_payload_bits,
+                    if available > 0 {
+                        u64::from(declared)
+                    } else {
+                        0
+                    }
+                );
+                // Complete-body staging rejects even the valid UserProfile prefix.
+                assert!(diagnostics.entries.is_empty());
             }
         }
 
@@ -12466,6 +12636,10 @@ mod tests {
                     ControllerFieldDisposition::Ignored,
                 );
                 diagnostics.malformed_bunches = u64::MAX;
+                diagnostics.body_parse_failures = u64::MAX;
+                diagnostics.block_payload_limit_rejections = u64::MAX;
+                diagnostics.block_payload_length_rejections = u64::MAX;
+                diagnostics.max_rejected_block_payload_bits = 65_537 + u64::from(start);
                 diagnostics.unknown_subobject_blocks = u64::MAX;
                 assert_eq!(diagnostics.entries.len(), 64);
                 assert_eq!(diagnostics.overflow, u64::MAX);
@@ -12475,6 +12649,10 @@ mod tests {
             assert!(totals.entries.iter().all(|entry| entry.count == u64::MAX));
             assert_eq!(totals.overflow, u64::MAX);
             assert_eq!(totals.malformed_bunches, u64::MAX);
+            assert_eq!(totals.body_parse_failures, u64::MAX);
+            assert_eq!(totals.block_payload_limit_rejections, u64::MAX);
+            assert_eq!(totals.block_payload_length_rejections, u64::MAX);
+            assert_eq!(totals.max_rejected_block_payload_bits, 65_601);
             assert_eq!(totals.unknown_subobject_blocks, u64::MAX);
             let value = serde_json::to_value(&totals).unwrap();
             let mut keys: Vec<_> = value
@@ -12487,8 +12665,12 @@ mod tests {
             assert_eq!(
                 keys,
                 [
+                    "block_payload_length_rejections",
+                    "block_payload_limit_rejections",
+                    "body_parse_failures",
                     "entries",
                     "malformed_bunches",
+                    "max_rejected_block_payload_bits",
                     "overflow",
                     "unknown_subobject_blocks"
                 ]

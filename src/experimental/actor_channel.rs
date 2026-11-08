@@ -129,6 +129,31 @@ pub struct ActorChannelLimits {
     pub max_path_units: usize,
 }
 
+/// Read-side rejection metadata only: no object identities or payload contents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContentBlockPayloadReadError {
+    Limit {
+        declared_bits: usize,
+        available_bits: usize,
+        limit_bits: usize,
+    },
+    Truncated {
+        declared_bits: usize,
+        available_bits: usize,
+    },
+}
+
+impl std::fmt::Display for ContentBlockPayloadReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Limit { .. } => "content block payload exceeds the payload bit limit",
+            Self::Truncated { .. } => "content block payload exceeds the bunch",
+        })
+    }
+}
+
+impl std::error::Error for ContentBlockPayloadReadError {}
+
 impl Default for ActorChannelLimits {
     fn default() -> Self {
         Self {
@@ -1365,14 +1390,24 @@ fn read_block(
         });
     }
     let bits = read_packed(reader, "content block payload bit count")? as usize;
-    ensure!(
-        bits <= codec.limits.max_payload_bits,
-        "content block payload exceeds the payload bit limit"
-    );
-    ensure!(
-        bits <= reader.remaining(),
-        "content block payload exceeds the bunch"
-    );
+    let available_bits = reader.remaining();
+    // Preserve the existing cap-before-length rejection order. A declaration
+    // above both bounds is not evidence of a legitimate oversized block.
+    if bits > codec.limits.max_payload_bits {
+        return Err(ContentBlockPayloadReadError::Limit {
+            declared_bits: bits,
+            available_bits,
+            limit_bits: codec.limits.max_payload_bits,
+        }
+        .into());
+    }
+    if bits > available_bits {
+        return Err(ContentBlockPayloadReadError::Truncated {
+            declared_bits: bits,
+            available_bits,
+        }
+        .into());
+    }
     Ok(ContentBlock {
         has_rep_layout,
         target,
