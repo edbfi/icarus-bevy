@@ -181,6 +181,9 @@ modifier composition and replication are unsupported.
 Contracts/current state/authority/replay share the 64 MiB charged budget;
 this is neither an RSS nor ICARUS compatibility qualification.
 
+Authored last-key validation measurement: F-1053; this does not qualify overall
+server or stock-client performance.
+
 ### Durable inventory commands
 
 F-1030. Accepts `move`, `split`, `merge`, `consume`, `place_overflow`;

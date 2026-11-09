@@ -941,18 +941,18 @@ impl CompiledInventoryContractsV1 {
         Ok(&self.definition().classes[*i].inventories)
     }
     fn recipe(&self, id: DomainId, key: &str) -> Result<&InventoryDefinitionV1> {
-        self.recipes(id)?
-            .iter()
-            .find(|r| r.key == key)
-            .ok_or_else(|| anyhow::anyhow!("inventory instance missing"))
+        let recipes = self.recipes(id)?;
+        recipes
+            .binary_search_by(|recipe| recipe.key.as_str().cmp(key))
+            .map(|index| &recipes[index])
+            .map_err(|_| anyhow::anyhow!("inventory instance missing"))
     }
     fn limit(&self, item: &str) -> Result<u32> {
-        self.definition()
-            .items
-            .iter()
-            .find(|i| i.key == item)
-            .map(|i| i.stack_limit)
-            .ok_or_else(|| anyhow::anyhow!("inventory item undeclared"))
+        let items = &self.definition().items;
+        items
+            .binary_search_by(|definition| definition.key.as_str().cmp(item))
+            .map(|index| items[index].stack_limit)
+            .map_err(|_| anyhow::anyhow!("inventory item undeclared"))
     }
     fn live(&self, live: &InventoryLiveOwnersV1) -> Result<BTreeMap<DomainId, OwnerHandle>> {
         graph(live)?;
@@ -992,10 +992,11 @@ fn totals<'a>(
     Ok(values)
 }
 fn eligible(recipe: &InventoryDefinitionV1, slot: usize, item: &str) -> bool {
-    recipe
-        .slot_rules
-        .get(slot)
-        .is_some_and(|r| r.allowed_items.iter().any(|v| v == item))
+    recipe.slot_rules.get(slot).is_some_and(|r| {
+        r.allowed_items
+            .binary_search_by(|key| key.as_str().cmp(item))
+            .is_ok()
+    })
 }
 fn input_budget(values: &[&dyn InventoryGraph]) -> Result<usize> {
     let mut b = Budget::default();

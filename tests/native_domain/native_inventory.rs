@@ -2204,3 +2204,123 @@ fn initial_item_and_deferred_stack_vectors_reload_across_growth_thresholds() {
     assert_eq!(inv(&state, 1, "bag").overflow.capacity(), 256);
     validate_inventory_state(&c, &state, p.initial_totals(), &live()).unwrap();
 }
+
+#[test]
+fn unsorted_contract_inputs_preserve_boundary_lookups_and_rejections_on_every_entry_path() {
+    let catalog = catalog_with_owners(2);
+    let mut definition = definition(&catalog);
+    definition.items = [("z", 3), ("n", 1), ("m", 2), ("b", 1), ("a", 1)]
+        .into_iter()
+        .map(|(key, stack_limit)| ItemDefinitionV1 {
+            key: key.into(),
+            stack_limit,
+        })
+        .collect();
+    for class in &mut definition.classes {
+        class.inventories = ["z", "a", "m"]
+            .into_iter()
+            .map(|key| InventoryDefinitionV1 {
+                key: key.into(),
+                initial_slots: 3,
+                force_add_when_zero: false,
+                overflow_limit: 0,
+                slot_rules: vec![
+                    SlotRuleV1 {
+                        allowed_items: vec!["z".into(), "a".into(), "m".into()]
+                    };
+                    3
+                ],
+            })
+            .collect();
+    }
+    let compiled = CompiledInventoryContractsV1::compile(definition.clone(), &catalog).unwrap();
+    let mut detached = compiled.snapshot();
+    // Editing an exported snapshot must not mutate the compiled declarations.
+    std::sync::Arc::make_mut(&mut detached)
+        .definition
+        .items
+        .reverse();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), serde_json::to_vec(&definition).unwrap()).unwrap();
+    let variants = [
+        compiled.clone(),
+        CompiledInventoryContractsV1::parse(&serde_json::to_string(&definition).unwrap(), &catalog)
+            .unwrap(),
+        CompiledInventoryContractsV1::parse(&toml::to_string(&definition).unwrap(), &catalog)
+            .unwrap(),
+        CompiledInventoryContractsV1::load(file.path(), &catalog).unwrap(),
+        CompiledInventoryContractsV1::from_snapshot(&detached, &catalog).unwrap(),
+    ];
+    let items = InitialInventoryItemsV1 {
+        items: ["a", "m", "z"]
+            .into_iter()
+            .flat_map(|inventory| {
+                [(0, "a", 1), (1, "m", 2), (2, "z", 3)]
+                    .into_iter()
+                    .map(move |(slot, key, count)| item(1, inventory, slot, key, count))
+            })
+            .collect(),
+    };
+    let expected = prepare_initial_inventory(&compiled, &live(), &items).unwrap();
+    for contracts in variants {
+        assert_eq!(contracts.identity(), compiled.identity());
+        let prepared = prepare_initial_inventory(&contracts, &live(), &items).unwrap();
+        assert_eq!(prepared.state(), expected.state());
+        for inventory in ["a", "m", "z"] {
+            let state = inv(prepared.state(), 1, inventory);
+            assert_eq!(
+                state
+                    .slots
+                    .iter()
+                    .map(|stack| stack.as_ref().unwrap().count)
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3]
+            );
+            assert!(state.overflow.is_empty());
+        }
+        for missing in ["0", "l", "zz"] {
+            let error = prepare_initial_inventory(
+                &contracts,
+                &live(),
+                &InitialInventoryItemsV1 {
+                    items: vec![item(1, "a", 0, missing, 1)],
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "inventory item undeclared");
+            let error = prepare_initial_inventory(
+                &contracts,
+                &live(),
+                &InitialInventoryItemsV1 {
+                    items: vec![item(1, missing, 0, "a", 1)],
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "inventory instance missing");
+        }
+        for (key, limit) in [("a", 1), ("m", 2), ("z", 3)] {
+            let error = prepare_initial_inventory(
+                &contracts,
+                &live(),
+                &InitialInventoryItemsV1 {
+                    items: vec![item(1, "a", 0, key, limit + 1)],
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "inventory initial item invalid");
+        }
+        for denied in ["b", "n"] {
+            let mut damaged = prepared.state().clone();
+            inv_mut(&mut damaged, 1, "a").slots[0]
+                .as_mut()
+                .unwrap()
+                .item = denied.into();
+            assert_eq!(
+                validate_inventory_state(&contracts, &damaged, prepared.initial_totals(), &live())
+                    .unwrap_err()
+                    .to_string(),
+                "inventory slot eligibility invalid"
+            );
+        }
+    }
+}
