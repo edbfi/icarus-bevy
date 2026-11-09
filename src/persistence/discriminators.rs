@@ -94,6 +94,7 @@ struct Probe<'a> {
 #[derive(Default)]
 struct HeaderProbe {
     authored_owners: bool,
+    legacy_preservation: bool,
     future: bool,
 }
 
@@ -107,6 +108,10 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
             if key == "schema_version" {
                 let value = map.next_value::<serde_json::Value>()?;
                 if let Some(schema) = value.as_u64() {
+                    self.legacy_preservation |=
+                        (u64::from(crate::simulation::SNAPSHOT_SCHEMA_PRESERVED)
+                            ..=u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_OWNERS))
+                            .contains(&schema);
                     let current = u64::from(crate::simulation::SNAPSHOT_SCHEMA_INVENTORY_OWNERS);
                     self.authored_owners |= schema == current
                         || schema == u64::from(crate::simulation::SNAPSHOT_SCHEMA_MODIFIER_OWNERS)
@@ -124,7 +129,8 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
     }
 }
 
-/// Inspect all header occurrences without choosing a duplicate's winner.
+/// Inspect all header occurrences without choosing a duplicate's winner, then
+/// check the independent preservation version on earlier supporting schemas.
 /// Strict header admission still follows this upgrade-only pass.
 pub(super) fn header(bytes: &[u8]) -> anyhow::Result<bool> {
     let mut probe = HeaderProbe::default();
@@ -136,6 +142,9 @@ pub(super) fn header(bytes: &[u8]) -> anyhow::Result<bool> {
         return Err(super::UnsupportedSchema.into());
     }
     result.map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?;
+    if probe.legacy_preservation {
+        preserved_encoding(bytes)?;
+    }
     Ok(probe.authored_owners)
 }
 
@@ -225,10 +234,25 @@ impl<'de> Visitor<'de> for Probe<'_> {
 }
 
 pub(super) fn authored_owners(bytes: &[u8]) -> anyhow::Result<()> {
+    scan(bytes, RULES)
+}
+
+/// Earlier schemas also carry this independently versioned preservation
+/// encoding. Inspect every occurrence before typed admission or sidecar reads.
+fn preserved_encoding(bytes: &[u8]) -> anyhow::Result<()> {
+    scan(
+        bytes,
+        rules![
+            "preserved_prospect/encoding" => Kind::Format(crate::preservation::PRESERVED_ENCODING_VERSION),
+        ],
+    )
+}
+
+fn scan(bytes: &[u8], rules: &[Rule]) -> anyhow::Result<()> {
     let mut future = false;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let result = Probe {
-        rules: RULES,
+        rules,
         future: &mut future,
     }
     .deserialize(&mut decoder)
