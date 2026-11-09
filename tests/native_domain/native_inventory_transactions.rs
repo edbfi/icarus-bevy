@@ -11,8 +11,8 @@ use std::{
 
 use icarus_bevy::{
     native_inventory::{
-        InventoryActionRequestV1, InventoryActionV1, InventorySlotEndpointV1,
-        InventoryStackEndpointV1, enable_inventory_owners,
+        InventoryActionRequestV1, InventoryActionV1, InventoryOverflowDestinationV1,
+        InventorySlotEndpointV1, InventoryStackEndpointV1, enable_inventory_owners,
     },
     persistence::SnapshotStore,
     simulation::WorldSnapshot,
@@ -25,6 +25,91 @@ static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 fn initial() -> WorldSnapshot {
     let (base, contracts, items) = super::native_authored_inventory::inputs();
     enable_inventory_owners(base, contracts, items).unwrap()
+}
+
+fn overflow_initial() -> WorldSnapshot {
+    use icarus_bevy::{
+        native_inventory::{
+            CompiledInventoryContractsV1, InitialInventoryItemV1, InventoryDefinitionV1,
+            ItemDefinitionV1, SlotRuleV1,
+        },
+        native_world::CompiledNativeCatalog,
+        simulation::DomainId,
+    };
+    let (base, contracts, mut items) = super::native_authored_inventory::inputs();
+    let catalog =
+        CompiledNativeCatalog::compile(base.native_world.as_ref().unwrap().definitions.clone())
+            .unwrap();
+    let mut definition = contracts.definition;
+    definition.items.push(ItemDefinitionV1 {
+        key: "stone".into(),
+        stack_limit: 10,
+    });
+    let class = &mut definition.classes[0];
+    class.inventories[0].slot_rules.push(SlotRuleV1 {
+        allowed_items: vec!["wood".into()],
+    });
+    class.inventories.push(InventoryDefinitionV1 {
+        key: "restricted".into(),
+        initial_slots: 1,
+        force_add_when_zero: false,
+        overflow_limit: 0,
+        slot_rules: vec![SlotRuleV1 {
+            allowed_items: vec!["stone".into()],
+        }],
+    });
+    for (owner, count) in [(1, 3), (1, 4), (2, 5)] {
+        items.items.push(InitialInventoryItemV1 {
+            owner: DomainId(owner),
+            inventory: "bag".into(),
+            requested_slot: 255,
+            item: "wood".into(),
+            count,
+        });
+    }
+    let contracts = CompiledInventoryContractsV1::compile(definition, &catalog).unwrap();
+    enable_inventory_owners(base, contracts.snapshot().as_ref().clone(), items).unwrap()
+}
+
+fn overflow_endpoint(snapshot: &WorldSnapshot, owner_index: usize) -> InventoryStackEndpointV1 {
+    let owner = &snapshot.native_inventories.as_ref().unwrap().owners[owner_index];
+    InventoryStackEndpointV1 {
+        owner: owner.owner,
+        inventory: "bag".into(),
+        stack_id: owner.inventories[0].overflow[0].stack.id,
+    }
+}
+
+fn overflow_destination(
+    snapshot: &WorldSnapshot,
+    owner_index: usize,
+    slot: Option<u16>,
+) -> InventoryOverflowDestinationV1 {
+    InventoryOverflowDestinationV1 {
+        owner: snapshot.native_inventories.as_ref().unwrap().owners[owner_index].owner,
+        inventory: "bag".into(),
+        slot,
+    }
+}
+
+fn inventory_quantities(snapshot: &WorldSnapshot) -> BTreeMap<String, u64> {
+    let state = snapshot.native_inventories.as_ref().unwrap();
+    let mut totals: BTreeMap<_, _> = state
+        .consumed
+        .iter()
+        .map(|item| (item.item.clone(), item.count))
+        .collect();
+    for inventory in state.owners.iter().flat_map(|owner| &owner.inventories) {
+        for stack in inventory
+            .slots
+            .iter()
+            .flatten()
+            .chain(inventory.overflow.iter().map(|entry| &entry.stack))
+        {
+            *totals.get_mut(&stack.item).unwrap() += u64::from(stack.count);
+        }
+    }
+    totals
 }
 
 fn save(root: &Path, snapshot: &WorldSnapshot) {
@@ -495,6 +580,195 @@ fn save_io_failure_emits_no_success_receipt_and_retains_committed_state() {
     let failed = execute(command(&root, &path, false));
     assert!(!failed.status.success());
     assert!(failed.stdout.is_empty());
+    assert_eq!(
+        serde_json::to_value(load(&root)).unwrap(),
+        serde_json::to_value(original).unwrap()
+    );
+}
+
+#[test]
+fn durable_overflow_existing_slot_and_append_survive_reload_without_reallocating_ids() {
+    let _guard = FIXTURE_LOCK.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("world");
+    let path = directory.path().join("request.json");
+    let original = overflow_initial();
+    save(&root, &original);
+    let totals = inventory_quantities(&original);
+    assert_eq!(
+        totals,
+        BTreeMap::from([("stone".into(), 0), ("wood".into(), 20)])
+    );
+    let mut expected = original.clone();
+    for append in [false, true] {
+        let current = load(&root);
+        let destination_owner = usize::from(!append);
+        let destination_slot = if append { None } else { Some(1) };
+        let action = request(
+            &current,
+            InventoryActionV1::PlaceOverflow {
+                source: overflow_endpoint(&current, 0),
+                destination: overflow_destination(&current, destination_owner, destination_slot),
+            },
+        );
+        write_request(&path, &action);
+        let before = disk(&root);
+        let dry_run = report(execute(command(&root, &path, true)));
+        assert_eq!(dry_run["published"], false);
+        assert_eq!(dry_run["outcome"], "applied");
+        assert!(dry_run.get("receipt").is_none());
+        assert_eq!(disk(&root), before);
+        let applied = report(execute(command(&root, &path, false)));
+        let state = expected.native_inventories.as_mut().unwrap();
+        let stack = state.owners[0].inventories[0].overflow.remove(0).stack;
+        if append {
+            state.owners[0].inventories[0].slots.push(Some(stack));
+        } else {
+            state.owners[1].inventories[0].slots[1] = Some(stack);
+        }
+        state.revision += 1;
+        assert_eq!(applied["event"], "native_inventory_applied");
+        assert_eq!(applied["published"], true);
+        assert_eq!(applied["revision"], state.revision);
+        assert_eq!(applied["receipt"]["generation"], state.revision);
+        let loaded = load(&root);
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(inventory_quantities(&loaded), totals);
+        assert_eq!(
+            loaded.native_inventory_authority,
+            original.native_inventory_authority
+        );
+        assert_eq!(
+            loaded.native_inventories.as_ref().unwrap().next_stack_id,
+            original.native_inventories.as_ref().unwrap().next_stack_id
+        );
+        // Replaying the committed request must not publish another generation.
+        let before = disk(&root);
+        assert!(!execute(command(&root, &path, false)).status.success());
+        assert_eq!(disk(&root), before);
+    }
+    let loaded = load(&root);
+    let bag = &loaded.native_inventories.as_ref().unwrap().owners[0].inventories[0];
+    assert_eq!(bag.slots.len(), 3);
+    assert!(
+        bag.slots[1].is_none(),
+        "append must retain existing empty slots"
+    );
+    assert!(bag.overflow.is_empty());
+    // A third overflow stack remains on the other owner, but no next slot is
+    // declared on the now fully allocated destination bag.
+    write_request(
+        &path,
+        &request(
+            &loaded,
+            InventoryActionV1::PlaceOverflow {
+                source: overflow_endpoint(&loaded, 1),
+                destination: overflow_destination(&loaded, 0, None),
+            },
+        ),
+    );
+    let before = disk(&root);
+    assert!(!execute(command(&root, &path, false)).status.success());
+    assert_eq!(disk(&root), before);
+    assert_eq!(inventory_quantities(&load(&root)), totals);
+}
+
+#[test]
+fn overflow_rejections_leave_the_complete_store_unchanged() {
+    let _guard = FIXTURE_LOCK.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("world");
+    let path = directory.path().join("request.json");
+    let original = overflow_initial();
+    save(&root, &original);
+    let source = overflow_endpoint(&original, 0);
+    let mut restricted = overflow_destination(&original, 1, Some(0));
+    restricted.inventory = "restricted".into();
+    let mut stale_owner = overflow_destination(&original, 1, Some(1));
+    stale_owner.owner.incarnation += 1;
+    let actions = [
+        // Only an overflow source is permitted, even for an otherwise empty slot.
+        InventoryActionV1::PlaceOverflow {
+            source: endpoint(&original, 0, 0),
+            destination: overflow_destination(&original, 1, Some(1)),
+        },
+        InventoryActionV1::PlaceOverflow {
+            source: source.clone(),
+            destination: overflow_destination(&original, 0, Some(0)),
+        },
+        // A numeric slot must already be allocated; null alone requests append.
+        InventoryActionV1::PlaceOverflow {
+            source: source.clone(),
+            destination: overflow_destination(&original, 1, Some(2)),
+        },
+        InventoryActionV1::PlaceOverflow {
+            source: source.clone(),
+            destination: restricted,
+        },
+        InventoryActionV1::PlaceOverflow {
+            source,
+            destination: stale_owner,
+        },
+    ];
+    let before = disk(&root);
+    for action in actions {
+        write_request(&path, &request(&original, action));
+        let failed = execute(command(&root, &path, false));
+        assert!(!failed.status.success());
+        assert!(failed.stdout.is_empty());
+        assert_eq!(disk(&root), before);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&failed.stderr).unwrap(),
+            json!({"error":"native inventory request rejected","event":"fatal"})
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(load(&root)).unwrap(),
+        serde_json::to_value(original).unwrap()
+    );
+}
+
+#[test]
+fn overflow_revision_exhaustion_rejects_but_validated_noop_still_publishes_nothing() {
+    let _guard = FIXTURE_LOCK.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("world");
+    let path = directory.path().join("request.json");
+    let mut original = overflow_initial();
+    original.native_inventories.as_mut().unwrap().revision = u64::MAX;
+    save(&root, &original);
+    let before = disk(&root);
+    write_request(
+        &path,
+        &request(
+            &original,
+            InventoryActionV1::PlaceOverflow {
+                source: overflow_endpoint(&original, 0),
+                destination: overflow_destination(&original, 1, Some(1)),
+            },
+        ),
+    );
+    assert!(!execute(command(&root, &path, false)).status.success());
+    assert_eq!(disk(&root), before);
+    write_request(
+        &path,
+        &request(
+            &original,
+            InventoryActionV1::Move {
+                source: endpoint(&original, 0, 0),
+                destination: slot(&original, 0, 0),
+            },
+        ),
+    );
+    let unchanged = report(execute(command(&root, &path, false)));
+    assert_eq!(unchanged["outcome"], "no_change");
+    assert_eq!(unchanged["revision"], u64::MAX);
+    assert_eq!(unchanged["published"], false);
+    assert!(unchanged.get("receipt").is_none());
+    assert_eq!(disk(&root), before);
     assert_eq!(
         serde_json::to_value(load(&root)).unwrap(),
         serde_json::to_value(original).unwrap()

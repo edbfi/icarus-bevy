@@ -191,8 +191,7 @@ python3 tools/cargo_guard.py --hold-target -- timeout 150s target/release/exampl
 
 ### Durable inventory commands
 
-F-1030. Accepts `move`, `split`, `merge`, `consume`, `place_overflow`;
-first four CLI-tested.
+F-1030. CLI-tested: `move`, `split`, `merge`, `consume`, `place_overflow`.
 
 `apply-native-inventory --request FILE --data-dir DIR [--dry-run]`: schema 12,
 regular `server.lock`; exclusive lock spans revision check to
