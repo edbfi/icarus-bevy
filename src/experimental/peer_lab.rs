@@ -249,6 +249,7 @@ use super::rep_rpc::{
     SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
     SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, SERVER_SHORT_TIMEOUT_FIELD_INDEX,
     parse_begin_player_initialisation, parse_rpc_payload, read_field_header,
+    server_friends_list_updated_parameters,
 };
 use super::rep_rpc::{
     FieldHeader, RpcArgument, RpcItem, encode_rpc_payload, player_controller_rpc_parameters,
@@ -1811,6 +1812,13 @@ fn controller_initialisation_calls(
                 } else if component.is_none()
                     && field.index == SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX
                 {
+                    // Validate the complete bounded array before allowing its
+                    // arrival to release connected-player finalisation.
+                    parse_rpc_payload(
+                        &field.payload,
+                        &server_friends_list_updated_parameters(),
+                        &codec,
+                    )?;
                     // Its friend IDs are not interpreted.
                     calls.push(ControllerCall::FriendsList);
                 } else if component == Some(0)
@@ -9009,6 +9017,37 @@ mod tests {
         assert_eq!(lab.peers.len(), 0);
     }
 
+    #[test]
+    fn friends_query_nak_repairs_transport_without_requerying_or_finalising() {
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.character_slot = Some(3);
+        entry.profiles.completed = true;
+        lab.query_connected_friends();
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+        notify_startup_packets(&mut lab, &socket, &mut client, |_| false);
+        assert!(lab.readiness_counts().resend_bunches_pending > 0);
+        lab.retry_friends_queries();
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+        assert_eq!(lab.stats.players_finalised, 0);
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert_eq!(lab.readiness_counts().resend_bunches_pending, 0);
+        lab.finalise_connected_players();
+        assert!(!lab.peers[&address].profiles.friend_ids_ready);
+        assert_eq!(lab.stats.friends_lists_received, 0);
+        assert_eq!(lab.stats.players_finalised, 0);
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+    }
+
     fn queue_initialisation_phase(lab: &mut PeerLab, address: SocketAddrV4, completion: bool) {
         if completion {
             let entry = lab.peers.get_mut(&address).unwrap();
@@ -11912,6 +11951,105 @@ mod tests {
             Payload::from_writer(BitWriter::new())
         }
 
+        fn friends_payload(order: ByteOrder, friends: &[&str]) -> Payload {
+            let argument = if friends.is_empty() {
+                RpcArgument::NotSent
+            } else {
+                RpcArgument::Sent(vec![RpcItem::Array(
+                    friends
+                        .iter()
+                        .map(|friend| {
+                            vec![RpcItem::Value(RepValue::Str(
+                                ArchiveText::text(friend).unwrap(),
+                            ))]
+                        })
+                        .collect(),
+                )])
+            };
+            encode_rpc_payload(
+                &server_friends_list_updated_parameters(),
+                &[argument],
+                &RepLayoutCodec {
+                    actor: actor_codec(0, order),
+                    checksums: false,
+                    limits: Default::default(),
+                },
+            )
+            .unwrap()
+        }
+
+        #[test]
+        fn friends_response_payload_validation_controls_finalisation() {
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                let valid = friends_payload(order, &["AUTHORED-FRIEND"]);
+                let mut truncated = BitWriter::new();
+                let mut reader = valid.reader();
+                for _ in 0..valid.bit_len() - 1 {
+                    truncated.write_bit(reader.read_bit());
+                }
+                let mut missing_count = BitWriter::new();
+                missing_count.write_bit(true);
+                let mut trailing = BitWriter::new();
+                trailing.write_bit(false);
+                trailing.write_bit(true);
+                let mut oversized = BitWriter::new();
+                oversized.write_bit(true);
+                oversized.write_bits(0xffff, 16);
+                for (index, payload) in [
+                    empty_payload(),
+                    Payload::from_writer(missing_count),
+                    Payload::from_writer(truncated),
+                    Payload::from_writer(trailing),
+                    Payload::from_writer(oversized),
+                    friends_payload(order, &[]),
+                    valid,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let expected_valid = index >= 5;
+                    let mut lab = prospect_refresh_lab();
+                    lab.config.packet.codec.order = order;
+                    let (socket, address, mut client) = controller_peer(&mut lab);
+                    // The friend response is the last blocker for this player.
+                    lab.peers.get_mut(&address).unwrap().profiles.completed = true;
+                    lab.finalise_connected_players();
+                    assert_eq!(lab.stats.players_finalised, 0);
+                    let payload = client_actor_body(
+                        &lab,
+                        vec![field_block(
+                            BlockTarget::Actor,
+                            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                            &[(SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, payload)],
+                        )],
+                    );
+                    let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                    receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+                    lab.finalise_connected_players();
+                    assert_eq!(
+                        lab.peers[&address].profiles.friend_ids_ready,
+                        expected_valid
+                    );
+                    assert_eq!(lab.stats.friends_lists_received, u64::from(expected_valid));
+                    assert_eq!(lab.stats.players_finalised, u64::from(expected_valid));
+                    assert_eq!(
+                        lab.stats.actor_bunches_malformed,
+                        u64::from(!expected_valid)
+                    );
+                    let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+                    assert_eq!(diagnostics.entries.len(), 1);
+                    assert_eq!(
+                        diagnostics.entries[0].disposition,
+                        if expected_valid {
+                            ControllerFieldDisposition::Recognized
+                        } else {
+                            ControllerFieldDisposition::Malformed
+                        }
+                    );
+                }
+            }
+        }
+
         fn receive_controller_payload(
             lab: &mut PeerLab,
             socket: &UdpSocket,
@@ -12603,7 +12741,10 @@ mod tests {
                         BlockTarget::Actor,
                         BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
                         &[
-                            (SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload()),
+                            (
+                                SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
+                                friends_payload(ByteOrder::Little, &[]),
+                            ),
                             (SERVER_SHORT_TIMEOUT_FIELD_INDEX, empty_payload()),
                             (
                                 SERVER_SHORT_TIMEOUT_FIELD_INDEX,
@@ -12690,7 +12831,10 @@ mod tests {
                     subobject(backend),
                     BACKEND_PROXY_FIELD_INDEX_BOUND,
                     &[
-                        (SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload()),
+                        (
+                            SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
+                            friends_payload(ByteOrder::Little, &[]),
+                        ),
                         (SERVER_RECEIVE_LOADOUT, empty_payload()),
                     ],
                 ),
@@ -12706,7 +12850,10 @@ mod tests {
                 field_block(
                     subobject(unknown),
                     BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-                    &[(SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload())],
+                    &[(
+                        SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
+                        friends_payload(ByteOrder::Little, &[]),
+                    )],
                 ),
                 ContentBlock {
                     has_rep_layout: true,
@@ -12969,7 +13116,11 @@ mod tests {
                     &mut writer,
                     &FieldHeader {
                         index,
-                        payload: empty_payload(),
+                        payload: if index == SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX {
+                            friends_payload(ByteOrder::Little, &[])
+                        } else {
+                            empty_payload()
+                        },
                     },
                     BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
                 )
@@ -13048,7 +13199,10 @@ mod tests {
                     BlockTarget::Actor,
                     BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
                     &[
-                        (SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, empty_payload()),
+                        (
+                            SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
+                            friends_payload(ByteOrder::Little, &[]),
+                        ),
                         (SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, {
                             // Present ChrSlot, missing its required Int payload.
                             let mut writer = BitWriter::new();
