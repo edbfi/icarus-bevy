@@ -147,7 +147,7 @@ original-clock parity or wall-clock catch-up on restart is implied.
 Activation is system-owned and immutable; a private nonclone health anchor
 latches errors closed and `run` checks it. Malformed, transplanted or missing
 components/resources reject. The apply CLI requires an existing world and strict
-JSON ≤64 KiB; request symlink path components and FIFOs reject. Admission
+JSON ≤64 KiB; symlinks anywhere in the request path and FIFOs reject. Admission
 requires an existing regular `server.lock` and creates or synchronizes no files.
 It has no `--dry-run`.
 
