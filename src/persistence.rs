@@ -3822,6 +3822,177 @@ mod crash_consistency_tests {
         );
     }
 
+    fn preserved_upgrade_disk(root: &Path) -> DiskState {
+        fs::read_dir(root)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().into_string().unwrap(),
+                    fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn preserved_encoding_upgrades_forbid_legacy_rollback_and_publication() {
+        use serde_json::{Value, json};
+        let source = section(41);
+        let mut inline = preserved(20, &source);
+        inline.schema_version = SNAPSHOT_SCHEMA_PRESERVED;
+        for current in [
+            inline,
+            preserved(20, &source),
+            native(20, Some(&source)),
+            inert(20, 1),
+            relationships(20, Some(&source), None),
+            lifecycle(20, Some(&source), 0),
+        ] {
+            for variant in [
+                "future",
+                "wide_future",
+                "malformed_sibling",
+                "missing_sidecar",
+                "duplicate_encoding",
+                "duplicate_parent",
+                "duplicate_header",
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path();
+                let mut store = SnapshotStore::open(root).unwrap();
+                store.save(&snapshot(10)).unwrap();
+                store.save(&current).unwrap();
+                // Saving schema 2 normally migrates it to 3. Install its actual
+                // inline generation here to exercise backward-compatible reads.
+                let bytes = if current.schema_version == SNAPSHOT_SCHEMA_PRESERVED {
+                    serde_json::to_vec(&current).unwrap()
+                } else {
+                    fs::read(root.join("snapshot-2.json")).unwrap()
+                };
+                let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+                wire["preserved_prospect"]["encoding"] = if variant == "wide_future" {
+                    json!(u64::MAX)
+                } else {
+                    json!(2)
+                };
+                if variant == "malformed_sibling" {
+                    wire["entities"] = json!(false);
+                    wire["preserved_prospect"]["payload_bytes"] = json!(false);
+                }
+                let bytes = match variant {
+                    "duplicate_header" => {
+                        let known = serde_json::to_string(&wire).unwrap();
+                        format!("{{\"schema_version\":false,{}", &known[1..]).into_bytes()
+                    }
+                    "duplicate_encoding" => {
+                        wire["preserved_prospect"]["encoding"] = json!(1);
+                        serde_json::to_string(&wire)
+                            .unwrap()
+                            .replacen("\"encoding\":1", "\"encoding\":2,\"encoding\":1", 1)
+                            .into_bytes()
+                    }
+                    "duplicate_parent" => {
+                        let future = serde_json::to_string(&wire["preserved_prospect"]).unwrap();
+                        wire["preserved_prospect"]["encoding"] = json!(1);
+                        let known = serde_json::to_string(&wire).unwrap();
+                        format!("{{\"preserved_prospect\":{future},{}", &known[1..]).into_bytes()
+                    }
+                    _ => serde_json::to_vec(&wire).unwrap(),
+                };
+                fs::write(root.join("snapshot-2.json"), &bytes).unwrap();
+                let mut manifest = store.manifest().unwrap().unwrap();
+                manifest.current.sha256 = checksum(&bytes);
+                fs::write(
+                    root.join("manifest.json"),
+                    serde_json::to_vec(&manifest).unwrap(),
+                )
+                .unwrap();
+                if variant == "missing_sidecar" {
+                    fs::remove_file(
+                        root.join(sidecar_name(current.preserved_prospect.as_ref().unwrap())),
+                    )
+                    .unwrap();
+                }
+                let unchanged = preserved_upgrade_disk(root);
+                for operation in 0..3 {
+                    let result = match operation {
+                        0 => store.load().map(|_| ()),
+                        1 => store.save(&snapshot(30)).map(|_| ()),
+                        _ => store.save_new(&snapshot(30)).map(|_| ()),
+                    };
+                    let error = result.expect_err(
+                        "future encoding must not select the preceding committed world",
+                    );
+                    assert!(
+                        error.is::<UnsupportedSchema>(),
+                        "schema {} {variant}: {error:#}",
+                        current.schema_version
+                    );
+                    assert_eq!(preserved_upgrade_disk(root), unchanged);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_zero_preserved_encoding_still_recovers_and_saves_again() {
+        use serde_json::{Value, json};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut store = SnapshotStore::open(root).unwrap();
+        store.save(&snapshot(10)).unwrap();
+        store.save(&preserved(20, &section(42))).unwrap();
+        let mut wire: Value =
+            serde_json::from_slice(&fs::read(root.join("snapshot-2.json")).unwrap()).unwrap();
+        wire["preserved_prospect"]["encoding"] = json!(0);
+        let bytes = serde_json::to_vec(&wire).unwrap();
+        fs::write(root.join("snapshot-2.json"), &bytes).unwrap();
+        let mut manifest = store.manifest().unwrap().unwrap();
+        manifest.current.sha256 = checksum(&bytes);
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let unchanged = preserved_upgrade_disk(root);
+        let loaded = store.load().unwrap().unwrap();
+        assert!(loaded.recovered_previous);
+        assert_eq!(loaded.snapshot, snapshot(10));
+        assert_eq!(preserved_upgrade_disk(root), unchanged);
+        assert_eq!(store.save(&snapshot(30)).unwrap().generation, 3);
+        assert_eq!(store.load().unwrap().unwrap().snapshot, snapshot(30));
+    }
+
+    #[test]
+    fn schema_one_irrelevant_preservation_remains_recoverable_corruption() {
+        use serde_json::{Value, json};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut store = SnapshotStore::open(root).unwrap();
+        store.save(&snapshot(10)).unwrap();
+        store.save(&snapshot(20)).unwrap();
+        let mut wire: Value =
+            serde_json::from_slice(&fs::read(root.join("snapshot-2.json")).unwrap()).unwrap();
+        // Schema 1 cannot contain preservation; this is not a supported
+        // independent version discriminator on an otherwise valid generation.
+        wire["preserved_prospect"] = json!({"encoding":2});
+        let bytes = serde_json::to_vec(&wire).unwrap();
+        fs::write(root.join("snapshot-2.json"), &bytes).unwrap();
+        let mut manifest = store.manifest().unwrap().unwrap();
+        manifest.current.sha256 = checksum(&bytes);
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let unchanged = preserved_upgrade_disk(root);
+        let loaded = store.load().unwrap().unwrap();
+        assert!(loaded.recovered_previous);
+        assert_eq!(loaded.snapshot, snapshot(10));
+        assert_eq!(preserved_upgrade_disk(root), unchanged);
+    }
+
     #[test]
     fn modifier_nested_upgrades_forbid_fallback_even_with_malformed_siblings() {
         // A current generation requiring an upgrade is terminal, even when

@@ -895,7 +895,10 @@ fn corrupted_sidecar_references_fail_closed() {
             let length = section["payload_bytes"].as_u64().unwrap();
             section["payload_bytes"] = (length + 1).into();
         }),
-        ("encoding", |section| section["encoding"] = 2.into()),
+        // Future versions are upgrade barriers, covered by persistence tests.
+        ("corrupt encoding zero", |section| {
+            section["encoding"] = 0.into()
+        }),
         ("inline data", |section| section["data"] = "AAAA".into()),
         ("missing field", |section| {
             section.as_object_mut().unwrap().remove("encoded_bytes");
@@ -1060,7 +1063,10 @@ fn corrupted_legacy_inline_sections_fail_closed() {
             let length = section["payload_bytes"].as_u64().unwrap();
             section["payload_bytes"] = (length + 1).into();
         }),
-        ("encoding", |section| section["encoding"] = 2.into()),
+        // Future versions are upgrade barriers, covered by persistence tests.
+        ("corrupt encoding zero", |section| {
+            section["encoding"] = 0.into()
+        }),
         ("unknown field", |section| section["extra"] = true.into()),
         ("positional", |section| {
             *section = json!([section["encoding"].clone(), section["data"].clone()]);
