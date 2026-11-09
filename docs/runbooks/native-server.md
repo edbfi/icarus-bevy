@@ -150,7 +150,7 @@ Each tick validates all source/proxy bindings, even peerless. Corruption
 retires bridge/stops admission without native edits. `activated`: live bindings
 exposed since installation. Timers stay native; no modifier containers sent.
 Unqualified: reconfiguration/original replacement/saved pose (U-025)/import/
-physics/gameplay/clients. Costs: schema 4 only (F-939, F-941); lifecycle unmeasured.
+physics/gameplay/clients. Costs: schema 4 only (F-952); lifecycle unmeasured.
 Probes:
 
 ```bash

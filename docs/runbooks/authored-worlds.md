@@ -181,6 +181,14 @@ modifier composition and replication are unsupported.
 Contracts/current state/authority/replay share the 64 MiB charged budget;
 this is neither an RSS nor ICARUS compatibility qualification.
 
+Authored last-key validation measurement: F-1053; this does not qualify overall
+server or stock-client performance.
+
+```bash
+python3 tools/cargo_guard.py build --release --locked --example native_inventory_bench
+python3 tools/cargo_guard.py --hold-target -- timeout 150s target/release/examples/native_inventory_bench
+```
+
 ### Durable inventory commands
 
 F-1030. Accepts `move`, `split`, `merge`, `consume`, `place_overflow`;
