@@ -399,8 +399,8 @@ fn execute(cli: Cli) -> Result<()> {
                 data_dir.is_dir(),
                 "modifier command requires an existing store"
             );
-            let mut store = SnapshotStore::open(&data_dir)
-                .map_err(|_| anyhow::anyhow!("open native modifier store failed"))?;
+            let mut store = SnapshotStore::open_existing(&data_dir)
+                .map_err(|_| anyhow::anyhow!("open existing native modifier store failed"))?;
             let loaded = store
                 .load()
                 .map_err(|_| anyhow::anyhow!("load native modifier world failed"))?
