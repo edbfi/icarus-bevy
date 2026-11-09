@@ -410,7 +410,7 @@ pub enum InitialiseEvent {
         slot_sent: bool,
         packet_id: u32,
     },
-    /// An empty `ServerFriendsListUpdated`, sent right after Begin.
+    /// An empty `ServerFriendsListUpdated`, answering field 118 (F-1051).
     FriendsListSent {
         channel: u32,
         packet_id: u32,
@@ -589,15 +589,6 @@ impl PlayerInitialiser {
                         slot_sent: self.config.chr_slot != 0,
                         packet_id,
                     });
-                    let field = friends_list_updated_field(&self.codec)?;
-                    let (_, packet_id) = client.send_actor_rpc(
-                        channel,
-                        &field,
-                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-                        &self.codec.actor,
-                    )?;
-                    self.summary.friends_list_sent = true;
-                    events.push(InitialiseEvent::FriendsListSent { channel, packet_id });
                 }
                 Ok(Some(_)) => {}
                 Ok(None) => notes.push("open: unresolved archetype".to_owned()),
@@ -663,6 +654,18 @@ impl PlayerInitialiser {
                 }
             };
             let Some((component, guid)) = target else {
+                if field.index == 118 && field.payload.bit_len() == 0 {
+                    let field = friends_list_updated_field(&self.codec)?;
+                    let (_, packet_id) = client.send_actor_rpc(
+                        channel,
+                        &field,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &self.codec.actor,
+                    )?;
+                    self.summary.friends_list_sent = true;
+                    events.push(InitialiseEvent::FriendsListSent { channel, packet_id });
+                    continue;
+                }
                 notes.push(format!("{label} field {}", field.index));
                 continue;
             };

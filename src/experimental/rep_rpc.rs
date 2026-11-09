@@ -377,7 +377,7 @@ pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
 pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
 
 /// Parameterless `APlayerController::ServerShortTimeout` on the pinned
-/// Survival PlayerController (3.0.34 identity qualification: F-1019).
+/// Survival PlayerController (3.0.34 identity qualification: F-1052).
 /// Recognition alone grants no timeout behavior.
 pub const SERVER_SHORT_TIMEOUT_FIELD_INDEX: u32 = 78;
 
@@ -576,6 +576,7 @@ pub fn icarus_character_rpc_parameters(field_index: u32) -> Option<Vec<RpcParame
 /// - `62`: `APlayerController::ClientUpdateMultipleLevelsStreamingStatus(LevelStatuses: TArray<FUpdateLevelStreamingLevelStatus>)`;
 /// - `63`: `APlayerController::ClientVoiceHandshakeComplete()`;
 /// - `78`: `APlayerController::ServerShortTimeout()`;
+/// - `118`: `AIcarusPlayerController::ClientQueryForFriendsList()` (F-1051);
 /// - `124`: `AIcarusPlayerController::Server_BeginPlayerInitialisation(ChrSlot: int32)`
 ///   (F-951 / controller net fields; client-to-server, reliable).
 pub fn player_controller_rpc_parameters(field_index: u32) -> Option<Vec<RpcParameter>> {
@@ -588,7 +589,7 @@ pub fn player_controller_rpc_parameters(field_index: u32) -> Option<Vec<RpcParam
             Some(vec![RpcParameter::Value(vec![RepCommand::Int])])
         }
         21 => Some(vec![RpcParameter::Bool]),
-        23 | 54 | 63 | SERVER_SHORT_TIMEOUT_FIELD_INDEX => Some(vec![]),
+        23 | 54 | 63 | 118 | SERVER_SHORT_TIMEOUT_FIELD_INDEX => Some(vec![]),
         40 | 49 => Some(vec![RpcParameter::Value(vec![RepCommand::Object])]),
         46 => Some(vec![RpcParameter::Value(vec![RepCommand::NetworkName])]),
         51 => Some(vec![

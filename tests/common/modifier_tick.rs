@@ -409,7 +409,9 @@ fn modifier_tick_contexts_are_peer_and_uid_local_and_discarded_on_disconnect() {
     let address = network::install(&mut app, lab).unwrap();
     let (first, _, _, _) = ModifierTimeFixture::join(&mut app, address, &profile);
     let first_id = app.world().resource::<PeerLab>().joined_connections()[0];
-    let (second, _, _, _) = ModifierTimeFixture::join(&mut app, address, &profile);
+    let ((second, _, _, _), mut others) =
+        ModifierTimeFixture::join_servicing(&mut app, address, &profile, vec![first]);
+    let first = others.pop().unwrap();
     let second_id = app
         .world()
         .resource::<PeerLab>()
@@ -474,7 +476,9 @@ fn modifier_tick_contexts_are_peer_and_uid_local_and_discarded_on_disconnect() {
             49.75
         );
     }
-    let (third, _, _, _) = ModifierTimeFixture::join(&mut app, address, &profile);
+    let ((third, _, _, _), mut others) =
+        ModifierTimeFixture::join_servicing(&mut app, address, &profile, vec![first]);
+    let first = others.pop().unwrap();
     let third_id = app
         .world()
         .resource::<PeerLab>()

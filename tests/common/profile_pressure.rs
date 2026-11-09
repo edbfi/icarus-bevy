@@ -129,6 +129,18 @@ impl Fixture {
                 let initialise = body.blocks.len() == 3;
                 for (index, block) in body.blocks.into_iter().enumerate() {
                     let BlockTarget::SubObject { object, .. } = block.target else {
+                        let field = read_field_header(
+                            &mut block.payload.reader(),
+                            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                            65536,
+                        )
+                        .unwrap();
+                        assert_eq!(field.index, 118);
+                        assert_eq!(field.payload.bit_len(), 0);
+                        send_friends_list_updated(
+                            &mut self.client,
+                            self.profile.engine_network_version,
+                        );
                         continue;
                     };
                     let bound = if initialise {
@@ -385,15 +397,26 @@ fn pending_profile_does_not_block_another_peer_and_is_discarded_on_close() {
     });
     let stats = fixture.app.world().resource::<PeerLab>().stats();
     assert_eq!(stats.players_initialised, 1);
-    assert_eq!(stats.players_finalised, 1);
+    // The full old queue also defers its friends refresh: initialisation may
+    // finish, but finalisation awaits that controller or its disconnect.
+    assert_eq!(stats.players_finalised, 0);
     assert_eq!(stats.profile_character_responses_received, 1);
     fixture.client.close().unwrap();
     fixture.app.world_mut().resource_mut::<PeerLab>().poll();
     assert_eq!(fixture.app.world().resource::<PeerLab>().peer_count(), 1);
-    let (reconnected, _) = with_server(&mut fixture.app, move || {
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PeerLab>()
+            .stats()
+            .players_finalised,
+        1
+    );
+    let ((reconnected, healthy), _) = with_server(&mut fixture.app, move || {
         let (mut client, _) = join_pinned_open(address, version, 32);
-        exchange_profiles(&mut client, engine, 3, 3);
-        client
+        let (_, mut others) = exchange_profiles_servicing(&mut client, engine, 3, 3, vec![healthy]);
+        (client, others.pop().unwrap())
     });
     let stats = fixture.app.world().resource::<PeerLab>().stats();
     assert_eq!(stats.players_initialised, 2);

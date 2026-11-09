@@ -75,9 +75,11 @@ Last reconciled: 2026-11-08
   addresses and assumptions do not transfer automatically. The 3.0.35 pin's
   tags, selected class profiles and row registry are qualified (F-1031 to
   F-1033); connected behavior and visibility bindings still need qualification.
-- Matched 26425113 receive bounds and CharacterProfile handler are F-1046 to
-  F-1048; do not repeat these static reads. Larger native envelopes F-1043
-  do not establish F-1049's RPC identity or qualify a connected run.
+- Matched receive/CharacterProfile guards F-1046 to F-1048 and friends-query
+  path F-1051 are qualified; do not repeat unchanged static reads. Retry
+  F-1050 initialises but does not enter the world. Next connected case must
+  distinguish query118 admission, client126, finalisation and UI progress;
+  F-1051 clears no visibility dispatch/effect precondition.
 
 ## Before enabling visibility dispatch or effects
 

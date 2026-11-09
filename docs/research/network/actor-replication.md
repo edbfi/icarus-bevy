@@ -8,16 +8,16 @@ Actor opens, codecs, relevancy and readiness after admission.
 
 ## Current answer
 
-Bounds/RPCs/opens F-1015/F-1016/F-1019/F-1017.
+Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034.
 [Visibility](../../specs/network/visibility-state.md): F-1020 wire, F-1021 staging,
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay. Bindings/cause: U-079.
 
-State/restart F-1036; fragmented BackendProxy baseline
-F-1049. Request/binding guards F-1039/F-1041; diagnostics F-1045/F-1042.
-Assembly F-1043 and progress F-1049 move the wait to CharacterProfile.
-Matched payload/partial bounds F-1046/F-1047 qualify larger native envelopes;
-CharacterProfile guards F-1048 do not identify the rejected RPC (F-1049; U-079).
+State/restart F-1036; profiles and initialisation now settle (F-1050).
+The wait is friends/finalisation: missing server query118, its callback126
+and native request transport are F-1051. Fields66/86 are F-1052.
+A scoped client retry must measure finalisation and UI progress separately;
+visibility bindings/effects remain U-079.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
@@ -39,4 +39,4 @@ UID/membership: F-943 to F-946, F-949 to F-951; loadout/backend: F-956 to F-958.
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1326.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330.
