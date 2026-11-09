@@ -374,6 +374,74 @@ fn request_reader_rejects_nonregular_symlink_oversized_and_strict_json_inputs() 
 }
 
 #[test]
+fn modifier_existing_store_admission_rejects_missing_and_symlink_locks_unchanged() {
+    use icarus_bevy::native_modifiers::{ModifierAction, ModifierRequest};
+    let _guard = FIXTURE_LOCK.lock().unwrap();
+    for mode in [
+        "empty",
+        "empty_with_lock",
+        "missing_lock",
+        "symlink_lock",
+        "held_lock",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        inputs(root.path());
+        success(&create(root.path(), "world", true, false, false));
+        let world = root.path().join("world");
+        let snapshot = load(&world);
+        let state = &snapshot.native_modifiers.as_ref().unwrap().owners[0];
+        let request = root.path().join("request.json");
+        write_json(
+            &request,
+            &ModifierRequest {
+                owner: state.owner,
+                expected_revision: state.revision,
+                action: ModifierAction::Advance { elapsed_nanos: 0 },
+            },
+        );
+        let external = root.path().join("external-lock");
+        fs::write(&external, SECRET).unwrap();
+        if mode == "empty" || mode == "empty_with_lock" {
+            // An existing ordinary directory is not an existing native store.
+            for entry in fs::read_dir(&world).unwrap() {
+                let entry = entry.unwrap();
+                if mode != "empty_with_lock" || entry.file_name() != "server.lock" {
+                    fs::remove_file(entry.path()).unwrap();
+                }
+            }
+            fs::write(world.join("sentinel"), SECRET).unwrap();
+        } else if mode != "held_lock" {
+            fs::remove_file(world.join("server.lock")).unwrap();
+            if mode == "symlink_lock" {
+                symlink(&external, world.join("server.lock")).unwrap();
+            }
+        }
+        let owner = (mode == "held_lock").then(|| SnapshotStore::open_existing(&world).unwrap());
+        let before = files(&world);
+        let output = apply(root.path(), &request, "world");
+        value_free(&output);
+        assert!(!output.status.success(), "mode {mode}");
+        assert_eq!(files(&world), before, "mode {mode}");
+        let expected = if mode == "empty_with_lock" {
+            "modifier command requires an existing committed world"
+        } else {
+            "open existing native modifier store failed"
+        };
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+        assert_eq!(fs::read(&external).unwrap(), SECRET.as_bytes());
+        if mode == "symlink_lock" {
+            assert!(
+                fs::symlink_metadata(world.join("server.lock"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+        drop(owner);
+    }
+}
+
+#[test]
 fn applied_timer_persists_progress_restarts_and_expires_without_repeating_add() {
     use icarus_bevy::native_modifiers::{
         FlatStatContribution, ModifierAction, ModifierDefinition, ModifierDuration,
