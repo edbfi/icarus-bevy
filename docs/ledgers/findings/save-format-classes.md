@@ -12,7 +12,6 @@ Last reconciled: 2026-11-10
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | F-142 | read_string_frame validates borrowed spans with no success-path heap alloc; strict errors/limits/EOF unchanged | observed | authored-test; M-056; M-057 | high; archive frame code; no original perf proof | U-028 | active |
-| F-164 | Four D01 Array getter/schema/ops chains were already resolved in frozen evidence and prospect spec | observed | static-decompile; M-065 | high; retained static evidence; reused |  | active |
 | F-198 | Explicit comparator byte-limit API keeps 64 KiB default and 256-field cap, allows caller limit up to 128 KiB; 8 tests pass | observed | authored-test; M-095 | high; comparator API; research ceiling |  | active |
 | F-213 | Original 8 MiB component transport cannot hold both complete C034 copies, so comparisons use per-copy batches | observed | tool-receipt | high; component transport cap |  | active |
 | F-496 | Save census closed for C009/C013/C028/C034: 3,440/5,485 records; all populated tagged boundaries qualified in both copies (incl. D01 Int/Str); DA04 and base arrays empty; 34 classes/2,045 records outside | observed | structural-comparison; M-048 | high; structure only; values and empty arrays open | U-022, U-046 | active |

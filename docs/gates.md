@@ -1,8 +1,7 @@
 # Gates
 
-Preconditions that block an action until a finding clears them, grouped by the
-action they block. This file is their only home; status, plan and digests link
-here instead of restating them.
+Preconditions that block an action until a finding clears them, grouped by
+action. This is their only home; status, plan and digests link here.
 
 Before restructure: 96ddb0b:docs/gates.md
 
@@ -17,7 +16,7 @@ Last reconciled: 2026-11-10
   U-041, U-042 resolved).
 - Do not retry these completed reads or unchanged helpers; preserve the failed
   nine-mode receipt, strict replay and split outputs (M-307). Any new C001
-  original-code case requires its own fresh scope, bindings and session.
+  original-code case requires a fresh scope, bindings and session.
 
 ## Before new save-class work
 
@@ -40,7 +39,7 @@ Last reconciled: 2026-11-10
   an equal-width multiset cannot replace that binding.
 - Preserve unknown fields and private inputs; no partial importer. Exact
   class/property names and supplied values must stay private under `work/`.
-- Separate per-copy batches are required for complete C034 comparisons (8 MiB cap).
+- Complete C034 comparisons need per-copy batches (8 MiB cap, F-213).
 
 ## Before promoting control-store or negotiation findings
 
@@ -52,12 +51,12 @@ Last reconciled: 2026-11-10
 - Complete `UWorld`/`UPendingNetGame` constructors and `UWorld::~UWorld`,
   receiver preservation, abutting `/GR-` vftables, `UNetDriver::InitBase`,
   static `ReceivedBunch` -> `NotifyControlMessage` dispatch and S1 runtime
-  exercise are qualified (F-520, F-544, F-701, F-723, F-724, F-729; U-007 to
-  U-010, U-013, U-015 to U-018, U-043 resolved).
+  exercise are qualified (F-701, F-723, F-724, F-729, F-753, F-755, F-756;
+  U-007 to U-010, U-013, U-015 to U-018, U-043 resolved).
 - Client and server archive/outer framing, `UControlChannel` byte-order
   persistence, fallback layouts, queued-bunch bounds, login-state gating,
   `PreLogin`/`InitNewPlayer` checks and 0 registered version/PreLogin callbacks
-  are bound in `experimental` (F-688, F-710 to F-714, F-729, F-740; U-014, U-037,
+  are bound in `experimental` (F-688, F-710 to F-714, F-729, F-757; U-014, U-037,
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
   addresses and assumptions do not transfer automatically. The 3.0.35 pin's
@@ -87,37 +86,31 @@ Last reconciled: 2026-11-10
 
 - The user authorized (2026-10-16) offline derivation of gameplay-tag mappings
   (U-065) and replicated-property schemas (U-066) from the local stock client,
-  configuration and packaged data, including use of derived protocol metadata
-  in the independent server. This clears the decision gate, not either
-  technical unknown or a compatibility claim.
-- Original assets, gameplay data tables, code and binaries must not ship
-  with the replacement. The standing instruction also forbids extracting or
-  reusing packaged gameplay tables; author behavior and world data independently. Each analysis still
-  needs a bounded case scope and session; runtime and connected experiments
-  retain their separate gates below.
-- The user decided (2026-10-22, F-828) that the shipped server must not
-  depend on the game client or on data derived only from it. Protocol
-  identities may come from the free public dedicated-server distribution,
-  fetched unattended at install time (`icarus-fetch`, F-831, U-073); gameplay
-  values must come from independently authored input (F-993). Document the
-  requirement for operators. Nothing original is committed or redistributed.
-  Client-derived metadata counts toward the shipped server only once
-  re-derived from or checked against that distribution (3.0.32: F-832, U-072
-  resolved); this does not authorize reuse of gameplay values.
+  configuration and packaged data, for use as protocol metadata in the
+  independent server. This clears the decision gate, not either technical
+  unknown or a compatibility claim.
+- Each analysis needs a bounded case scope and session; runtime and connected
+  experiments keep their gates below. Nothing original ships, is committed or
+  redistributed, and packaged gameplay tables are never extracted or reused
+  ([independence](linux-dedicated-server-plan.md#independence-and-provenance)).
+- Input parity (2026-10-22, F-828): no dependency on the client or client-only
+  data. Protocol identities come from the public dedicated-server distribution
+  at install time (`icarus-fetch`, F-831, U-073); gameplay values from
+  independently authored input (F-993); document this for operators.
+  Client-derived metadata counts only once re-derived from or checked against
+  that distribution (3.0.32: F-832, U-072 resolved).
 
 ## Before any original-server or client run
 
-- Each runtime experiment requires its own case scope and current launcher
-  session; historical authorization windows remain expired (F-218, F-252).
-- The user's standing instruction (2026-10-28, renewed through 2026-11-10;
-  F-968, M-1273, M-1307, M-1331, M-1334) authorizes offline and online
-  research: network and Steam access, fetching and running the matched official dedicated server,
-  original-runtime runs, and connected stock-client scenarios against the
-  original or the native server, without per-scenario approval. This replaces
-  the per-scenario approval and the connected-test deferral (F-421; U-038,
-  U-047, U-052). Offline routes are preferred when they answer equally well.
-- Every run still needs its own `work/` case with scope, exact inputs and
-  hashes, limits and literal commands; original execution only through the
-  [launchers](runbooks/original-server-launcher.md); bounded runs with
-  cleanup. A scenario needing the user's stock client, Steam login or
+- The standing instruction (2026-10-28, renewed through 2026-11-10; F-968,
+  M-1273, M-1307, M-1331, M-1334) authorizes offline and online research,
+  Steam/network access, matched official-server runs and connected
+  stock-client scenarios against the original or native server without
+  per-scenario approval, replacing the connected-test deferral (F-421; U-038,
+  U-047, U-052). Prefer offline routes that answer equally well.
+- Every run still needs its own `work/` case and current launcher session with
+  scope, exact inputs and hashes, limits and literal commands; original
+  execution only through the [launchers](runbooks/original-server-launcher.md);
+  bounded runs with cleanup. Historical authorization windows remain expired
+  (F-218, F-252). A scenario needing the user's stock client, Steam login or
   credentials is prepared completely and requested with exact steps.

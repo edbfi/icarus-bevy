@@ -87,8 +87,15 @@ unavailable.
   `DataLength == TotalLength` (F-880, F-737). Success is labeled
   `experimental_envelope_only`; `--inner-tags`
   adds `experimental_root_tags_only` aggregate counts under the fixed research
-  profile (F-882), and `--stage-check` adds `experimental_stage_only` root,
-  `ProspectInfo`, migration and recorder base-component staging (`F-738`).
+  profile (F-882), and `--stage-check` adds `experimental_stage_only` staging
+  (`experimental::recorders::stage_prospect_save_state`,
+  `prospect::stage_prospect`): the `FProspectSaveState` root schema, tag order,
+  `PostLoadSerialize` migration, the 17 `FProspectInfo` tags, optional
+  `ProspectID` matching, recorder base framing, 65-class constructor defaults
+  with tag overlays and per-recorder `Validate`
+  ([restore rules](restore-rules.md)), counting `C033` `bIsPhysicsDynamic`
+  across all 15 saves (F-680, F-736, F-738, F-746, F-747;
+  `world_imported: false`).
 - The original reader checks overrun only and normalizes narrow/wide strings
   lossily (`F-893`; U-026 resolved), whereas the strict inspector fails closed;
   the entry-path failure matrix (`LoadProspectByName` vs `SetupLoadedProspect`)

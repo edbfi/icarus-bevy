@@ -2,13 +2,13 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-11-10.
+Experimental; scope dedicated-server build 25621760 (supplied-save build: F-323). Last reconciled: 2026-11-10.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
 
 Prospect-load entry paths, `ProspectSaveState` version fixups/dispatch,
-recorder/base-component and C013/C028/C034/C009/D01 framing in both copies. Envelope: [envelope inspection](prospect-envelope.md); tags:
+recorder/base-component and C013/C028/C034/C009/D01 framing in both copies. Envelope: [envelope](prospect-envelope.md); tags:
 [tagged properties](tagged-properties.md); strings: [archive strings](archive-string.md);
 restoration: [restore rules](restore-rules.md). Not covered: gameplay data-table
 row meanings, reference resolution and world import.
@@ -28,7 +28,7 @@ Entry paths and failure reporting
 - From file (F-899, F-733; U-056, U-058, U-063 resolved):
   `SetupLoadedProspect`, called from `InitGame` (`0x1414acc40`) with
   `?LocalSavePath=`, logs Fatal at `0x1414bb15f` when a header or state load
-  fails (F-899), before `ResetActiveProspect`.
+  fails, before `ResetActiveProspect`.
 
 Inner state, version and archive mode
 
@@ -62,10 +62,9 @@ Recorders and base component
 
 - Recorder array and `BinaryData` framing: [tagged properties](tagged-properties.md)
   (F-883, F-257, F-884).
-- Restore (F-890, F-891, F-909): the class string resolves, the component is
-  constructed, and `+0x4a0` (`0x1418a9c80` -> `+0xa0` = `0x1418aaf70` -> `0x14200ea70`) reads
-  tagged `CPF_SaveGame` properties, a 4-byte GUID-trailer boolean and the
-  `+0x488` version-upgrade hook.
+- Restore resolves and constructs the class; `+0x4a0` then reads tagged
+  `CPF_SaveGame` properties, a 4-byte GUID-trailer boolean and the `+0x488`
+  version-upgrade hook (addresses: F-890, F-891, F-909).
 
 C013, C028, C034, C009 and D01
 
@@ -74,8 +73,8 @@ C013, C028, C034, C009 and D01
   (5 properties, zero trailer, exact EOF); record, stitch and restore of
   `FLODTiles` per F-716.
 - `C028` (`UActorStateRecorderComponent` subclass; F-645, F-716; U-061
-  resolved): `+0x4a0` = `0x1418a9bb0` calls `ApplyRecorderTransform` and
-  `+0x488` = `0x14189d380` upgrades `TreePrimitive` per F-716. Every body
+  resolved): `+0x4a0` calls `ApplyRecorderTransform` and `+0x488` upgrades
+  `TreePrimitive` (addresses: F-716). Every body
   frames (F-259, F-655; binary `N01` 16 B / `N02` 12 B; F-116, F-123..F-141,
   F-363..F-374, F-720; U-030 resolved).
 - `C034`: base load/serialize, `C028` post-load; 829 records per copy; fields
@@ -113,20 +112,13 @@ Acceptance conditions for any importer
   timestamp, root-presence and binding metadata beside mutable poses,
   cross-checked on reload. Original coordinates, official loadability and
   faithful save import stay unqualified.
-- `DecodedImportCandidate` retains migrated roots, exact recorder identities,
-  decisions, optional typing and unchanged preserved bytes from one decode
-  under explicit allowances (F-920; limits:
-  [native server](../../runbooks/native-server.md#supplied-saves)). Unknown root
-  enums stay explicit; it supplies no restoration adapters and authorizes no
-  publication.
-- `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
-  (`prospect`) and `icarus-server inspect-save --stage-check` validate the
-  `FProspectSaveState` root schema, tag order, `PostLoadSerialize` migration,
-  the 17 `FProspectInfo` tags, optional `ProspectID` matching, base framing,
-  65-class constructor defaults with tag overlays and per-recorder `Validate`
-  ([restore rules](restore-rules.md)), and count `C033` `bIsPhysicsDynamic`
-  across all 15 saves (F-680, F-736, F-738, F-746, F-747;
-  `world_imported: false`).
+- `DecodedImportCandidate` (F-920; limits:
+  [native server](../../runbooks/native-server.md#supplied-saves)) retains
+  migrated roots, exact recorder identities, decisions, optional typing and
+  unchanged preserved bytes from one decode; unknown root enums stay explicit,
+  with no restoration adapters or publication.
+- Native staging (`inspect-save --stage-check`):
+  [envelope spec](prospect-envelope.md#candidate) (F-738).
 - Cross-build classes/defaults/overrides: [restore rules](restore-rules.md)
   (F-902); constructor provenance: [C001 digest](../../research/save-format/c001-constructor.md)
   (F-905..F-910).
