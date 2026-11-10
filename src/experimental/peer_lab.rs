@@ -3906,6 +3906,20 @@ impl PeerLab {
             bump(&mut self.stats.connected_player_records_removed);
             let index = record.index;
             self.mark_connected_players_due(|other| other.connected_players_sent.contains(&index));
+            // Arrays are composed from live records only, and a NAK repair
+            // resends stored bytes, so nothing names this record again. Its
+            // numeric GUID stays consumed; indices are never reused.
+            if let Some(session) = &self.game_state_open {
+                self.guid_cache.forget_subobject(session.state.key, index);
+            }
+        }
+        if let Some(connection) = entry.connection_id {
+            // The pawn (actor, components, inventory and modifier subobjects)
+            // opens only on its owner's connection, and connection IDs are
+            // never reissued to a later Join (until the u32 counter wraps), so
+            // no live connection can name these identities again. Releasing
+            // them bounds the cache by live sessions; GUIDs are not reused.
+            self.guid_cache.forget_actor(pawn_key(connection));
         }
         if let (Some(capture), Some(connection)) =
             (&mut self.private_rpc82_capture, entry.connection_id)
@@ -10768,6 +10782,122 @@ mod tests {
             .collect()
     }
 
+    /// Two sequential record sessions on one lab, the first removed before
+    /// the second begins: each session's bunches (GameState-channel bunches
+    /// by shape, block targets and listed records, since their world times
+    /// vary) and the GUIDs it was given.
+    fn sequential_record_sessions() -> Vec<(Vec<String>, u32, u32)> {
+        let mut lab = record_lab(true);
+        let channel = game_state_channel(&lab);
+        let mut sessions = Vec::new();
+        for (connection, user) in [(1, "AuthoredFirst"), (2, "AuthoredSecond")] {
+            let (socket, address, mut client) = record_peer(&mut lab, connection, user);
+            let mut bunches = Vec::new();
+            complete_record_player(&mut lab, address);
+            bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+            lab.controller_call(address, ControllerCall::FriendsList);
+            lab.finalise_connected_players();
+            lab.retry_connected_player_records();
+            bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+            assert_eq!(lab.peers[&address].connected_player_creations_settled, 1);
+            let record = record_bodies(&lab, &bunches)
+                .into_iter()
+                .flat_map(|body| body.blocks)
+                .find_map(|block| match block.target {
+                    BlockTarget::SubObject { object, .. } => Some(object.guid),
+                    BlockTarget::Actor => None,
+                })
+                .unwrap();
+            let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+            let shapes = bunches
+                .iter()
+                .map(|bunch| {
+                    let header = &bunch.header;
+                    let content = if header.channel_index != channel {
+                        format!("{:02x?}", bunch.payload.bytes())
+                    } else if header.reliable && !header.open && !header.has_package_map_exports {
+                        let body = super::super::actor_channel::read_actor_bunch_body(
+                            &mut bunch.payload.reader(),
+                            false,
+                            &actor_codec(17, super::super::archive::ByteOrder::Little),
+                        )
+                        .unwrap();
+                        let listed = body
+                            .blocks
+                            .last()
+                            .map(|block| listed_records(&lab, block))
+                            .unwrap_or_default();
+                        let targets: Vec<_> = body
+                            .blocks
+                            .iter()
+                            .map(|block| match &block.target {
+                                BlockTarget::Actor => None,
+                                BlockTarget::SubObject { object, .. } => Some(object.guid),
+                            })
+                            .collect();
+                        format!("{targets:?} {listed:?}")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{} {} {} {} {} {content}",
+                        header.channel_index,
+                        header.reliable,
+                        header.open,
+                        header.has_package_map_exports,
+                        bunch.payload.bit_len()
+                    )
+                })
+                .collect();
+            sessions.push((shapes, record, pawn));
+            lab.remove_peer(address).unwrap();
+        }
+        sessions
+    }
+
+    /// Releasing a departed session's cached identities changes no bunch
+    /// of the first session, nor of a session after a departure: the
+    /// digests were recorded before the release was introduced. GUIDs are
+    /// never reused across sessions.
+    #[test]
+    fn sequential_sessions_send_the_same_bunches_after_identity_release() {
+        let sessions = sequential_record_sessions();
+        assert_eq!(sessions, sequential_record_sessions(), "deterministic");
+        let digests: Vec<String> = sessions
+            .iter()
+            .map(|(shapes, ..)| {
+                let mut hasher = Sha256::new();
+                for shape in shapes {
+                    hasher.update(shape.as_bytes());
+                    hasher.update(b"\n");
+                }
+                hasher
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+            })
+            .collect();
+        // Recorded at c946063, before departed identities were released.
+        assert_eq!(
+            digests,
+            [
+                "8ac0fb3576ddeb09435ccbe9d43e66ba15e35ff922dd1735e055acc047ed5c32",
+                "9a18acaf7b90592cc21d8efe0f0b5b0d49cfff3e0c038a2e5e82844fa928870d",
+            ]
+        );
+        let [
+            (_, first_record, first_pawn),
+            (_, second_record, second_pawn),
+        ] = sessions.as_slice()
+        else {
+            panic!("two sessions");
+        };
+        assert_ne!(first_record, second_record);
+        assert_ne!(first_pawn, second_pawn);
+        assert!(second_record > first_record && second_pawn > first_pawn);
+    }
+
     #[test]
     fn disabled_connected_player_records_send_exactly_the_previous_bunches() {
         let before = record_scenario(None);
@@ -15329,3 +15459,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod churn_tests;

@@ -138,6 +138,11 @@ impl ConnectionExports {
         Self::default()
     }
 
+    /// GUIDs this connection tracks as pending or acked.
+    pub fn tracked_count(&self) -> usize {
+        self.status.len()
+    }
+
     /// Whether a packet carrying `guid`'s export has been acked.
     pub fn is_acked(&self, guid: u32) -> bool {
         self.status.get(&guid) == Some(&None)
@@ -259,6 +264,49 @@ impl NetGuidCache {
     /// Aggregate retained bridge identities; this exposes no private mapping.
     pub fn incarnation_count(&self) -> usize {
         self.incarnations.len()
+    }
+
+    /// Forget every keyed identity of the actor `key`: the actor, its named
+    /// components and its runtime subobjects. Numeric GUIDs stay consumed, so
+    /// a later request for `key` gets a fresh GUID, never a forgotten one.
+    /// Call only once no live connection can reference `key` again. Returns
+    /// the number of identities forgotten.
+    pub(crate) fn forget_actor(&mut self, key: ActorKey) -> usize {
+        let forgotten: Vec<_> = self
+            .keyed
+            .range((key, KeyedPart::Actor)..=(key, KeyedPart::Subobject(u32::MAX)))
+            .map(|(entry, _)| entry.clone())
+            .collect();
+        for entry in &forgotten {
+            self.keyed.remove(entry);
+        }
+        forgotten.len()
+    }
+
+    /// Forget runtime subobject `index` of the keyed actor `key`, under the
+    /// same rule as [`forget_actor`](Self::forget_actor).
+    pub(crate) fn forget_subobject(&mut self, key: ActorKey, index: u32) -> bool {
+        self.keyed
+            .remove(&(key, KeyedPart::Subobject(index)))
+            .is_some()
+    }
+
+    /// Aggregate retained keyed identities (actors, their named components
+    /// and runtime subobjects); this exposes no private mapping.
+    pub fn keyed_count(&self) -> usize {
+        self.keyed.len()
+    }
+
+    /// Aggregate retained static path identities.
+    pub fn static_count(&self) -> usize {
+        self.statics.len()
+    }
+
+    /// Dynamic GUIDs consumed so far: a counter, not retained state. Numeric
+    /// GUIDs are never reused; [`assign_dynamic`](Self::assign_dynamic)
+    /// refuses once `u32::MAX >> 1` are consumed.
+    pub fn dynamic_guids_assigned(&self) -> u32 {
+        self.dynamic_index
     }
 
     /// A component of the keyed world actor `key` (actor GUID `actor`): its
@@ -1255,5 +1303,52 @@ mod tests {
         assert!(reassigned > other_slot);
         assert_eq!(cache.incarnation_count(), 2);
         assert_eq!(cache.dynamic_index, before_prune.dynamic_index + 1);
+    }
+
+    #[test]
+    fn forgetting_an_actor_releases_only_its_identities_and_never_reuses_guids() {
+        let mut cache = NetGuidCache::new();
+        let (gone, kept) = (
+            ActorKey::Session(1 << 32 | 7),
+            ActorKey::Session(1 << 32 | 8),
+        );
+        let actor = cache.actor_guid(gone).unwrap();
+        let component = cache
+            .keyed_guid(gone, KeyedPart::Component("root".into()))
+            .unwrap();
+        let subobjects = [0, u32::MAX].map(|index| cache.subobject_guid(gone, index).unwrap());
+        let kept_actor = cache.actor_guid(kept).unwrap();
+        let kept_subobject = cache.subobject_guid(kept, 0).unwrap();
+        let world = cache.actor_guid(ActorKey::World(7)).unwrap();
+        let path = [PathSegment::new("/Authored/Archetype", 42, false)];
+        let static_guid = cache.assign_static(&path);
+        let consumed = cache.dynamic_guids_assigned();
+        assert_eq!(cache.keyed_count(), 7);
+
+        assert!(cache.forget_subobject(kept, 0));
+        assert!(!cache.forget_subobject(kept, 0));
+        assert_eq!(cache.forget_actor(gone), 4);
+        assert_eq!(cache.forget_actor(gone), 0);
+        assert_eq!(cache.keyed_count(), 2);
+        assert_eq!(cache.static_count(), 1);
+        assert_eq!(cache.dynamic_guids_assigned(), consumed);
+        assert_eq!(cache.actor_guid(kept).unwrap(), kept_actor);
+        assert_eq!(cache.actor_guid(ActorKey::World(7)).unwrap(), world);
+        assert_eq!(cache.assign_static(&path), static_guid);
+        // A forgotten identity asked for again is fresh, never a released GUID.
+        let again = [
+            cache.actor_guid(gone).unwrap(),
+            cache.subobject_guid(gone, 0).unwrap(),
+            cache.subobject_guid(kept, 0).unwrap(),
+        ];
+        let released = [
+            actor,
+            component,
+            subobjects[0],
+            subobjects[1],
+            kept_subobject,
+        ];
+        assert!(again.iter().all(|guid| *guid > consumed << 1));
+        assert!(again.iter().all(|guid| !released.contains(guid)));
     }
 }
