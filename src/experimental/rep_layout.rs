@@ -2738,7 +2738,7 @@ pub fn actor_component_rep_layout() -> Vec<RepCommand> {
 /// COND_None, RepNotify `OnRep_ConnectedPlayers`). Net fields observed in
 /// public server 26425113 (equal in 26313077); the command order is derived
 /// and reproduces the S2 65-bit block bit for bit
-/// (`work/connected-player-record-20261110`).
+/// (F-1072, F-1075).
 pub fn connected_players_rep_layout() -> Vec<RepCommand> {
     let mut commands = actor_component_rep_layout();
     commands.push(RepCommand::DynamicArray {
@@ -2754,7 +2754,7 @@ pub fn connected_players_rep_layout() -> Vec<RepCommand> {
 /// (object references), 6 `ConnectionStartTime` and 7
 /// `ConnectionCompleteTime` (`float`). Struct members observed in public
 /// server 26425113; the order is derived and reproduces the S2 361-bit
-/// creation block bit for bit (`work/connected-player-record-20261110`).
+/// creation block bit for bit (F-1072, F-1075).
 pub fn replicated_connected_player_rep_layout() -> Vec<RepCommand> {
     vec![
         RepCommand::Str,

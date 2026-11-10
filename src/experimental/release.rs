@@ -642,7 +642,7 @@ impl ReleaseGameStateProfile {
     /// `ReplicatedConnectedPlayer` (class network checksum 3049816867, derived
     /// with the retained checksum algorithm from public servers 26425113 and
     /// 26313077, identical, and equal to the S2 export's checksum), then its
-    /// package `/Script/Icarus` (`work/connected-player-record-20261110`).
+    /// package `/Script/Icarus` (F-1072).
     /// Not derived for 3.0.31 or 3.0.32, whose built-ins omit it.
     pub fn connected_player_record_chain() -> Vec<ReleasePathSegment> {
         vec![

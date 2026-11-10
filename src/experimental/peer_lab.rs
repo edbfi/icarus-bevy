@@ -1223,7 +1223,7 @@ impl InitialisationReceipt {
 }
 
 /// This session's `UReplicatedConnectedPlayer` record
-/// (`work/connected-player-record-20261110`, spec section 4): registered at
+/// (F-1073, F-1077): registered at
 /// Begin acceptance, completed with the player, finalised with the player.
 /// Its values are read from the session when composed, so a send always
 /// carries the latest state.
@@ -4669,13 +4669,9 @@ impl PeerLab {
         Ok(())
     }
 
-    /// Configure at most 32 explicit actions once, before admitting any peers.
-    /// Actions retain caller order and start only after all initial opens queue
-    /// successfully and the controller and referenced pawn channels settle.
-    /// This conservative ACK policy does not establish geometry or possession.
     /// Replicate each joined player's `UReplicatedConnectedPlayer` record
-    /// under the GameState's `ConnectedPlayers` (Mode A of
-    /// `work/connected-player-record-20261110/spec.md`): a record registers
+    /// under the GameState's `ConnectedPlayers` (Mode A,
+    /// F-1077): a record registers
     /// at Begin acceptance and, once its player is finalised (F-973), one
     /// reliable GameState-channel bunch creates it with all seven handles and
     /// sends the whole array. Requires the PlayerController, pawn, GameState
@@ -4723,6 +4719,10 @@ impl PeerLab {
         self.connected_players.is_some()
     }
 
+    /// Configure at most 32 explicit actions once, before admitting any peers.
+    /// Actions retain caller order and start only after all initial opens queue
+    /// successfully and the controller and referenced pawn channels settle.
+    /// This conservative ACK policy does not establish geometry or possession.
     pub fn enable_controller_startup(
         &mut self,
         profile: &ReleaseProfile,

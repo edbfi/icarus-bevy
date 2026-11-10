@@ -18,7 +18,7 @@
 //! its advancing clocks (F-805), and [`compose_connected_players_update`]
 //! frames the reliable update that creates `UReplicatedConnectedPlayer`
 //! records under `ConnectedPlayers` and replicates its array
-//! (`work/connected-player-record-20261110`).
+//! (F-1072, F-1075).
 //!
 //! GUIDs follow the [`NetGuidCache`] policy: the GameState and the managers
 //! are keyed world actors, so a manager the GameState names keeps that GUID
@@ -644,7 +644,7 @@ pub fn compose_game_state_update(
 
 /// Release identifiers and layouts of the `UReplicatedConnectedPlayer` records
 /// the GameState's `ConnectedPlayers` component lists
-/// (`work/connected-player-record-20261110`, spec sections 1 and 6).
+/// (F-1072, F-1077).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectedPlayersPlan {
     /// `ReplicatedConnectedPlayer` with its class network checksum, then

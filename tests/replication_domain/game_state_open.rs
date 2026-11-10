@@ -728,7 +728,7 @@ fn active_prospect_values_reject_invalid_enums_strings_and_resource_counts() {
 
 mod connected_player_records {
     //! Authored vectors for `UReplicatedConnectedPlayer` and `ConnectedPlayers`
-    //! (`work/connected-player-record-20261110/spec.md` section 7, items 1-6):
+    //! (F-1072, F-1075, F-1077):
     //! placeholder IDs, GUIDs and times only.
     use super::*;
     use icarus_bevy::experimental::{

@@ -32,8 +32,11 @@
 //! poll intervals) follow as property updates (F-805), and with a loaded
 //! world and the official data tables its `LockedMissions` (F-834); with
 //! [`apply_server_settings`], `TimeBetweenSaves` and a locally saving
-//! server's `NetworkingStatus` listing the joined players (F-810). Nothing
-//! else replicates.
+//! server's `NetworkingStatus` listing the joined players (F-810). With
+//! `[network] connected_player_records` on (the default) and a release that
+//! names the record class, each finalised player's connected-player record
+//! and the `ConnectedPlayers` array follow in one reliable GameState bunch
+//! (F-1077). Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -1876,8 +1879,7 @@ fn bind_session(
         if let Some(player_state) = player_state {
             lab.enable_player_state_open(player_state)?;
         }
-        // Connected-player records (`work/connected-player-record-20261110`,
-        // Mode A) whenever finalisation runs with every open a record
+        // Connected-player records (F-1077, Mode A) whenever finalisation runs with every open a record
         // references; the release must name the record class.
         if network.connected_player_records
             && has_pawn
