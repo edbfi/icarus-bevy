@@ -94,6 +94,7 @@ Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes/drains/saves.
 Prospect/mode F-804; data F-993. Monotonic delivery timeout: sent records lack
 ACK/NAK progress despite traffic; `closed_by_delivery_stall`/`peers_delivery_stalled`
 separate from idle expiry (F-1013).
+Removal releases a session's GUID identities; GUIDs are never reused (F-1083).
 
 `authored_gameplay`: regular JSON ≤8 MiB, e.g.
 `{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.

@@ -490,6 +490,8 @@ pub struct PlayerInitialiser {
     tracker: ActorChannelTracker,
     summary: InitialiseSummary,
     notes: BTreeMap<String, u64>,
+    /// Leave field-118 friends queries unanswered ([`Self::withhold_friends_list`]).
+    withhold_friends_list: bool,
 }
 
 impl PlayerInitialiser {
@@ -507,7 +509,14 @@ impl PlayerInitialiser {
             codec,
             summary: InitialiseSummary::default(),
             notes: BTreeMap::new(),
+            withhold_friends_list: false,
         }
+    }
+
+    /// Never answer the friends query (field 118), as a client that stops
+    /// before `ServerFriendsListUpdated`; its player cannot finalise.
+    pub fn withhold_friends_list(&mut self) {
+        self.withhold_friends_list = true;
     }
 
     pub fn summary(&self) -> &InitialiseSummary {
@@ -655,6 +664,10 @@ impl PlayerInitialiser {
             };
             let Some((component, guid)) = target else {
                 if field.index == 118 && field.payload.bit_len() == 0 {
+                    if self.withhold_friends_list {
+                        notes.push("friends query withheld".to_owned());
+                        continue;
+                    }
                     let field = friends_list_updated_field(&self.codec)?;
                     let (_, packet_id) = client.send_actor_rpc(
                         channel,
