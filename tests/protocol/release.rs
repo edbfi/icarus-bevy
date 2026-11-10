@@ -64,7 +64,15 @@ fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     assert_eq!(pawn.components, previous.pawn.as_ref().unwrap().components);
     assert_eq!(profile.player_controller, previous.player_controller);
     assert_eq!(profile.player_state, previous.player_state);
-    assert_eq!(profile.game_state, previous.game_state);
+    // 3.0.34 adds only the connected-player record chain derived for it.
+    let mut game_state = profile.game_state.clone().unwrap();
+    assert_eq!(
+        game_state.connected_player_record.take(),
+        Some(
+            icarus_bevy::experimental::release::ReleaseGameStateProfile::connected_player_record_chain()
+        )
+    );
+    assert_eq!(Some(game_state), previous.game_state);
     assert_eq!(profile.managers, previous.managers);
     let parsed = ReleaseProfile::parse(
         "[release]\napp_id = 2089300\nbuild_id = 26313077\nproject_version = \"3.0.34.159385-rel-DangerousHorizons\"\nnetwork_checksum = 4087436304\n",
@@ -1196,4 +1204,63 @@ fn manager_sections_parse_and_fail_closed() {
             "{bad}"
         );
     }
+}
+
+/// The `ReplicatedConnectedPlayer` chain was derived for 3.0.34 and 3.0.35
+/// only: built-ins and pin-only TOML for older builds carry none, so they
+/// send no connected-player record.
+#[test]
+fn connected_player_record_chain_is_built_in_only_where_derived() {
+    use icarus_bevy::experimental::release::network_checksum;
+    let builtins = [
+        (ReleaseProfile::release_3_0_31(), false),
+        (ReleaseProfile::release_3_0_32(), false),
+        (ReleaseProfile::release_3_0_34(), true),
+        (ReleaseProfile::release_3_0_35(), true),
+    ];
+    for (profile, derived) in builtins {
+        let pin = &profile.pin;
+        let chain = profile
+            .game_state
+            .as_ref()
+            .unwrap()
+            .connected_player_record
+            .clone();
+        assert_eq!(chain.is_some(), derived, "{}", pin.build_id);
+        assert_eq!(
+            profile.connected_players_plan().unwrap().is_some(),
+            derived,
+            "{}",
+            pin.build_id
+        );
+        if let Some(chain) = chain {
+            assert_eq!(
+                (chain[0].path.as_str(), chain[0].checksum),
+                ("ReplicatedConnectedPlayer", 3_049_816_867)
+            );
+            assert_eq!(
+                (chain[1].path.as_str(), chain[1].checksum),
+                ("/Script/Icarus", 0)
+            );
+        }
+        let parsed = ReleaseProfile::parse(&format!(
+            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
+            pin.app_id,
+            pin.build_id,
+            pin.project_version,
+            network_checksum(&pin.project_version)
+        ))
+        .unwrap();
+        assert_eq!(parsed.game_state, profile.game_state, "{}", pin.build_id);
+    }
+    // The 3.0.31 client build shares the 3.0.31 built-ins.
+    let client = ReleaseProfile::release_3_0_31();
+    let parsed = ReleaseProfile::parse(&format!(
+        "[release]\napp_id = {}\nbuild_id = 25793767\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
+        client.pin.app_id,
+        client.pin.project_version,
+        network_checksum(&client.pin.project_version)
+    ))
+    .unwrap();
+    assert!(parsed.connected_players_plan().unwrap().is_none());
 }

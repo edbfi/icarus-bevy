@@ -725,3 +725,379 @@ fn active_prospect_values_reject_invalid_enums_strings_and_resource_counts() {
         assert!(active_prospect_update_values(&info).is_err());
     }
 }
+
+mod connected_player_records {
+    //! Authored vectors for `UReplicatedConnectedPlayer` and `ConnectedPlayers`
+    //! (F-1072, F-1075, F-1077):
+    //! placeholder IDs, GUIDs and times only.
+    use super::*;
+    use icarus_bevy::experimental::{
+        actor_channel::{NetGuidRef, SubObjectClass},
+        control_messages::ArchiveText,
+        game_state_open::{
+            ConnectedPlayerState, ConnectedPlayersPlan, compose_connected_players_update,
+            connected_players_array_stream,
+        },
+        packet::Payload,
+        release::ReleaseProfile,
+        rep_layout::{
+            PropertyStream, RepArray, RepCommand, connected_players_rep_layout,
+            encode_rep_properties, parse_rep_properties, replicated_connected_player_rep_layout,
+        },
+    };
+
+    fn stream(entries: Vec<(u32, RepValue)>) -> PropertyStream {
+        PropertyStream {
+            entries: entries
+                .into_iter()
+                .map(|(handle, value)| RepEntry {
+                    handle,
+                    checksum: None,
+                    value,
+                })
+                .collect(),
+            terminator_checksum: None,
+        }
+    }
+
+    /// A narrow placeholder ID of `chars` characters (the archive string adds
+    /// its terminator): 17 characters is the 361-bit vector of
+    /// `vectors-output.txt`, as the S2 ID's 18 bytes.
+    fn placeholder_id(chars: usize) -> ArchiveText {
+        let text: String = (0..chars)
+            .map(|index| (b'A' + (index % 26) as u8) as char)
+            .collect();
+        ArchiveText::text(&text).unwrap()
+    }
+
+    fn record(units: usize, guids: [u32; 3]) -> ConnectedPlayerState {
+        ConnectedPlayerState {
+            player_id: placeholder_id(units),
+            chr_slot: 0,
+            controller: Some(guids[0]),
+            character: guids[1],
+            player_state: guids[2],
+            connection_start_time: 1.5,
+            connection_complete_time: 2.75,
+        }
+    }
+
+    /// Encode, parse back and re-encode exactly; returns the bit length.
+    fn round_trip(value: &PropertyStream, layout: &[RepCommand]) -> usize {
+        let payload = encode_rep_properties(value, layout, &rep_codec()).unwrap();
+        let parsed = parse_rep_properties(&payload, layout, &rep_codec()).unwrap();
+        assert_eq!(&parsed, value);
+        let again = encode_rep_properties(&parsed, layout, &rep_codec()).unwrap();
+        assert_eq!(again, payload, "re-encodes exactly");
+        payload.bit_len()
+    }
+
+    #[test]
+    fn record_creation_lengths_follow_the_id_and_guid_widths() {
+        let layout = replicated_connected_player_rep_layout();
+        assert_eq!(layout.len(), 7);
+        // Item 1: 17-unit narrow ID, GUIDs 10/12/14, floats 1.5/2.75.
+        assert_eq!(
+            round_trip(&record(17, [10, 12, 14]).creation_stream(), &layout),
+            361
+        );
+        // Item 2: 8 bits per ID character.
+        for chars in [1, 9, 40] {
+            assert_eq!(
+                round_trip(&record(chars, [10, 12, 14]).creation_stream(), &layout),
+                361 + 8 * chars - 8 * 17,
+                "{chars} characters"
+            );
+        }
+        // Item 3: 8 more bits per reference whose GUID is 128 or more.
+        for (guids, wide) in [([200, 12, 14], 1), ([10, 300, 14], 1), ([200, 300, 400], 3)] {
+            assert_eq!(
+                round_trip(&record(17, guids).creation_stream(), &layout),
+                361 + 8 * wide
+            );
+        }
+        // A null controller reference is one packed byte, like a small GUID.
+        let mut other = record(17, [10, 12, 14]);
+        other.controller = None;
+        assert_eq!(round_trip(&other.creation_stream(), &layout), 361);
+    }
+
+    #[test]
+    fn staged_record_updates_have_the_derived_lengths() {
+        // Item 4: the staged handle sets of the original's three steps.
+        let layout = replicated_connected_player_rep_layout();
+        let full = record(17, [10, 12, 14]).creation_stream();
+        let select = |handles: &[u32]| PropertyStream {
+            entries: full
+                .entries
+                .iter()
+                .filter(|entry| handles.contains(&entry.handle))
+                .cloned()
+                .collect(),
+            terminator_checksum: None,
+        };
+        assert_eq!(round_trip(&select(&[1, 3, 6]), &layout), 249);
+        assert_eq!(round_trip(&select(&[2, 4, 5]), &layout), 81);
+        assert_eq!(round_trip(&select(&[7]), &layout), 49);
+    }
+
+    #[test]
+    fn array_lengths_and_element_handles() {
+        // Item 5.
+        let layout = connected_players_rep_layout();
+        assert_eq!(layout.len(), 3);
+        for (guids, bits) in [(vec![200], 65), (vec![100], 57), (vec![], 41)] {
+            let value = connected_players_array_stream(&guids).unwrap();
+            assert_eq!(round_trip(&value, &layout), bits, "{guids:?}");
+        }
+        let two = connected_players_array_stream(&[100, 102]).unwrap();
+        assert_eq!(
+            two,
+            stream(vec![(
+                3,
+                RepValue::DynamicArray(RepArray {
+                    count: 2,
+                    stream: stream(vec![
+                        (1, RepValue::Object(NetGuidRef::plain(100))),
+                        (2, RepValue::Object(NetGuidRef::plain(102))),
+                    ]),
+                }),
+            )])
+        );
+        round_trip(&two, &layout);
+    }
+
+    fn records_plan() -> ConnectedPlayersPlan {
+        ReleaseProfile::release_3_0_35()
+            .connected_players_plan()
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn release_names_the_record_class_chain() {
+        let plan = records_plan();
+        assert_eq!(plan.record_class.len(), 2);
+        assert_eq!(plan.record_class[0].path, "ReplicatedConnectedPlayer");
+        assert_eq!(plan.record_class[0].checksum, 3_049_816_867);
+        assert_eq!(plan.record_class[1].path, "/Script/Icarus");
+        assert_eq!(plan.record_class[1].checksum, 0);
+        assert_eq!(plan.record_layout, replicated_connected_player_rep_layout());
+        assert_eq!(plan.component_layout, connected_players_rep_layout());
+    }
+
+    /// The bunch body and the decoded export references of a composed update.
+    fn decode(
+        update: &icarus_bevy::experimental::game_state_open::ConnectedPlayersUpdate,
+    ) -> (
+        icarus_bevy::experimental::actor_channel::ActorBunchBody,
+        Vec<NetGuidRef>,
+    ) {
+        let body = read_actor_bunch_body(&mut update.payload.reader(), false, &codec()).unwrap();
+        let exports = update
+            .exports
+            .as_ref()
+            .map_or_else(Vec::new, |exports: &Payload| {
+                PackageMapState::new()
+                    .consume_export_prefix(&mut exports.reader(), &codec())
+                    .unwrap()
+            });
+        (body, exports)
+    }
+
+    #[test]
+    fn creation_bunch_keeps_the_observed_block_order_and_exports_the_class() {
+        // Item 6.
+        let game_state = plan();
+        let records = records_plan();
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        let open = compose_game_state_open(
+            &mut cache,
+            &mut exports,
+            &game_state,
+            &state(),
+            4,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        assert!(open.exports.is_some());
+        exports.commit_bunch(1);
+        exports.received_ack(1);
+        let world_time = BTreeMap::from([(
+            handle::WORLD_TIME_SECONDS,
+            RepValue::Float(20.0f32.to_bits()),
+        )]);
+        let compose = |cache: &mut NetGuidCache, exports: &mut ConnectionExports| {
+            compose_connected_players_update(
+                cache,
+                exports,
+                &game_state,
+                &records,
+                GAME_STATE,
+                &world_time,
+                &[(0, record(17, [10, 12, 14]))],
+                &[0],
+                ByteOrder::Little,
+            )
+            .unwrap()
+        };
+        let update = compose(&mut cache, &mut exports);
+        let (body, exported) = decode(&update);
+        assert!(body.spawn.is_none());
+        let [actor, record_block, component] = body.blocks.as_slice() else {
+            panic!("three blocks: {}", body.blocks.len());
+        };
+        // GameState actor block first, with the world time.
+        assert!(actor.has_rep_layout && matches!(actor.target, BlockTarget::Actor));
+        let values = read_rep_properties(
+            &mut actor.payload.reader(),
+            &game_state.layout,
+            &rep_codec(),
+        )
+        .unwrap();
+        assert_eq!(values.entries.len(), 1);
+        assert_eq!(values.entries[0].handle, handle::WORLD_TIME_SECONDS);
+        // Then the record, named by the exported class GUID.
+        let record_guid = cache.subobject_guid(GAME_STATE, 0).unwrap();
+        let [class_export] = exported.as_slice() else {
+            panic!("only the record class is exported: {}", exported.len());
+        };
+        let class_path = class_export.export.as_ref().unwrap();
+        assert_eq!(
+            class_path.path.as_ref().unwrap().path,
+            ArchiveText::text("ReplicatedConnectedPlayer").unwrap()
+        );
+        assert_eq!(class_path.checksum, Some(3_049_816_867));
+        let outer = class_path
+            .path
+            .as_ref()
+            .unwrap()
+            .outer
+            .export
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            outer.path.as_ref().unwrap().path,
+            ArchiveText::text("/Script/Icarus").unwrap()
+        );
+        assert!(record_block.has_rep_layout);
+        assert_eq!(
+            record_block.target,
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(record_guid),
+                class: SubObjectClass::Class(NetGuidRef::plain(class_export.guid)),
+            }
+        );
+        assert_eq!(record_block.payload.bit_len(), 361);
+        assert_eq!(
+            parse_rep_properties(&record_block.payload, &records.record_layout, &rep_codec())
+                .unwrap(),
+            record(17, [10, 12, 14]).creation_stream()
+        );
+        // Then ConnectedPlayers, stably named, carrying the whole array.
+        let component_guid = 4; // assigned by the open (Players, F-794 order)
+        assert_eq!(
+            component.target,
+            BlockTarget::SubObject {
+                object: NetGuidRef::plain(component_guid),
+                class: SubObjectClass::StablyNamed,
+            }
+        );
+        assert!(record_guid < 128);
+        assert_eq!(component.payload.bit_len(), 57);
+        assert_eq!(
+            parse_rep_properties(&component.payload, &records.component_layout, &rep_codec())
+                .unwrap(),
+            connected_players_array_stream(&[record_guid]).unwrap()
+        );
+        // The class export repeats until a packet carrying it is acked.
+        exports.commit_bunch(2);
+        let again = compose(&mut cache, &mut exports);
+        assert_eq!(decode(&again).1.len(), 1);
+        exports.commit_bunch(3);
+        exports.received_ack(3);
+        let acked = compose(&mut cache, &mut exports);
+        assert!(acked.exports.is_none());
+        // The record keeps one driver-wide GUID.
+        assert_eq!(cache.subobject_guid(GAME_STATE, 0).unwrap(), record_guid);
+    }
+
+    #[test]
+    fn array_only_updates_and_invalid_inputs_leave_state_unchanged() {
+        let game_state = plan();
+        let records = records_plan();
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        compose_game_state_open(
+            &mut cache,
+            &mut exports,
+            &game_state,
+            &state(),
+            4,
+            ByteOrder::Little,
+        )
+        .unwrap();
+        exports.commit_bunch(1);
+        exports.received_ack(1);
+        // Removal of the last record: no actor values, no records, empty array.
+        let removal = compose_connected_players_update(
+            &mut cache,
+            &mut exports,
+            &game_state,
+            &records,
+            GAME_STATE,
+            &BTreeMap::new(),
+            &[],
+            &[],
+            ByteOrder::Little,
+        )
+        .unwrap();
+        assert!(removal.exports.is_none());
+        let (body, _) = decode(&removal);
+        let [component] = body.blocks.as_slice() else {
+            panic!("one component block");
+        };
+        assert_eq!(component.payload.bit_len(), 41);
+        let next = cache.clone().assign_dynamic().unwrap();
+        for (created, array) in [
+            (vec![(5, record(17, [10, 12, 14]))], vec![]),
+            (vec![(5, record(17, [10, 12, 14]))], vec![5, 5]),
+            (
+                vec![(5, record(17, [10, 12, 14])), (5, record(17, [10, 12, 14]))],
+                vec![5],
+            ),
+        ] {
+            assert!(
+                compose_connected_players_update(
+                    &mut cache,
+                    &mut exports,
+                    &game_state,
+                    &records,
+                    GAME_STATE,
+                    &BTreeMap::new(),
+                    &created,
+                    &array,
+                    ByteOrder::Little,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            compose_connected_players_update(
+                &mut cache,
+                &mut exports,
+                &game_state,
+                &records,
+                GAME_STATE,
+                &BTreeMap::from([(handle::WORLD_TALENT_MANAGER_CLASS, RepValue::Bool(true))]),
+                &[],
+                &[],
+                ByteOrder::Little,
+            )
+            .is_err()
+        );
+        assert_eq!(cache.assign_dynamic().unwrap(), next, "no GUID consumed");
+        assert_eq!(exports.bunch_exports().count(), 0);
+    }
+}

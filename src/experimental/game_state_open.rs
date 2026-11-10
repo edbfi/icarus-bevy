@@ -15,7 +15,10 @@
 //!
 //! After the open, [`compose_game_state_update`] frames a property update
 //! of the GameState actor (no spawn, one actor block), as the original sends
-//! its advancing clocks (F-805).
+//! its advancing clocks (F-805), and [`compose_connected_players_update`]
+//! frames the reliable update that creates `UReplicatedConnectedPlayer`
+//! records under `ConnectedPlayers` and replicates its array
+//! (F-1072, F-1075).
 //!
 //! GUIDs follow the [`NetGuidCache`] policy: the GameState and the managers
 //! are keyed world actors, so a manager the GameState names keeps that GUID
@@ -27,7 +30,9 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
 
-use super::actor_channel::{ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body};
+use super::actor_channel::{
+    ActorBunchBody, BlockTarget, ContentBlock, NetGuidRef, SubObjectClass, encode_actor_bunch_body,
+};
 use super::actor_open::{
     BlockContent, ComponentActorOpen, OpenComponent, Reference, compose_component_actor_open,
 };
@@ -635,6 +640,244 @@ pub fn compose_game_state_update(
         },
         &codec,
     )
+}
+
+/// Release identifiers and layouts of the `UReplicatedConnectedPlayer` records
+/// the GameState's `ConnectedPlayers` component lists
+/// (F-1072, F-1077).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectedPlayersPlan {
+    /// `ReplicatedConnectedPlayer` with its class network checksum, then
+    /// `/Script/Icarus`; exported until a connection acks it (F-796).
+    pub record_class: Vec<PathSegment>,
+    /// The 7-handle `UReplicatedConnectedPlayer` layout.
+    pub record_layout: Vec<RepCommand>,
+    /// The 3-handle `UConnectedPlayers` layout.
+    pub component_layout: Vec<RepCommand>,
+}
+
+/// `UConnectedPlayers::ReplicatedConnectedPlayers`, the component's handle 3.
+pub const CONNECTED_PLAYERS_ARRAY_HANDLE: u32 = 3;
+
+/// The values of one record's `State` (`FConnectedPlayer`) as sent to one
+/// connection. Object references are GUIDs already assigned by the caller;
+/// `controller` is `None` (a null reference) where the controller is not
+/// the connection's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectedPlayerState {
+    /// `PlayerCharacterID.PlayerID` (handle 1).
+    pub player_id: ArchiveText,
+    /// `PlayerCharacterID.ChrSlot` (handle 2).
+    pub chr_slot: i32,
+    /// `PlayerController` (handle 3).
+    pub controller: Option<u32>,
+    /// `PlayerCharacter` (handle 4), the possessed pawn.
+    pub character: u32,
+    /// `PlayerState` (handle 5).
+    pub player_state: u32,
+    /// `ConnectionStartTime` (handle 6), server world seconds.
+    pub connection_start_time: f32,
+    /// `ConnectionCompleteTime` (handle 7), server world seconds.
+    pub connection_complete_time: f32,
+}
+
+impl ConnectedPlayerState {
+    /// A creation stream: all seven handles, as the S2 creation carried them
+    /// (spec section 2), whether or not a value equals a class default.
+    pub fn creation_stream(&self) -> PropertyStream {
+        let object = |guid: Option<u32>| {
+            RepValue::Object(guid.map_or_else(NetGuidRef::null, NetGuidRef::plain))
+        };
+        let values = [
+            RepValue::Str(self.player_id.clone()),
+            RepValue::Int(self.chr_slot),
+            object(self.controller),
+            object(Some(self.character)),
+            object(Some(self.player_state)),
+            RepValue::Float(self.connection_start_time.to_bits()),
+            RepValue::Float(self.connection_complete_time.to_bits()),
+        ];
+        PropertyStream {
+            entries: values
+                .into_iter()
+                .zip(1..)
+                .map(|(value, handle)| RepEntry {
+                    handle,
+                    checksum: None,
+                    value,
+                })
+                .collect(),
+            terminator_checksum: None,
+        }
+    }
+}
+
+/// The whole `ReplicatedConnectedPlayers` array (handle 3): `records` in array
+/// order, one object element per record with element handles `1..=N`.
+pub fn connected_players_array_stream(records: &[u32]) -> Result<PropertyStream> {
+    let count = u16::try_from(records.len()).context("too many connected players")?;
+    let entries = records
+        .iter()
+        .zip(1..)
+        .map(|(guid, handle)| RepEntry {
+            handle,
+            checksum: None,
+            value: RepValue::Object(NetGuidRef::plain(*guid)),
+        })
+        .collect();
+    Ok(PropertyStream {
+        entries: vec![RepEntry {
+            handle: CONNECTED_PLAYERS_ARRAY_HANDLE,
+            checksum: None,
+            value: RepValue::DynamicArray(RepArray {
+                count,
+                stream: PropertyStream {
+                    entries,
+                    terminator_checksum: None,
+                },
+            }),
+        }],
+        terminator_checksum: None,
+    })
+}
+
+/// A composed `ConnectedPlayers` update: the export-only prefix its class and
+/// component references need, if any, and the actor bunch body.
+#[derive(Clone, Debug)]
+pub struct ConnectedPlayersUpdate {
+    pub exports: Option<Payload>,
+    pub payload: Payload,
+}
+
+/// Compose a reliable GameState-channel update carrying connected-player
+/// records, in the block order S2 observed (spec section 2): an actor block
+/// with `actor_values` when nonempty (S2 carried the GameState values due
+/// then; the caller attaches at least the world time), one class-named
+/// sub-object block per created record, then the `ConnectedPlayers` block with
+/// the whole array. Each record is runtime sub-object `index` of the
+/// GameState `key` (one driver-wide dynamic GUID per record, never exported:
+/// its block names its class). `array` lists record indices in array order and
+/// must contain every created record. The record class export and an
+/// unacknowledged component path go in [`ConnectedPlayersUpdate::exports`],
+/// repeated until acknowledged (F-796). On failure the GUID cache and
+/// connection exports are unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_connected_players_update(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    game_state: &GameStateOpenPlan,
+    plan: &ConnectedPlayersPlan,
+    key: ActorKey,
+    actor_values: &BTreeMap<u32, RepValue>,
+    created: &[(u32, ConnectedPlayerState)],
+    array: &[u32],
+    order: super::archive::ByteOrder,
+) -> Result<ConnectedPlayersUpdate> {
+    for handle in actor_values.keys() {
+        ensure!(
+            (handle::HAS_BEGUN_PLAY..=handle::LAST).contains(handle)
+                && *handle != handle::WORLD_TALENT_MANAGER_CLASS,
+            "GameState handle {handle} is RepSkip or out of range"
+        );
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    ensure!(
+        array.iter().all(|index| unique.insert(*index)),
+        "a connected player is listed twice"
+    );
+    let mut fresh = std::collections::BTreeSet::new();
+    for (index, _) in created {
+        ensure!(fresh.insert(*index), "a record is created twice");
+        ensure!(
+            unique.contains(index),
+            "a created record is missing from the array"
+        );
+    }
+    ensure!(!plan.record_class.is_empty(), "empty record class chain");
+    let codec = actor_codec(game_state.engine_net_version, order);
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let mut next_cache = cache.clone();
+    let mut next_exports = exports.clone();
+    next_exports.begin_bunch();
+    let mut exported = Vec::new();
+    let mut blocks = Vec::new();
+    if !actor_values.is_empty() {
+        let stream = PropertyStream {
+            entries: actor_values
+                .iter()
+                .map(|(handle, value)| RepEntry {
+                    handle: *handle,
+                    checksum: None,
+                    value: value.clone(),
+                })
+                .collect(),
+            terminator_checksum: None,
+        };
+        blocks.push(ContentBlock {
+            has_rep_layout: true,
+            target: BlockTarget::Actor,
+            payload: encode_rep_properties(&stream, &game_state.layout, &rep_codec)?,
+        });
+    }
+    for (index, state) in created {
+        let class = next_cache.export_static(&mut next_exports, &plan.record_class)?;
+        let class_guid = class.guid;
+        exported.push(class);
+        blocks.push(ContentBlock {
+            has_rep_layout: true,
+            target: BlockTarget::SubObject {
+                object: NetGuidRef::plain(next_cache.subobject_guid(key, *index)?),
+                class: SubObjectClass::Class(NetGuidRef::plain(class_guid)),
+            },
+            payload: encode_rep_properties(
+                &state.creation_stream(),
+                &plan.record_layout,
+                &rep_codec,
+            )?,
+        });
+    }
+    let actor = next_cache.actor_guid(key)?;
+    let component = next_cache.export_keyed_subobject(
+        &mut next_exports,
+        key,
+        actor,
+        &game_state.components.connected_players,
+    )?;
+    let component_guid = component.guid;
+    exported.push(component);
+    let guids = array
+        .iter()
+        .map(|index| next_cache.subobject_guid(key, *index))
+        .collect::<Result<Vec<_>>>()?;
+    blocks.push(ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::SubObject {
+            object: NetGuidRef::plain(component_guid),
+            class: SubObjectClass::StablyNamed,
+        },
+        payload: encode_rep_properties(
+            &connected_players_array_stream(&guids)?,
+            &plan.component_layout,
+            &rep_codec,
+        )?,
+    });
+    let update = ConnectedPlayersUpdate {
+        exports: super::session_open::exports_of(&exported, &codec)?,
+        payload: encode_actor_bunch_body(
+            &ActorBunchBody {
+                spawn: None,
+                blocks,
+            },
+            &codec,
+        )?,
+    };
+    *cache = next_cache;
+    *exports = next_exports;
+    Ok(update)
 }
 
 /// `FNetworkingStatus`, the GameState's `NetworkingStatus` (handles

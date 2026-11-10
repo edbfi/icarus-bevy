@@ -49,6 +49,10 @@ Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
 Password unvalidated: no real passwords.
 Diagnostics: [network readiness](network-readiness.md) (F-1045).
+Records F-1077: `[network] connected_player_records` / probe
+`--connected-player-records` (ready field), default true, need a release naming
+the record class (3.0.34/3.0.35 pins) plus pawn, PlayerState and GameState
+opens; else `run` omits them, the probe refuses. `false`: prior bunches.
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.

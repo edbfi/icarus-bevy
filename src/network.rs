@@ -32,8 +32,11 @@
 //! poll intervals) follow as property updates (F-805), and with a loaded
 //! world and the official data tables its `LockedMissions` (F-834); with
 //! [`apply_server_settings`], `TimeBetweenSaves` and a locally saving
-//! server's `NetworkingStatus` listing the joined players (F-810). Nothing
-//! else replicates.
+//! server's `NetworkingStatus` listing the joined players (F-810). With
+//! `[network] connected_player_records` on (the default) and a release that
+//! names the record class, each finalised player's connected-player record
+//! and the `ConnectedPlayers` array follow in one reliable GameState bunch
+//! (F-1077). Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -1817,6 +1820,7 @@ fn bind_session(
                 _ => None,
             }
         };
+        let has_pawn = pawn.is_some();
         if let Some(pawn) = pawn {
             let content = pawn_content(tables.as_mut())?;
             let inventories = content.inventories.clone();
@@ -1871,8 +1875,22 @@ fn bind_session(
             // The server's own frame rate, measured as the original does.
             lab.enable_server_fps(ServerFpsMeter::new(DEFAULT_SAMPLES)?)?;
         }
+        let has_player_state = player_state.is_some();
         if let Some(player_state) = player_state {
             lab.enable_player_state_open(player_state)?;
+        }
+        // Connected-player records (F-1077, Mode A) whenever finalisation runs with every open a record
+        // references; the release must name the record class.
+        if network.connected_player_records
+            && has_pawn
+            && has_player_state
+            && lab.has_game_state_open()
+            && let Some(profile) = &profile
+            && let Some(records) = profile
+                .connected_players_plan()
+                .context("compose the connected-player record plan")?
+        {
+            lab.enable_connected_player_records(records)?;
         }
         // The GameState's managers, after the PlayerState (F-859).
         if lab.has_game_state_open()

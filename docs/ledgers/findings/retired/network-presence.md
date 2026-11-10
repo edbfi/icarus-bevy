@@ -2,7 +2,7 @@
 
 Rows superseded by consolidated active findings; IDs and full claims remain.
 
-Last reconciled: 2026-11-08
+Last reconciled: 2026-11-10
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -17,3 +17,4 @@ Last reconciled: 2026-11-08
 | F-1017 | Eight opens settle without Begin; actor fields 78/82 occur once; RPC82 field payload_bits is 612; initialization batches zero | measured | runtime-capture; M-1207/ev_7aca8c0967bd, M-1207/ev_49851006a601 | high; matched-client, one peer, 300 s bound; count includes any outer framing, not isolated custom value; no world-entry/cause proof | U-079 | superseded-by F-1034 |
 | F-1019 | 3.0.34 inherited controller fields: 78 ServerShortTimeout (no parameters), 82 ServerUpdateLevelVisibility (struct); BeginPlayerInitialisation remains 124 (int slot) | observed | static-metadata; M-1197 | high; native ancestry and local indices; native struct size does not define wire encoding or handler effects | U-079 | superseded-by F-1052 |
 | F-1049 | UserProfile admits; CharacterProfile wait/Preparing geometry persist; partials 22/2/0; native 65536-bit cap rejects an available 131729-bit block | measured | capture/source; M-1293, M-1302 to M-1304, M-1309, M-1310, M-1315, M-1316, M-1320, M-1321, M-1326 | bounded; unidentified RPC; no world entry or compatibility proof | U-038, U-079 | superseded-by F-1050 |
+| F-1050 | Retains F-1049: both profiles admit; loadout/bestiary complete; initialisation transport settles; friends/finalised 0; Preparing geometry persists | measured | capture; M-1293, M-1302 to M-1304, M-1309, M-1310, M-1315, M-1316, M-1320, M-1321, M-1326, M-1327 | bounded; one account; no world entry | U-038, U-079 | superseded-by F-1067 |

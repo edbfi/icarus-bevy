@@ -121,6 +121,10 @@ struct Options {
     /// Flush aggregate progress to stderr at this cadence; never includes player values.
     #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=60))]
     progress_interval_seconds: u64,
+    /// Replicate each finalised player's ReplicatedConnectedPlayer record under the
+    /// GameState's ConnectedPlayers; `false` makes a comparison run without it.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    connected_player_records: bool,
 }
 
 impl Options {
@@ -151,6 +155,56 @@ impl Options {
         )?;
         Ok(actions)
     }
+
+    /// Pure preflight of `--connected-player-records`: enabled records need a
+    /// release that names the record class and the opens a record references.
+    fn connected_player_records(&self, profile: &ReleaseProfile) -> Result<bool> {
+        if !self.connected_player_records {
+            return Ok(false);
+        }
+        ensure!(
+            profile.connected_players_plan()?.is_some()
+                && profile.pawn_open_plan(PROBE_MAP)?.is_some()
+                && profile.player_state_open_plan(PROBE_MAP)?.is_some()
+                && profile.game_state_open_plan(PROBE_MAP)?.is_some(),
+            "connected-player records need the release's record class and pawn, GameState and PlayerState profiles; pass --connected-player-records false"
+        );
+        Ok(true)
+    }
+}
+
+/// Aggregate counts read before [`PeerLab::shutdown`], as the summary has
+/// always reported them.
+fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::Value> {
+    let mut counts = serde_json::Map::new();
+    counts.insert(
+        "sessions_before_shutdown".into(),
+        json!(lab.session_counts()),
+    );
+    counts.insert(
+        "readiness_before_shutdown".into(),
+        json!(lab.readiness_counts()),
+    );
+    counts.insert(
+        "controller_fields_before_shutdown".into(),
+        json!(lab.controller_field_totals()),
+    );
+    counts.insert("stats_before_shutdown".into(), json!(lab.stats()));
+    counts.insert("peak_peers".into(), json!(lab.peak_peer_count()));
+    counts
+}
+
+/// Shut the lab down and return the session counts that only shutdown
+/// moves (`shutdown_failures_sent`, `shutdown_closes_sent`,
+/// `closed_by_shutdown`), read afterwards.
+fn shut_down(lab: &mut PeerLab) -> serde_json::Map<String, serde_json::Value> {
+    lab.shutdown();
+    let mut counts = serde_json::Map::new();
+    counts.insert(
+        "sessions_after_shutdown".into(),
+        json!(lab.session_counts()),
+    );
+    counts
 }
 
 fn emit_progress(value: &serde_json::Value) -> Result<()> {
@@ -173,6 +227,7 @@ fn main() -> Result<()> {
     );
     let profile = ReleaseProfile::load(&options.release)?;
     let startup = options.startup_plan(&profile)?;
+    let connected_player_records = options.connected_player_records(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -235,6 +290,7 @@ fn main() -> Result<()> {
         max_players: 1,
         session_timeout_seconds: 30,
         release_profile: Some(options.release),
+        connected_player_records,
         ..NetworkConfig::default()
     };
     let mut peer_config = network::peer_lab_config(&config);
@@ -258,6 +314,10 @@ fn main() -> Result<()> {
     // connection is polled. Connected world entry remains unqualified.
     bound.lab.extend_game_state_values(game_state)?;
     bound.lab.add_manager_open(ManagerSlot::Flod, flod)?;
+    ensure!(
+        bound.lab.has_connected_player_records() == connected_player_records,
+        "connected-player record configuration did not apply"
+    );
     if !startup.is_empty() {
         bound.lab.enable_controller_startup(&profile, startup)?;
     }
@@ -279,6 +339,7 @@ fn main() -> Result<()> {
         "progress_interval_seconds": options.progress_interval_seconds,
         "authored_world": options.authored_world.report(),
         "controller_startup": options.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
+        "connected_player_records": connected_player_records,
         "compatibility_proven": false,
     }))
     .err();
@@ -313,13 +374,9 @@ fn main() -> Result<()> {
         "stop_requested"
     };
     let mut lab = app.world_mut().resource_mut::<PeerLab>();
-    let counts = lab.session_counts();
-    let readiness = lab.readiness_counts();
-    let controller_fields = lab.controller_field_totals();
-    let stats = lab.stats().clone();
-    let peak = lab.peak_peer_count();
+    let before = counts_before_shutdown(&lab);
     let private_capture = lab.finish_private_rpc82_capture();
-    lab.shutdown();
+    let after = shut_down(&mut lab);
     let service_result = service.stop_and_join();
     let query_result = responder
         .join()
@@ -332,7 +389,11 @@ fn main() -> Result<()> {
     } else {
         reason
     };
-    let mut summary = json!({"event":"native_join_stopped","reason":reason,"sessions_before_shutdown":counts,"readiness_before_shutdown":readiness,"controller_fields_before_shutdown":controller_fields,"stats_before_shutdown":stats,"peak_peers":peak,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    if let Some(object) = summary.as_object_mut() {
+        object.extend(before);
+        object.extend(after);
+    }
     native_join_capture::add_counts(&mut summary, private_capture, header_capture);
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &summary)?;
@@ -509,6 +570,104 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn connected_player_records_default_on_and_fail_closed_before_networking() {
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(default.connected_player_records);
+        assert!(default.connected_player_records(&profile).unwrap());
+        let off = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--connected-player-records",
+            "false",
+        ])
+        .unwrap();
+        assert!(!off.connected_player_records(&profile).unwrap());
+        for value in ["maybe", ""] {
+            assert!(
+                Options::try_parse_from([
+                    "probe",
+                    "--name",
+                    "Authored",
+                    "--connected-player-records",
+                    value,
+                ])
+                .is_err()
+            );
+        }
+        // A release without the record class cannot run the default.
+        let mut unnamed = profile.clone();
+        unnamed.game_state.as_mut().unwrap().connected_player_record = None;
+        assert!(default.connected_player_records(&unnamed).is_err());
+        assert!(!off.connected_player_records(&unnamed).unwrap());
+        let mut no_pawn = profile;
+        no_pawn.pawn = None;
+        assert!(default.connected_player_records(&no_pawn).is_err());
+    }
+
+    #[test]
+    fn stopped_summary_reports_counts_that_only_shutdown_moves() {
+        use icarus_bevy::experimental::{handshake::initial_request, peer_lab::PeerLabConfig};
+        let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(lab.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        // Authored stateless handshake: challenge, echo, acknowledgement.
+        let mut buffer = [0; 2048];
+        client.send(&initial_request()).unwrap();
+        lab.poll();
+        let length = client.recv(&mut buffer).unwrap();
+        client.send(&buffer[..length]).unwrap();
+        lab.poll();
+        client.recv(&mut buffer).unwrap();
+        assert_eq!(lab.peer_count(), 1);
+        let before = counts_before_shutdown(&lab);
+        let after = shut_down(&mut lab);
+        assert_eq!(lab.peer_count(), 0);
+        let mut summary = json!({"event": "native_join_stopped"});
+        let object = summary.as_object_mut().unwrap();
+        object.extend(before);
+        object.extend(after);
+        let failures = "/sessions_before_shutdown/shutdown_failures_sent";
+        assert_eq!(summary.pointer(failures), Some(&json!(0)));
+        assert_eq!(
+            summary.pointer("/stats_before_shutdown/shutdown_failures_sent"),
+            Some(&json!(0))
+        );
+        let after = "/sessions_after_shutdown";
+        assert_eq!(
+            summary.pointer(&format!("{after}/shutdown_failures_sent")),
+            Some(&json!(1))
+        );
+        // The peer never delivered a reliable control bunch: no close.
+        assert_eq!(
+            summary.pointer(&format!("{after}/shutdown_closes_sent")),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            summary.pointer(&format!("{after}/closed_by_shutdown")),
+            Some(&json!(1))
+        );
+        assert_eq!(
+            summary.pointer(&format!("{after}/active_peers")),
+            Some(&json!(0))
+        );
+        for key in [
+            "sessions_before_shutdown",
+            "readiness_before_shutdown",
+            "controller_fields_before_shutdown",
+            "stats_before_shutdown",
+            "peak_peers",
+        ] {
+            assert!(summary.get(key).is_some(), "{key}");
+        }
+        assert_eq!(summary["peak_peers"], 1);
     }
 
     #[test]

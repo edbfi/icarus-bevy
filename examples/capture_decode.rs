@@ -75,7 +75,7 @@ use icarus_bevy::experimental::{
         bp_ui_projection_component_mount_status_rep_layout,
         bp_ui_projection_component_player_rep_layout, bp_world_boss_spawner_rep_layout,
         bp_world_object_rep_layout, bpc_environmental_buildup_rep_layout,
-        character_state_rep_layout, child_actor_component_rep_layout,
+        character_state_rep_layout, child_actor_component_rep_layout, connected_players_rep_layout,
         decayable_component_rep_layout, durable_component_rep_layout,
         fillable_component_rep_layout, flammable_actor_rep_layout, flod_actor_component_rep_layout,
         flod_rep_layout, focusable_component_rep_layout, genetics_component_rep_layout,
@@ -86,8 +86,8 @@ use icarus_bevy::experimental::{
         mount_character_state_rep_layout, player_character_state_rep_layout,
         player_history_tracker_rep_layout, player_state_rep_layout, quest_manager_rep_layout,
         quest_rep_layout, radiation_manager_rep_layout, read_rep_properties,
-        resource_network_component_rep_layout, scene_component_rep_layout,
-        static_mesh_component_rep_layout, stomach_component_rep_layout,
+        replicated_connected_player_rep_layout, resource_network_component_rep_layout,
+        scene_component_rep_layout, static_mesh_component_rep_layout, stomach_component_rep_layout,
         survival_character_state_rep_layout, trait_behaviour_rep_layout,
         trait_component_rep_layout, transmutable_component_rep_layout, voxel_resource_rep_layout,
         weather_controller_rep_layout, weather_forecast_bar_component_rep_layout,
@@ -742,7 +742,6 @@ fn classify_subobject_schema(
         | "Highlightable"
         | "ThermalComponent"
         | "BP_PlayerBuildingPlacement"
-        | "ConnectedPlayers"
         | "DialogueSystem"
         | "BP_NetworkProxyComponent"
         | "BackendProxyComponent"
@@ -754,6 +753,8 @@ fn classify_subobject_schema(
         | "BP_UIProjectionComponent_MountTooltip"
         | "BP_JumpLerpComponent"
         | "GameplayTasksComponent" => "UActorComponent",
+        "ConnectedPlayers" => "UConnectedPlayers",
+        "ReplicatedConnectedPlayer" => "UReplicatedConnectedPlayer",
         "TraitBehaviour" => "UTraitBehaviour",
         "WeatherForecastBarComponent" => "UWeatherForecastBarComponent",
         _ => return None,
@@ -824,6 +825,8 @@ fn schema_commands(schema: &str, profile: &ReleaseProfile) -> Result<Vec<RepComm
         "BP_Building_Base_C" => bp_building_base_rep_layout(loc, vel, rot, tag_encoding),
         "UWeatherForecastBarComponent" => weather_forecast_bar_component_rep_layout(),
         "UActorComponent" => actor_component_rep_layout(),
+        "UConnectedPlayers" => connected_players_rep_layout(),
+        "UReplicatedConnectedPlayer" => replicated_connected_player_rep_layout(),
         "UFLODActorComponent" => flod_actor_component_rep_layout(),
         "UAudioContextComponent" => audio_context_component_rep_layout(),
         "UTraitComponent" => trait_component_rep_layout(),
@@ -3633,4 +3636,90 @@ pub fn run_inbound_metadata(
     decoder.stats.partial_in_progress_at_end = decoder.partial.in_progress();
     decoder.output.flush()?;
     Ok(json!({"mode":"inbound_controller_metadata", "stats":decoder.stats}))
+}
+
+#[cfg(test)]
+mod connected_player_schema_tests {
+    use super::*;
+    use icarus_bevy::experimental::{
+        actor_channel::NetGuidRef,
+        control_messages::ArchiveText,
+        rep_layout::{
+            PropertyStream, RepArray, RepEntry, RepValue, encode_rep_properties,
+            parse_rep_properties,
+        },
+    };
+
+    fn entry(handle: u32, value: RepValue) -> RepEntry {
+        RepEntry {
+            handle,
+            checksum: None,
+            value,
+        }
+    }
+
+    fn stream(entries: Vec<RepEntry>) -> PropertyStream {
+        PropertyStream {
+            entries,
+            terminator_checksum: None,
+        }
+    }
+
+    /// The record class and the stably named component resolve to their own
+    /// layouts, which parse authored record and array streams whole.
+    #[test]
+    fn connected_player_record_and_array_blocks_are_recognised() -> Result<()> {
+        let profile = ReleaseProfile::release_3_0_35();
+        let archetype = Some("Default__BP_IcarusGameState_C");
+        let mut layouts = Vec::new();
+        for (name, schema, handles) in [
+            ("ReplicatedConnectedPlayer", "UReplicatedConnectedPlayer", 7),
+            ("ConnectedPlayers", "UConnectedPlayers", 3),
+        ] {
+            let Some(TargetSchema::RepLayout(found)) = classify_subobject_schema(name, archetype)
+            else {
+                panic!("{name} is not a rep-layout schema");
+            };
+            assert_eq!(found, schema);
+            let commands = schema_commands(found, &profile)?;
+            assert_eq!(commands.len(), handles);
+            layouts.push(commands);
+        }
+        let codec = RepLayoutCodec {
+            actor: ActorChannelCodec {
+                engine_net_version: 17,
+                exports_enabled: false,
+                has_level: true,
+                order: ByteOrder::Little,
+                limits: ActorChannelLimits::default(),
+            },
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        let record = stream(vec![
+            entry(1, RepValue::Str(ArchiveText::text("AUTHOREDUSER00017")?)),
+            entry(2, RepValue::Int(0)),
+            entry(3, RepValue::Object(NetGuidRef::plain(10))),
+            entry(4, RepValue::Object(NetGuidRef::plain(12))),
+            entry(5, RepValue::Object(NetGuidRef::plain(14))),
+            entry(6, RepValue::Float(1.5f32.to_bits())),
+            entry(7, RepValue::Float(2.75f32.to_bits())),
+        ]);
+        let array = stream(vec![entry(
+            3,
+            RepValue::DynamicArray(RepArray {
+                count: 1,
+                stream: stream(vec![entry(1, RepValue::Object(NetGuidRef::plain(200)))]),
+            }),
+        )]);
+        for ((value, layout), bits) in [(record, &layouts[0]), (array, &layouts[1])]
+            .into_iter()
+            .zip([361, 65])
+        {
+            let payload = encode_rep_properties(&value, layout, &codec)?;
+            assert_eq!(payload.bit_len(), bits);
+            assert_eq!(parse_rep_properties(&payload, layout, &codec)?, value);
+        }
+        Ok(())
+    }
 }
