@@ -17,34 +17,29 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-c001-decoder.md
 
 ## Current answer
 
-The callback 0x1419fe870 and candidate constructor 0x141788530 are complete
-functions, not fragments (F-905; U-005 resolved). The retained listing query
-in M-568/M-569 rejected because the project was opened with `-noanalysis`,
-leaving the callback undisassembled (F-905; U-003, U-042 resolved). CRT init
-registers the native getter 0x1419fe200 (F-906, F-722; U-006 resolved).
+Callback 0x1419fe870 and candidate constructor 0x141788530 are complete
+functions (F-905; U-005 resolved); the M-568/M-569 listing query rejected
+because `-noanalysis` left the callback undisassembled (F-905; U-003, U-042
+resolved). CRT init registers native getter 0x1419fe200 (F-906, F-722; U-006
+resolved).
 
-A standalone decoder that works on fixed buffers without a Program or database
-(F-907) passes its authored fixtures, including one- and two-window variants
-(F-907). With zero lookahead it decodes every physical byte of the callback,
-the candidate, their common callee and that callee's two callees (F-474, F-908).
-Retained-frame replay qualifies its inputs: unwind records, register and space
-descriptors and public opcode constants (F-476, F-477, F-908). The old slot
-preparation mis-stated two addresses (F-910); same-build base and offsets give
-three candidate slots (F-910).
+A database-free standalone decoder passes its authored fixtures (F-907) and,
+with zero lookahead, decodes every byte of the callback, the candidate, their
+common callee and its two callees (F-474, F-908). Retained-frame replay
+qualifies its inputs (F-476, F-477, F-908). The old slot preparation
+mis-stated two addresses; same-build base and offsets give three candidate
+slots (F-910).
 
-Decompilation and client-PDB correspondence resolve the complete bridge and
-runtime restoration (F-908, F-906, F-909, F-722, F-902, F-728, F-733,
-F-735; U-004, U-020 to U-023, U-041 resolved). Callback 0x1419fe870
-dereferences `rbx = *(C001**)rcx` and inlines constructor 0x141788530: both
-call base constructor 0x1418824d0 (which preserves `rbx`), store vftables
-0x1449d9f90 (`+0x0`) and 0x1449da448 (`+0x28`), and initialize `+0xd8..+0x1b8`.
-Slot `+0x4a0` (0x1418a9bb0) calls base `RestoreState` 0x1418a9c80 (696 B,
-matching client 0x1418ae6c0 + log), which constructs `FMemoryReader` at version
-522 and dispatches `+0xa0` (`Serialize` 0x1418aaf70) then `+0x488`
-(`UpgradeVersion` 0x14189d380), before conditionally invoking `+0x4b0`
-(`ApplyRecorderTransform`); `+0x4a8` is 0x14189a760, and
-`UpdateOwnerToDatabaseState` (0x1418ba040) restores modifiers, `D01` inventory
-slots (`0x1418b8f20`) and `CPF_SaveGame` variables (`0x1418bcff0`, F-735).
+Decompilation and client-PDB correspondence resolve the bridge and runtime
+restoration (F-906, F-908, F-909, F-722, F-902, F-728, F-733, F-735; U-004,
+U-020 to U-023, U-041 resolved). Callback 0x1419fe870 dereferences
+`rbx = *(C001**)rcx` and inlines the candidate; both call the `rbx`-preserving
+base constructor, store F-908's vftables and initialize `+0xd8..+0x1b8`. Slot
+`+0x4a0` reaches base `RestoreState` (F-722), which reads through
+`FMemoryReader` at version 522, dispatches `Serialize` then `UpgradeVersion`
+and may invoke `ApplyRecorderTransform` (`+0x4b0`, F-909);
+`UpdateOwnerToDatabaseState` restores modifiers, `D01` slots and
+`CPF_SaveGame` variables (F-735).
 
 ## Open
 

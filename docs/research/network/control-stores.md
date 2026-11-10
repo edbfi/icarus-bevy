@@ -27,11 +27,10 @@ ReceivedBunch preserves Hello byte order, dispatches destruction locally and
 other messages through the notify slot, with 20 fallback layouts (F-284,
 F-514 to F-539, F-579, F-712 to F-714, F-740, F-857; U-014, U-044 resolved).
 
-S2's original 3.0.34 direct join and Steam auth success are captured (F-1006),
-after selecting `IpNetDriver` (F-1005). Its pre-connection auth frames and
-Login identity are F-1007; release metadata is F-1008. Native Steam auth and
-control Join pass (F-1009); the authored prospect is selectable (F-1010),
-but geometry readiness blocks world entry (U-079; U-038 remains open).
+S2, original 3.0.34: direct join and Steam auth F-1005, F-1006; auth frames
+and Login identity F-1007; release metadata F-1008. Native Steam auth and
+control Join pass (F-1009) and the authored prospect is selectable (F-1010);
+world entry stays blocked (U-079; U-038 open).
 
 ## Open
 

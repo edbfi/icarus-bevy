@@ -54,17 +54,14 @@ concurrency/partial-bunch sweeps: F-877. Missing reruns: M-898.
 Anonymous byte-matched server data.pak fetch: F-828, F-829, F-831;
 authored gameplay input: F-993.
 
-Toolchain/headless/typing/CI: F-879, F-484, F-497; client identity:
-F-878/F-731 (U-034 resolved). Original fixity/export/entry-map/exchange:
-F-265/F-266/F-268/F-253; unrun launcher: F-252; expired runtime windows: F-218.
+Toolchain/headless/CI: F-879, F-497; client identity: F-878/F-731 (U-034
+resolved). Original fixity/entry-map/exchange: F-265/F-268/F-253; unrun
+launcher: F-252; expired runtime windows: F-218.
 
-Authored bridge debug/release idle and joined-peer costs: F-952.
-M-1060 debug medians: 38.74–40.25 to 29.08–32.08 ms; p95 exceeds 33.333 ms.
-Matched whole-binary comparisons qualified cheaper 1,024-actor release idle
-and joined-peer runs; small cells overlap and some debug p95 exceed a frame.
-Frozen-frame decisions replay in M-1088. Binary layout, fixed mode order and
-host activity limit attribution; no isolated-change, reference/client or
-ICARUS performance qualification follows.
+Authored bridge debug/release idle and joined-peer costs, overlaps and limits:
+F-952 (debug medians and frame-exceeding p95: M-1060). Frozen-frame decisions
+replay in M-1088. Binary layout, fixed mode order and host activity limit
+attribution.
 
 Authored inventory last-key validation costs: F-1053.
 

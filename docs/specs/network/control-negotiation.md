@@ -6,7 +6,7 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688,
 F-689, F-712 to F-714, F-858). Scope: dedicated-server build 25621760 (M-168)
 unless a current-client (build 25793767) comparison is named.
-Last reconciled: 2026-10-31.
+Last reconciled: 2026-11-10.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -23,8 +23,8 @@ Steam-handler exchange. Excludes compression and complete runtime initialization
   as a hexadecimal FString and the Steam ID as u64; type 2 carries a
   four-byte Boolean. One outer terminator follows, with no connection
   sequence header or connection terminator. The captured Login uses type
-  index 3 and the same Steam identity. Native auth success, Welcome and
-  control Join are captured (F-1009); world entry remains blocked (U-079).
+  index 3 and the same Steam identity. Native results:
+  [control-store digest](../../research/network/control-stores.md) (F-1009).
 - Dispatch (F-284, F-757; M-170/E-011, M-170/E-013): a validity check precedes
   table dispatch, and a separate branch serves another operating mode.
 
