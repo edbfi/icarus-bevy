@@ -87,6 +87,15 @@ hashes in the case.
 `sessions.friends_list_queries_queued`: reliable field118 admissions, including
 requeries when another player begins. It is not client execution.
 `friends_lists_received` and `players_finalised` remain separate (F-1051).
+`friends_list_queries_acknowledged`: a positive packet ACK settled that query's
+own reliable bunch, once per query; delivery, not client execution.
+`friends_list_rejections.*`: refused field126 payloads by fixed reason
+(`truncated`, `array_count_over_limit`, `entry_limit_exceeded`,
+`string_length_over_limit`, `string_missing_terminator`,
+`string_invalid_encoding`, `trailing_bits`, `unclassified`); each also counts in
+`actor_bunches_malformed`, drops its bunch and sends no requery.
+`friends_lists_ignored_{unregistered,already_ready}`: parsed responses ignored,
+also counted in `initialisation_calls_ignored`.
 
 ## Readiness counts
 
@@ -108,3 +117,9 @@ controller request batch and `completions_{queued,settled,awaiting_ack}` for
 PlayerState character-ID publication. Queued means transport admission;
 settlement needs every reliable sequence in the batch ACKed. Later same-channel
 traffic does not delay it. Queued = settled + awaiting ACK, independent of responses/application/finalisation.
+
+`friends_query` (live peers, latest admitted query each): `pending_admission`
+held back from transport; `queued` = `settled` + `awaiting_ack`, where settled
+is the ACK above and a newer admission replaces an unsettled receipt;
+`awaiting_response`: settled, no newer query pending, no accepted field126
+since.

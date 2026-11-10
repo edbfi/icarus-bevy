@@ -103,7 +103,7 @@ Unreadable saved ID: startup failure; failed claim: skip open, count
 `PlayerState` replication failures close the session (original: kick).
 ACK/NAK retries opens/profiles/one pending control reply per peer; queueing
 commits admission. Begin waits for PlayerState; pawn retries retain one UID (F-1011).
-Initialization/restore F-973/F-975; limits F-964/F-979/F-982/F-981/F-989. Incomplete inputs withhold derived stats/saved vitals; independent fields restore. Unmatched players enter History (F-967); unanswered clients never complete
+Initialization/restore F-973/F-975; limits F-964/F-1056/F-1055. Incomplete inputs withhold derived stats/saved vitals; independent fields restore. Unmatched players enter History (F-967); unanswered clients never complete
 (F-959). Rejected staging discards characters/controllers/History; joiners
 enter empty History as new players.
 

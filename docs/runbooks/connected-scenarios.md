@@ -47,7 +47,7 @@ target/debug/examples/capture_decode INPUT work/CASE/metadata.jsonl --inbound-co
 ```
 
 Required flags; order `little`/`big`; channel 1–32766; component GUIDs
-distinct, >1. Inbound framing supports pinned 3.0.32 (F-954, F-955, F-1015)
+distinct, >1. Inbound framing supports pinned 3.0.32 (F-1065, F-1015)
 and 3.0.34 (F-1016). Match engine version; neither grants RPC semantics.
 Datagrams: `event:"datagram"`,
 `direction:"client_to_server"`/`"server_to_client"`, unsigned `ms`, nonempty even

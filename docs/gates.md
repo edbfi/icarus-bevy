@@ -6,18 +6,15 @@ here instead of restating them.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-09
+Last reconciled: 2026-11-10
 
 ## Before any C001 original-code case
 
-- Authored decoder fixtures, exact-window decodes (305/296, 106 and 196/217 B),
-  complete `.pdata` bounds (103538, 95461 and 103518), CRT registration
-  (`0x1406a8ab0` -> `0x142187f70` and `0x141a00220`), base constructor receiver
-  preservation (`0x1418824d0` keeps `rbx`), vftable targets (`0x1449d9f90` /
-  `0x1449da448`, `+0x4a0` `0x1418a9bb0` -> `0x1418a9c80` -> `+0xa0` `0x1418aaf70` ->
-  `+0x488` `0x14189d380`), and the `-noanalysis` cause of the M-568/M-569
-  rejection are qualified (F-474, F-476, F-477, F-905 to F-910, F-722; U-001 to
-  U-006, U-023, U-041, U-042 resolved).
+- Authored decoder fixtures, exact-window decodes, complete `.pdata` bounds,
+  CRT registration, base-constructor receiver preservation, vftable and slot
+  targets, and the `-noanalysis` cause of the M-568/M-569 rejection are
+  qualified (F-474, F-476, F-477, F-905 to F-910, F-722; U-001 to U-006, U-023,
+  U-041, U-042 resolved).
 - Do not retry these completed reads or unchanged helpers; preserve the failed
   nine-mode receipt, strict replay and split outputs (M-307). Any new C001
   original-code case requires its own fresh scope, bindings and session.
@@ -26,17 +23,13 @@ Last reconciled: 2026-11-09
 
 - Completed C028/C034 finite audits and C013 coverage determine the census; do
   not repeat their completed populated value structures or D01/DA04 checks.
-- Server 25621760 and client 25793767 static correspondences for `FString`/`FName`
-  normalization, `FFloatProperty`, `FVector`, `FArrayProperty`, immutable
-  `CPF_SaveGame`, tagged wrap-around, C013/C028 migration/restore, `C030`
-  `TextProperty`, `C015`/`C022`/`C032` Map/Set/Int64/Struct items, all 65
-  `RecorderComponent` `FClassParams`, all 38 `StateRecorderBlobs` (`C001..C038`)
-  record/restore/stitch/match/validate methods, `D01` inventory/variable
-  restore (`14` `EDynamicItemProperties`), and entry-path failure matrices are
-  qualified (F-715 to F-720, F-725 to F-728, F-731 to F-738, F-741 to F-744,
-  F-893, F-899, F-902, F-904;
-  U-020 to U-024, U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to
-  U-063 resolved); do not repeat those static reads.
+- Server 25621760 and client 25793767 static correspondences for string/name,
+  property, migration/restore, Map/Set/Int64/Struct items, all 65 recorder
+  `FClassParams`, all 38 `StateRecorderBlobs` methods, `D01` restore and
+  entry-path failure matrices are qualified (F-715 to F-720, F-725 to F-728,
+  F-731 to F-738, F-741 to F-744, F-893, F-899, F-902, F-904; U-020 to U-024,
+  U-026, U-028 to U-033, U-039, U-046, U-048, U-050, U-053 to U-063 resolved);
+  do not repeat those static reads.
 - Audit selected coverage before choosing another save boundary; do not repeat
   completed header/string comparisons.
 - Complete prior range/result replay and both-copy budgets precede any new unit
@@ -56,18 +49,13 @@ Last reconciled: 2026-11-09
 - Any expanded output needs new source/classes/scope/session and byte
   qualification; old lookahead is not silently promoted to decoded evidence.
   Later decoding must honor measured spans without automatic expansion.
-- Complete `UWorld::UWorld` (1,332 B, `.pdata` 255917..255921) and
-  `UPendingNetGame::UPendingNetGame` (71 B, 245246) constructors,
-  `UWorld::~UWorld` (`TARGET02`, 757 B, 255950), `UObject`/`FURL` receiver
-  preservation, `/GR-` abutting vftables (`0x145467ef0`/`0x145468180`),
-  `UNetDriver::InitBase` (`Driver + 0x208`), static `ReceivedBunch` ->
-  `NotifyControlMessage` (`CONTROL01` `0x1439ee7f0`, `.pdata` 256371) dispatch,
-  and S1 runtime exercise are qualified (F-520, F-544, F-701, F-723, F-724,
-  F-729; U-007 to U-010, U-013, U-015 to U-018, U-043 resolved); native
-  connected sessions need their own case (U-038).
+- Complete `UWorld`/`UPendingNetGame` constructors and `UWorld::~UWorld`,
+  receiver preservation, abutting `/GR-` vftables, `UNetDriver::InitBase`,
+  static `ReceivedBunch` -> `NotifyControlMessage` dispatch and S1 runtime
+  exercise are qualified (F-520, F-544, F-701, F-723, F-724, F-729; U-007 to
+  U-010, U-013, U-015 to U-018, U-043 resolved).
 - Client and server archive/outer framing, `UControlChannel` byte-order
-  persistence (`Connection + 0x158`), 20 fallback layouts (`0..18`, `21`, `22`),
-  32,767 queued-bunch bounds, `IsClientMsgTypeValid` state gating,
+  persistence, fallback layouts, queued-bunch bounds, login-state gating,
   `PreLogin`/`InitNewPlayer` checks and 0 registered version/PreLogin callbacks
   are bound in `experimental` (F-688, F-710 to F-714, F-729, F-740; U-014, U-037,
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
@@ -108,25 +96,22 @@ Last reconciled: 2026-11-09
   needs a bounded case scope and session; runtime and connected experiments
   retain their separate gates below.
 - The user decided (2026-10-22, F-828) that the shipped server must not
-  depend on the game client, which is not publicly available, or on data
-  derived only from it. Protocol identities may come from the free,
-  public dedicated-server distribution, fetched at install time without an
-  interactive confirmation (container installs); gameplay values must come
-  from independently authored input (F-993). The native Rust fetcher
-  `icarus-fetch` now does this anonymously without steamcmd (F-831, U-073).
-  The requirement must be documented for operators. Nothing original is committed or
-  redistributed. Client-derived metadata counts toward the shipped server only
-  once re-derived from or checked against that distribution; for 3.0.32
-  the earlier table-source qualification is F-832 (U-072 resolved). It does
-  not authorize reuse of their gameplay values.
+  depend on the game client or on data derived only from it. Protocol
+  identities may come from the free public dedicated-server distribution,
+  fetched unattended at install time (`icarus-fetch`, F-831, U-073); gameplay
+  values must come from independently authored input (F-993). Document the
+  requirement for operators. Nothing original is committed or redistributed.
+  Client-derived metadata counts toward the shipped server only once
+  re-derived from or checked against that distribution (3.0.32: F-832, U-072
+  resolved); this does not authorize reuse of gameplay values.
 
 ## Before any original-server or client run
 
 - Each runtime experiment requires its own case scope and current launcher
   session; historical authorization windows remain expired (F-218, F-252).
-- The user's standing instruction (2026-10-28, renewed through
-  2026-11-09; F-968, M-1273, M-1307, M-1331) authorizes offline and online research: network
-  and Steam access, fetching and running the matched official dedicated server,
+- The user's standing instruction (2026-10-28, renewed through 2026-11-10;
+  F-968, M-1273, M-1307, M-1331, M-1334) authorizes offline and online
+  research: network and Steam access, fetching and running the matched official dedicated server,
   original-runtime runs, and connected stock-client scenarios against the
   original or the native server, without per-scenario approval. This replaces
   the per-scenario approval and the connected-test deferral (F-421; U-038,

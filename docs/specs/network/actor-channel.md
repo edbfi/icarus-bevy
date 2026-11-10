@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-08.
+Last reconciled: 2026-11-10.
 
 ## Scope
 
@@ -15,28 +15,16 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
 
 ## Confirmed
 
-- State/predicate and possession restart chain: F-1036. Dedicated predicate
-  false does not prove stock-client execution.
-- Retry admits both profiles and initialises, with transport settled; friends
-  and finalisation remain absent at Preparing geometry (F-1050).
-- Official AddConnectedPlayer queries every registered controller via reliable
-  parameterless ClientQueryForFriendsList (118); success/failure callbacks
-  send ServerFriendsListUpdated (126). Native Begin queues that query,
-  coalesces pressure, repairs loss and waits for an actual response (F-1051).
-  ACKs alone do not establish friends readiness or UI/world progress.
-- Field66 acknowledges possession; configured Backend field86 requests account
-  flag synchronization through the client. Neither is a visibility ACK (F-1052).
-- Matched UserProfile request/identifier/backend callback guards: F-1039.
-  Public phases F-1045 and opt-in private headers F-1042 separate observation
-  boundaries, not client handler execution. Matched requested subobject
-  identity/outer and receiver object/outer/direction/RPC-flag gates: F-1041;
-  configured identity/framing agree.
-- Matched receive framing has no independent content-block cap (F-1046).
-  Constructed partials use a 64 KiB executable default, overridden to 128 KiB
-  by shipped configuration (F-1047). Native assembly/block envelopes follow
-  that setting; fragment-count and peer budgets remain defensive (F-1043).
-  CharacterProfile parameter/handler guards: F-1048; connected admission
-  follows F-1050. Recognition is not independent wire identity proof.
+- Matched connected boundaries: possession restart chain F-1036; UserProfile
+  guards F-1039; BackendProxy identity and receiver gates F-1041;
+  CharacterProfile parameters F-1048; friends query (118) and response (126)
+  F-1051, native Begin queueing it; fields 66/86 F-1052 (no visibility ACK).
+  Receive framing has no independent content-block cap (F-1046); constructed
+  partials default to 64 KiB, raised to 128 KiB by shipped configuration
+  (F-1047), which native envelopes follow (F-1043). Public phases F-1045 and
+  private headers F-1042 are observation boundaries. The retry initialises
+  without friends readiness, finalisation or world entry (F-1050). ACKs,
+  recognition and the false dedicated predicate prove no client execution.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
@@ -68,7 +56,7 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
 - GameState open values: active prospect 51..67 and C015 handles 34, 35, 39,
   41, 42, 46 (F-855; arrays carry every element field, `IsCurrentlyPlaying`
   only for connected members); `SessionFlags` 47 (F-830);
-  `LockedMissions` 50 (F-834, F-835); `bIsOpenWorldProspect` 48 and
+  `LockedMissions` 50 (F-1060); `bIsOpenWorldProspect` 48 and
   `bIsOutpostProspect` 49 (F-911); `RichPresenceGUID` 24 (F-912).
 - Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
   and `ConstructNetIndex` sort by `GetAllNodes` + `FName::LexicalLess`, set
@@ -132,11 +120,11 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   relevancy/priority qualification follows (U-038). Numeric thresholds and
   defaults remain in the source-bound constants/comments in
   [actor_channel.rs](../../../src/experimental/actor_channel.rs).
-- GameState updates (F-805, F-807): ~30 Hz unreliable actor blocks (component
+- GameState updates (F-1057, F-807): ~30 Hz unreliable actor blocks (component
   blocks may follow) carry changed `TimeOfDay` (38), 0.1 s
   `ReplicatedWorldTimeSeconds` (19), whole-second `LevelTimeElapsedSec` (46),
-  2 s `ServerFPS` (82) and changed `NetworkingStatus` (68..79; F-810, F-856,
-  F-808). Multi-bunch updates split as unreliable partials on consecutive
+  2 s `ServerFPS` (82) and changed `NetworkingStatus` (68..79; F-810, F-1057,
+  F-1058). Multi-bunch updates split as unreliable partials on consecutive
   packets (F-825; `LabPeer::actor_update_datagrams`).
 
 - Modifier time (F-991, F-994, F-996): authority rejects equal/unordered

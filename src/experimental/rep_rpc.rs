@@ -395,6 +395,120 @@ pub fn server_friends_list_updated_parameters() -> Vec<RpcParameter> {
     }])]
 }
 
+/// Why a `ServerFriendsListUpdated` payload failed [`parse_rpc_payload`]
+/// with [`server_friends_list_updated_parameters`]. Diagnostics only: the
+/// parser alone decides acceptance; no payload value is retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FriendsListRejection {
+    /// Input ended inside the presence bit, array count, a string count or
+    /// string units.
+    Truncated,
+    /// Array count above `min(max_array_elements, RPC_ARRAY_COUNT_MAX)`.
+    ArrayCountOverLimit,
+    /// Array plus element entries above the codec's `max_entries`.
+    EntryLimitExceeded,
+    /// A string count of `i32::MIN` or above the string unit limits.
+    StringLengthOverLimit,
+    /// A nonzero string count whose last unit is not NUL.
+    StringMissingTerminator,
+    /// Non-ASCII narrow units, an embedded NUL or U+FFFF.
+    StringInvalidEncoding,
+    /// Bits after the parameter.
+    TrailingBits,
+    /// No reason above reproduces the parser's failure.
+    Unclassified,
+}
+
+impl std::fmt::Display for FriendsListRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "friends list rejected: {self:?}")
+    }
+}
+
+/// Classify a payload [`parse_rpc_payload`] rejected, repeating its read
+/// order with [`server_friends_list_updated_parameters`]: presence bit, then
+/// per entry the budget before its value, array count and limit, each
+/// string's count, limits, units and strict frame checks, then trailing bits.
+pub fn friends_list_rejection(payload: &Payload, codec: &RepLayoutCodec) -> FriendsListRejection {
+    use super::archive::{ByteOrder, MAX_STRING_UNITS};
+    let order = codec.actor.order;
+    let mut reader = payload.reader();
+    let present = reader.read_bit();
+    if reader.is_error() {
+        return FriendsListRejection::Truncated;
+    }
+    if present {
+        let mut entries = codec.limits.max_entries;
+        if entries == 0 {
+            return FriendsListRejection::EntryLimitExceeded;
+        }
+        entries -= 1;
+        let Ok(count) = read_u16(&mut reader, order, "RPC array count") else {
+            return FriendsListRejection::Truncated;
+        };
+        if count > array_limit(codec) {
+            return FriendsListRejection::ArrayCountOverLimit;
+        }
+        if count > 0 && codec.limits.max_depth == 0 {
+            return FriendsListRejection::Unclassified;
+        }
+        for _ in 0..count {
+            if entries == 0 {
+                return FriendsListRejection::EntryLimitExceeded;
+            }
+            entries -= 1;
+            let Ok(units) = read_u32(&mut reader, order, "string item") else {
+                return FriendsListRejection::Truncated;
+            };
+            let units = units as i32;
+            let wide = units < 0;
+            let magnitude = units.unsigned_abs() as usize;
+            if units == i32::MIN || magnitude > codec.limits.max_string_units {
+                return FriendsListRejection::StringLengthOverLimit;
+            }
+            let bytes = reader.read_bytes(magnitude * if wide { 2 } else { 1 });
+            if reader.is_error() {
+                return FriendsListRejection::Truncated;
+            }
+            if magnitude > MAX_STRING_UNITS {
+                return FriendsListRejection::StringLengthOverLimit;
+            }
+            if magnitude == 0 {
+                continue;
+            }
+            if !wide && !bytes.is_ascii() {
+                return FriendsListRejection::StringInvalidEncoding;
+            }
+            let decoded: Vec<u16> = if wide {
+                bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|unit| match order {
+                        ByteOrder::Little => u16::from_le_bytes(*unit),
+                        ByteOrder::Big => u16::from_be_bytes(*unit),
+                    })
+                    .collect()
+            } else {
+                bytes.iter().map(|byte| u16::from(*byte)).collect()
+            };
+            let Some((terminator, content)) = decoded.split_last() else {
+                return FriendsListRejection::Unclassified;
+            };
+            if *terminator != 0 {
+                return FriendsListRejection::StringMissingTerminator;
+            }
+            if content.iter().any(|unit| *unit == 0 || *unit == 0xffff) {
+                return FriendsListRejection::StringInvalidEncoding;
+            }
+        }
+    }
+    if !reader.at_end() {
+        return FriendsListRejection::TrailingBits;
+    }
+    FriendsListRejection::Unclassified
+}
+
 /// Pinned plain `UBackendProxyComponent` class cache bound.
 pub const BACKEND_PROXY_FIELD_INDEX_BOUND: u32 = 149;
 pub const CLIENT_REQUEST_GET_USER_PROFILE: u32 = 25;

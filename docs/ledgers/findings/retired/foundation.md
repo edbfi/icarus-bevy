@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../foundation.md): superseded by a summary
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-11-09
+Last reconciled: 2026-11-10
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -138,3 +138,5 @@ Last reconciled: 2026-11-09
 | F-925 | Strict authored C001 fixtures preserve source provenance through placements, owner lifecycle and Bool/I32 use-gate actions; edits, retries and recovery retain current state | observed | authored-test; M-926..M-929, M-937..M-943 | high; schemas 5/8/9, authored coordinates/layouts/callbacks only; no official import or client proof | U-025, U-045 | superseded-by F-927 |
 | F-939 | Archetype/occupancy checks lower some debug idle medians at 1,024 actors; lookup-only medians overlap | measured | authored-test; M-1057, M-1060, M-1063, M-1064, M-1069, M-1070 | high; 3 matched pairs/32 samples per mode; occupancy ranges overlap and p95 varies; no release/reference/client claim | U-035, U-049 | superseded-by F-952 |
 | F-941 | Release idle cost of the authored bridge at 1,024 actors falls 874–970 to 470–484 us over a matched no-bridge app; 1/64 ranges overlap | measured | runtime-capture; M-1075; 6bbe9cc/0ba813a | high; 3 matched pairs/400 frames, cores 4-7, 0 peers; whole-App medians; combined candidate, no per-change attribution; no reference/client/ICARUS/RSS claim | U-035, U-049 | superseded-by F-952 |
+| F-404 | User execution instruction resumes offline research; fetched feature HEAD matches origin; no connected lab or original runtime scope | observed | authorization; M-174 | high; continuation; per-case gates remain | U-038 | retired: historical |
+| F-264 | Client intake supports matched-build static comparison; connected testing with the stock Windows client is deferred. | observed | review; M-113; build 25793767 | high; client intake; Matched-client behavior untested; packaged assets not required | U-038 | retired: historical intake; deferral superseded-by F-968 |

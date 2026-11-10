@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-10-23.
+Experimental; scope dedicated-server build 25621760 (supplied saves are user-reported from 25793767). Last reconciled: 2026-11-10.
 Full text: d5b0ae6:docs/specs/save-format/prospect-loading.md
 
 ## Scope
@@ -109,28 +109,24 @@ Acceptance conditions for any importer
   flag and complete transform, with optional supported find policy and false
   skip-owner flag; any other field rejects. Independently authored inert
   geometry has no variables, and native-frame coordinates transfer without
-  conversion or normalization. Schema 5 keeps the preserved source and immutable
-  identity, timestamp, root-presence and binding metadata beside mutable poses,
-  cross-checked on reload.
-  Original coordinates, official loadability and
+  conversion. Schema 5 keeps the preserved source and immutable identity,
+  timestamp, root-presence and binding metadata beside mutable poses,
+  cross-checked on reload. Original coordinates, official loadability and
   faithful save import stay unqualified.
-- `DecodedImportCandidate` retains migrated root values, exact UTF-16 recorder
-  identities, decisions, optional typing outcomes and unchanged preserved bytes
-  from one envelope decode (F-920). Unknown root enums stay explicit; allocation
-  allowances bound retained typing plus each sequential scratch reservation, and
-  count-only inspection separates retained charges from required decode limits.
-  Borrowed assessment and actor projection supply no restoration adapters and
-  authorize no publication.
+- `DecodedImportCandidate` retains migrated roots, exact recorder identities,
+  decisions, optional typing and unchanged preserved bytes from one decode
+  under explicit allowances (F-920; limits:
+  [native server](../../runbooks/native-server.md#supplied-saves)). Unknown root
+  enums stay explicit; it supplies no restoration adapters and authorizes no
+  publication.
 - `stage_prospect_save_state` (`experimental::recorders`), `stage_prospect`
   (`prospect`) and `icarus-server inspect-save --stage-check` validate the
-  `FProspectSaveState` root schema, out-of-order tags, `PostLoadSerialize`
-  migration, the 17 `FProspectInfo` tags, optional `ProspectID` matching, base
-  framing, 65-class ctor defaults plus tag overlays (`bSkipDefaultOwnerResolution`,
-  `OwnerResolvePolicy`, `ParentCharacterUID` -> `RequiresStitching`) and
-  per-recorder `Validate` (`+0x408`, incl. `N018` `false` and `N022`
-  rocket-spawn), and count `C033` `bIsPhysicsDynamic` across
-  all 15 saves (`dddd.json`: F-680, F-747; `world_imported: false`; F-736, F-738,
-  F-746).
+  `FProspectSaveState` root schema, tag order, `PostLoadSerialize` migration,
+  the 17 `FProspectInfo` tags, optional `ProspectID` matching, base framing,
+  65-class constructor defaults with tag overlays and per-recorder `Validate`
+  ([restore rules](restore-rules.md)), and count `C033` `bIsPhysicsDynamic`
+  across all 15 saves (F-680, F-736, F-738, F-746, F-747;
+  `world_imported: false`).
 - Cross-build classes/defaults/overrides: [restore rules](restore-rules.md)
   (F-902); constructor provenance: [C001 digest](../../research/save-format/c001-constructor.md)
   (F-905..F-910).
