@@ -63,10 +63,11 @@ Last reconciled: 2026-11-10
   tags, selected class profiles and row registry are qualified (F-1031 to
   F-1033); connected behavior and visibility bindings still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048 and friends-query
-  path F-1051 and record reads F-1072 to F-1076 are qualified; do not repeat
-  them or run F-1067 unchanged. Record F-1077 ships behind its switch,
-  unqualified with a stock client; the next connected run measures the
-  U-038/U-079 items. None clears visibility preconditions.
+  path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
+  F-1080 are qualified; do not repeat them or run F-1067 unchanged. Record
+  F-1077 ships behind its switch, unqualified with a stock client; the next
+  connected run measures the U-038/U-079 items, first whether a field-82 burst
+  follows the record's ACK (F-1080, F-1081). None clears visibility preconditions.
 
 ## Before enabling visibility dispatch or effects
 
@@ -81,6 +82,10 @@ Last reconciled: 2026-11-10
   (U-079). M-1207 counts the whole field including any outer bit, not custom
   length; no payload retained. Offline case authorization/limits:
   M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1240, M-1241, M-1243.
+- Sending level-status call 62 is server-originated and outside this gate
+  (F-1078) but first needs the map's level list and order, per-level flags and
+  LOD, and name remapping bound; opening a level's actors after a field-82
+  report is a visibility effect and stays blocked.
 
 ## Before deriving replication schema for the server
 

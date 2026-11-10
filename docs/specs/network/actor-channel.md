@@ -22,8 +22,7 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   Receive framing has no independent content-block cap (F-1046); constructed
   partials default to 64 KiB, raised to 128 KiB by shipped configuration
   (F-1047), which native envelopes follow (F-1043). Public phases F-1045 and
-  private headers F-1042 are observation boundaries. ACKs, recognition and
-  the false dedicated predicate prove no client execution.
+  private headers F-1042 are observation boundaries.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
@@ -163,8 +162,7 @@ scheduling or stock-client qualification.
 ## Open questions
 
 - U-079: live visibility bindings/effects and client profile execution remain
-  unqualified; F-1034/F-1042 supply neither. Friends-query qualification
-  F-1051 does not clear them.
+  unqualified (F-1034, F-1042, F-1051).
 
 - Authenticated runtime relevancy and priority exercise (U-038).
 
