@@ -22,8 +22,8 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   Receive framing has no independent content-block cap (F-1046); constructed
   partials default to 64 KiB, raised to 128 KiB by shipped configuration
   (F-1047), which native envelopes follow (F-1043). Public phases F-1045 and
-  private headers F-1042 are observation boundaries. The retry initialises
-  without friends readiness, finalisation or world entry (F-1050). ACKs,
+  private headers F-1042 are observation boundaries. The retry finalises
+  without world entry (F-1067). ACKs,
   recognition and the false dedicated predicate prove no client execution.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.

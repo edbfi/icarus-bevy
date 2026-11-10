@@ -13,11 +13,13 @@ Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034.
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay. Bindings/cause: U-079.
 
-State/restart F-1036; profiles and initialisation now settle (F-1050).
-The wait is friends/finalisation: missing server query118, its callback126
-and native request transport are F-1051. Fields66/86 are F-1052.
-A scoped client retry must measure finalisation and UI progress separately;
-visibility bindings/effects remain U-079.
+State/restart F-1036; query118/callback126 F-1051; fields66/86 F-1052.
+The retry finalises yet stays at Preparing geometry with no later client
+calls (F-1067), so friends/finalisation is not the wait. After 126 the
+original sends a connected-player record, then level actors (F-1070), but
+not its static RPC113 (F-1068); native sends no record or level actors
+(F-1071). Curtain inputs
+F-1069; visibility bindings/effects remain U-079.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
@@ -39,4 +41,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1337.
