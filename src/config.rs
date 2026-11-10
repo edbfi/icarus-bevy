@@ -102,6 +102,17 @@ pub struct NetworkConfig {
     /// Needs a release profile with the controller and pawn opens and is
     /// otherwise left off. `false` makes a comparison run.
     pub controller_possession_properties: bool,
+    /// RESERVED, must stay `false`: level visibility actors (dispatching a
+    /// client's field-82 level visibility reports, F-1052, and opening each
+    /// newly visible level's actors) are a visibility effect that
+    /// `docs/gates.md` ("Before enabling visibility dispatch or effects")
+    /// still blocks, so the server binary can never turn them on: `true`
+    /// fails validation with [`LEVEL_VISIBILITY_ACTORS_GATED`]. The key is
+    /// kept so that it is recognised and refused rather than silently
+    /// ignored. Only the bounded join probe enables the feature
+    /// (`--level-visibility-actors true`), through the lab API, to qualify
+    /// the gate's remaining clauses in a connected run.
+    pub level_visibility_actors: bool,
 }
 
 impl Default for NetworkConfig {
@@ -120,12 +131,17 @@ impl Default for NetworkConfig {
             authored_replication: None,
             connected_player_records: true,
             controller_possession_properties: true,
+            level_visibility_actors: false,
         }
     }
 }
 
+/// Why `[network] level_visibility_actors = true` is refused.
+pub const LEVEL_VISIBILITY_ACTORS_GATED: &str = "network.level_visibility_actors is reserved and must be false: opening a level's actors after a level visibility report is gated (docs/gates.md, \"Before enabling visibility dispatch or effects\"); the server cannot enable it, only the bounded join probe can (--level-visibility-actors true)";
+
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        ensure!(!self.level_visibility_actors, LEVEL_VISIBILITY_ACTORS_GATED);
         if let Some(world) = &self.authored_world {
             world.validate()?;
             ensure!(

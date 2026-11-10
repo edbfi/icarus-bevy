@@ -105,12 +105,37 @@ enum KeyedPart {
     Subobject(u32),
 }
 
+/// Test-only count of static-key probes; a clone copies the count.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct ProbeCount(std::sync::atomic::AtomicU64);
+
+#[cfg(test)]
+impl Clone for ProbeCount {
+    fn clone(&self) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(
+            self.0.load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+}
+
 /// Driver-wide NetGUID assignment, shared by every connection.
 #[derive(Clone, Debug, Default)]
 pub struct NetGuidCache {
     static_index: u32,
     dynamic_index: u32,
     statics: BTreeMap<Vec<String>, u32>,
+    /// Case-folded index of `statics`: each ASCII-lowercased key and how many
+    /// exact keys fold to it, kept in step with every insert and removal, so
+    /// a case-insensitive lookup is one map probe.
+    folded_statics: BTreeMap<Vec<String>, usize>,
+    /// Static-key probes made by case-insensitive lookups, for tests.
+    #[cfg(test)]
+    folded_probes: ProbeCount,
+    /// Static keys an owner-tagged export created
+    /// ([`export_static_owned`](Self::export_static_owned)) and that no other
+    /// assignment has touched since: only these may be forgotten.
+    owned_statics: BTreeSet<Vec<String>>,
     /// Dynamic GUIDs of keyed world objects: an actor, one of its stably
     /// named components, or one of its runtime subobjects.
     keyed: BTreeMap<(ActorKey, KeyedPart), u32>,
@@ -330,16 +355,52 @@ impl NetGuidCache {
     }
 
     /// The static GUID of the leaf of `chain` (leaf first), assigning
-    /// unassigned segments leaf-first (odd, from 3).
+    /// unassigned segments leaf-first (odd, from 3). For configuration and
+    /// tests: it never wraps, and returns the null GUID `0` (assigning
+    /// nothing) once the static space is exhausted; composition paths use
+    /// [`export_static`](Self::export_static), which refuses instead.
     pub fn assign_static(&mut self, chain: &[PathSegment]) -> u32 {
+        self.try_assign_static(chain, false).unwrap_or(0)
+    }
+
+    /// [`assign_static`](Self::assign_static) with exhaustion refused, as
+    /// [`assign_dynamic`](Self::assign_dynamic) refuses: at most
+    /// `u32::MAX >> 1` static GUIDs, checked for every new suffix before any
+    /// is assigned, so a refusal leaves the cache unchanged. With `owned`,
+    /// keys it creates are tagged as the caller's own and existing tags are
+    /// kept; without, every key it touches loses its tag (another user now
+    /// references it).
+    fn try_assign_static(&mut self, chain: &[PathSegment], owned: bool) -> Result<u32> {
+        let keys: Vec<Vec<String>> = (0..chain.len())
+            .map(|depth| Self::static_key(&chain[depth..]))
+            .collect();
+        let new = keys
+            .iter()
+            .filter(|key| !self.statics.contains_key(*key))
+            .count();
+        ensure!(
+            u32::try_from(new)
+                .ok()
+                .and_then(|new| self.static_index.checked_add(new))
+                .is_some_and(|index| index <= u32::MAX >> 1),
+            "static NetGUID space exhausted"
+        );
         let mut leaf = 0;
-        for depth in 0..chain.len() {
-            let key: Vec<String> = chain[depth..].iter().map(|s| s.path.clone()).collect();
+        for (depth, key) in keys.into_iter().enumerate() {
             let guid = match self.statics.get(&key) {
-                Some(guid) => *guid,
+                Some(guid) => {
+                    if !owned {
+                        self.owned_statics.remove(&key);
+                    }
+                    *guid
+                }
                 None => {
                     self.static_index += 1;
                     let guid = (self.static_index << 1) | 1;
+                    if owned {
+                        self.owned_statics.insert(key.clone());
+                    }
+                    *self.folded_statics.entry(Self::fold(&key)).or_default() += 1;
                     self.statics.insert(key, guid);
                     guid
                 }
@@ -348,25 +409,115 @@ impl NetGuidCache {
                 leaf = guid;
             }
         }
-        leaf
+        Ok(leaf)
+    }
+
+    /// Whether any static key equals `chain` ignoring ASCII case, as the
+    /// engine compares names: one probe of the case-folded index.
+    pub(crate) fn has_static_ignoring_case(&self, chain: &[PathSegment]) -> bool {
+        #[cfg(test)]
+        self.folded_probes
+            .0
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.folded_statics
+            .contains_key(&Self::fold(&Self::static_key(chain)))
+    }
+
+    fn fold(key: &[String]) -> Vec<String> {
+        key.iter().map(|path| path.to_ascii_lowercase()).collect()
+    }
+
+    /// Static-key probes case-insensitive lookups have made.
+    #[cfg(test)]
+    pub(crate) fn folded_probes(&self) -> u64 {
+        self.folded_probes
+            .0
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the case-folded index matches `statics` exactly.
+    #[cfg(test)]
+    pub(crate) fn folded_index_consistent(&self) -> bool {
+        let mut expected: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+        for key in self.statics.keys() {
+            *expected.entry(Self::fold(key)).or_default() += 1;
+        }
+        expected == self.folded_statics
+    }
+
+    /// Forget the static GUID of exactly `chain`'s leaf under these outers
+    /// (not the outers'), only if an owner-tagged export created it and
+    /// nothing else has touched it since. The number stays consumed: a
+    /// later request assigns a fresh one. The owner calls this only once no
+    /// live connection of its own references it.
+    pub(crate) fn forget_owned_static(&mut self, chain: &[PathSegment]) -> bool {
+        let key = Self::static_key(chain);
+        if !self.owned_statics.remove(&key) || self.statics.remove(&key).is_none() {
+            return false;
+        }
+        let folded = Self::fold(&key);
+        if let Some(count) = self.folded_statics.get_mut(&folded) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.folded_statics.remove(&folded);
+            }
+        }
+        true
+    }
+
+    /// The static GUID of exactly `chain`, if assigned.
+    #[cfg(test)]
+    pub(crate) fn static_guid(&self, chain: &[PathSegment]) -> Option<u32> {
+        self.statics.get(&Self::static_key(chain)).copied()
+    }
+
+    /// Advance the static counter, to reach the exhaustion boundary in tests.
+    #[cfg(test)]
+    pub(crate) fn set_static_index(&mut self, index: u32) {
+        self.static_index = index;
+    }
+
+    fn static_key(chain: &[PathSegment]) -> Vec<String> {
+        chain.iter().map(|segment| segment.path.clone()).collect()
     }
 
     /// The reference for a static chain: a full export (outers by the same
     /// rule) while `exports` says the full path should be sent, a plain
-    /// reference otherwise (F-796).
+    /// reference otherwise (F-796). Refuses, unchanged, once the static
+    /// GUID space is exhausted.
     pub fn export_static(
         &mut self,
         exports: &mut ConnectionExports,
         chain: &[PathSegment],
     ) -> Result<NetGuidRef> {
-        let guid = self.assign_static(chain);
+        self.export_static_tagged(exports, chain, false)
+    }
+
+    /// [`export_static`](Self::export_static) for an owner that may later
+    /// forget what it created ([`forget_owned_static`](Self::forget_owned_static)):
+    /// new keys are tagged as its own; existing keys keep their tag state.
+    pub(crate) fn export_static_owned(
+        &mut self,
+        exports: &mut ConnectionExports,
+        chain: &[PathSegment],
+    ) -> Result<NetGuidRef> {
+        self.export_static_tagged(exports, chain, true)
+    }
+
+    fn export_static_tagged(
+        &mut self,
+        exports: &mut ConnectionExports,
+        chain: &[PathSegment],
+        owned: bool,
+    ) -> Result<NetGuidRef> {
+        let guid = self.try_assign_static(chain, owned)?;
         if !exports.should_send_full_path(guid) {
             return Ok(NetGuidRef::plain(guid));
         }
         exports.bunch.insert(guid);
         let segment = chain.first().context("empty static chain")?;
         let outer = if chain.len() > 1 {
-            let outer = self.export_static(exports, &chain[1..])?;
+            let outer = self.export_static_tagged(exports, &chain[1..], owned)?;
             if outer.export.is_some() {
                 outer
             } else {

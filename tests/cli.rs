@@ -538,3 +538,58 @@ fn fifo_current_generation_recovers_regular_previous_generation() {
     assert!(loaded.snapshot.tick >= previous.tick);
     assert_eq!(loaded.snapshot.entities, previous.entities);
 }
+
+/// The server binary can never enable gated level visibility actors:
+/// `[network] level_visibility_actors = true` fails `check-config` and `run`
+/// with the gated message before any state exists; `false` passes and
+/// `check-config` reports it as false.
+#[test]
+fn the_gated_level_visibility_switch_is_refused_by_the_binary() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    let config = directory.path().join("server.toml");
+    fs::write(&config, "[network]\nlevel_visibility_actors = true\n").unwrap();
+    for mode in ["check-config", "run"] {
+        let output = cli()
+            .arg(mode)
+            .arg("--config")
+            .arg(&config)
+            .arg("--data-dir")
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{mode}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let fatal = stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["event"] == "fatal")
+            .unwrap_or_else(|| panic!("{mode}: {stderr}"));
+        assert!(
+            fatal["error"]
+                .as_str()
+                .unwrap()
+                .contains(icarus_bevy::config::LEVEL_VISIBILITY_ACTORS_GATED),
+            "{mode}: {stderr}"
+        );
+        assert!(!state.exists());
+    }
+    fs::write(&config, "[network]\nlevel_visibility_actors = false\n").unwrap();
+    let output = cli()
+        .arg("check-config")
+        .arg("--config")
+        .arg(&config)
+        .arg("--data-dir")
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let effective: icarus_bevy::config::ServerConfig =
+        toml::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert!(!effective.network.level_visibility_actors);
+    assert!(!state.exists());
+}

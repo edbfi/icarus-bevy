@@ -1,9 +1,11 @@
 //! Session churn retention: an authored loopback client drives the full
 //! session path the native server supports (handshake, Login, Join, initial
 //! opens, Begin, profile, loadout and bestiary answers, the friends query and
-//! its answer, finalisation, the connected-player record and its ACK) through
-//! many sequential or concurrent sessions, ended cleanly, by idle expiry, by a
-//! reconnect from the same address or early. After each checkpoint every
+//! its answer, finalisation, the connected-player record and its ACK, and,
+//! with level visibility actors on, level visibility reports and the level
+//! actor opens they bring) through many sequential or concurrent sessions,
+//! ended cleanly, by idle expiry, by a reconnect from the same address or
+//! early. After each checkpoint every
 //! driver-wide structure that can outlive a session is compared with its size
 //! after warm-up. The client shares this repository's model, so passing shows
 //! the native lifecycle releases what a session held, not client
@@ -19,15 +21,21 @@ use std::{
 
 use bevy::app::App;
 
-use super::{PeerEntry, PeerLab, PeerLabStats};
+use super::{LevelActorSlot, PeerEntry, PeerLab, PeerLabStats};
 use crate::{
     config::{NetworkConfig, ServerConfig},
     experimental::{
+        archive::ByteOrder,
         control_messages::{ArchiveText, ControlCodec, ControlMessage},
-        packet::{PacketConfig, Receiver},
+        packet::{BitWriter, PacketConfig, Payload, Receiver},
         probe_client::{ProbeClient, ProbeConfig},
         probe_initialise::{InitialiseConfig, PlayerInitialiser, player_unique_net_id},
         release::ReleaseProfile,
+        rep_rpc::{
+            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, FieldHeader,
+            SERVER_UPDATE_LEVEL_VISIBILITY_FIELD_INDEX,
+        },
+        session_open::actor_codec,
     },
     network,
     simulation::{WorldSnapshot, build_app},
@@ -54,6 +62,20 @@ fn network_config() -> NetworkConfig {
     }
 }
 
+/// [`network_config`] with level visibility actors on.
+/// Turn level visibility actors on through the lab API, as the bounded
+/// join probe does: production configuration refuses the switch.
+fn enable_levels(lab: &mut PeerLab) {
+    let profile = ReleaseProfile::load(&release_toml()).expect("release");
+    lab.enable_level_visibility_actors(&profile)
+        .expect("level visibility actors");
+}
+
+/// Authored placeholder level every [`Ending::ReportedLevels`] session
+/// reports; each also reports one named after its own local port, so
+/// departed sessions' levels are distinct identities that must be released.
+const SHARED_LEVEL: &str = "/Game/Authored/Churn/Tile_shared";
+
 /// Sizes of the `PeerLab` and GUID-cache structures that can outlive a
 /// session. Per-session structures must return exactly to their warm-up
 /// size; configuration-sized ones (statics, manager and quest opens) stay
@@ -76,6 +98,8 @@ struct Retained {
     networking_players: usize,
     /// Fixed-size unreliable-bunch field table (bounded, never per session).
     unreliable_fields: usize,
+    /// Level packages whose actors live connections hold.
+    level_actor_holders: usize,
 }
 
 /// Monotonic counters: no stored state per session, bounded by their range.
@@ -104,6 +128,10 @@ struct PeerRetained {
     sent_records: usize,
     /// Controller possession updates pending admission or awaiting ACK.
     possession_unsettled: usize,
+    /// Visible levels, levels with actors and queued level actor opens.
+    visible_levels: usize,
+    level_actors: usize,
+    level_actor_queue: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +160,9 @@ fn peer_retained(entry: &PeerEntry) -> PeerRetained {
                 || (entry.controller_possession_receipt.channel.is_some()
                     && !entry.controller_possession_receipt.settled),
         ),
+        visible_levels: entry.visible_levels.len(),
+        level_actors: entry.level_actors.len(),
+        level_actor_queue: entry.level_actor_queue.len(),
     }
 }
 
@@ -153,6 +184,9 @@ fn snapshot(lab: &PeerLab) -> Snapshot {
         live.restored_modifiers += one.restored_modifiers;
         live.sent_records += one.sent_records;
         live.possession_unsettled += one.possession_unsettled;
+        live.visible_levels += one.visible_levels;
+        live.level_actors += one.level_actors;
+        live.level_actor_queue += one.level_actor_queue;
     }
     Snapshot {
         retained: Retained {
@@ -175,6 +209,7 @@ fn snapshot(lab: &PeerLab) -> Snapshot {
                 .and_then(|session| session.networking.as_ref())
                 .map_or(0, |status| status.player_names.len()),
             unreliable_fields: lab.unreliable_actor_bunches.controller_fields.len(),
+            level_actor_holders: lab.level_actor_holders.len(),
         },
         counters: Counters {
             dynamic_guids: lab.guid_cache.dynamic_guids_assigned(),
@@ -226,6 +261,8 @@ struct Progress {
     completed: bool,
     finalised: bool,
     record_settled: bool,
+    /// Level actor opens a positive ACK settled on this connection.
+    level_opens_settled: usize,
 }
 
 enum Request {
@@ -287,6 +324,14 @@ fn serve<H: Host, T: Send + 'static>(
                         completed: entry.profiles.completed,
                         finalised: entry.profiles.finalised,
                         record_settled: entry.connected_player_creations_settled > 0,
+                        level_opens_settled: entry
+                            .level_actors
+                            .values()
+                            .flatten()
+                            .filter(|slot| {
+                                matches!(slot, LevelActorSlot::Opened { settled: true, .. })
+                            })
+                            .count(),
                     });
                     let _ = reply.send(progress);
                 }
@@ -393,6 +438,26 @@ enum Ending {
     /// Profiles, loadout and bestiary complete; the friends query is never
     /// answered, so the player cannot finalise; then close.
     AfterProfiles,
+    /// Full path, then two level visibility reports (a shared level and one
+    /// of its own) and the ACK of all four level actor opens, then a close.
+    ReportedLevels,
+}
+
+/// A visible field-82 report of `package` (narrow name, number 0).
+fn level_report(package: &str) -> FieldHeader {
+    let mut writer = BitWriter::new();
+    for bit in [true, true, true, false] {
+        writer.write_bit(bit);
+    }
+    let units = i32::try_from(package.len() + 1).expect("short name");
+    writer.write_bytes(&units.to_le_bytes());
+    writer.write_bytes(package.as_bytes());
+    writer.write_bytes(&[0]);
+    writer.write_bytes(&0u32.to_le_bytes());
+    FieldHeader {
+        index: SERVER_UPDATE_LEVEL_VISIBILITY_FIELD_INDEX,
+        payload: Payload::from_writer(writer),
+    }
 }
 
 struct Session {
@@ -537,6 +602,31 @@ fn session(
         Ending::Clean | Ending::Idle | Ending::Reconnect => {
             session.pump_with(link, others, |_, progress| {
                 progress.is_some_and(|p| p.finalised && p.record_settled)
+            });
+        }
+        Ending::ReportedLevels => {
+            session.pump_with(link, others, |_, progress| {
+                progress.is_some_and(|p| p.finalised && p.record_settled)
+            });
+            let channel = session
+                .initialiser
+                .summary()
+                .controller_channel
+                .expect("controller channel");
+            let own = format!("/Game/Authored/Churn/Tile_{}", session.address.port());
+            for package in [SHARED_LEVEL, own.as_str()] {
+                session
+                    .client
+                    .send_actor_rpc(
+                        channel,
+                        &level_report(package),
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &actor_codec(engine, ByteOrder::Little),
+                    )
+                    .expect("level report");
+            }
+            session.pump_with(link, others, |_, progress| {
+                progress.is_some_and(|p| p.level_opens_settled == 4)
             });
         }
     }
@@ -773,21 +863,36 @@ fn lab() -> PeerLab {
 }
 
 fn production_app() -> App {
+    production_app_with(false)
+}
+
+/// The production app; with `levels`, level visibility actors enabled on
+/// the bound lab before installation (the probe's path).
+fn production_app_with(levels: bool) -> App {
     let config = ServerConfig {
         network: network_config(),
         ..ServerConfig::default()
     };
     let mut app = build_app(&config, &WorldSnapshot::default()).expect("app");
-    let bound = network::bind(&config.network)
+    let mut bound = network::bind(&config.network)
         .expect("bind")
         .expect("enabled");
+    if levels {
+        enable_levels(&mut bound.lab);
+    }
     network::install(&mut app, bound.lab).expect("install");
     app
 }
 
 fn lab_ending(ending: Ending) -> Run {
     let cycles = cycles();
-    let mut lab = lab();
+    let mut lab = if ending == Ending::ReportedLevels {
+        let mut lab = lab();
+        enable_levels(&mut lab);
+        lab
+    } else {
+        lab()
+    };
     let run = sequential(&mut lab, ending, cycles);
     run.assert_retained();
     let stats = &run.last().stats;
@@ -799,6 +904,16 @@ fn lab_ending(ending: Ending) -> Run {
             assert_eq!(stats.players_finalised, cycles);
             assert_eq!(stats.connected_player_record_creations_acked, cycles);
             assert_eq!(stats.controller_possession_updates_acked, cycles);
+            assert_eq!(stats.level_actor_opens_sent, 0);
+        }
+        Ending::ReportedLevels => {
+            assert_eq!(stats.players_finalised, cycles);
+            assert_eq!(stats.level_visibility_reports_added, 2 * cycles);
+            assert_eq!(stats.level_actor_opens_sent, 4 * cycles);
+            assert_eq!(stats.level_actor_opens_acked, 4 * cycles);
+            assert_eq!(stats.level_actor_opens_deferred, 0);
+            assert_eq!(stats.level_actor_open_errors, 0);
+            assert_eq!(stats.level_visibility_reports_malformed, 0);
         }
         Ending::AfterJoin => assert_eq!(stats.players_finalised, 0),
         Ending::AfterBegin | Ending::AfterProfiles => {
@@ -840,6 +955,11 @@ fn leave_after_begin_churn_retains_no_session_state() {
 #[test]
 fn leave_after_profiles_churn_retains_no_session_state() {
     lab_ending(Ending::AfterProfiles);
+}
+
+#[test]
+fn reported_levels_churn_retains_no_session_state() {
+    lab_ending(Ending::ReportedLevels);
 }
 
 #[test]
@@ -902,4 +1022,14 @@ fn production_app_full_path_churn_retains_no_session_state() {
         let counts = network::session_counts(app.world()).expect("installed");
         assert_eq!(counts.active_peers, 0);
     }
+    // With level visibility actors on, sessions that report levels.
+    let mut app = production_app_with(true);
+    let run = sequential(&mut app, Ending::ReportedLevels, cycles);
+    run.assert_retained();
+    let stats = &run.last().stats;
+    assert_eq!(stats.level_actor_opens_sent, 4 * cycles);
+    assert_eq!(stats.level_actor_opens_acked, 4 * cycles);
+    let counts = network::session_counts(app.world()).expect("installed");
+    assert_eq!(counts.active_peers, 0);
+    assert_eq!(counts.level_actor_opens_acked, 4 * cycles);
 }

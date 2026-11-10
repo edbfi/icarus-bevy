@@ -1264,3 +1264,91 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
     .unwrap();
     assert!(parsed.connected_players_plan().unwrap().is_none());
 }
+
+/// Level visibility actor identities were derived for 3.0.34 and 3.0.35
+/// only: built-ins and pin-only TOML for older builds carry none, an explicit
+/// `[level_actors]` overrides them, and invalid sections fail to parse.
+#[test]
+fn level_actors_are_built_in_only_where_derived_and_overridable() {
+    use icarus_bevy::experimental::release::{ReleaseLevelActorsProfile, network_checksum};
+    let builtins = [
+        (ReleaseProfile::release_3_0_31(), false),
+        (ReleaseProfile::release_3_0_32(), false),
+        (ReleaseProfile::release_3_0_34(), true),
+        (ReleaseProfile::release_3_0_35(), true),
+    ];
+    let pin_toml = |pin: &icarus_bevy::experimental::release::ReleasePin, build: u64| {
+        format!(
+            "[release]\napp_id = {}\nbuild_id = {build}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
+            pin.app_id,
+            pin.project_version,
+            network_checksum(&pin.project_version)
+        )
+    };
+    for (profile, derived) in builtins {
+        let pin = &profile.pin;
+        assert_eq!(profile.level_actors.is_some(), derived, "{}", pin.build_id);
+        if let Some(actors) = &profile.level_actors {
+            assert_eq!(actors, &ReleaseLevelActorsProfile::icarus_world_settings());
+            assert_eq!(
+                actors.names,
+                ["IcarusWorldSettings_0", "BP_IcarusWorldSettings_C"]
+            );
+            assert_eq!(actors.checksum, 3_401_274_505);
+        }
+        let parsed = ReleaseProfile::parse(&pin_toml(pin, pin.build_id)).unwrap();
+        assert_eq!(
+            parsed.level_actors, profile.level_actors,
+            "{}",
+            pin.build_id
+        );
+    }
+    let pin = ReleaseProfile::release_3_0_32().pin;
+    let base = pin_toml(&pin, pin.build_id);
+    let explicit = ReleaseProfile::parse(&format!(
+        "{base}[level_actors]\nnames = [\"AuthoredSettings_0\"]\nchecksum = 7\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        explicit.level_actors,
+        Some(ReleaseLevelActorsProfile {
+            names: vec!["AuthoredSettings_0".to_owned()],
+            checksum: 7,
+        })
+    );
+    for bad in [
+        "[level_actors]\nnames = []\nchecksum = 7\n",
+        "[level_actors]\nnames = [\"A\", \"B\", \"C\", \"D\", \"E\"]\nchecksum = 7\n",
+        "[level_actors]\nnames = [\"A\", \"a\"]\nchecksum = 7\n",
+        "[level_actors]\nnames = [\"/Game/A\"]\nchecksum = 7\n",
+        "[level_actors]\nnames = [\"A.B\"]\nchecksum = 7\n",
+        "[level_actors]\nnames = [\"\"]\nchecksum = 7\n",
+        "[level_actors]\nnames = [\"A\"]\nchecksum = 0\n",
+        "[level_actors]\nnames = [\"A\"]\n",
+        "[level_actors]\nnames = [\"A\"]\nchecksum = 7\nextra = 1\n",
+    ] {
+        assert!(
+            ReleaseProfile::parse(&format!("{base}{bad}")).is_err(),
+            "{bad}"
+        );
+    }
+    // The chain the opens export: actor, PersistentLevel, world, package.
+    let actors = ReleaseLevelActorsProfile::icarus_world_settings();
+    let chain = actors
+        .actor_chain(1, "/Game/Authored/Sublevels/Tile_x0_y0")
+        .unwrap();
+    let segments: Vec<_> = chain
+        .iter()
+        .map(|segment| (segment.path.as_str(), segment.checksum, segment.no_load))
+        .collect();
+    assert_eq!(
+        segments,
+        [
+            ("BP_IcarusWorldSettings_C", 3_401_274_505, true),
+            ("PersistentLevel", 0, true),
+            ("Tile_x0_y0", 0, true),
+            ("/Game/Authored/Sublevels/Tile_x0_y0", 0, true),
+        ]
+    );
+    assert!(actors.actor_chain(2, "/Game/Authored/Tile").is_err());
+}

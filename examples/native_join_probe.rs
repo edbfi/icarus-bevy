@@ -129,6 +129,10 @@ struct Options {
     /// properties naming that pawn (unqualified); `false` makes a comparison run without them.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     controller_possession_properties: bool,
+    /// Dispatch the client's level visibility reports (controller field 82) and open each
+    /// newly visible level's world-settings actors (unqualified); off unless asked.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    level_visibility_actors: bool,
 }
 
 impl Options {
@@ -188,6 +192,34 @@ impl Options {
                 .is_some()
                 && profile.pawn_open_plan(PROBE_MAP)?.is_some(),
             "controller possession properties need the release's controller and pawn profiles; pass --controller-possession-properties false"
+        );
+        Ok(true)
+    }
+
+    /// Pure preflight of `--level-visibility-actors`: enabled dispatch needs
+    /// the release's level actor identities, its controller open and the
+    /// qualified visibility decoder profile.
+    fn level_visibility_actors(&self, profile: &ReleaseProfile) -> Result<bool> {
+        use icarus_bevy::experimental::visibility::{
+            VisibilityArchiveProfile, VisibilityDecodeProfile,
+        };
+        if !self.level_visibility_actors {
+            return Ok(false);
+        }
+        ensure!(
+            profile
+                .level_actors
+                .as_ref()
+                .is_some_and(|actors| actors.validate().is_ok())
+                && profile
+                    .player_controller_open_plan(PROBE_MAP, [0.0; 3])?
+                    .is_some()
+                && VisibilityDecodeProfile::qualify(
+                    profile,
+                    VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
+                )
+                .is_ok(),
+            "level visibility actors need the release's level actor identities, controller profile and a qualified visibility profile; pass --level-visibility-actors false"
         );
         Ok(true)
     }
@@ -255,6 +287,7 @@ fn main() -> Result<()> {
     let startup = options.startup_plan(&profile)?;
     let connected_player_records = options.connected_player_records(&profile)?;
     let controller_possession_properties = options.controller_possession_properties(&profile)?;
+    let level_visibility_actors = options.level_visibility_actors(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -319,6 +352,9 @@ fn main() -> Result<()> {
         release_profile: Some(options.release),
         connected_player_records,
         controller_possession_properties,
+        // Gated: the server configuration refuses it, so the probe enables
+        // the lab switch itself below, before any connection exists.
+        level_visibility_actors: false,
         ..NetworkConfig::default()
     };
     let mut peer_config = network::peer_lab_config(&config);
@@ -350,6 +386,13 @@ fn main() -> Result<()> {
         bound.lab.has_controller_possession_properties() == controller_possession_properties,
         "controller possession configuration did not apply"
     );
+    if level_visibility_actors {
+        bound.lab.enable_level_visibility_actors(&profile)?;
+    }
+    ensure!(
+        bound.lab.has_level_visibility_actors() == level_visibility_actors,
+        "level visibility actor configuration did not apply"
+    );
     // Diagnostic for this probe only; the server leaves it off.
     bound.lab.enable_unreliable_actor_bunch_counts();
     if !startup.is_empty() {
@@ -375,6 +418,7 @@ fn main() -> Result<()> {
         "controller_startup": options.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
         "connected_player_records": connected_player_records,
         "controller_possession_properties": controller_possession_properties,
+        "level_visibility_actors": level_visibility_actors,
         "compatibility_proven": false,
     }))
     .err();
@@ -682,6 +726,47 @@ mod tests {
                 .controller_possession_properties(&no_controller)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn level_visibility_actors_default_off_and_fail_closed_before_networking() {
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(!default.level_visibility_actors);
+        assert!(!default.level_visibility_actors(&profile).unwrap());
+        let on = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--level-visibility-actors",
+            "true",
+        ])
+        .unwrap();
+        assert!(on.level_visibility_actors(&profile).unwrap());
+        for value in ["maybe", ""] {
+            assert!(
+                Options::try_parse_from([
+                    "probe",
+                    "--name",
+                    "Authored",
+                    "--level-visibility-actors",
+                    value,
+                ])
+                .is_err()
+            );
+        }
+        // A release without the identities, or one the visibility decoder
+        // is not qualified for, cannot run with the switch on.
+        let mut unnamed = profile.clone();
+        unnamed.level_actors = None;
+        assert!(on.level_visibility_actors(&unnamed).is_err());
+        assert!(!default.level_visibility_actors(&unnamed).unwrap());
+        let mut older = ReleaseProfile::release_3_0_32();
+        older.level_actors = profile.level_actors.clone();
+        assert!(on.level_visibility_actors(&older).is_err());
+        let mut no_controller = profile;
+        no_controller.player_controller = None;
+        assert!(on.level_visibility_actors(&no_controller).is_err());
     }
 
     #[test]

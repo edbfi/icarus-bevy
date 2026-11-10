@@ -195,7 +195,7 @@ use super::actor_channel::{
     ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, ContentBlock,
     encode_actor_bunch_body, read_client_actor_bunch_body,
 };
-use super::actor_open::{Block, Reference};
+use super::actor_open::{Block, Reference, StaticActorOpen, compose_static_actor_open};
 use super::admission::{
     ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
     DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy,
@@ -240,22 +240,27 @@ use super::profile_exchange::{
     self, InitialisationAnswer, ProfileExchange, ProfileKind, ProfileResponse,
 };
 use super::quest_open::{QuestOpenBasePlan, QuestOpenPlan, compose_quest_open};
-use super::release::ReleaseProfile;
-use super::rep_layout::{RepLayoutCodec, RepValue};
+use super::release::{ReleaseLevelActorsProfile, ReleaseProfile};
+use super::rep_layout::{NetworkName, RepLayoutCodec, RepValue};
 use super::rep_rpc::{
     BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
     BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, FriendsListRejection,
     PLAYER_DATA_FIELD_INDEX_BOUND, RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
     SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
     SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, SERVER_SHORT_TIMEOUT_FIELD_INDEX,
-    friends_list_rejection, parse_begin_player_initialisation, parse_rpc_payload,
-    read_field_header, server_friends_list_updated_parameters,
+    SERVER_UPDATE_LEVEL_VISIBILITY_FIELD_INDEX, friends_list_rejection,
+    parse_begin_player_initialisation, parse_rpc_payload, read_field_header,
+    server_friends_list_updated_parameters,
 };
 use super::rep_rpc::{
     FieldHeader, RpcArgument, RpcItem, encode_rpc_payload, player_controller_rpc_parameters,
     write_field_header,
 };
-use super::session_open::compose_controller_possession_update;
+use super::session_open::{actor_role_block, compose_controller_possession_update};
+use super::visibility::{
+    DecodedVisibilityParameter, VisibilityArchiveProfile, VisibilityDecodeProfile,
+    VisibilityRpc82Layout, parse_visibility_rpc82,
+};
 
 /// Explicit caller-authored startup actions. Their order and necessity are not
 /// qualified against a stock client. No actions are enabled by default.
@@ -475,6 +480,35 @@ pub const MAX_UDP_PAYLOAD_BYTES: u32 = 65_507;
 pub const DEFAULT_MAX_CHANNELS: u32 = 256;
 /// Lab choice: default archive-string unit cap for channel names.
 pub const DEFAULT_MAX_STRING_UNITS: usize = 256;
+/// Native bound on one connection's visible-level set and on the levels it
+/// keeps actor records for (a memory bound, not a channel bound: see
+/// [`MAX_LEVEL_ACTOR_CHANNELS`]). The original server's join-time level
+/// status call lists 134 streaming levels for the observed map (F-1078), so
+/// 256 names every one of them. With [`MAX_LEVEL_NAME_UNITS`] a connection
+/// retains at most three copies of each name (the set, the per-level map and
+/// the admission queue: 3 x 256 x 1,023 bytes, about 0.75 MiB), plus the
+/// driver-wide holder entry of each distinct level held (two copies).
+pub const MAX_VISIBLE_LEVELS: usize = 256;
+/// Per-connection cap on the actor channels level actors may hold: 64
+/// levels of two actors. Hides close nothing in this version, so the budget
+/// is consumed by every level ever shown in a session, never returned; a
+/// session that shows more levels than fit gets their opens refused
+/// (counted). Readiness exports the budget remaining.
+pub const MAX_LEVEL_ACTOR_CHANNELS: usize = 128;
+/// Free actor channels (outside the configured session channels) that level
+/// actors always leave to the server's own later opens, such as native
+/// replication's relevancy set and any future session open. A native
+/// policy: the lab cannot know how many actors replication will open, so a
+/// fixed quarter of the default 256-channel table is kept back; with that
+/// table level actors stop at [`MAX_LEVEL_ACTOR_CHANNELS`] first.
+pub const LEVEL_ACTOR_CHANNEL_RESERVE: usize = 64;
+/// Level actor opens admitted per connection per poll pass, after every
+/// other retry pass of that poll (lowest priority): one level's pair.
+pub const LEVEL_ACTOR_OPENS_PER_PASS: usize = 2;
+/// Native admission cap on a reported level package name, in UTF-16 units:
+/// the engine's `NAME_SIZE` (1024) less its terminator. The decoder's own
+/// cap (65,536 units, F-1021) is far above any package name.
+pub const MAX_LEVEL_NAME_UNITS: usize = 1023;
 
 /// Opt-in login-state gating (`IsClientMsgTypeValid`), `PreLogin`, `Welcome`,
 /// `Netspeed`, and `Join` / `SplitJoin` (`SpawnPlayActor`) policy for [`PeerLab`].
@@ -837,6 +871,67 @@ pub struct PeerLabStats {
     /// pawn channel no longer open when due; that session's update is
     /// abandoned and its record no longer waits for it.
     pub controller_possession_errors: u64,
+    /// Level visibility reports (controller field 82, F-1052) dispatched with
+    /// [`PeerLab::enable_level_visibility_actors`], by disposition; counts
+    /// only, never names. A newly visible level added to the connection's set.
+    pub level_visibility_reports_added: u64,
+    /// A visible report of a level already in the set: no effect.
+    pub level_visibility_reports_duplicate: u64,
+    /// A hidden report; the name leaves the set if it was there.
+    pub level_visibility_reports_hidden: u64,
+    /// A visible report while the set holds [`MAX_VISIBLE_LEVELS`] names:
+    /// ignored.
+    pub level_visibility_reports_over_bound: u64,
+    /// Field 82 payloads the decoder refused: that field alone is skipped by
+    /// its declared length (diagnosed Malformed) and the rest of its bunch
+    /// is applied as when field 82 was ignored.
+    pub level_visibility_reports_malformed: u64,
+    /// A visible report naming no admissible streamed level (an unresolved
+    /// hardcoded name, a nonzero name number, a name that is not a plain
+    /// `/Game/` package path, the persistent map or a release package in any
+    /// letter case, or one naming an identity the server already holds):
+    /// counted and ignored, never a close.
+    pub level_visibility_reports_refused_name: u64,
+    /// A report whose parameter was absent (presence bit clear).
+    pub level_visibility_reports_absent: u64,
+    /// Level actor opens (one per actor of a newly visible level) admitted to
+    /// reliable transport on fresh actor channels.
+    pub level_actor_opens_sent: u64,
+    /// Admitted level actor opens a positive packet ACK settled, once each.
+    /// No client spawn is implied.
+    pub level_actor_opens_acked: u64,
+    /// Level actor admission passes held back by transport pressure (a
+    /// drainable refusal, or a sent ring less than half free); retried in
+    /// report order after ACK/NAK progress.
+    pub level_actor_opens_deferred: u64,
+    /// Level actor refusals. One increment is one actor slot of one
+    /// connection entering the refused state for a cause it was not refused
+    /// for at its previous attempt: the per-connection cap
+    /// ([`MAX_LEVEL_ACTOR_CHANNELS`]), which only the session's end lifts
+    /// since hides close nothing, or the channels (no free channel, or the
+    /// [`LEVEL_ACTOR_CHANNEL_RESERVE`] would be touched), which a released
+    /// actor channel can lift. A retry refused again for the same cause adds
+    /// nothing; a slot refused for channels is retried after a release only
+    /// while the connection is below its cap and the budget can admit it,
+    /// and on a later report of its level. A level hidden while none of its
+    /// actors was admitted is forgotten, so a later report of it starts
+    /// afresh. Also one per actor name for each visible report of a level
+    /// that gets no record because the connection's level record bound is
+    /// full.
+    pub level_actor_opens_refused: u64,
+    /// Channel-refused slots re-armed for one retry after an actor channel
+    /// was released: at most as many as the budget can then admit, never a
+    /// cap refusal.
+    pub level_actor_opens_requeued: u64,
+    /// Composition or framing failures that cannot drain, including an
+    /// exhausted static GUID space; retried only on a later report.
+    pub level_actor_open_errors: u64,
+    /// Opens still awaiting admission when their level was reported hidden:
+    /// dropped unsent.
+    pub level_actor_opens_withdrawn: u64,
+    /// Hidden reports of a level whose actors this connection opened: the
+    /// actors stay open (the original's hide-side wire is unobserved).
+    pub level_hides_actors_kept: u64,
     pub player_character_id_updates_sent: u64,
     /// Returning pawns given their saved UID (F-950).
     pub returning_pawns_restored: u64,
@@ -1056,6 +1151,22 @@ pub struct SessionCounts {
     pub controller_possession_updates_acked: u64,
     pub controller_possession_sends_deferred: u64,
     pub controller_possession_errors: u64,
+    /// Level visibility report and level actor counters, as in [`PeerLabStats`].
+    pub level_visibility_reports_added: u64,
+    pub level_visibility_reports_duplicate: u64,
+    pub level_visibility_reports_hidden: u64,
+    pub level_visibility_reports_over_bound: u64,
+    pub level_visibility_reports_malformed: u64,
+    pub level_visibility_reports_refused_name: u64,
+    pub level_visibility_reports_absent: u64,
+    pub level_actor_opens_sent: u64,
+    pub level_actor_opens_acked: u64,
+    pub level_actor_opens_deferred: u64,
+    pub level_actor_opens_refused: u64,
+    pub level_actor_opens_requeued: u64,
+    pub level_actor_open_errors: u64,
+    pub level_actor_opens_withdrawn: u64,
+    pub level_hides_actors_kept: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
     pub returning_pawn_updates_sent: u64,
@@ -1105,6 +1216,7 @@ pub struct ReadinessCounts {
     pub friends_query: FriendsQueryReadiness,
     pub connected_player_records: ConnectedPlayerRecordReadiness,
     pub controller_possession: ControllerPossessionReadiness,
+    pub level_visibility: LevelVisibilityReadiness,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
     /// Retained receipts after a positive ACK leaves the controller channel
@@ -1198,6 +1310,31 @@ pub struct ControllerPossessionReadiness {
     pub queued: usize,
     pub settled: usize,
     pub awaiting_ack: usize,
+}
+
+/// Live level visibility gauges ([`PeerLab::enable_level_visibility_actors`]),
+/// summed over connections; counts only, never level names.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct LevelVisibilityReadiness {
+    /// Levels currently in the connections' visible sets.
+    pub levels_visible: usize,
+    /// Levels whose actors a connection holds (opened or still pending),
+    /// visible or since hidden.
+    pub levels_with_actors: usize,
+    /// Level actor opens awaiting admission (transport pressure).
+    pub opens_pending: usize,
+    /// Admitted opens not yet ACKed.
+    pub opens_awaiting_ack: usize,
+    /// Admitted opens a positive ACK settled.
+    pub opens_settled: usize,
+    /// Opens refused by the channel budget, waiting for a released channel.
+    pub opens_refused_waiting: usize,
+    /// Actor channels level actors hold (opened, kept across hides).
+    pub channels_held: usize,
+    /// Further level actor channels the connections' budgets allow now:
+    /// per connection the lesser of the cap left and the free channels
+    /// beyond the reserve. Read per connection with one client connected.
+    pub channel_budget_remaining: usize,
 }
 
 /// Fixed channel kinds of client-to-server unreliable actor bunches, from the
@@ -1435,6 +1572,127 @@ struct ConnectedPlayerRecord {
 struct ConnectedPlayerReceipt {
     receipt: InitialisationReceipt,
     records: usize,
+}
+
+/// Level visibility actors ([`PeerLab::enable_level_visibility_actors`]):
+/// the qualified field-82 decoder and the actor identities a level's report
+/// opens.
+struct LevelVisibilityActors {
+    /// Normal little-endian, package-map custom route (F-1021, F-1034),
+    /// qualified against the release at configuration.
+    profile: VisibilityDecodeProfile,
+    actors: ReleaseLevelActorsProfile,
+    engine_net_version: u32,
+    /// Case-folded packages a report may never name: the persistent map's
+    /// (its actors open with the session) and every package the release's
+    /// own opens may export ([`ReleaseProfile::server_package_paths`]).
+    reserved_packages: BTreeSet<String>,
+    /// [`MAX_VISIBLE_LEVELS`]; smaller only in tests.
+    max_visible_levels: usize,
+    /// [`MAX_LEVEL_ACTOR_CHANNELS`]; smaller only in tests.
+    max_level_channels: usize,
+}
+
+/// An admitted level: its case-folded key (set membership, the per-level
+/// map, the queue and the driver-wide holders) and the client's spelling.
+struct AdmittedLevel {
+    key: String,
+    spelling: String,
+}
+
+impl LevelVisibilityActors {
+    /// The level a report names, if it is admissible as a streamed level:
+    /// a string name with number 0 whose text is a plain `/Game/` package
+    /// path (ASCII letters, digits, `_` and `-` in nonempty `/` segments, at
+    /// most [`MAX_LEVEL_NAME_UNITS`]) that is not a reserved package in any
+    /// letter case. Names compare ignoring ASCII case, as the engine
+    /// compares names. This is an authored native rule. The original instead
+    /// rejects a name whose package its own loader cannot find (and then
+    /// closes the connection, F-1023), which depends on server packages a
+    /// native server does not have; a refused name is counted, never closed
+    /// on. Hardcoded indices stay unresolved (F-1021) and a nonzero number
+    /// would need an FName suffix rendering that is not qualified, so both
+    /// are refused.
+    fn admitted(&self, name: &NetworkName) -> Option<AdmittedLevel> {
+        let NetworkName::String { text, number: 0 } = name else {
+            return None;
+        };
+        let units = text.units();
+        if units.len() > MAX_LEVEL_NAME_UNITS {
+            return None;
+        }
+        let spelling = String::from_utf16(units).ok()?;
+        let root = spelling.get(..6)?;
+        if !root.eq_ignore_ascii_case("/Game/") {
+            return None;
+        }
+        let rest = &spelling[6..];
+        let plain = rest.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        });
+        let key = spelling.to_ascii_lowercase();
+        (plain && !self.reserved_packages.contains(&key)).then_some(AdmittedLevel { key, spelling })
+    }
+
+    /// Every static chain a level's actors name, leaf first, in `spelling`:
+    /// one per actor, then the level's `PersistentLevel`, world and package
+    /// chains.
+    fn level_chains(&self, spelling: &str) -> Result<Vec<Vec<PathSegment>>> {
+        let mut chains = (0..self.actors.names.len())
+            .map(|index| self.actors.actor_chain(index, spelling))
+            .collect::<Result<Vec<_>>>()?;
+        let level = super::session_open::map_level_chain(spelling)?;
+        for depth in 0..level.len() {
+            chains.push(level[depth..].to_vec());
+        }
+        Ok(chains)
+    }
+}
+
+/// A level whose actors at least one live connection holds: how many, and
+/// the spelling every connection's exports carry. One object has one path
+/// and one GUID in the driver's cache, so the first holder's spelling is
+/// kept while any connection holds it, as the engine's name table keeps the
+/// spelling a name was first created with; names resolve ignoring case.
+struct LevelHolding {
+    holders: usize,
+    spelling: String,
+}
+
+/// Why a level actor open was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LevelRefusal {
+    /// The connection's level actors hold its cap; hides close nothing, so
+    /// no released channel lifts it.
+    Cap,
+    /// No free channel, or taking one would touch the reserve: a released
+    /// actor channel can lift it.
+    Channels,
+}
+
+/// One actor of a level a connection reported visible.
+enum LevelActorSlot {
+    /// Awaiting admission to reliable transport (its level is queued), with
+    /// the cause it was refused for at its previous attempt, if any.
+    Pending { refused: Option<LevelRefusal> },
+    /// Admitted on `channel`; settled once a positive ACK left the channel
+    /// reliably empty. Nothing else is ever sent on it.
+    Opened {
+        channel: u32,
+        settled: bool,
+        abandoned: bool,
+    },
+    /// Refused for this cause: a [`LevelRefusal::Channels`] refusal of a
+    /// visible level is eligible again after an actor channel is released
+    /// while the budget can admit it; either is eligible again on a later
+    /// report of the level.
+    Refused(LevelRefusal),
+    /// Withdrawn by a hide or failed for good: eligible again only on a
+    /// later report of the level.
+    Unsent,
 }
 
 /// Independent live-player blockers, separate from the exclusive player phases.
@@ -1890,6 +2148,23 @@ struct PeerEntry {
     controller_possession_receipt: InitialisationReceipt,
     /// The update could not be admitted for good; nothing waits for it.
     controller_possession_failed: bool,
+    /// Case-folded packages this connection reported visible and that are
+    /// still visible (at most [`MAX_VISIBLE_LEVELS`]).
+    visible_levels: BTreeSet<String>,
+    /// Per case-folded level whose actors this connection was due, one slot
+    /// per actor name: an actor opens at most once per connection, and an
+    /// opened actor is kept when its level is hidden (at most
+    /// [`MAX_VISIBLE_LEVELS`] levels).
+    level_actors: BTreeMap<String, Vec<LevelActorSlot>>,
+    /// Levels with a pending slot, in report order, each once.
+    level_actor_queue: VecDeque<String>,
+    level_actors_retry_ready: bool,
+    /// Some visible level's slot is refused for channels: a released actor
+    /// channel arms a budget check ([`Self::level_channels_released`]).
+    level_actors_refused: bool,
+    /// An actor channel was released since: the next admission pass checks
+    /// whether channel-refused slots can now be admitted.
+    level_channels_released: bool,
     friends_query_pending: bool,
     friends_query_retry_ready: bool,
     /// The last admitted friends query's reliable bunch (F-1051).
@@ -2018,6 +2293,91 @@ fn transport_capacity_can_drain(entry: &PeerEntry, error: &anyhow::Error, channe
     temporary && !entry.peer.is_failed()
 }
 
+/// One connection's level actor channel budget at one moment.
+struct LevelChannelBudget {
+    /// The per-connection cap ([`MAX_LEVEL_ACTOR_CHANNELS`]).
+    cap: usize,
+    /// The first channel above the session channels.
+    first: u32,
+    reserved: Vec<u32>,
+    /// Channels its level actors hold.
+    held: usize,
+    /// Free actor channels from `first`, session channels excluded.
+    free: usize,
+}
+
+impl LevelChannelBudget {
+    /// Level actor channels it may still take: the cap left, and the free
+    /// channels beyond the reserve, whichever is less.
+    fn remaining(&self) -> usize {
+        self.cap
+            .saturating_sub(self.held)
+            .min(self.free.saturating_sub(LEVEL_ACTOR_CHANNEL_RESERVE))
+    }
+}
+
+/// Queue `key` once, arming the connection's next admission pass.
+fn enqueue_level(entry: &mut PeerEntry, key: &str) {
+    if !entry.level_actor_queue.iter().any(|queued| queued == key) {
+        entry.level_actor_queue.push_back(key.to_owned());
+    }
+    entry.level_actors_retry_ready = true;
+}
+
+/// Make every never-admitted slot of `key` (refused or withdrawn) pending
+/// again, remembering a refusal's cause, and queue the level.
+fn requeue_level(entry: &mut PeerEntry, key: &str) {
+    let Some(slots) = entry.level_actors.get_mut(key) else {
+        return;
+    };
+    let mut any = false;
+    for slot in slots.iter_mut() {
+        let refused = match slot {
+            LevelActorSlot::Refused(cause) => Some(*cause),
+            LevelActorSlot::Unsent => None,
+            LevelActorSlot::Pending { .. } | LevelActorSlot::Opened { .. } => continue,
+        };
+        *slot = LevelActorSlot::Pending { refused };
+        any = true;
+    }
+    if any {
+        enqueue_level(entry, key);
+    }
+}
+
+/// Make at most `limit` channel-refused slots of visible levels pending
+/// again, in level order, and note whether any stay refused for channels.
+/// Returns how many it re-armed.
+fn requeue_channel_refusals(entry: &mut PeerEntry, limit: usize) -> usize {
+    let mut left = limit;
+    let mut remaining = false;
+    let visible: Vec<String> = entry.visible_levels.iter().cloned().collect();
+    for key in visible {
+        let mut queued = false;
+        if let Some(slots) = entry.level_actors.get_mut(&key) {
+            for slot in slots.iter_mut() {
+                if !matches!(slot, LevelActorSlot::Refused(LevelRefusal::Channels)) {
+                    continue;
+                }
+                if left == 0 {
+                    remaining = true;
+                    continue;
+                }
+                *slot = LevelActorSlot::Pending {
+                    refused: Some(LevelRefusal::Channels),
+                };
+                left -= 1;
+                queued = true;
+            }
+        }
+        if queued {
+            enqueue_level(entry, &key);
+        }
+    }
+    entry.level_actors_refused = remaining;
+    limit - left
+}
+
 /// Whether a connection can carry connected-player records: its GameState
 /// open is committed (replica present) and its channel is open, not closing.
 fn connected_players_receivable(entry: &PeerEntry, channel: Option<u32>) -> bool {
@@ -2049,6 +2409,9 @@ struct RegisteredPlayer {
 enum ControllerCall {
     Begin(i32),
     ShortTimeout,
+    /// A decoded field-82 report (F-1021), dispatched only with
+    /// [`PeerLab::enable_level_visibility_actors`].
+    LevelVisibility(DecodedVisibilityParameter),
     FriendsList,
     Profile(ProfileResponse),
     Initialisation(InitialisationAnswer),
@@ -2060,6 +2423,8 @@ pub(crate) fn validate_controller_capture(
     order: super::archive::ByteOrder,
     components: [Option<u32>; 3],
 ) -> bool {
+    // The private capture's validation never decodes field 82: it stays
+    // identical whether or not level visibility actors are enabled.
     controller_initialisation_calls(
         payload,
         engine_net_version,
@@ -2072,7 +2437,8 @@ pub(crate) fn validate_controller_capture(
 
 /// Stage a complete controller bunch before applying any calls: malformed
 /// trailing input must not partially mutate session state. Subobject payloads
-/// are never interpreted as calls on the controller itself.
+/// are never interpreted as calls on the controller itself. Field 82 stays
+/// ignored ([`controller_calls`] without a visibility profile).
 fn controller_initialisation_calls(
     payload: &Payload,
     engine_net_version: u32,
@@ -2080,6 +2446,41 @@ fn controller_initialisation_calls(
     components: [Option<u32>; 3],
     diagnostics: &mut ControllerFieldDiagnostics,
 ) -> Result<(Vec<ControllerCall>, usize)> {
+    controller_calls(
+        payload,
+        engine_net_version,
+        order,
+        components,
+        None,
+        diagnostics,
+    )
+    .map(|staged| (staged.calls, staged.ignored))
+}
+
+/// One controller bunch's staged calls and field accounting.
+struct StagedControllerCalls {
+    calls: Vec<ControllerCall>,
+    /// Fields skipped as unrecognized.
+    ignored: usize,
+    /// Field-82 payloads the visibility decoder refused, each skipped alone.
+    malformed_level_reports: usize,
+}
+
+/// [`controller_initialisation_calls`], and with `level_visibility` an
+/// actor-block field 82 is decoded (exact consumption, absence distinct,
+/// F-1021) and staged with the bunch's other calls; without it the field
+/// stays ignored, as before. A field 82 the decoder refuses is skipped by
+/// its declared length and diagnosed Malformed; the bunch's other fields
+/// are applied exactly as when field 82 is ignored, so enabling level
+/// visibility never costs a call the bunch would otherwise deliver.
+fn controller_calls(
+    payload: &Payload,
+    engine_net_version: u32,
+    order: super::archive::ByteOrder,
+    components: [Option<u32>; 3],
+    level_visibility: Option<&VisibilityDecodeProfile>,
+    diagnostics: &mut ControllerFieldDiagnostics,
+) -> Result<StagedControllerCalls> {
     let actor = actor_codec(engine_net_version, order);
     let body = match read_client_actor_bunch_body(&mut payload.reader(), &actor) {
         Ok(body) => body,
@@ -2127,6 +2528,7 @@ fn controller_initialisation_calls(
     };
     let mut calls = Vec::new();
     let mut ignored = 0;
+    let mut malformed_level_reports = 0;
     for block in body.blocks {
         let (component, bound) = match &block.target {
             BlockTarget::Actor => (None, BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND),
@@ -2162,6 +2564,29 @@ fn controller_initialisation_calls(
                 ControllerFieldTarget::PermittedSubobject
             };
             let before = calls.len();
+            if component.is_none()
+                && field.index == SERVER_UPDATE_LEVEL_VISIBILITY_FIELD_INDEX
+                && let Some(profile) = level_visibility
+            {
+                // F-1052 field identity; F-1021 decoder. The field is framed
+                // by its own length, so a refusal skips it alone.
+                let disposition = match parse_visibility_rpc82(
+                    &field.payload,
+                    profile,
+                    VisibilityRpc82Layout::NormalSingleCustomStruct,
+                ) {
+                    Ok(parameter) => {
+                        calls.push(ControllerCall::LevelVisibility(parameter));
+                        ControllerFieldDisposition::Recognized
+                    }
+                    Err(_) => {
+                        malformed_level_reports += 1;
+                        ControllerFieldDisposition::Malformed
+                    }
+                };
+                diagnostics.record(target, field.index, field.payload.bit_len(), disposition);
+                continue;
+            }
             let parsed = (|| -> Result<()> {
                 if component.is_none()
                     && field.index == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
@@ -2229,7 +2654,11 @@ fn controller_initialisation_calls(
             parsed?;
         }
     }
-    Ok((calls, ignored))
+    Ok(StagedControllerCalls {
+        calls,
+        ignored,
+        malformed_level_reports,
+    })
 }
 
 /// The GameState every joined connection is opened with (F-794).
@@ -2376,6 +2805,15 @@ pub struct PeerLab {
     /// Opt-in controller possession properties after each pawn open
     /// ([`PeerLab::enable_controller_possession_properties`]).
     controller_possession: bool,
+    /// Opt-in level visibility dispatch and actor opens
+    /// ([`PeerLab::enable_level_visibility_actors`]); `None` leaves field 82
+    /// ignored.
+    level_visibility: Option<LevelVisibilityActors>,
+    /// Per case-folded level, the live connections holding its actors
+    /// (opened or not) and its wire spelling. The static GUIDs this feature
+    /// created for it, and nothing else touched, are forgotten when the last
+    /// one leaves.
+    level_actor_holders: BTreeMap<String, LevelHolding>,
     /// Header-only counts of dropped client unreliable actor bunches, kept
     /// only while `count_unreliable_actor_bunches` is set.
     unreliable_actor_bunches: UnreliableActorBunchCounts,
@@ -2542,6 +2980,8 @@ impl PeerLab {
             connected_players: None,
             next_connected_player_record: 0,
             controller_possession: false,
+            level_visibility: None,
+            level_actor_holders: BTreeMap::new(),
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
             count_unreliable_actor_bunches: false,
             manager_opens: Vec::new(),
@@ -4135,6 +4575,9 @@ impl PeerLab {
             // (F-1083).
             self.guid_cache.forget_actor(pawn_key(connection));
         }
+        for package in entry.level_actors.keys() {
+            self.release_level_actors(package);
+        }
         if let (Some(capture), Some(connection)) =
             (&mut self.private_rpc82_capture, entry.connection_id)
         {
@@ -4986,6 +5429,88 @@ impl PeerLab {
         self.controller_possession
     }
 
+    /// Dispatch level visibility reports and open each newly visible level's
+    /// actors (level visibility actors). A client reports a streamed level it
+    /// made visible or hid with controller field 82 (F-1052; it streams tiles
+    /// once its connected-player record is finalised, F-1080, and reports
+    /// each, F-1081). Each actor-block field 82 on a connection's own
+    /// controller channel is decoded with the qualified conditional decoder
+    /// (exact consumption, absence distinct, staged with its bunch; F-1021,
+    /// F-1024) and applied to that connection's visible-level set; a field
+    /// the decoder refuses is skipped alone. A level newly added there gets
+    /// one reliable static open per actor `profile` names, on fresh actor
+    /// channels, as the original answers each report: admitted at the end of
+    /// each poll, at most [`LEVEL_ACTOR_OPENS_PER_PASS`] per connection and
+    /// within its channel budget ([`MAX_LEVEL_ACTOR_CHANNELS`], leaving
+    /// [`LEVEL_ACTOR_CHANNEL_RESERVE`] free). An actor opens at most once per
+    /// connection; a hide closes nothing, so its channel stays spent.
+    /// Unqualified with a stock client; the visibility gate is not cleared
+    /// by this code. Requires the PlayerController open and a release with
+    /// level actor identities on the qualified visibility profile; must be
+    /// configured before any peer exists.
+    pub fn enable_level_visibility_actors(&mut self, profile: &ReleaseProfile) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "level visibility actors are configured before admission"
+        );
+        let controller = self
+            .player_controller_open
+            .as_ref()
+            .context("level visibility actors need the controller open")?;
+        let actors = profile
+            .level_actors
+            .clone()
+            .context("the release names no level actors")?;
+        actors.validate()?;
+        ensure!(
+            profile.engine_network_version == controller.engine_net_version,
+            "level visibility release differs from the controller plan"
+        );
+        let decoder = VisibilityDecodeProfile::qualify(
+            profile,
+            VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
+        )?;
+        let persistent_package = controller
+            .profile
+            .level
+            .last()
+            .context("controller level chain is empty")?
+            .path
+            .clone();
+        let reserved_packages = profile
+            .server_package_paths()
+            .into_iter()
+            .chain([persistent_package])
+            .map(|package| package.to_ascii_lowercase())
+            .collect();
+        self.level_visibility = Some(LevelVisibilityActors {
+            profile: decoder,
+            actors,
+            engine_net_version: controller.engine_net_version,
+            reserved_packages,
+            max_visible_levels: MAX_VISIBLE_LEVELS,
+            max_level_channels: MAX_LEVEL_ACTOR_CHANNELS,
+        });
+        Ok(())
+    }
+
+    /// Turn level visibility actors off for a comparison run; the lab then
+    /// sends exactly what it sends without them. Must be called before any
+    /// peer exists.
+    pub fn disable_level_visibility_actors(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "level visibility actors are configured before admission"
+        );
+        self.level_visibility = None;
+        Ok(())
+    }
+
+    /// Whether level visibility reports are dispatched and answered.
+    pub fn has_level_visibility_actors(&self) -> bool {
+        self.level_visibility.is_some()
+    }
+
     /// Header-only counts of the client unreliable actor bunches dropped
     /// since bind, by channel kind and controller field index: lab-wide over
     /// every connection, kept after sessions end, so they read cleanly only
@@ -5049,7 +5574,10 @@ impl PeerLab {
             self.free_session_channel(plan.channel_index),
             "the PlayerController channel collides with another channel or is out of range"
         );
-        self.guid_cache.register_level(&plan.profile.level);
+        ensure!(
+            self.guid_cache.register_level(&plan.profile.level) != 0,
+            "static NetGUID space exhausted"
+        );
         self.player_controller_open = Some(plan);
         Ok(())
     }
@@ -5222,6 +5750,21 @@ impl PeerLab {
             controller_possession_updates_acked: self.stats.controller_possession_updates_acked,
             controller_possession_sends_deferred: self.stats.controller_possession_sends_deferred,
             controller_possession_errors: self.stats.controller_possession_errors,
+            level_visibility_reports_added: self.stats.level_visibility_reports_added,
+            level_visibility_reports_duplicate: self.stats.level_visibility_reports_duplicate,
+            level_visibility_reports_hidden: self.stats.level_visibility_reports_hidden,
+            level_visibility_reports_over_bound: self.stats.level_visibility_reports_over_bound,
+            level_visibility_reports_malformed: self.stats.level_visibility_reports_malformed,
+            level_visibility_reports_refused_name: self.stats.level_visibility_reports_refused_name,
+            level_visibility_reports_absent: self.stats.level_visibility_reports_absent,
+            level_actor_opens_sent: self.stats.level_actor_opens_sent,
+            level_actor_opens_acked: self.stats.level_actor_opens_acked,
+            level_actor_opens_deferred: self.stats.level_actor_opens_deferred,
+            level_actor_opens_refused: self.stats.level_actor_opens_refused,
+            level_actor_opens_requeued: self.stats.level_actor_opens_requeued,
+            level_actor_open_errors: self.stats.level_actor_open_errors,
+            level_actor_opens_withdrawn: self.stats.level_actor_opens_withdrawn,
+            level_hides_actors_kept: self.stats.level_hides_actors_kept,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
             returning_pawn_updates_sent: self.stats.returning_pawn_updates_sent,
@@ -5384,6 +5927,23 @@ impl PeerLab {
             possession.queued += usize::from(receipt.channel.is_some());
             possession.settled += usize::from(receipt.settled);
             possession.awaiting_ack += usize::from(receipt.channel.is_some() && !receipt.settled);
+            let levels = &mut counts.level_visibility;
+            levels.levels_visible += entry.visible_levels.len();
+            levels.levels_with_actors += entry.level_actors.len();
+            for slot in entry.level_actors.values().flatten() {
+                match slot {
+                    LevelActorSlot::Pending { .. } => levels.opens_pending += 1,
+                    LevelActorSlot::Opened { settled: true, .. } => levels.opens_settled += 1,
+                    LevelActorSlot::Opened { .. } => levels.opens_awaiting_ack += 1,
+                    LevelActorSlot::Refused(_) => levels.opens_refused_waiting += 1,
+                    LevelActorSlot::Unsent => {}
+                }
+            }
+            if self.level_visibility.is_some() {
+                let budget = self.level_channel_budget(entry);
+                levels.channels_held += budget.held;
+                levels.channel_budget_remaining += budget.remaining();
+            }
             counts.controller_startup_actions_queued += entry.controller_startup_queued;
             counts.controller_startup_actions_settled += entry.controller_startup_settled;
             counts.controller_startup_actions_awaiting_ack +=
@@ -5633,6 +6193,12 @@ impl PeerLab {
                         controller_possession_retry_ready: false,
                         controller_possession_receipt: InitialisationReceipt::default(),
                         controller_possession_failed: false,
+                        visible_levels: BTreeSet::new(),
+                        level_actors: BTreeMap::new(),
+                        level_actor_queue: VecDeque::new(),
+                        level_actors_retry_ready: false,
+                        level_actors_refused: false,
+                        level_channels_released: false,
                         friends_query_pending: false,
                         friends_query_retry_ready: false,
                         friends_query_receipt: InitialisationReceipt::default(),
@@ -5802,6 +6368,24 @@ impl PeerLab {
                                 .stats
                                 .connected_player_record_creations_acked
                                 .saturating_add(settled_records as u64);
+                            // Each level actor open settles once, when a
+                            // positive ACK leaves its own channel reliably
+                            // empty; NAKs are repaired by the reliable layer.
+                            for slot in entry.level_actors.values_mut().flatten() {
+                                if let LevelActorSlot::Opened {
+                                    channel,
+                                    settled,
+                                    abandoned,
+                                } = slot
+                                    && !*settled
+                                {
+                                    *abandoned |= summary.released_actor_channels.contains(channel);
+                                    if !*abandoned && entry.peer.actor_channel_settled(*channel) {
+                                        *settled = true;
+                                        bump(&mut self.stats.level_actor_opens_acked);
+                                    }
+                                }
+                            }
                         }
                         // Retain the receipt before subsequent calls can queue
                         // unrelated controller traffic. NAKs retain reliable
@@ -5821,6 +6405,15 @@ impl PeerLab {
                         incarnation_released = entry.retiring_incarnations.len() != retiring;
                         for channel in &summary.released_actor_channels {
                             entry.closing_legacy_actors.remove(channel);
+                        }
+                        // A released actor channel (a replication close's
+                        // ACK) may make room for channel-refused level opens:
+                        // the next admission pass checks the budget once.
+                        // The cheap trigger, never a per-poll scan.
+                        if !summary.released_actor_channels.is_empty() && entry.level_actors_refused
+                        {
+                            entry.level_channels_released = true;
+                            entry.level_actors_retry_ready = true;
                         }
                         entry.last_seen = now;
                         entry.ack_pending = true;
@@ -5844,6 +6437,9 @@ impl PeerLab {
                             }
                             if entry.controller_possession_pending {
                                 entry.controller_possession_retry_ready = true;
+                            }
+                            if !entry.level_actor_queue.is_empty() {
+                                entry.level_actors_retry_ready = true;
                             }
                             if entry.pending_profile_exchange.is_some() {
                                 entry.profile_exchange_retry_ready = true;
@@ -6020,14 +6616,28 @@ impl PeerLab {
                                 bump(&mut self.stats.actor_bunches_ignored);
                                 continue;
                             }
-                            let parsed = controller_initialisation_calls(
+                            // The qualified decoder reads little-endian
+                            // archives only (F-1021); a big-endian connection
+                            // keeps field 82 ignored.
+                            let order = entry.peer.connection_byte_order();
+                            let level_visibility = self
+                                .level_visibility
+                                .as_ref()
+                                .filter(|_| matches!(order, super::archive::ByteOrder::Little))
+                                .map(|config| &config.profile);
+                            let parsed = controller_calls(
                                 &bunch.payload,
                                 plan.engine_net_version,
-                                entry.peer.connection_byte_order(),
+                                order,
                                 [entry.backend_proxy, entry.player_data, entry.bestiary],
+                                level_visibility,
                                 &mut entry.controller_field_diagnostics,
                             );
-                            let (calls, ignored) = match parsed {
+                            let StagedControllerCalls {
+                                calls,
+                                ignored,
+                                malformed_level_reports,
+                            } = match parsed {
                                 Ok(parsed) => parsed,
                                 Err(error) => {
                                     if let Some(reason) =
@@ -6047,6 +6657,10 @@ impl PeerLab {
                                 .stats
                                 .controller_fields_ignored
                                 .saturating_add(ignored as u64);
+                            self.stats.level_visibility_reports_malformed = self
+                                .stats
+                                .level_visibility_reports_malformed
+                                .saturating_add(malformed_level_reports as u64);
                             staged_calls.extend(calls);
                         }
                     }
@@ -6289,6 +6903,9 @@ impl PeerLab {
             // The bounded field diagnostics retain recognition. Timeout policy
             // and the original callback's effects are not qualified here.
             ControllerCall::ShortTimeout => {}
+            ControllerCall::LevelVisibility(parameter) => {
+                self.level_visibility_report(address, parameter);
+            }
             ControllerCall::Begin(slot) => {
                 if slot == -1
                     || entry.character_slot.is_some()
@@ -7044,6 +7661,429 @@ impl PeerLab {
                         bump(&mut self.stats.peers_failed);
                     } else {
                         self.connected_player_actor_opened(address);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply one decoded level visibility report (field 82) to the
+    /// connection's visible-level set and queue a newly visible level's
+    /// actors; the opens themselves are admitted only at the end of a poll
+    /// ([`retry_level_actor_opens`](Self::retry_level_actor_opens)), after
+    /// the session's own traffic. The report is honoured whatever the
+    /// session's phase: it can arrive only on this connection's own open
+    /// controller channel, and the original applies it without a
+    /// finalisation or readiness check (F-1023). The opens depend on nothing
+    /// else the connection holds: each names its own static chain on a fresh
+    /// channel, so they need not wait for any other open's ACK.
+    fn level_visibility_report(
+        &mut self,
+        address: SocketAddrV4,
+        parameter: DecodedVisibilityParameter,
+    ) {
+        let Some(config) = &self.level_visibility else {
+            return;
+        };
+        let DecodedVisibilityParameter::Present(report) = parameter else {
+            // The original zeroes its parameter before reading (bit1 and
+            // both names cleared), so an absent value would be a hide of no
+            // name; nothing here holds such a name.
+            bump(&mut self.stats.level_visibility_reports_absent);
+            return;
+        };
+        let level = config.admitted(&report.package_name);
+        if !report.visible {
+            bump(&mut self.stats.level_visibility_reports_hidden);
+            if let Some(level) = level {
+                self.hide_level(address, &level.key);
+            }
+            return;
+        }
+        // A rejected add makes the original close the connection (F-1023),
+        // but its rejection tests packages a native server does not have, so
+        // an inadmissible name is counted and ignored, never closed on.
+        let Some(level) = level else {
+            bump(&mut self.stats.level_visibility_reports_refused_name);
+            return;
+        };
+        let Some(entry) = self.peers.get(&address) else {
+            return;
+        };
+        if entry.visible_levels.contains(&level.key) {
+            bump(&mut self.stats.level_visibility_reports_duplicate);
+            return;
+        }
+        if entry.visible_levels.len() >= config.max_visible_levels {
+            bump(&mut self.stats.level_visibility_reports_over_bound);
+            return;
+        }
+        let registering = !entry.level_actors.contains_key(&level.key)
+            && !self.level_actor_holders.contains_key(&level.key);
+        if registering {
+            // A level chain the server already names, in any letter case
+            // (another map, a package exported for its own opens that was
+            // not known in advance), is not a streamed level here.
+            let collides = match config.level_chains(&level.spelling) {
+                Ok(chains) => chains[config.actors.names.len()..]
+                    .iter()
+                    .any(|chain| self.guid_cache.has_static_ignoring_case(chain)),
+                Err(_) => true,
+            };
+            if collides {
+                bump(&mut self.stats.level_visibility_reports_refused_name);
+                return;
+            }
+        }
+        let names = config.actors.names.len();
+        let max_levels = config.max_visible_levels;
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        entry.visible_levels.insert(level.key.clone());
+        bump(&mut self.stats.level_visibility_reports_added);
+        if entry.level_actors.contains_key(&level.key) {
+            // Shown again: every actor never admitted on this connection is
+            // due again; an opened one is never opened twice.
+            requeue_level(entry, &level.key);
+            return;
+        }
+        if entry.level_actors.len() >= max_levels {
+            // Hidden levels keep their records: the record bound is reached
+            // by levels shown over the session, not only visible ones.
+            self.stats.level_actor_opens_refused = self
+                .stats
+                .level_actor_opens_refused
+                .saturating_add(names as u64);
+            return;
+        }
+        entry.level_actors.insert(
+            level.key.clone(),
+            (0..names)
+                .map(|_| LevelActorSlot::Pending { refused: None })
+                .collect(),
+        );
+        enqueue_level(entry, &level.key);
+        self.level_actor_holders
+            .entry(level.key)
+            .or_insert(LevelHolding {
+                holders: 0,
+                spelling: level.spelling,
+            })
+            .holders += 1;
+    }
+
+    /// A hidden report: the level leaves the set. Opens still awaiting
+    /// admission are withdrawn (the original replicates a level's actors only
+    /// while it is visible, F-1023). Admitted opens stay open: the original
+    /// closes a hidden level's channels (reason 2, F-1023), but no hide has
+    /// been observed on the wire, so this first version closes nothing, and
+    /// the channels stay counted against the connection's budget.
+    fn hide_level(&mut self, address: SocketAddrV4, key: &str) {
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        entry.visible_levels.remove(key);
+        let Some(slots) = entry.level_actors.get_mut(key) else {
+            return;
+        };
+        let mut withdrawn = 0;
+        for slot in slots.iter_mut() {
+            if matches!(slot, LevelActorSlot::Pending { .. }) {
+                *slot = LevelActorSlot::Unsent;
+                withdrawn += 1;
+            }
+        }
+        entry.level_actor_queue.retain(|queued| queued != key);
+        self.stats.level_actor_opens_withdrawn = self
+            .stats
+            .level_actor_opens_withdrawn
+            .saturating_add(withdrawn);
+        let opened = slots
+            .iter()
+            .any(|slot| matches!(slot, LevelActorSlot::Opened { .. }));
+        if opened {
+            bump(&mut self.stats.level_hides_actors_kept);
+        } else {
+            // Nothing of it was sent: a later report may open it afresh.
+            entry.level_actors.remove(key);
+            self.release_level_actors(key);
+        }
+    }
+
+    /// One fewer live connection holds `key`'s actors; with none left, no
+    /// connection of this feature names its static identities again, so the
+    /// ones it created and nothing else has touched since are forgotten
+    /// (numbers stay consumed), bounding the cache by live sessions. A shared
+    /// identity (a later server open that exported the same package, say)
+    /// lost its owner tag when shared and survives.
+    fn release_level_actors(&mut self, key: &str) {
+        let Some(holding) = self.level_actor_holders.get_mut(key) else {
+            return;
+        };
+        holding.holders = holding.holders.saturating_sub(1);
+        if holding.holders > 0 {
+            return;
+        }
+        let Some(holding) = self.level_actor_holders.remove(key) else {
+            return;
+        };
+        if let Some(config) = &self.level_visibility
+            && let Ok(chains) = config.level_chains(&holding.spelling)
+        {
+            for chain in &chains {
+                self.guid_cache.forget_owned_static(chain);
+            }
+        }
+    }
+
+    /// The lowest-priority pass of a poll: for each connection with queued
+    /// level actor opens, admit at most [`LEVEL_ACTOR_OPENS_PER_PASS`], in
+    /// report order, and only while its sent ring is at least half free, so
+    /// a burst of reports cannot fill the ring ahead of the session's own
+    /// records and updates. A connection held back by transport waits for
+    /// ACK/NAK progress; one stopped by the per-pass bound continues next
+    /// poll. A NAK of an admitted open is repaired by the reliable layer from
+    /// the stored parts, never recomposed.
+    fn retry_level_actor_opens(&mut self) {
+        if self.level_visibility.is_none() {
+            return;
+        }
+        let ready: Vec<SocketAddrV4> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                ((!entry.level_actor_queue.is_empty() || entry.level_channels_released)
+                    && std::mem::take(&mut entry.level_actors_retry_ready))
+                .then_some(*address)
+            })
+            .collect();
+        for address in ready {
+            self.send_level_actor_opens(address);
+        }
+    }
+
+    /// Session channels the lab configures (controller, pawn, GameState,
+    /// PlayerState, managers, quests): a level actor never takes one, even
+    /// before its own open commits.
+    fn reserved_session_channels(&self) -> Vec<u32> {
+        [
+            self.player_controller_open
+                .as_ref()
+                .map(|plan| plan.channel_index),
+            self.pawn_open.as_ref().map(|(_, channel, _)| *channel),
+            self.game_state_open
+                .as_ref()
+                .map(|session| session.channel_index),
+            self.player_state_open
+                .as_ref()
+                .map(|plan| plan.channel_index),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.manager_opens.iter().map(|(_, _, channel)| *channel))
+        .chain(self.quest_opens.iter().map(|(_, channel)| *channel))
+        .collect()
+    }
+
+    /// `entry`'s level actor channel budget now: the channels its level
+    /// actors hold, and the free actor channels above the session channels
+    /// (excluding them) that anything may still take.
+    fn level_channel_budget(&self, entry: &PeerEntry) -> LevelChannelBudget {
+        let reserved = self.reserved_session_channels();
+        let first = reserved.iter().max().map_or(2, |channel| channel + 1);
+        let end = entry.peer.config().packet.limits.max_channels;
+        let control = entry.peer.config().control_channel_index;
+        let free = (first..end)
+            .filter(|channel| {
+                *channel != control
+                    && !reserved.contains(channel)
+                    && !entry.peer.has_actor_channel(*channel)
+            })
+            .count();
+        let held = entry
+            .level_actors
+            .values()
+            .flatten()
+            .filter(|slot| matches!(slot, LevelActorSlot::Opened { .. }))
+            .count();
+        LevelChannelBudget {
+            cap: self
+                .level_visibility
+                .as_ref()
+                .map_or(MAX_LEVEL_ACTOR_CHANNELS, |config| config.max_level_channels),
+            first,
+            reserved,
+            held,
+            free,
+        }
+    }
+
+    fn send_level_actor_opens(&mut self, address: SocketAddrV4) {
+        let mut admitted = 0;
+        let Some(entry) = self.peers.get(&address) else {
+            return;
+        };
+        // Computed once per pass, then kept current as opens are admitted.
+        let mut budget = self.level_channel_budget(entry);
+        if let Some(entry) = self.peers.get_mut(&address)
+            && std::mem::take(&mut entry.level_channels_released)
+            && budget.held < budget.cap
+        {
+            // Only as many channel refusals as the budget can now admit; a
+            // cap refusal is never re-armed by a released channel.
+            let requeued = requeue_channel_refusals(entry, budget.remaining());
+            self.stats.level_actor_opens_requeued = self
+                .stats
+                .level_actor_opens_requeued
+                .saturating_add(requeued as u64);
+        }
+        loop {
+            let Some(config) = &self.level_visibility else {
+                return;
+            };
+            let Some(entry) = self.peers.get_mut(&address) else {
+                return;
+            };
+            let Some(key) = entry.level_actor_queue.front().cloned() else {
+                return;
+            };
+            let Some(index) = entry.level_actors.get(&key).and_then(|slots| {
+                slots
+                    .iter()
+                    .position(|slot| matches!(slot, LevelActorSlot::Pending { .. }))
+            }) else {
+                entry.level_actor_queue.pop_front();
+                continue;
+            };
+            if admitted >= LEVEL_ACTOR_OPENS_PER_PASS {
+                // The rest go out on later polls, after their traffic.
+                entry.level_actors_retry_ready = true;
+                return;
+            }
+            let ring = entry.peer.sequencer().notify().sent_records().len();
+            let capacity = entry.peer.config().sent_capacity;
+            if (capacity - ring.min(capacity)) * 2 < capacity {
+                // Leave half the ring to the session's own traffic; ACK/NAK
+                // progress (which this outstanding traffic brings) re-arms.
+                bump(&mut self.stats.level_actor_opens_deferred);
+                return;
+            }
+            let set_slot = |entry: &mut PeerEntry, slot: LevelActorSlot| {
+                if let Some(current) = entry
+                    .level_actors
+                    .get_mut(&key)
+                    .and_then(|slots| slots.get_mut(index))
+                {
+                    *current = slot;
+                }
+            };
+            let previous = entry
+                .level_actors
+                .get(&key)
+                .and_then(|slots| slots.get(index))
+                .and_then(|slot| match slot {
+                    LevelActorSlot::Pending { refused } => *refused,
+                    _ => None,
+                });
+            let mut refuse = |entry: &mut PeerEntry, cause: LevelRefusal| {
+                set_slot(entry, LevelActorSlot::Refused(cause));
+                if cause == LevelRefusal::Channels && entry.visible_levels.contains(&key) {
+                    entry.level_actors_refused = true;
+                }
+                // Once per cause transition, never per retry.
+                if previous != Some(cause) {
+                    bump(&mut self.stats.level_actor_opens_refused);
+                }
+            };
+            if budget.remaining() == 0 {
+                // At the cap, or the reserve would be touched.
+                let cause = if budget.held >= budget.cap {
+                    LevelRefusal::Cap
+                } else {
+                    LevelRefusal::Channels
+                };
+                refuse(entry, cause);
+                continue;
+            }
+            let mut start = budget.first;
+            let channel = loop {
+                match entry.peer.free_actor_channel(start) {
+                    Some(channel) if budget.reserved.contains(&channel) => start = channel + 1,
+                    other => break other,
+                }
+            };
+            let Some(channel) = channel else {
+                refuse(entry, LevelRefusal::Channels);
+                continue;
+            };
+            let Some(spelling) = self
+                .level_actor_holders
+                .get(&key)
+                .map(|holding| holding.spelling.clone())
+            else {
+                set_slot(entry, LevelActorSlot::Unsent);
+                bump(&mut self.stats.level_actor_open_errors);
+                continue;
+            };
+            let order = entry.peer.connection_byte_order();
+            let mut cache = self.guid_cache.clone();
+            let mut exports = entry.exports.clone();
+            let sent = config
+                .actors
+                .actor_chain(index, &spelling)
+                .and_then(|chain| {
+                    Ok(StaticActorOpen {
+                        chain,
+                        blocks: vec![actor_role_block(config.engine_net_version)?],
+                        engine_net_version: config.engine_net_version,
+                    })
+                })
+                .and_then(|open| {
+                    compose_static_actor_open(&mut cache, &mut exports, &open, channel, order)
+                })
+                .and_then(|(composed, _)| {
+                    entry
+                        .peer
+                        .reliable_actor_open_datagrams(&composed.bunch, composed.exports.as_slice())
+                });
+            match sent {
+                Ok(sent) => {
+                    commit_exports(&mut exports, &sent);
+                    entry.exports = exports;
+                    entry.ack_pending = false;
+                    set_slot(
+                        entry,
+                        LevelActorSlot::Opened {
+                            channel,
+                            settled: false,
+                            abandoned: false,
+                        },
+                    );
+                    self.guid_cache = cache;
+                    admitted += 1;
+                    budget.held += 1;
+                    budget.free = budget.free.saturating_sub(1);
+                    bump(&mut self.stats.level_actor_opens_sent);
+                    // Queued for reliable repair: a failed socket send only counts.
+                    self.send_all(&sent, address);
+                }
+                Err(error) => {
+                    if transport_capacity_can_drain(entry, &error, channel) {
+                        // Keep it and everything after it, in order, until
+                        // ACK/NAK progress.
+                        bump(&mut self.stats.level_actor_opens_deferred);
+                        return;
+                    }
+                    // Composition or framing that cannot drain, including an
+                    // exhausted static GUID space: counted, the connection
+                    // kept unless its transport failed.
+                    set_slot(entry, LevelActorSlot::Unsent);
+                    bump(&mut self.stats.level_actor_open_errors);
+                    if entry.peer.is_failed() {
+                        self.remove_peer(address);
+                        bump(&mut self.stats.peers_failed);
+                        return;
                     }
                 }
             }
@@ -8517,6 +9557,8 @@ impl PeerLab {
         self.update_pawn_properties();
         self.send_acks();
         self.update_game_state();
+        // Lowest priority: after every other pass of this poll, bounded.
+        self.retry_level_actor_opens();
     }
 
     /// One GameState update pass (module docs): advance the clock to the
@@ -17311,6 +18353,7 @@ mod tests {
             assert!(!text.contains("AuthoredUnreliable"));
         }
     }
+    mod level_visibility;
 }
 
 #[cfg(test)]
