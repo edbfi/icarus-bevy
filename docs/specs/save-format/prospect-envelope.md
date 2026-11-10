@@ -4,7 +4,7 @@
 
 Experimental: envelope schema observed statically in build 25621760 (M-168) and
 confirmed against all twelve supplied prospect documents; the inner world is
-not interpreted. Last reconciled: 2026-10-22.
+not interpreted. Last reconciled: 2026-11-10.
 Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
@@ -66,14 +66,10 @@ unavailable.
   reference-server re-saves (`15 / 15`, `2,664..2,850` recorders, F-738).
 - No explicit outer build or save-version marker exists, and neither the
   payload nor the original server's re-save holds a version string (F-896).
-- Provenance: the user supplied the archive from a heavy ICARUS world; it is
-  preserved privately with an inventory (M-166). Intake: 24 members (2 JSON, 22
-  backups), 26,511,334 bytes, all member CRCs pass (F-881). The writes
-  date from the 3.0.29 release window, a week before the user-reported 3.0.31,
-  which is the installed client's version (F-896, F-685, F-878). A stock Windows
-  client exists on the user's separate machine, outside the offline lab.
-  Possession of the archive completes no compatibility, bug-reproduction or
-  performance gate.
+- Provenance: the user-supplied heavy-world archive is preserved privately with
+  an inventory (M-166); intake F-881. The writes date from the 3.0.29 window,
+  before the user-reported 3.0.31 client (F-896, F-685, F-878). Possession
+  completes no compatibility, bug-reproduction or performance gate.
 
 ## Candidate
 

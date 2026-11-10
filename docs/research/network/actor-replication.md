@@ -28,7 +28,7 @@ bindings.
 [World managers](../../specs/network/world-managers.md): managers, quests,
 profiles/restore, modifier/temperature; automatic climate/scheduling unqualified.
 Prospect refresh/initialization F-936/F-1014/F-1011/F-975; triggers U-070/F-822.
-UID/membership: F-943 to F-946, F-949 to F-951; loadout/backend: F-956 to F-958.
+UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F-958.
 
 ## Open
 

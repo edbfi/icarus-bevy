@@ -17,15 +17,11 @@ Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-c001-decoder.md
 
 ## Current answer
 
-The callback 0x1419fe870 (305 B) and candidate constructor 0x141788530 (296 B)
-are complete functions (.pdata 103538 and 95461, unwind v1 flags=2, push/pop
-rbx) rather than fragments (F-905; U-005 resolved). The retained listing
-query in M-568/M-569 rejected because the project was imported/opened with
-`-noanalysis`, leaving 0x1419fe870 undisassembled so `getInstructionAt`
-returned null with no API exception (F-905; U-003, U-042 resolved). The
-native getter 0x1419fe200 (.pdata 103518 at 0x14655d468) is registered by CRT
-init 0x1406a8ab0 -> 0x142187f70 and 0x141a00220 via 0x144abc1b0[0] with 48
-`.text` references (F-906, F-722; U-006 resolved).
+The callback 0x1419fe870 and candidate constructor 0x141788530 are complete
+functions, not fragments (F-905; U-005 resolved). The retained listing query
+in M-568/M-569 rejected because the project was opened with `-noanalysis`,
+leaving the callback undisassembled (F-905; U-003, U-042 resolved). CRT init
+registers the native getter 0x1419fe200 (F-906, F-722; U-006 resolved).
 
 A standalone decoder that works on fixed buffers without a Program or database
 (F-907) passes its authored fixtures, including one- and two-window variants
