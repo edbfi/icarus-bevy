@@ -14,20 +14,16 @@ F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay. Bindings/cause: U-079.
 
 State/restart F-1036; query118/callback126 F-1051; fields66/86 F-1052.
-The retry finalises yet stays at Preparing geometry with no later client
-calls (F-1067), so friends/finalisation is not the wait. After 126 the
-original sends a connected-player record (F-1072 to F-1075), then level
-actors (F-1081), but not its static RPC113 (F-1068). Clients stream terrain
-tiles themselves (F-1078, F-1079) once their own record finalises (F-1080).
-Native sends the record, unproven with a client (F-1077), not 62, other
-startup RPCs or level actors (F-1082). Curtain inputs
-F-1069/F-1076; visibility bindings/effects remain U-079.
+Runs 1/2 finalise without tile reports (F-1084, F-1085); with controller
+17/20 run 3 reports tiles, UI unchanged (F-1089). After 126 the original sends the record (F-1072 to
+F-1075), then level actors (F-1081), not RPC113 (F-1068). Clients stream
+tiles (F-1078, F-1079) once their record finalises (F-1080). The native record
+matches (F-1077, F-1086), but its check needs controller IcarusPlayerCharacter,
+unsent until F-1088 (F-1087); 62, startup RPCs and level actors are missing
+(F-1082). Curtain inputs F-1069/F-1076.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
-
-Release identities/layouts F-1027/F-1028/F-1031 to F-1033 establish no live
-bindings.
 
 [World managers](../../specs/network/world-managers.md): managers, quests,
 profiles/restore, modifier/temperature; automatic climate/scheduling unqualified.
@@ -43,4 +39,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1343.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1351.

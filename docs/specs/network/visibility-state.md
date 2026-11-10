@@ -68,7 +68,8 @@ RPC82 framing, local handler/cache paths and level-status call 62.
   server streaming level (count; per level FName as FString with number 0,
   int32 LOD, loaded/visible/block-on-load bits), then 23. Clients skip
   distance-dependent levels, streaming tiles themselves (F-1079) once their
-  record is finalised (F-1080).
+  record is finalised (F-1080). Native's one 82 is S2's first (vista level);
+  S2's next eight are tiles (F-1085).
 
 ## Candidate
 
@@ -92,11 +93,10 @@ record and the 82 burst; loading-text predicate unread.
 
 U-079/[gates](../../gates.md#before-enabling-visibility-dispatch-or-effects):
 no readiness/world-entry cause proof. M-1207 is count only. Unread: a Blueprint
-override of the F-1080 gate; the level the native run's single 82 names (F-1067);
-3.0.35 client behaviour.
+override of the F-1080 gate; 3.0.35 client behaviour.
 
 ## Evidence
 
 M-1208, M-1209, M-1215, M-1217, M-1219, M-1221, M-1223 to M-1244, M-1246/M-1252.
 M-1240/M-1241/M-1243 are direct; M-1234/M-1242/M-1244 are empty REA bundles.
-M-1161, M-1342, M-1343 (F-1078 to F-1081).
+M-1161, M-1342, M-1343 (F-1078 to F-1081); M-1345, M-1347 (F-1085).

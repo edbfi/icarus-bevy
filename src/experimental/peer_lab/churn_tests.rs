@@ -74,6 +74,8 @@ struct Retained {
     quest_opens: usize,
     member_refresh_members: usize,
     networking_players: usize,
+    /// Fixed-size unreliable-bunch field table (bounded, never per session).
+    unreliable_fields: usize,
 }
 
 /// Monotonic counters: no stored state per session, bounded by their range.
@@ -100,6 +102,8 @@ struct PeerRetained {
     closing_legacy: usize,
     restored_modifiers: usize,
     sent_records: usize,
+    /// Controller possession updates pending admission or awaiting ACK.
+    possession_unsettled: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +127,11 @@ fn peer_retained(entry: &PeerEntry) -> PeerRetained {
         closing_legacy: entry.closing_legacy_actors.len(),
         restored_modifiers: entry.restored_modifiers.len(),
         sent_records: entry.peer.sequencer().notify().sent_records().len(),
+        possession_unsettled: usize::from(
+            entry.controller_possession_pending
+                || (entry.controller_possession_receipt.channel.is_some()
+                    && !entry.controller_possession_receipt.settled),
+        ),
     }
 }
 
@@ -143,6 +152,7 @@ fn snapshot(lab: &PeerLab) -> Snapshot {
         live.closing_legacy += one.closing_legacy;
         live.restored_modifiers += one.restored_modifiers;
         live.sent_records += one.sent_records;
+        live.possession_unsettled += one.possession_unsettled;
     }
     Snapshot {
         retained: Retained {
@@ -164,6 +174,7 @@ fn snapshot(lab: &PeerLab) -> Snapshot {
             networking_players: session
                 .and_then(|session| session.networking.as_ref())
                 .map_or(0, |status| status.player_names.len()),
+            unreliable_fields: lab.unreliable_actor_bunches.controller_fields.len(),
         },
         counters: Counters {
             dynamic_guids: lab.guid_cache.dynamic_guids_assigned(),
@@ -780,10 +791,14 @@ fn lab_ending(ending: Ending) -> Run {
     let run = sequential(&mut lab, ending, cycles);
     run.assert_retained();
     let stats = &run.last().stats;
+    // Every session's pawn opens at Join, so each gets one possession update.
+    assert_eq!(stats.controller_possession_updates_sent, cycles);
+    assert_eq!(stats.controller_possession_errors, 0);
     match ending {
         Ending::Clean | Ending::Idle | Ending::Reconnect => {
             assert_eq!(stats.players_finalised, cycles);
             assert_eq!(stats.connected_player_record_creations_acked, cycles);
+            assert_eq!(stats.controller_possession_updates_acked, cycles);
         }
         Ending::AfterJoin => assert_eq!(stats.players_finalised, 0),
         Ending::AfterBegin | Ending::AfterProfiles => {
@@ -839,6 +854,10 @@ fn eight_concurrent_peers_churn_retains_no_session_state() {
         run.last().stats.connected_player_record_creations_acked,
         rounds * workers as u64
     );
+    assert_eq!(
+        run.last().stats.controller_possession_updates_acked,
+        rounds * workers as u64
+    );
     assert_eq!(run.last().stats.peers_rejected, 0);
 }
 
@@ -874,6 +893,8 @@ fn production_app_full_path_churn_retains_no_session_state() {
         run.assert_retained();
         let stats = &run.last().stats;
         assert_eq!(stats.connected_player_record_creations_acked, cycles);
+        assert_eq!(stats.controller_possession_updates_sent, cycles);
+        assert_eq!(stats.controller_possession_updates_acked, cycles);
         assert_eq!(
             stats.connected_player_records_removed + u64::from(ending == Ending::Reconnect),
             cycles

@@ -94,6 +94,14 @@ pub struct NetworkConfig {
     /// profile naming the record class and the pawn, GameState and PlayerState
     /// opens, and are otherwise left off. `false` makes a comparison run.
     pub connected_player_records: bool,
+    /// EXPERIMENTAL: after each player's pawn open, send one reliable
+    /// PlayerController property update with handle 17 `Pawn` and handle 20
+    /// `IcarusPlayerCharacter` referencing that pawn: the controller pawn the
+    /// connected-player record's finalisation check compares (F-1074). Default
+    /// on, as the original sends them; unqualified with a stock client.
+    /// Needs a release profile with the controller and pawn opens and is
+    /// otherwise left off. `false` makes a comparison run.
+    pub controller_possession_properties: bool,
 }
 
 impl Default for NetworkConfig {
@@ -111,6 +119,7 @@ impl Default for NetworkConfig {
             authored_gameplay: None,
             authored_replication: None,
             connected_player_records: true,
+            controller_possession_properties: true,
         }
     }
 }

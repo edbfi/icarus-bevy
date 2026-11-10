@@ -344,6 +344,7 @@ pub struct PeerReceive {
     summary: ReceiveSummary,
     messages: Vec<Decoded>,
     actor_bunches: Vec<Bunch>,
+    unreliable_actor_bunches: Vec<Bunch>,
 }
 
 impl std::fmt::Debug for PeerReceive {
@@ -369,6 +370,14 @@ impl PeerReceive {
     /// Payload decoding belongs to the opt-in session policy.
     pub fn actor_bunches(&self) -> &[Bunch] {
         &self.actor_bunches
+    }
+
+    /// Unreliable bunches on open, nonclosing actor channels, in arrival
+    /// order: dropped as before (each counted in `actor_bunches_dropped`) and
+    /// lent here only for header-level counting; never delivered or applied.
+    /// Bounded by the bunches one packet can carry.
+    pub fn unreliable_actor_bunches(&self) -> &[Bunch] {
+        &self.unreliable_actor_bunches
     }
 
     /// The delivered messages, consuming the result.
@@ -566,6 +575,13 @@ impl LabPeer {
         self.failed
     }
 
+    /// Test-only: fail this transport as an earlier error would, without the
+    /// session layer noticing, to reach paths that guard a failed peer.
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(&mut self) {
+        self.failed = true;
+    }
+
     fn ensure_usable(&self) -> Result<()> {
         ensure!(
             !self.failed,
@@ -718,6 +734,7 @@ impl LabPeer {
                 summary,
                 messages: Vec::new(),
                 actor_bunches: Vec::new(),
+                unreliable_actor_bunches: Vec::new(),
             });
         };
         summary.disposition = PacketDisposition::Accepted {
@@ -778,7 +795,7 @@ impl LabPeer {
         }
         let delivered = self.deliver(staged, &mut summary);
         let messages = self.fail_on_error(delivered)?;
-        let (actor_bunches, actors_accepted) =
+        let (actor_bunches, unreliable_actor_bunches, actors_accepted) =
             self.deliver_actors(bunches, &mut summary, capture, header.sequence);
         let acked = self.sequencer.ack_seq(received.sequence, actors_accepted);
         self.fail_on_error(acked)?;
@@ -788,6 +805,7 @@ impl LabPeer {
             summary,
             messages,
             actor_bunches,
+            unreliable_actor_bunches,
         })
     }
 
@@ -797,8 +815,9 @@ impl LabPeer {
         summary: &mut ReceiveSummary,
         mut capture: Option<&mut super::selected_rpc_capture::CaptureTap<'_>>,
         releasing_packet_sequence: u16,
-    ) -> (Vec<Bunch>, bool) {
+    ) -> (Vec<Bunch>, Vec<Bunch>, bool) {
         let mut delivered = Vec::new();
+        let mut unreliable = Vec::new();
         let mut accepted = true;
         for bunch in bunches {
             if self.is_control(&bunch) || self.closing_actors.contains(&bunch.header.channel_index)
@@ -812,6 +831,7 @@ impl LabPeer {
             summary.actor_bunches += 1;
             let Some(raw) = bunch.header.reliable_sequence_raw else {
                 summary.actor_bunches_dropped += 1;
+                unreliable.push(bunch);
                 continue;
             };
             // Decode only after ordered delivery: even unsupported forms occupy
@@ -844,7 +864,7 @@ impl LabPeer {
             }
         }
         summary.actor_queued_reliable = self.actors.values().map(ReliableChannel::queued_len).sum();
-        (delivered, accepted)
+        (delivered, unreliable, accepted)
     }
 
     /// Construct only supported reliable actor bodies. Capture sees the wire

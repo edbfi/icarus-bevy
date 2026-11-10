@@ -255,6 +255,7 @@ use super::rep_rpc::{
     FieldHeader, RpcArgument, RpcItem, encode_rpc_payload, player_controller_rpc_parameters,
     write_field_header,
 };
+use super::session_open::compose_controller_possession_update;
 
 /// Explicit caller-authored startup actions. Their order and necessity are not
 /// qualified against a stock client. No actions are enabled by default.
@@ -820,6 +821,22 @@ pub struct PeerLabStats {
     /// Composition or framing refusals that cannot drain; nothing is retried
     /// until the next record change.
     pub connected_player_record_errors: u64,
+    /// Controller possession property updates (handle 17 `Pawn` and handle
+    /// 20 `IcarusPlayerCharacter`, the controller pawn F-1074's check reads)
+    /// admitted to reliable controller transport: at most one per session,
+    /// after its pawn open, with
+    /// [`PeerLab::enable_controller_possession_properties`].
+    pub controller_possession_updates_sent: u64,
+    /// Admitted possession updates whose own reliable bunch a positive packet
+    /// ACK settled, counted once each. No client application is implied.
+    pub controller_possession_updates_acked: u64,
+    /// Possession updates held back by drainable transport pressure; the
+    /// retry composes from the current state after ACK/NAK progress.
+    pub controller_possession_sends_deferred: u64,
+    /// Composition or framing refusals that cannot drain, or a controller or
+    /// pawn channel no longer open when due; that session's update is
+    /// abandoned and its record no longer waits for it.
+    pub controller_possession_errors: u64,
     pub player_character_id_updates_sent: u64,
     /// Returning pawns given their saved UID (F-950).
     pub returning_pawns_restored: u64,
@@ -1034,6 +1051,11 @@ pub struct SessionCounts {
     pub connected_player_record_sends_deferred: u64,
     pub connected_player_records_removed: u64,
     pub connected_player_record_errors: u64,
+    /// Controller possession property counters, as in [`PeerLabStats`].
+    pub controller_possession_updates_sent: u64,
+    pub controller_possession_updates_acked: u64,
+    pub controller_possession_sends_deferred: u64,
+    pub controller_possession_errors: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
     pub returning_pawn_updates_sent: u64,
@@ -1082,6 +1104,7 @@ pub struct ReadinessCounts {
     pub initialisation_transport: InitialisationTransportCounts,
     pub friends_query: FriendsQueryReadiness,
     pub connected_player_records: ConnectedPlayerRecordReadiness,
+    pub controller_possession: ControllerPossessionReadiness,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
     /// Retained receipts after a positive ACK leaves the controller channel
@@ -1161,6 +1184,175 @@ pub struct ConnectedPlayerRecordReadiness {
     pub creations_settled: usize,
     /// Queued record creations not yet ACKed.
     pub records_awaiting_ack: usize,
+}
+
+/// Live controller possession property gauges (F-1074), one receipt per
+/// session for its single update; settled means a positive packet ACK
+/// covered that update's reliable bunch, not that a client applied it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ControllerPossessionReadiness {
+    /// Sessions whose pawn open committed but whose update is not admitted
+    /// yet (transport pressure).
+    pub pending_send: usize,
+    /// `queued` = `settled` + `awaiting_ack`.
+    pub queued: usize,
+    pub settled: usize,
+    pub awaiting_ack: usize,
+}
+
+/// Fixed channel kinds of client-to-server unreliable actor bunches, from the
+/// opens this connection committed; never an actor identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnreliableChannelKind {
+    Controller,
+    Pawn,
+    PlayerState,
+    GameState,
+    Other,
+}
+
+/// Count and last whole-bunch payload length of one channel kind, summed
+/// over every connection since bind: `last_payload_bits` is whichever
+/// connection's bunch of this kind arrived last.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct UnreliableChannelCounts {
+    /// Lab-wide count since bind, all connections.
+    pub bunches: u64,
+    /// From the most recent such bunch on any connection.
+    pub last_payload_bits: u64,
+}
+
+/// One controller actor-block field index seen in unreliable bunches, on any
+/// connection since bind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct UnreliableFieldCounts {
+    pub index: u32,
+    /// Lab-wide count since bind, all connections.
+    pub count: u64,
+    /// The field's own payload length (after its header) when last seen on
+    /// any connection.
+    pub last_payload_bits: u64,
+}
+
+/// Distinct controller field indices [`UnreliableActorBunchCounts`] keeps.
+pub const UNRELIABLE_CONTROLLER_FIELD_ENTRIES: usize = 16;
+
+/// Header-only breakdown of client-to-server unreliable actor bunches, which
+/// stay dropped exactly as before (each is also in `actor_bunches_dropped`).
+/// Counts and lengths only: no payloads, values or identities. Field indices
+/// are read only on the controller channel, the one channel whose class field
+/// bound the lab holds; a pawn or GameState field index needs a class bound
+/// the lab does not have, so those channels are counted whole.
+///
+/// Lab-wide, not per session: counts accumulate over every connection since
+/// bind and are not dropped when a session ends, one connection can fill the
+/// field table for all, and each `last_payload_bits` comes from whichever
+/// connection sent last. It reads cleanly only with one client connected.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct UnreliableActorBunchCounts {
+    pub controller: UnreliableChannelCounts,
+    pub pawn: UnreliableChannelCounts,
+    pub player_state: UnreliableChannelCounts,
+    pub game_state: UnreliableChannelCounts,
+    /// Open actor channels that are none of the kinds above for their
+    /// connection (managers, quests, replicated actors).
+    pub other: UnreliableChannelCounts,
+    /// At most [`UNRELIABLE_CONTROLLER_FIELD_ENTRIES`] distinct indices, in
+    /// first-seen order, shared by every connection (the first connections
+    /// to send can fill it); further indices count in
+    /// `controller_field_overflow`.
+    pub controller_fields: Vec<UnreliableFieldCounts>,
+    pub controller_field_overflow: u64,
+    /// Controller bunches not read to fields: partial parts, or open, close,
+    /// paused, export or must-be-mapped forms.
+    pub controller_unparsed: u64,
+    /// Controller bunches whose body or field headers did not parse; fields
+    /// read before the failure still count.
+    pub controller_malformed: u64,
+    /// Controller blocks addressed to a sub-object or carrying properties:
+    /// counted, not read.
+    pub controller_other_blocks: u64,
+}
+
+impl UnreliableActorBunchCounts {
+    fn channel(&mut self, kind: UnreliableChannelKind) -> &mut UnreliableChannelCounts {
+        match kind {
+            UnreliableChannelKind::Controller => &mut self.controller,
+            UnreliableChannelKind::Pawn => &mut self.pawn,
+            UnreliableChannelKind::PlayerState => &mut self.player_state,
+            UnreliableChannelKind::GameState => &mut self.game_state,
+            UnreliableChannelKind::Other => &mut self.other,
+        }
+    }
+
+    /// Count one dropped unreliable bunch of `kind`; `controller` is the
+    /// controller's actor codec, given only for the controller channel.
+    fn record(
+        &mut self,
+        kind: UnreliableChannelKind,
+        bunch: &super::packet::Bunch,
+        controller: Option<&super::actor_channel::ActorChannelCodec>,
+    ) {
+        let channel = self.channel(kind);
+        bump(&mut channel.bunches);
+        channel.last_payload_bits = bunch.payload.bit_len() as u64;
+        let Some(codec) = controller else {
+            return;
+        };
+        let h = &bunch.header;
+        if h.partial
+            || h.open
+            || h.close
+            || h.paused
+            || h.has_package_map_exports
+            || h.has_must_be_mapped_guids
+        {
+            bump(&mut self.controller_unparsed);
+            return;
+        }
+        let Ok(body) = read_client_actor_bunch_body(&mut bunch.payload.reader(), codec) else {
+            bump(&mut self.controller_malformed);
+            return;
+        };
+        for block in &body.blocks {
+            if block.has_rep_layout || !matches!(block.target, BlockTarget::Actor) {
+                bump(&mut self.controller_other_blocks);
+                continue;
+            }
+            let mut reader = block.payload.reader();
+            while !reader.at_end() {
+                let Ok(field) = read_field_header(
+                    &mut reader,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    codec.limits.max_payload_bits,
+                ) else {
+                    bump(&mut self.controller_malformed);
+                    return;
+                };
+                self.record_field(field.index, field.payload.bit_len());
+            }
+        }
+    }
+
+    fn record_field(&mut self, index: u32, payload_bits: usize) {
+        if let Some(entry) = self
+            .controller_fields
+            .iter_mut()
+            .find(|entry| entry.index == index)
+        {
+            bump(&mut entry.count);
+            entry.last_payload_bits = payload_bits as u64;
+        } else if self.controller_fields.len() < UNRELIABLE_CONTROLLER_FIELD_ENTRIES {
+            self.controller_fields.push(UnreliableFieldCounts {
+                index,
+                count: 1,
+                last_payload_bits: payload_bits as u64,
+            });
+        } else {
+            bump(&mut self.controller_field_overflow);
+        }
+    }
 }
 
 /// Refused `ServerFriendsListUpdated` fields by [`FriendsListRejection`];
@@ -1689,6 +1881,15 @@ struct PeerEntry {
     connected_player_creations_settled: usize,
     /// The committed PlayerController open's actor and PlayerState GUIDs.
     controller_open_guids: Option<(u32, u32)>,
+    /// Controller possession properties (F-1074): due once this session's
+    /// pawn open committed, until admitted to transport or abandoned.
+    controller_possession_pending: bool,
+    controller_possession_retry_ready: bool,
+    /// The admitted update's own reliable bunch; its channel is set once
+    /// admitted, so a session sends at most one.
+    controller_possession_receipt: InitialisationReceipt,
+    /// The update could not be admitted for good; nothing waits for it.
+    controller_possession_failed: bool,
     friends_query_pending: bool,
     friends_query_retry_ready: bool,
     /// The last admitted friends query's reliable bunch (F-1051).
@@ -2172,6 +2373,15 @@ pub struct PeerLab {
     connected_players: Option<ConnectedPlayersPlan>,
     /// The next record's sub-object index under the GameState key.
     next_connected_player_record: u32,
+    /// Opt-in controller possession properties after each pawn open
+    /// ([`PeerLab::enable_controller_possession_properties`]).
+    controller_possession: bool,
+    /// Header-only counts of dropped client unreliable actor bunches, kept
+    /// only while `count_unreliable_actor_bunches` is set.
+    unreliable_actor_bunches: UnreliableActorBunchCounts,
+    /// Opt-in ([`PeerLab::enable_unreliable_actor_bunch_counts`]): off by
+    /// default, so the receive path parses no dropped bunch for diagnostics.
+    count_unreliable_actor_bunches: bool,
     /// Opt-in world manager opens after the PlayerState: each manager's
     /// key, plan and channel (F-859).
     manager_opens: Vec<(ActorKey, ManagerOpenPlan, u32)>,
@@ -2331,6 +2541,9 @@ impl PeerLab {
             player_state_open: None,
             connected_players: None,
             next_connected_player_record: 0,
+            controller_possession: false,
+            unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
+            count_unreliable_actor_bunches: false,
             manager_opens: Vec::new(),
             quest_open_base: None,
             quest_opens: Vec::new(),
@@ -4734,6 +4947,63 @@ impl PeerLab {
         self.connected_players.is_some()
     }
 
+    /// Send each session's controller possession properties: once its pawn
+    /// open is committed, one reliable actor property update on its
+    /// PlayerController channel with handle 17 `Pawn` and handle 20
+    /// `IcarusPlayerCharacter`, both referencing that pawn. The connected-
+    /// player record's finalisation check compares handle 20 with the
+    /// record's pawn, and only replication sets it on a client (F-1074).
+    /// A session's record waits until its update is admitted (not ACKed).
+    /// Unqualified with a stock client. Requires the PlayerController and
+    /// pawn opens; must be configured before any peer exists.
+    pub fn enable_controller_possession_properties(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "controller possession properties are configured before admission"
+        );
+        ensure!(
+            self.player_controller_open.is_some() && self.pawn_open.is_some(),
+            "controller possession properties need the controller and pawn opens"
+        );
+        self.controller_possession = true;
+        Ok(())
+    }
+
+    /// Turn controller possession properties off for a comparison run; the
+    /// lab then sends exactly what it sends without them. Must be called
+    /// before any peer exists.
+    pub fn disable_controller_possession_properties(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "controller possession properties are configured before admission"
+        );
+        self.controller_possession = false;
+        Ok(())
+    }
+
+    /// Whether each session's controller possession properties are sent.
+    pub fn has_controller_possession_properties(&self) -> bool {
+        self.controller_possession
+    }
+
+    /// Header-only counts of the client unreliable actor bunches dropped
+    /// since bind, by channel kind and controller field index: lab-wide over
+    /// every connection, kept after sessions end, so they read cleanly only
+    /// with one client connected (the probe's `unreliable_actor_bunches`).
+    /// All zero unless [`Self::enable_unreliable_actor_bunch_counts`] was
+    /// called.
+    pub fn unreliable_actor_bunch_counts(&self) -> &UnreliableActorBunchCounts {
+        &self.unreliable_actor_bunches
+    }
+
+    /// Count dropped client unreliable actor bunches by channel kind and
+    /// controller field from now on. A diagnostic for probes: it parses each
+    /// such controller bunch's headers on the receive path, so the server
+    /// leaves it off. The bunches stay dropped either way.
+    pub fn enable_unreliable_actor_bunch_counts(&mut self) {
+        self.count_unreliable_actor_bunches = true;
+    }
+
     /// Configure at most 32 explicit actions once, before admitting any peers.
     /// Actions retain caller order and start only after all initial opens queue
     /// successfully and the controller and referenced pawn channels settle.
@@ -4948,6 +5218,10 @@ impl PeerLab {
                 .connected_player_record_sends_deferred,
             connected_player_records_removed: self.stats.connected_player_records_removed,
             connected_player_record_errors: self.stats.connected_player_record_errors,
+            controller_possession_updates_sent: self.stats.controller_possession_updates_sent,
+            controller_possession_updates_acked: self.stats.controller_possession_updates_acked,
+            controller_possession_sends_deferred: self.stats.controller_possession_sends_deferred,
+            controller_possession_errors: self.stats.controller_possession_errors,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
             returning_pawn_updates_sent: self.stats.returning_pawn_updates_sent,
@@ -5104,6 +5378,12 @@ impl PeerLab {
             records.creations_queued += entry.connected_player_creations_settled + awaiting;
             records.creations_settled += entry.connected_player_creations_settled;
             records.records_awaiting_ack += awaiting;
+            let possession = &mut counts.controller_possession;
+            let receipt = &entry.controller_possession_receipt;
+            possession.pending_send += usize::from(entry.controller_possession_pending);
+            possession.queued += usize::from(receipt.channel.is_some());
+            possession.settled += usize::from(receipt.settled);
+            possession.awaiting_ack += usize::from(receipt.channel.is_some() && !receipt.settled);
             counts.controller_startup_actions_queued += entry.controller_startup_queued;
             counts.controller_startup_actions_settled += entry.controller_startup_settled;
             counts.controller_startup_actions_awaiting_ack +=
@@ -5349,6 +5629,10 @@ impl PeerLab {
                         connected_player_receipts: Vec::new(),
                         connected_player_creations_settled: 0,
                         controller_open_guids: None,
+                        controller_possession_pending: false,
+                        controller_possession_retry_ready: false,
+                        controller_possession_receipt: InitialisationReceipt::default(),
+                        controller_possession_failed: false,
                         friends_query_pending: false,
                         friends_query_retry_ready: false,
                         friends_query_receipt: InitialisationReceipt::default(),
@@ -5490,6 +5774,15 @@ impl PeerLab {
                             if receipt.settled && !settled {
                                 bump(&mut self.stats.friends_list_queries_acknowledged);
                             }
+                            let receipt = &mut entry.controller_possession_receipt;
+                            let settled = receipt.settled;
+                            receipt.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                            if receipt.settled && !settled {
+                                bump(&mut self.stats.controller_possession_updates_acked);
+                            }
                             // Each record creation settles once, on a positive
                             // ACK of its own bunch; NAKs leave repair to the
                             // reliable layer and settle nothing.
@@ -5548,6 +5841,9 @@ impl PeerLab {
                             }
                             if entry.connected_players_pending {
                                 entry.connected_players_retry_ready = true;
+                            }
+                            if entry.controller_possession_pending {
+                                entry.controller_possession_retry_ready = true;
                             }
                             if entry.pending_profile_exchange.is_some() {
                                 entry.profile_exchange_retry_ready = true;
@@ -5674,6 +5970,47 @@ impl PeerLab {
                             .stats
                             .actor_duplicate_reliable
                             .saturating_add(summary.actor_duplicate_reliable as u64);
+                        // Header-only counts; these bunches stay dropped.
+                        if self.count_unreliable_actor_bunches
+                            && !received.unreliable_actor_bunches().is_empty()
+                        {
+                            let controller_codec =
+                                self.player_controller_open.as_ref().map(|plan| {
+                                    actor_codec(
+                                        plan.engine_net_version,
+                                        entry.peer.connection_byte_order(),
+                                    )
+                                });
+                            let pawn_channel =
+                                self.pawn_open.as_ref().map(|(_, channel, _)| *channel);
+                            let game_state_channel = self
+                                .game_state_open
+                                .as_ref()
+                                .map(|session| session.channel_index);
+                            for bunch in received.unreliable_actor_bunches() {
+                                let channel = Some(bunch.header.channel_index);
+                                let kind = if channel == entry.player_controller_channel {
+                                    UnreliableChannelKind::Controller
+                                } else if channel == pawn_channel
+                                    && entry.controller_startup_pawn_guid.is_some()
+                                {
+                                    UnreliableChannelKind::Pawn
+                                } else if channel == entry.player_state_channel {
+                                    UnreliableChannelKind::PlayerState
+                                } else if channel == game_state_channel
+                                    && entry.game_state.is_some()
+                                {
+                                    UnreliableChannelKind::GameState
+                                } else {
+                                    UnreliableChannelKind::Other
+                                };
+                                let controller = controller_codec
+                                    .as_ref()
+                                    .filter(|_| kind == UnreliableChannelKind::Controller);
+                                self.unreliable_actor_bunches
+                                    .record(kind, bunch, controller);
+                            }
+                        }
                         for bunch in received.actor_bunches() {
                             let Some(plan) = &self.player_controller_open else {
                                 bump(&mut self.stats.actor_bunches_ignored);
@@ -6414,6 +6751,12 @@ impl PeerLab {
             })
         };
         let pawn_channel = self.pawn_open.as_ref().map(|(_, channel, _)| *channel);
+        // The record follows its session's controller possession properties
+        // (F-1074): admission order is wire order on this connection, so the
+        // update's bunch leaves first; an abandoned update holds nothing.
+        if self.controller_possession && owner.controller_possession_pending {
+            return Ok(None);
+        }
         if !same
             || !owner.profiles.completed
             || !open(owner.player_controller_channel)
@@ -6582,6 +6925,125 @@ impl PeerLab {
                     if entry.peer.is_failed() {
                         self.remove_peer(address);
                         bump(&mut self.stats.peers_failed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// This session's pawn open just committed: its controller possession
+    /// properties are due now, once per session.
+    fn controller_possession_due(&mut self, address: SocketAddrV4) {
+        if !self.controller_possession {
+            return;
+        }
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        if entry.controller_possession_receipt.channel.is_some()
+            || entry.controller_possession_failed
+        {
+            return;
+        }
+        entry.controller_possession_pending = true;
+        entry.controller_possession_retry_ready = true;
+        self.retry_controller_possession();
+    }
+
+    /// Admit each due session's possession update, composed from the current
+    /// pawn reference. Capacity refusal keeps it pending until ACK/NAK
+    /// progress (as [`retry_friends_queries`](Self::retry_friends_queries));
+    /// a NAK of an admitted bunch is repaired by the reliable layer from the
+    /// stored bytes, never recomposed.
+    fn retry_controller_possession(&mut self) {
+        if !self.controller_possession {
+            return;
+        }
+        let ready: Vec<SocketAddrV4> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                (entry.controller_possession_pending
+                    && std::mem::take(&mut entry.controller_possession_retry_ready))
+                .then_some(*address)
+            })
+            .collect();
+        for address in ready {
+            self.send_controller_possession(address);
+        }
+    }
+
+    fn send_controller_possession(&mut self, address: SocketAddrV4) {
+        let (Some(plan), Some((_, pawn_channel, _))) =
+            (&self.player_controller_open, &self.pawn_open)
+        else {
+            return;
+        };
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let open = |channel: u32| {
+            entry.peer.has_actor_channel(channel) && !entry.peer.actor_channel_closing(channel)
+        };
+        let target = entry
+            .player_controller_channel
+            .filter(|channel| open(*channel))
+            .zip(
+                entry
+                    .controller_startup_pawn_guid
+                    .filter(|_| open(*pawn_channel)),
+            );
+        let Some((channel, pawn)) = target else {
+            // Nowhere to send it or nothing to name: abandoned, and a record
+            // held back for it may go ahead.
+            entry.controller_possession_pending = false;
+            entry.controller_possession_failed = true;
+            bump(&mut self.stats.controller_possession_errors);
+            self.connected_player_actor_opened(address);
+            return;
+        };
+        let codec = RepLayoutCodec {
+            actor: actor_codec(plan.engine_net_version, entry.peer.connection_byte_order()),
+            checksums: false,
+            limits: Default::default(),
+        };
+        let sent = compose_controller_possession_update(pawn, &plan.actor_layout, &codec).and_then(
+            |payload| {
+                let previous = entry
+                    .peer
+                    .actor_reliable_sequence(channel)
+                    .context("controller channel missing")?;
+                let sent = entry
+                    .peer
+                    .reliable_actor_bunch_datagrams(channel, payload)?;
+                Ok((sent, previous))
+            },
+        );
+        match sent {
+            Ok((sent, previous)) => {
+                entry.controller_possession_receipt =
+                    InitialisationReceipt::committed(&entry.peer, channel, previous);
+                entry.controller_possession_pending = false;
+                entry.ack_pending = false;
+                bump(&mut self.stats.controller_possession_updates_sent);
+                // Queued for reliable repair: a failed socket send only counts.
+                self.send_all(&sent, address);
+                // A record held back for this update may follow it now.
+                self.connected_player_actor_opened(address);
+            }
+            Err(error) => {
+                if transport_capacity_can_drain(entry, &error, channel) {
+                    entry.controller_possession_retry_ready = false;
+                    bump(&mut self.stats.controller_possession_sends_deferred);
+                } else {
+                    entry.controller_possession_pending = false;
+                    entry.controller_possession_failed = true;
+                    bump(&mut self.stats.controller_possession_errors);
+                    if entry.peer.is_failed() {
+                        self.remove_peer(address);
+                        bump(&mut self.stats.peers_failed);
+                    } else {
+                        self.connected_player_actor_opened(address);
                     }
                 }
             }
@@ -7561,7 +8023,10 @@ impl PeerLab {
         entry.ack_pending = false;
         let channel = *channel;
         self.guid_cache = cache;
-        if self.send_all(&sent, address) {
+        let delivered = self.send_all(&sent, address);
+        // The possession properties name this pawn, so they follow its open.
+        self.controller_possession_due(address);
+        if delivered {
             bump(&mut self.stats.pawn_opens_sent);
             self.complete_player_initialisation(address);
         }
@@ -8041,6 +8506,7 @@ impl PeerLab {
         }
         self.retry_control_replies();
         self.retry_initial_opens();
+        self.retry_controller_possession();
         self.retry_controller_startup();
         self.retry_friends_queries();
         self.retry_pending_profile_exchanges();
@@ -10955,6 +11421,1143 @@ mod tests {
         assert!(!lab.has_connected_player_records());
         lab.enable_connected_player_records(plan).unwrap();
         assert!(lab.has_connected_player_records());
+    }
+
+    /// [`record_lab`] with controller possession properties on.
+    fn possession_lab(records: bool) -> PeerLab {
+        let mut lab = record_lab(records);
+        lab.enable_controller_possession_properties().unwrap();
+        lab
+    }
+
+    /// A joined peer like [`record_peer`] on a fresh loopback socket, before
+    /// any opens: the caller drives the initial opens.
+    fn possession_identity_peer(
+        lab: &mut PeerLab,
+        connection: u32,
+        user: &str,
+    ) -> (
+        UdpSocket,
+        SocketAddrV4,
+        super::super::sequencing::PacketSequencer,
+    ) {
+        use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(lab.local_addr().unwrap()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (address, client) = handshake_peer_on(lab, &socket);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.connection_id = Some(connection);
+        entry.player = Some(RegisteredPlayer {
+            player_id: connection as i32,
+            name_units: "AUTHORED-POSSESSION".encode_utf16().collect(),
+        });
+        entry.login_unique_id = Some(UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+            value: NetIdValue::Text(ArchiveText::text(user).unwrap()),
+        });
+        entry.profiles.character_slot = Some(3);
+        (socket, address, client)
+    }
+
+    /// [`record_peer`], returning every bunch of its real initial-open
+    /// sequence (all delivered and ACKed).
+    fn possession_peer(
+        lab: &mut PeerLab,
+        connection: u32,
+        user: &str,
+    ) -> (
+        UdpSocket,
+        SocketAddrV4,
+        super::super::sequencing::PacketSequencer,
+        Vec<super::super::packet::Bunch>,
+    ) {
+        let (socket, address, mut client) = possession_identity_peer(lab, connection, user);
+        assert!(lab.send_player_controller_open(address));
+        let bunches = deliver_bunches(lab, &socket, &mut client, |_| true);
+        (socket, address, client, bunches)
+    }
+
+    /// Whether `bunch` has the possession update's framing: a whole,
+    /// reliable, nonopening controller-channel bunch without exports. During
+    /// the initial opens no other controller bunch has it.
+    fn possession_shaped(bunch: &super::super::packet::Bunch) -> bool {
+        let header = &bunch.header;
+        header.channel_index == super::super::session_open::PLAYER_CONTROLLER_CHANNEL_INDEX
+            && header.reliable
+            && !header.open
+            && !header.partial
+            && !header.has_package_map_exports
+    }
+
+    /// The possession updates among `bunches`: their positions and their
+    /// decoded `(handle, value)` entries, read with the repository decoder
+    /// against the controller open's own layout. Other controller bunches
+    /// (RPC fields, no property block) are skipped.
+    fn possession_updates(
+        lab: &PeerLab,
+        bunches: &[super::super::packet::Bunch],
+    ) -> Vec<(usize, Vec<(u32, RepValue)>)> {
+        let plan = lab.player_controller_open.as_ref().unwrap();
+        let codec = RepLayoutCodec {
+            actor: actor_codec(
+                plan.engine_net_version,
+                super::super::archive::ByteOrder::Little,
+            ),
+            checksums: false,
+            limits: Default::default(),
+        };
+        bunches
+            .iter()
+            .enumerate()
+            .filter(|(_, bunch)| possession_shaped(bunch))
+            .filter_map(|(index, bunch)| {
+                let mut reader = bunch.payload.reader();
+                let body = super::super::actor_channel::read_actor_bunch_body(
+                    &mut reader,
+                    false,
+                    &codec.actor,
+                )
+                .unwrap();
+                assert!(reader.at_end());
+                let [block] = body.blocks.as_slice() else {
+                    return None;
+                };
+                if !block.has_rep_layout {
+                    return None;
+                }
+                assert!(body.spawn.is_none());
+                assert_eq!(block.target, BlockTarget::Actor);
+                let stream = super::super::rep_layout::parse_rep_properties(
+                    &block.payload,
+                    &plan.actor_layout,
+                    &codec,
+                )
+                .unwrap();
+                Some((
+                    index,
+                    stream
+                        .entries
+                        .into_iter()
+                        .map(|entry| (entry.handle, entry.value))
+                        .collect(),
+                ))
+            })
+            .collect()
+    }
+
+    fn possession_entries(pawn: u32) -> Vec<(u32, RepValue)> {
+        let reference = RepValue::Object(super::super::actor_channel::NetGuidRef::plain(pawn));
+        vec![(17, reference.clone()), (20, reference)]
+    }
+
+    fn pawn_open_position(bunches: &[super::super::packet::Bunch]) -> usize {
+        bunches
+            .iter()
+            .position(|bunch| {
+                bunch.header.channel_index == super::super::pawn_open::PAWN_CHANNEL_INDEX
+                    && bunch.header.open
+            })
+            .unwrap()
+    }
+
+    /// The real initial opens send one update right after the pawn open,
+    /// naming the pawn as handles 17 and 20 of the survival controller's
+    /// layout; it re-encodes exactly, is ACKed once and is never repeated
+    /// by finalisation, the record or later passes.
+    #[test]
+    fn controller_possession_update_follows_the_pawn_open_once_and_decodes() {
+        let mut lab = possession_lab(true);
+        let (socket, address, mut client, bunches) =
+            possession_peer(&mut lab, 1, "AuthoredPossession");
+        let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        let [(position, entries)] = possession_updates(&lab, &bunches).try_into().unwrap();
+        assert_eq!(entries, possession_entries(pawn));
+        assert!(position > pawn_open_position(&bunches));
+        // GameState and PlayerState opens follow it.
+        let game_state = game_state_channel(&lab);
+        assert!(
+            bunches[position..]
+                .iter()
+                .any(|bunch| bunch.header.channel_index == game_state && bunch.header.open)
+        );
+        // The survival controller's 30-handle layout; exact re-encoding.
+        let plan = lab.player_controller_open.clone().unwrap();
+        assert_eq!(plan.actor_layout.len(), 30);
+        let codec = RepLayoutCodec {
+            actor: actor_codec(
+                plan.engine_net_version,
+                super::super::archive::ByteOrder::Little,
+            ),
+            checksums: false,
+            limits: Default::default(),
+        };
+        let composed = super::super::session_open::compose_controller_possession_update(
+            pawn,
+            &plan.actor_layout,
+            &codec,
+        )
+        .unwrap();
+        assert_eq!(composed.bytes(), bunches[position].payload.bytes());
+        assert_eq!(composed.bit_len(), bunches[position].payload.bit_len());
+        let body = super::super::actor_channel::read_actor_bunch_body(
+            &mut composed.reader(),
+            false,
+            &codec.actor,
+        )
+        .unwrap();
+        let reencoded = encode_actor_bunch_body(&body, &codec.actor).unwrap();
+        assert_eq!(reencoded.bytes(), composed.bytes());
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+        assert_eq!(lab.stats.controller_possession_sends_deferred, 0);
+        assert_eq!(lab.stats.controller_possession_errors, 0);
+        let settled = ControllerPossessionReadiness {
+            queued: 1,
+            settled: 1,
+            ..Default::default()
+        };
+        assert_eq!(lab.readiness_counts().controller_possession, settled);
+        // Begin, completion, finalisation and the record add none.
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        lab.controller_possession_due(address);
+        lab.retry_controller_possession();
+        let later = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(possession_updates(&lab, &later).is_empty());
+        assert_eq!(record_bodies(&lab, &later).len(), 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+        let counts = lab.session_counts();
+        assert_eq!(counts.controller_possession_updates_sent, 1);
+        assert_eq!(counts.controller_possession_updates_acked, 1);
+        assert_eq!(counts.controller_possession_sends_deferred, 0);
+        assert_eq!(counts.controller_possession_errors, 0);
+        lab.remove_peer(address).unwrap();
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness::default()
+        );
+    }
+
+    /// Nothing is due before the pawn open commits; a pawn that opens later
+    /// is followed by the update then.
+    #[test]
+    fn controller_possession_waits_for_the_pawn_open() {
+        let mut lab = possession_lab(false);
+        let (socket, address, mut client) =
+            possession_identity_peer(&mut lab, 1, "AuthoredLatePawn");
+        assert!(matches!(
+            lab.send_initial_controller_open(address),
+            InitialOpenOutcome::Committed(_)
+        ));
+        lab.retry_controller_possession();
+        let opened = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(possession_updates(&lab, &opened).is_empty());
+        assert_eq!(lab.stats.controller_possession_updates_sent, 0);
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness::default()
+        );
+        let (controller, player_state) = lab.peers[&address].controller_open_guids.unwrap();
+        assert!(matches!(
+            lab.send_pawn_open(address, controller, player_state),
+            InitialOpenOutcome::Committed(_)
+        ));
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        let [(position, entries)] = possession_updates(&lab, &bunches).try_into().unwrap();
+        assert_eq!(entries, possession_entries(pawn));
+        assert!(position > pawn_open_position(&bunches));
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+    }
+
+    /// A finalised player whose controller possession update is held back by
+    /// genuine transport pressure, so its connected-player record is held
+    /// too. The real opens run stage by stage (controller, GameState,
+    /// PlayerState); Begin, both initialisation answers and the friends list
+    /// arrive before the pawn opens. Then the controller channel's reliable
+    /// window is filled with authored bunches whose packets the client NAKs:
+    /// they stay unacknowledged (the window is full) while the sent ring
+    /// empties. The real pawn open then commits, the update is refused as
+    /// drainable window pressure and defers, the PlayerState completion goes
+    /// out on its own channel, and finalisation makes the record due.
+    ///
+    /// Sent-ring pressure cannot produce this state: completion needs a ring
+    /// slot as well, and every pass admits the update before completion.
+    fn held_possession_peer(
+        lab: &mut PeerLab,
+        user: &str,
+    ) -> (
+        UdpSocket,
+        SocketAddrV4,
+        super::super::sequencing::PacketSequencer,
+    ) {
+        use super::super::packet_lab::MAX_PENDING_RELIABLE;
+        let (socket, address, mut client) = possession_identity_peer(lab, 1, user);
+        assert!(matches!(
+            lab.send_initial_controller_open(address),
+            InitialOpenOutcome::Committed(_)
+        ));
+        assert!(matches!(
+            lab.send_game_state_open(address),
+            InitialOpenOutcome::Committed(_)
+        ));
+        let (controller, player_state) = lab.peers[&address].controller_open_guids.unwrap();
+        assert!(matches!(
+            lab.send_player_state_open(address, controller, player_state),
+            InitialOpenOutcome::Committed(_)
+        ));
+        ack_startup_packets(lab, &socket, &mut client);
+        lab.controller_call(address, ControllerCall::Begin(3));
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.profiles.outstanding = None;
+        entry.profiles.has_loadout = true;
+        entry.profiles.has_bestiary = true;
+        lab.controller_call(address, ControllerCall::FriendsList);
+        deliver_bunches(lab, &socket, &mut client, |_| true);
+        assert!(!lab.peers[&address].profiles.completed, "no pawn yet");
+        let channel = lab.peers[&address].player_controller_channel.unwrap();
+        let ring = |lab: &PeerLab| {
+            lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .len()
+        };
+        for _ in 0..2 * MAX_PENDING_RELIABLE {
+            let entry = lab.peers.get_mut(&address).unwrap();
+            if entry.peer.pending_actor_reliable(channel) == Some(MAX_PENDING_RELIABLE) {
+                break;
+            }
+            let datagram = entry
+                .peer
+                .reliable_actor_bunch(
+                    channel,
+                    Payload::from_writer(super::super::packet::BitWriter::new()),
+                )
+                .unwrap();
+            assert!(lab.send(&datagram, address));
+            if ring(lab) >= 32 {
+                notify_startup_packets(lab, &socket, &mut client, |_| false);
+            }
+        }
+        if ring(lab) > 0 {
+            notify_startup_packets(lab, &socket, &mut client, |_| false);
+        }
+        assert_eq!(
+            lab.peers[&address].peer.pending_actor_reliable(channel),
+            Some(MAX_PENDING_RELIABLE)
+        );
+        assert_eq!(ring(lab), 0);
+        assert!(matches!(
+            lab.send_pawn_open(address, controller, player_state),
+            InitialOpenOutcome::Committed(_)
+        ));
+        assert_eq!(lab.stats.controller_possession_sends_deferred, 1);
+        assert_eq!(lab.stats.controller_possession_updates_sent, 0);
+        assert!(
+            lab.peers[&address].profiles.completed,
+            "completion went out"
+        );
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness {
+                pending_send: 1,
+                ..Default::default()
+            }
+        );
+        (socket, address, client)
+    }
+
+    /// ACK progress for [`held_possession_peer`]: the client acknowledges
+    /// everything outstanding and the reliable layer repairs the NAKed
+    /// controller bunches until the controller window has room. Only packet
+    /// notifications are processed; no retry pass runs.
+    fn drain_controller_window(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        client: &mut super::super::sequencing::PacketSequencer,
+        address: SocketAddrV4,
+    ) {
+        use super::super::packet_lab::MAX_PENDING_RELIABLE;
+        let channel = lab.peers[&address].player_controller_channel.unwrap();
+        deliver_bunches(lab, socket, client, |_| true);
+        for _ in 0..MAX_PENDING_RELIABLE {
+            if lab.peers[&address].peer.pending_actor_reliable(channel) < Some(MAX_PENDING_RELIABLE)
+            {
+                assert!(lab.peers[&address].controller_possession_retry_ready);
+                return;
+            }
+            let repair = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&repair, address));
+            deliver_bunches(lab, socket, client, |_| true);
+        }
+        panic!("the controller window did not drain");
+    }
+
+    /// The real sequence with records and possession properties on: the
+    /// update defers at the pawn open under genuine window pressure, the
+    /// player completes and finalises meanwhile and its record is held;
+    /// passes without packet progress admit nothing; ACK progress then
+    /// admits the update and the record follows in the same pass, in that
+    /// order on the wire, each exactly once.
+    #[test]
+    fn the_record_follows_a_possession_update_held_by_transport_pressure() {
+        let mut lab = possession_lab(true);
+        let (socket, address, mut client) = held_possession_peer(&mut lab, "AuthoredHeld");
+        for _ in 0..3 {
+            lab.retry_controller_possession();
+            lab.finalise_connected_players();
+            lab.retry_connected_player_records();
+        }
+        assert_eq!(lab.stats.controller_possession_sends_deferred, 1);
+        assert_eq!(lab.stats.controller_possession_updates_sent, 0);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        drain_controller_window(&mut lab, &socket, &mut client, address);
+        assert_eq!(
+            lab.stats.controller_possession_updates_sent, 0,
+            "no pass yet"
+        );
+        lab.poll();
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 1);
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        let [(update, entries)] = possession_updates(&lab, &bunches).try_into().unwrap();
+        assert_eq!(entries, possession_entries(pawn));
+        let channel = game_state_channel(&lab);
+        let record = bunches
+            .iter()
+            .position(|bunch| {
+                bunch.header.channel_index == channel && bunch.header.reliable && !bunch.header.open
+            })
+            .unwrap();
+        assert!(update < record, "the update leaves before the record");
+        assert_eq!(record_bodies(&lab, &bunches).len(), 1);
+        // Later passes add nothing; each settled exactly once.
+        for _ in 0..3 {
+            lab.poll();
+        }
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(
+            (
+                lab.stats.controller_possession_updates_sent,
+                lab.stats.controller_possession_updates_acked,
+                lab.stats.controller_possession_sends_deferred,
+                lab.stats.controller_possession_errors,
+            ),
+            (1, 1, 1, 0)
+        );
+        assert_eq!(
+            (
+                lab.stats.connected_player_record_creations_sent,
+                lab.stats.connected_player_record_creations_acked,
+                lab.stats.connected_player_array_updates_sent,
+                lab.stats.connected_player_record_errors,
+            ),
+            (1, 1, 1, 0)
+        );
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness {
+                queued: 1,
+                settled: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    /// Abandonment because the controller or pawn channel is gone when the
+    /// deferred update comes due again. The deferral and the ACK progress are
+    /// real; the close is driven on the connection's transport
+    /// (`LabPeer::reliable_actor_close`), because the session never closes
+    /// its own controller or pawn channel through any public call, so this
+    /// branch is not reachable through the public sequence. The error counts
+    /// once and the update is never retried. The record stops waiting for
+    /// it but still cannot go out: it references that same closing actor
+    /// (`connected_player_for` requires the controller, pawn and PlayerState
+    /// open), so none is sent and no record error is counted.
+    #[test]
+    fn an_update_whose_channel_closed_is_abandoned_once() {
+        for close_pawn in [true, false] {
+            let mut lab = possession_lab(true);
+            let (socket, address, mut client) = held_possession_peer(&mut lab, "AuthoredClosed");
+            drain_controller_window(&mut lab, &socket, &mut client, address);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let channel = if close_pawn {
+                super::super::pawn_open::PAWN_CHANNEL_INDEX
+            } else {
+                entry.player_controller_channel.unwrap()
+            };
+            let close = entry.peer.reliable_actor_close(channel, 1).unwrap();
+            assert!(lab.send(&close, address));
+            lab.poll();
+            assert_eq!(
+                lab.stats.controller_possession_errors, 1,
+                "pawn={close_pawn}"
+            );
+            assert!(lab.peers[&address].controller_possession_failed);
+            assert!(!lab.peers[&address].controller_possession_pending);
+            for _ in 0..3 {
+                lab.poll();
+                deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+                lab.controller_possession_due(address);
+            }
+            assert_eq!(
+                (
+                    lab.stats.controller_possession_updates_sent,
+                    lab.stats.controller_possession_sends_deferred,
+                    lab.stats.controller_possession_errors,
+                ),
+                (0, 1, 1),
+                "pawn={close_pawn}"
+            );
+            assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+            assert_eq!(lab.stats.connected_player_record_errors, 0);
+            assert_eq!(
+                lab.readiness_counts().controller_possession,
+                ControllerPossessionReadiness::default()
+            );
+        }
+    }
+
+    /// Abandonment by a refusal that cannot drain while the peer stays
+    /// usable, here a composition refusal. A lab's controller plan is fixed
+    /// before admission and composes for every pawn GUID, so this cannot
+    /// happen through the public sequence: the plan's layout is truncated by
+    /// hand after the real deferral. The error counts once, the update is
+    /// never retried, and the held record is released and sent in the same
+    /// pass.
+    #[test]
+    fn an_update_that_cannot_be_composed_is_abandoned_and_releases_the_record() {
+        let mut lab = possession_lab(true);
+        let (socket, address, mut client) = held_possession_peer(&mut lab, "AuthoredRefused");
+        lab.player_controller_open
+            .as_mut()
+            .unwrap()
+            .actor_layout
+            .truncate(16);
+        drain_controller_window(&mut lab, &socket, &mut client, address);
+        lab.poll();
+        assert_eq!(lab.stats.controller_possession_errors, 1);
+        assert_eq!(lab.stats.controller_possession_updates_sent, 0);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert!(lab.has_peer(address));
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(possession_updates(&lab, &bunches).is_empty());
+        assert_eq!(record_bodies(&lab, &bunches).len(), 1);
+        for _ in 0..3 {
+            lab.poll();
+            lab.controller_possession_due(address);
+        }
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(
+            (
+                lab.stats.controller_possession_updates_sent,
+                lab.stats.controller_possession_sends_deferred,
+                lab.stats.controller_possession_errors,
+                lab.stats.peers_failed,
+            ),
+            (0, 1, 1, 0)
+        );
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        assert_eq!(lab.readiness_counts().controller_possession.pending_send, 0);
+    }
+
+    /// Abandonment on a failed transport, which also removes the peer. Not
+    /// reachable through the public sequence: every call that fails a
+    /// connection's transport (a receive error, a send-side invariant)
+    /// removes that peer at once, so a deferred update never meets a failed
+    /// transport. The test-only `LabPeer::fail_for_test` fails it between
+    /// passes after the real deferral and ACK progress. The error counts
+    /// once, the peer is removed as failed with its record, and nothing is
+    /// sent.
+    #[test]
+    fn an_update_on_a_failed_transport_is_abandoned_and_removes_the_peer() {
+        let mut lab = possession_lab(true);
+        let (socket, address, mut client) = held_possession_peer(&mut lab, "AuthoredFailed");
+        drain_controller_window(&mut lab, &socket, &mut client, address);
+        lab.peers.get_mut(&address).unwrap().peer.fail_for_test();
+        lab.retry_controller_possession();
+        assert_eq!(lab.stats.controller_possession_errors, 1);
+        assert_eq!(lab.stats.peers_failed, 1);
+        assert!(!lab.has_peer(address));
+        assert_eq!(lab.stats.connected_player_records_removed, 1);
+        for _ in 0..3 {
+            lab.retry_controller_possession();
+            lab.poll();
+        }
+        assert_eq!(
+            (
+                lab.stats.controller_possession_updates_sent,
+                lab.stats.controller_possession_errors,
+                lab.stats.connected_player_record_creations_sent,
+            ),
+            (0, 1, 0)
+        );
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    /// Datagrams the real pawn open takes after an ACKed controller open.
+    fn pawn_open_datagrams() -> usize {
+        let mut lab = record_lab(false);
+        let (socket, address, mut client) =
+            possession_identity_peer(&mut lab, 1, "AuthoredPressure");
+        assert!(matches!(
+            lab.send_initial_controller_open(address),
+            InitialOpenOutcome::Committed(_)
+        ));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let ring = |lab: &PeerLab| {
+            lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .len()
+        };
+        let before = ring(&lab);
+        let (controller, player_state) = lab.peers[&address].controller_open_guids.unwrap();
+        assert!(matches!(
+            lab.send_pawn_open(address, controller, player_state),
+            InitialOpenOutcome::Committed(_)
+        ));
+        ring(&lab) - before
+    }
+
+    /// The sent ring fills right behind the pawn open: the update defers,
+    /// does not spin without packet progress, and after an ACK goes out
+    /// once, composed from the current pawn reference.
+    #[test]
+    fn controller_possession_pressure_retries_once_with_the_current_pawn() {
+        use super::super::packet::{Packet, PacketConfig, Receiver, read_packet, write_packet};
+        let pawn_datagrams = pawn_open_datagrams();
+        let mut lab = possession_lab(false);
+        let (socket, address, mut client) =
+            possession_identity_peer(&mut lab, 1, "AuthoredPressure");
+        assert!(matches!(
+            lab.send_initial_controller_open(address),
+            InitialOpenOutcome::Committed(_)
+        ));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        let config = PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let free = entry.peer.config().sent_capacity
+            - entry.peer.sequencer().notify().sent_records().len();
+        for _ in 0..free - pawn_datagrams {
+            let entry = lab.peers.get_mut(&address).unwrap();
+            let datagram = entry.peer.ack_packet().unwrap();
+            lab.socket.send_to(&datagram, address).unwrap();
+            let mut bytes = [0; 2048];
+            let length = socket.recv(&mut bytes).unwrap();
+            let packet = read_packet(&bytes[..length], &config).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        let (controller, player_state) = lab.peers[&address].controller_open_guids.unwrap();
+        assert!(matches!(
+            lab.send_pawn_open(address, controller, player_state),
+            InitialOpenOutcome::Committed(_)
+        ));
+        assert_eq!(lab.stats.controller_possession_sends_deferred, 1);
+        assert_eq!(lab.stats.controller_possession_updates_sent, 0);
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness {
+                pending_send: 1,
+                ..Default::default()
+            }
+        );
+        for _ in 0..3 {
+            lab.retry_controller_possession();
+        }
+        assert_eq!(lab.stats.controller_possession_sends_deferred, 1);
+        // The client's ACK of the filler packets releases the ring.
+        let bytes = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        client.commit().unwrap();
+        socket.send(&bytes).unwrap();
+        lab.poll();
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(lab.stats.controller_possession_sends_deferred, 1);
+        assert_eq!(lab.stats.controller_possession_errors, 0);
+        assert_eq!(lab.readiness_counts().controller_possession.pending_send, 0);
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        let [(position, entries)] = possession_updates(&lab, &bunches).try_into().unwrap();
+        assert_eq!(entries, possession_entries(pawn));
+        assert!(position > pawn_open_position(&bunches));
+        lab.retry_controller_possession();
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+    }
+
+    /// Read every outstanding datagram of `address`, ACKing or NAKing each
+    /// as `delivered` says of its bunches, and return the bunches in order.
+    fn deliver_bunches_by_content(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        client: &mut super::super::sequencing::PacketSequencer,
+        delivered: impl Fn(&[super::super::packet::Bunch]) -> bool,
+    ) -> Vec<super::super::packet::Bunch> {
+        use super::super::packet::{Packet, Receiver, read_packet, write_packet};
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let count = lab.peers[&address]
+            .peer
+            .sequencer()
+            .notify()
+            .sent_records()
+            .len();
+        let config = super::super::packet::PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        let mut bunches = Vec::new();
+        for _ in 0..count {
+            let mut bytes = [0; 2048];
+            let length = socket.recv(&mut bytes).unwrap();
+            let packet = read_packet(&bytes[..length], &config).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client
+                .ack_seq(received.sequence, delivered(&packet.bunches))
+                .unwrap();
+            bunches.extend(packet.bunches);
+        }
+        let bytes = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        client.commit().unwrap();
+        receive_authored_at(lab, socket, &bytes, Instant::now());
+        bunches
+    }
+
+    #[test]
+    fn controller_possession_nak_is_repaired_without_recomposition() {
+        let mut lab = possession_lab(false);
+        let (socket, address, mut client) = possession_identity_peer(&mut lab, 1, "AuthoredNak");
+        assert!(lab.send_player_controller_open(address));
+        let lost = deliver_bunches_by_content(&mut lab, &socket, &mut client, |bunches| {
+            !bunches.iter().any(possession_shaped)
+        });
+        let [(position, entries)] = possession_updates(&lab, &lost).try_into().unwrap();
+        let original = lost[position].payload.clone();
+        let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        assert_eq!(entries, possession_entries(pawn));
+        assert_eq!(lab.stats.controller_possession_updates_acked, 0);
+        assert!(lab.readiness_counts().resend_bunches_pending > 0);
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness {
+                queued: 1,
+                awaiting_ack: 1,
+                ..Default::default()
+            }
+        );
+        // The reliable layer resends the stored bunch unchanged.
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        let repaired = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let [(position, _)] = possession_updates(&lab, &repaired).try_into().unwrap();
+        assert_eq!(repaired[position].payload.bytes(), original.bytes());
+        assert_eq!(repaired[position].payload.bit_len(), original.bit_len());
+        assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+        // A later ACK does not count it again.
+        let more = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&more, address));
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness {
+                queued: 1,
+                settled: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_reconnect_gets_its_own_possession_update() {
+        let mut lab = possession_lab(true);
+        let (socket, address, _client) = record_peer(&mut lab, 1, "AuthoredReconnect");
+        let first = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        assert_eq!(lab.stats.controller_possession_updates_acked, 1);
+        let (rejoined, mut client) = record_peer_on(&mut lab, &socket, 2, "AuthoredReconnect");
+        assert_eq!(rejoined, address);
+        assert_eq!(lab.stats.peers_replaced, 1);
+        let second = lab.peers[&address].controller_startup_pawn_guid.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(lab.stats.controller_possession_updates_sent, 2);
+        assert_eq!(lab.stats.controller_possession_updates_acked, 2);
+        assert_eq!(
+            lab.readiness_counts().controller_possession,
+            ControllerPossessionReadiness {
+                queued: 1,
+                settled: 1,
+                ..Default::default()
+            }
+        );
+        // Nothing more on later passes.
+        lab.controller_possession_due(address);
+        lab.retry_controller_possession();
+        assert!(deliver_bunches(&mut lab, &socket, &mut client, |_| true).is_empty());
+        assert_eq!(lab.stats.controller_possession_updates_sent, 2);
+    }
+
+    /// Leaving at each stage (controller only, update held back, admitted
+    /// and unacknowledged, settled) leaves no possession state or work.
+    #[test]
+    fn possession_state_leaves_with_its_session_at_every_stage() {
+        for stage in 0..4 {
+            let mut lab = possession_lab(true);
+            let (socket, address, mut client) =
+                possession_identity_peer(&mut lab, 1, "AuthoredLeave");
+            assert!(matches!(
+                lab.send_initial_controller_open(address),
+                InitialOpenOutcome::Committed(_)
+            ));
+            if stage > 0 {
+                let (controller, player_state) = lab.peers[&address].controller_open_guids.unwrap();
+                assert!(matches!(
+                    lab.send_pawn_open(address, controller, player_state),
+                    InitialOpenOutcome::Committed(_)
+                ));
+            }
+            match stage {
+                1 => {
+                    let entry = lab.peers.get_mut(&address).unwrap();
+                    entry.controller_possession_receipt = InitialisationReceipt::default();
+                    entry.controller_possession_pending = true;
+                }
+                3 => {
+                    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+                }
+                _ => {}
+            }
+            let expected_settled = u64::from(stage == 3);
+            assert_eq!(
+                lab.stats.controller_possession_updates_acked,
+                expected_settled
+            );
+            let sent = lab.stats.controller_possession_updates_sent;
+            assert_eq!(sent, u64::from(stage > 0), "stage {stage}");
+            lab.remove_peer(address).unwrap();
+            assert_eq!(
+                lab.readiness_counts().controller_possession,
+                ControllerPossessionReadiness::default(),
+                "stage {stage}"
+            );
+            lab.retry_controller_possession();
+            lab.controller_possession_due(address);
+            assert_eq!(lab.stats.controller_possession_updates_sent, sent);
+            assert_eq!(
+                lab.stats.controller_possession_updates_acked,
+                expected_settled
+            );
+            assert_eq!(lab.stats.controller_possession_errors, 0);
+        }
+    }
+
+    /// Every bunch the client receives from Join to the record's ACK, and
+    /// the same by channel for comparison: GameState payloads, which carry
+    /// the lab clock, by length only. `None` never touches the switch;
+    /// `Some(false)` turns it on, then off.
+    #[allow(clippy::type_complexity)]
+    fn possession_scenario(
+        mode: Option<bool>,
+    ) -> (
+        Vec<super::super::packet::Bunch>,
+        Vec<(u32, bool, bool, bool, usize, Vec<u8>)>,
+    ) {
+        let mut lab = record_lab(true);
+        match mode {
+            Some(true) => lab.enable_controller_possession_properties().unwrap(),
+            Some(false) => {
+                lab.enable_controller_possession_properties().unwrap();
+                lab.disable_controller_possession_properties().unwrap();
+            }
+            None => {}
+        }
+        assert_eq!(
+            lab.has_controller_possession_properties(),
+            mode == Some(true)
+        );
+        let channel = game_state_channel(&lab);
+        let (socket, address, mut client, mut bunches) =
+            possession_peer(&mut lab, 1, "AuthoredScenario");
+        complete_record_player(&mut lab, address);
+        bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        lab.retry_connected_player_records();
+        bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        let shapes = bunches
+            .iter()
+            .map(|bunch| {
+                let header = &bunch.header;
+                let bytes = if header.channel_index == channel {
+                    Vec::new()
+                } else {
+                    bunch.payload.bytes().to_vec()
+                };
+                (
+                    header.channel_index,
+                    header.reliable,
+                    header.open,
+                    header.has_package_map_exports,
+                    bunch.payload.bit_len(),
+                    bytes,
+                )
+            })
+            .collect();
+        (bunches, shapes)
+    }
+
+    /// Within one build: never touched equals turned on then off, and on adds
+    /// exactly the one update. It cannot see a change to shared code; the
+    /// cross-commit pin is `switch_off_sessions_send_the_parent_commits_bunches`.
+    #[test]
+    fn disabled_controller_possession_sends_exactly_the_previous_bunches() {
+        let (_, before) = possession_scenario(None);
+        let (_, disabled) = possession_scenario(Some(false));
+        assert!(!before.is_empty());
+        assert_eq!(disabled, before);
+        // Enabled, the run differs only by the one possession update: every
+        // other bunch is unchanged and in the same order.
+        let (bunches, mut enabled) = possession_scenario(Some(true));
+        assert_eq!(enabled.len(), before.len() + 1);
+        let extra = enabled
+            .iter()
+            .zip(&before)
+            .position(|(enabled, before)| enabled != before)
+            .unwrap_or(before.len());
+        enabled.remove(extra);
+        assert_eq!(enabled, before);
+        let lab = record_lab(false);
+        let updates = possession_updates(&lab, &bunches[extra..=extra]);
+        let [(0, entries)] = updates.as_slice() else {
+            panic!("the extra bunch is the possession update");
+        };
+        let handles: Vec<u32> = entries.iter().map(|(handle, _)| *handle).collect();
+        assert_eq!(handles, [17, 20]);
+        assert!(extra > pawn_open_position(&bunches));
+        // Configuration is fixed once a peer exists.
+        let mut lab = possession_lab(false);
+        let (_socket, _address, _client) = record_peer(&mut lab, 1, "AuthoredLate");
+        assert!(lab.disable_controller_possession_properties().is_err());
+        assert!(lab.enable_controller_possession_properties().is_err());
+        assert!(lab.has_controller_possession_properties());
+    }
+
+    #[test]
+    fn controller_possession_requires_the_controller_and_pawn_opens() {
+        let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
+        assert!(lab.enable_controller_possession_properties().is_err());
+        // The GameState and controller, but no pawn open.
+        let mut lab = prospect_refresh_lab();
+        assert!(lab.enable_controller_possession_properties().is_err());
+        assert!(!lab.has_controller_possession_properties());
+        let mut lab = record_lab(false);
+        lab.enable_controller_possession_properties().unwrap();
+        assert!(lab.has_controller_possession_properties());
+    }
+
+    /// Two sequential sessions on `lab`, each from the stateless handshake
+    /// and Join to its connected-player record's ACK, the first removed
+    /// before the second joins: every bunch the client receives, digested
+    /// per session. Whole bunches off the GameState channel count by their
+    /// exact bytes; GameState-channel bunches, which carry the lab clock,
+    /// count by header flags, length and block targets. Uses only behaviour
+    /// that predates the controller possession switch.
+    fn switch_off_session_digests(lab: &mut PeerLab) -> Vec<String> {
+        use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+        let channel = game_state_channel(lab);
+        let codec = actor_codec(17, super::super::archive::ByteOrder::Little);
+        let mut digests = Vec::new();
+        for (connection, user) in [(1u32, "AuthoredDigestFirst"), (2, "AuthoredDigestSecond")] {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.connect(lab.local_addr().unwrap()).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let (address, mut client) = handshake_peer_on(lab, &socket);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            entry.connection_id = Some(connection);
+            entry.player = Some(RegisteredPlayer {
+                player_id: connection as i32,
+                name_units: "AUTHORED-DIGEST".encode_utf16().collect(),
+            });
+            entry.login_unique_id = Some(UniqueNetId {
+                kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+                value: NetIdValue::Text(ArchiveText::text(user).unwrap()),
+            });
+            entry.profiles.character_slot = Some(3);
+            assert!(lab.send_player_controller_open(address));
+            let mut bunches = deliver_bunches(lab, &socket, &mut client, |_| true);
+            complete_record_player(lab, address);
+            bunches.extend(deliver_bunches(lab, &socket, &mut client, |_| true));
+            lab.controller_call(address, ControllerCall::FriendsList);
+            lab.finalise_connected_players();
+            lab.retry_connected_player_records();
+            bunches.extend(deliver_bunches(lab, &socket, &mut client, |_| true));
+            assert_eq!(lab.peers[&address].connected_player_creations_settled, 1);
+            let mut hasher = Sha256::new();
+            for bunch in &bunches {
+                let header = &bunch.header;
+                let content = if header.channel_index != channel {
+                    format!("{:02x?}", bunch.payload.bytes())
+                } else if header.reliable
+                    && !header.open
+                    && !header.partial
+                    && !header.has_package_map_exports
+                {
+                    let body = super::super::actor_channel::read_actor_bunch_body(
+                        &mut bunch.payload.reader(),
+                        false,
+                        &codec,
+                    )
+                    .unwrap();
+                    let targets: Vec<_> = body
+                        .blocks
+                        .iter()
+                        .map(|block| match &block.target {
+                            BlockTarget::Actor => None,
+                            BlockTarget::SubObject { object, .. } => Some(object.guid),
+                        })
+                        .collect();
+                    format!("{targets:?}")
+                } else {
+                    String::new()
+                };
+                hasher.update(
+                    format!(
+                        "{} {} {} {} {} {} {content}\n",
+                        header.channel_index,
+                        header.reliable,
+                        header.open,
+                        header.partial,
+                        header.has_package_map_exports,
+                        bunch.payload.bit_len()
+                    )
+                    .as_bytes(),
+                );
+            }
+            digests.push(
+                hasher
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            );
+            lab.remove_peer(address).unwrap();
+        }
+        digests
+    }
+
+    /// The production bind's lab with records on (the default).
+    fn production_digest_lab(config: crate::config::NetworkConfig) -> PeerLab {
+        crate::network::bind(&config).unwrap().unwrap().lab
+    }
+
+    /// The switch-off path pinned to the parent of the controller possession
+    /// change. These digests were produced by [`switch_off_session_digests`]
+    /// on a build of 68b6325's `src/` (the commit before the switch existed,
+    /// the same helper and fixtures appended to its tests), not by this
+    /// build. A lab that never touches the switch, one that turns it on and
+    /// then off, and the production bind with
+    /// `controller_possession_properties = false` must send exactly those
+    /// bunches; with the switch on every session differs.
+    #[test]
+    fn switch_off_sessions_send_the_parent_commits_bunches() {
+        const LAB: [&str; 2] = [
+            "da3f7bbda7f9e3c4b8f4183c6ccd55fc6ab259dc1487fbf838d9a29a2862d963",
+            "9aed6aef271f5c71155cf76e5693a22f3006b10dc12271c32b95ca7331b272ef",
+        ];
+        const PRODUCTION: [&str; 2] = [
+            "cafb88babd75ea37f94944a890596a7d6d1e8566b9a61278fb471031411bde5c",
+            "4d6c55a1fba2f27e51d71df5b9201a4116d2a8ae3322fdba1022e24c97e5b205",
+        ];
+        let mut untouched = record_lab(true);
+        assert!(!untouched.has_controller_possession_properties());
+        assert_eq!(switch_off_session_digests(&mut untouched), LAB);
+        let mut toggled = record_lab(true);
+        toggled.enable_controller_possession_properties().unwrap();
+        toggled.disable_controller_possession_properties().unwrap();
+        assert_eq!(switch_off_session_digests(&mut toggled), LAB);
+        let config = crate::config::NetworkConfig {
+            enabled: true,
+            port: 0,
+            release_profile: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+            ),
+            controller_possession_properties: false,
+            ..crate::config::NetworkConfig::default()
+        };
+        let mut production = production_digest_lab(config.clone());
+        assert!(!production.has_controller_possession_properties());
+        assert!(production.has_connected_player_records());
+        assert_eq!(switch_off_session_digests(&mut production), PRODUCTION);
+        let on = switch_off_session_digests(&mut possession_lab(true));
+        assert!(on.iter().zip(LAB).all(|(on, off)| on != off));
+        let mut production_on = production_digest_lab(crate::config::NetworkConfig {
+            controller_possession_properties: true,
+            ..config
+        });
+        assert!(production_on.has_controller_possession_properties());
+        let on = switch_off_session_digests(&mut production_on);
+        assert!(on.iter().zip(PRODUCTION).all(|(on, off)| on != off));
     }
 
     fn queue_initialisation_phase(lab: &mut PeerLab, address: SocketAddrV4, completion: bool) {
@@ -15457,6 +17060,255 @@ mod tests {
             );
             assert_eq!(diagnostics.overflow, 937);
             assert_eq!(diagnostics.entries[0].target, ControllerFieldTarget::Actor);
+        }
+
+        /// Authored client-to-server unreliable bunches on every channel kind:
+        /// each still drops exactly as before (counted in
+        /// `actor_bunches_dropped`, no dispatch or field diagnostics), and the
+        /// header-only breakdown counts it by channel kind, controller field
+        /// index and length; the field table caps at its fixed size with an
+        /// overflow count, and counts saturate.
+        #[test]
+        fn unreliable_client_bunches_are_counted_by_channel_and_field_and_stay_dropped() {
+            let mut lab = record_lab(false);
+            let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredUnreliable");
+            let entry = &lab.peers[&address];
+            let controller = entry.player_controller_channel.unwrap();
+            let player_state = entry.player_state_channel.unwrap();
+            let pawn = super::super::super::pawn_open::PAWN_CHANNEL_INDEX;
+            let game_state = game_state_channel(&lab);
+            assert!(entry.peer.has_actor_channel(pawn));
+            assert!(entry.peer.has_actor_channel(game_state));
+            let unreliable = |channel: u32, partial: bool, payload: Payload| Bunch {
+                header: BunchHeader {
+                    control: false,
+                    open: false,
+                    close: false,
+                    close_reason: None,
+                    paused: false,
+                    reliable: false,
+                    channel_index: channel,
+                    has_package_map_exports: false,
+                    has_must_be_mapped_guids: false,
+                    partial,
+                    reliable_sequence_raw: None,
+                    partial_initial: partial,
+                    partial_final: false,
+                    channel_name: None,
+                },
+                payload,
+            };
+            let bits = |count: usize| {
+                let mut writer = BitWriter::new();
+                for bit in 0..count {
+                    writer.write_bit(bit % 3 == 0);
+                }
+                Payload::from_writer(writer)
+            };
+            let fields = |lab: &PeerLab, fields: &[(u32, Payload)]| {
+                client_actor_body(
+                    lab,
+                    vec![field_block(
+                        BlockTarget::Actor,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        fields,
+                    )],
+                )
+            };
+            let mut send = |lab: &mut PeerLab, bunches: Vec<Bunch>| {
+                let bytes = write_packet(
+                    &Packet {
+                        magic: 0,
+                        header: client.header().unwrap(),
+                        info: None,
+                        bunches,
+                    },
+                    &lab.config.packet.packet,
+                )
+                .unwrap();
+                client.commit().unwrap();
+                receive_authored_at(lab, &socket, &bytes, Instant::now());
+            };
+            let camera = fields(&lab, &[(81, bits(40))]);
+            let two = fields(&lab, &[(81, bits(24)), (78, bits(0))]);
+            let malformed = Payload::from_writer({
+                let mut writer = BitWriter::new();
+                writer.write_bit(true);
+                writer
+            });
+            // Off by default: the bunch is dropped as before and not counted.
+            let dropped = lab.stats.actor_bunches_dropped;
+            send(
+                &mut lab,
+                vec![unreliable(controller, false, camera.clone())],
+            );
+            assert_eq!(lab.stats.actor_bunches_dropped, dropped + 1);
+            assert_eq!(
+                lab.unreliable_actor_bunch_counts(),
+                &UnreliableActorBunchCounts::default()
+            );
+            lab.enable_unreliable_actor_bunch_counts();
+            send(
+                &mut lab,
+                vec![
+                    unreliable(controller, false, camera.clone()),
+                    unreliable(controller, false, two.clone()),
+                    unreliable(pawn, false, bits(70)),
+                ],
+            );
+            send(
+                &mut lab,
+                vec![
+                    unreliable(player_state, false, bits(9)),
+                    unreliable(game_state, false, bits(10)),
+                    unreliable(controller, true, bits(12)),
+                    unreliable(controller, false, malformed),
+                ],
+            );
+            let counts = lab.unreliable_actor_bunch_counts().clone();
+            assert_eq!(
+                counts.controller,
+                UnreliableChannelCounts {
+                    bunches: 4,
+                    last_payload_bits: 1,
+                }
+            );
+            assert_eq!(
+                counts.pawn,
+                UnreliableChannelCounts {
+                    bunches: 1,
+                    last_payload_bits: 70,
+                }
+            );
+            assert_eq!(counts.player_state.bunches, 1);
+            assert_eq!(counts.player_state.last_payload_bits, 9);
+            assert_eq!(counts.game_state.bunches, 1);
+            assert_eq!(counts.game_state.last_payload_bits, 10);
+            assert_eq!(counts.other, UnreliableChannelCounts::default());
+            assert_eq!(
+                counts.controller_fields,
+                [
+                    UnreliableFieldCounts {
+                        index: 81,
+                        count: 2,
+                        last_payload_bits: 24,
+                    },
+                    UnreliableFieldCounts {
+                        index: 78,
+                        count: 1,
+                        last_payload_bits: 0,
+                    },
+                ]
+            );
+            assert_eq!(counts.controller_unparsed, 1);
+            assert_eq!(counts.controller_malformed, 1);
+            assert_eq!(counts.controller_field_overflow, 0);
+            assert_eq!(counts.controller_other_blocks, 0);
+            // Still dropped exactly as before: nothing dispatched or diagnosed.
+            // Seven counted bunches plus the one sent before counting began.
+            assert_eq!(lab.stats.actor_bunches_dropped, dropped + 8);
+            assert_eq!(lab.stats.controller_fields_ignored, 0);
+            assert_eq!(lab.stats.actor_bunches_malformed, 0);
+            let diagnostics = lab.controller_field_diagnostics(address).unwrap();
+            assert!(diagnostics.entries.is_empty());
+            assert_eq!(diagnostics.malformed_bunches, 0);
+            // A replicated actor the lab opens on a free channel through its
+            // public `open_actor` is "other"; a sub-object block is counted,
+            // not read.
+            let backend = lab.peers[&address].backend_proxy.unwrap();
+            let component = client_actor_body(
+                &lab,
+                vec![field_block(
+                    subobject(backend),
+                    BACKEND_PROXY_FIELD_INDEX_BOUND,
+                    &[(1, bits(3))],
+                )],
+            );
+            let replicated = lab
+                .open_actor(
+                    1,
+                    0x5eed,
+                    super::super::super::session_open::ActorOpenSpec {
+                        actor: 0,
+                        archetype: vec![
+                            super::super::super::session_open::PathSegment::new(
+                                "Default__AuthoredCrate_C",
+                                0x0bad_cafe,
+                                false,
+                            ),
+                            super::super::super::session_open::PathSegment::new(
+                                "/Game/Authored/AuthoredCrate",
+                                0,
+                                false,
+                            ),
+                        ],
+                        level: super::super::super::session_open::map_level_chain(
+                            PeerLabAdmission::default().map_url,
+                        )
+                        .unwrap(),
+                        location: Some([0.0; 3]),
+                        rotation: None,
+                        velocity: None,
+                        blocks: Vec::new(),
+                    },
+                    game_state + 1,
+                    17,
+                )
+                .unwrap();
+            assert!(![controller, pawn, player_state, game_state].contains(&replicated));
+            send(
+                &mut lab,
+                vec![
+                    unreliable(replicated, false, bits(5)),
+                    unreliable(controller, false, component),
+                ],
+            );
+            let counts = lab.unreliable_actor_bunch_counts().clone();
+            assert_eq!(
+                counts.other,
+                UnreliableChannelCounts {
+                    bunches: 1,
+                    last_payload_bits: 5,
+                }
+            );
+            assert_eq!(counts.pawn.bunches, 1);
+            assert_eq!(counts.controller_other_blocks, 1);
+            // The field table keeps 16 distinct indices; the rest overflow.
+            for index in 100..(100 + UNRELIABLE_CONTROLLER_FIELD_ENTRIES as u32) {
+                let payload = fields(&lab, &[(index, bits(1))]);
+                send(&mut lab, vec![unreliable(controller, false, payload)]);
+            }
+            let counts = lab.unreliable_actor_bunch_counts().clone();
+            assert_eq!(
+                counts.controller_fields.len(),
+                UNRELIABLE_CONTROLLER_FIELD_ENTRIES
+            );
+            assert_eq!(counts.controller_field_overflow, 2);
+            assert!(
+                counts
+                    .controller_fields
+                    .iter()
+                    .all(|field| field.index != 114)
+            );
+            // Saturation.
+            lab.unreliable_actor_bunches.controller.bunches = u64::MAX;
+            lab.unreliable_actor_bunches.controller_fields[0].count = u64::MAX;
+            lab.unreliable_actor_bunches.controller_field_overflow = u64::MAX;
+            let unseen = fields(&lab, &[(150, bits(1))]);
+            send(
+                &mut lab,
+                vec![
+                    unreliable(controller, false, camera),
+                    unreliable(controller, false, two),
+                    unreliable(controller, false, unseen),
+                ],
+            );
+            let counts = lab.unreliable_actor_bunch_counts();
+            assert_eq!(counts.controller.bunches, u64::MAX);
+            assert_eq!(counts.controller_fields[0].count, u64::MAX);
+            assert_eq!(counts.controller_field_overflow, u64::MAX);
+            let text = serde_json::to_string(counts).unwrap();
+            assert!(!text.contains("AuthoredUnreliable"));
         }
     }
 }

@@ -540,7 +540,14 @@ const HANDLE_ROLE: u32 = 14;
 /// `AActor::ReplicatedMovement` (F-703).
 const HANDLE_REPLICATED_MOVEMENT: u32 = 6;
 const HANDLE_PLAYER_STATE: u32 = 16;
+/// `AController::Pawn` (F-703: `AController` handles 16..17).
+pub const CONTROLLER_HANDLE_PAWN: u32 = 17;
 const HANDLE_SPAWN_LOCATION: u32 = 19;
+/// `AIcarusPlayerController::IcarusPlayerCharacter`, the first handle after
+/// `APlayerController`'s 18..19 (F-703, F-704): an object reference that
+/// only replication sets on a client, and the controller pawn the record's
+/// finalisation check compares (F-1074).
+pub const CONTROLLER_HANDLE_ICARUS_PLAYER_CHARACTER: u32 = 20;
 /// The first `COMPONENT_HANDLES` components (`BackendProxyComponent`,
 /// `PlayerDataComponent`, `BestiaryManagerComponent` in 3.0.31) are also
 /// referenced by actor properties; later components only get their own
@@ -765,6 +772,42 @@ pub fn compose_player_controller_open(
         exports: export_payload,
         bunch,
     })
+}
+
+/// The controller possession properties: one actor property update (an actor
+/// block, no spawn, no exports) on an open PlayerController channel carrying
+/// handle 17 `Pawn` and handle 20 `IcarusPlayerCharacter`, both plain
+/// references to `pawn`, encoded against the controller open's own
+/// `actor_layout`. The record's finalisation check reads handle 20 (F-1074).
+///
+/// The original also sends `AttachmentReplication` (AActor handles 7, 9 and
+/// 12 of 7..12) to the pawn in the same update; the check does not read them,
+/// so they are deferred. Unqualified with a stock client.
+pub fn compose_controller_possession_update(
+    pawn: u32,
+    actor_layout: &[RepCommand],
+    codec: &RepLayoutCodec,
+) -> Result<Payload> {
+    use super::actor_channel::{ActorBunchBody, encode_actor_bunch_body};
+    let reference = RepValue::Object(NetGuidRef::plain(pawn));
+    let stream = PropertyStream {
+        entries: vec![
+            entry(CONTROLLER_HANDLE_PAWN, reference.clone()),
+            entry(CONTROLLER_HANDLE_ICARUS_PLAYER_CHARACTER, reference),
+        ],
+        terminator_checksum: None,
+    };
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![ContentBlock {
+                has_rep_layout: true,
+                target: BlockTarget::Actor,
+                payload: encode_rep_properties(&stream, actor_layout, codec)?,
+            }],
+        },
+        &codec.actor,
+    )
 }
 
 /// The PlayerState actor block's handles in the original's first open (F-784):
