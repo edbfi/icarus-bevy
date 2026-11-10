@@ -65,9 +65,9 @@ Last reconciled: 2026-11-10
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 done; do not repeat them or
-  rerun F-1084 unchanged. Record F-1077 is ACKed but insufficient; the next
-  connected run uses the native controller update of handles 17/20 (F-1088)
-  and measures the U-038/U-079 items. None clears visibility preconditions.
+  rerun F-1084/F-1089 unchanged. With F-1077 and F-1088 the client finalises
+  and reports tiles (F-1089), UI unchanged; the next connected run needs the
+  level-actor answer to 82, governed below. None clears those preconditions.
 
 ## Before enabling visibility dispatch or effects
 
