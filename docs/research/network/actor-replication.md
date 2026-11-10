@@ -19,8 +19,8 @@ follow (F-1084, F-1085). After 126 the original sends the record (F-1072 to
 F-1075), then level actors (F-1081), not RPC113 (F-1068). Clients stream
 tiles (F-1078, F-1079) once their record finalises (F-1080). The native record
 matches (F-1077, F-1086), but its check needs controller IcarusPlayerCharacter,
-never sent natively (F-1087); 62, startup RPCs and level actors are missing
-(F-1082). Curtain inputs F-1069/F-1076.
+unsent until F-1088, untested with a client (F-1087); 62, startup RPCs and
+level actors are missing (F-1082). Curtain inputs F-1069/F-1076.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.

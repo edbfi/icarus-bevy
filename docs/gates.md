@@ -66,8 +66,8 @@ Last reconciled: 2026-11-10
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 done; do not repeat them or
   rerun F-1084 unchanged. Record F-1077 is ACKed but insufficient; the next
-  connected run first needs a native controller update with handles 17/20,
-  then measures the U-038/U-079 items. None clears visibility preconditions.
+  connected run uses the native controller update of handles 17/20 (F-1088)
+  and measures the U-038/U-079 items. None clears visibility preconditions.
 
 ## Before enabling visibility dispatch or effects
 

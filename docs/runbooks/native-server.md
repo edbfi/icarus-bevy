@@ -49,6 +49,8 @@ Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
 Password unvalidated: no real passwords.
 Diagnostics: [network readiness](network-readiness.md) (F-1045).
+Possession F-1088: `[network] controller_possession_properties` / probe
+`--controller-possession-properties`, default true, needs the pawn open.
 Records F-1077: `[network] connected_player_records` / probe
 `--connected-player-records` (ready field), default true, need a release naming
 the record class (3.0.34/3.0.35 pins) plus pawn, PlayerState and GameState
