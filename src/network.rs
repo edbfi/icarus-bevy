@@ -36,7 +36,10 @@
 //! `[network] connected_player_records` on (the default) and a release that
 //! names the record class, each finalised player's connected-player record
 //! and the `ConnectedPlayers` array follow in one reliable GameState bunch
-//! (F-1077). Nothing else replicates.
+//! (F-1077). With `[network] controller_possession_properties` on (the
+//! default), each pawn open is followed by one reliable PlayerController
+//! property update naming that pawn as `Pawn` and `IcarusPlayerCharacter`
+//! (F-1074). Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -1891,6 +1894,11 @@ fn bind_session(
                 .context("compose the connected-player record plan")?
         {
             lab.enable_connected_player_records(records)?;
+        }
+        // Controller possession properties (F-1074) after every pawn open;
+        // the controller plan is present in this branch.
+        if network.controller_possession_properties && has_pawn {
+            lab.enable_controller_possession_properties()?;
         }
         // The GameState's managers, after the PlayerState (F-859).
         if lab.has_game_state_open()

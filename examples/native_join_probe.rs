@@ -125,6 +125,10 @@ struct Options {
     /// GameState's ConnectedPlayers; `false` makes a comparison run without it.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     connected_player_records: bool,
+    /// After each pawn open, send the PlayerController's Pawn and IcarusPlayerCharacter
+    /// properties naming that pawn (unqualified); `false` makes a comparison run without them.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    controller_possession_properties: bool,
 }
 
 impl Options {
@@ -171,6 +175,22 @@ impl Options {
         );
         Ok(true)
     }
+
+    /// Pure preflight of `--controller-possession-properties`: enabled
+    /// properties need the release's controller and pawn opens.
+    fn controller_possession_properties(&self, profile: &ReleaseProfile) -> Result<bool> {
+        if !self.controller_possession_properties {
+            return Ok(false);
+        }
+        ensure!(
+            profile
+                .player_controller_open_plan(PROBE_MAP, [0.0; 3])?
+                .is_some()
+                && profile.pawn_open_plan(PROBE_MAP)?.is_some(),
+            "controller possession properties need the release's controller and pawn profiles; pass --controller-possession-properties false"
+        );
+        Ok(true)
+    }
 }
 
 /// Aggregate counts read before [`PeerLab::shutdown`], as the summary has
@@ -188,6 +208,10 @@ fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::
     counts.insert(
         "controller_fields_before_shutdown".into(),
         json!(lab.controller_field_totals()),
+    );
+    counts.insert(
+        "unreliable_actor_bunches_before_shutdown".into(),
+        json!(lab.unreliable_actor_bunch_counts()),
     );
     counts.insert("stats_before_shutdown".into(), json!(lab.stats()));
     counts.insert("peak_peers".into(), json!(lab.peak_peer_count()));
@@ -228,6 +252,7 @@ fn main() -> Result<()> {
     let profile = ReleaseProfile::load(&options.release)?;
     let startup = options.startup_plan(&profile)?;
     let connected_player_records = options.connected_player_records(&profile)?;
+    let controller_possession_properties = options.controller_possession_properties(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -291,6 +316,7 @@ fn main() -> Result<()> {
         session_timeout_seconds: 30,
         release_profile: Some(options.release),
         connected_player_records,
+        controller_possession_properties,
         ..NetworkConfig::default()
     };
     let mut peer_config = network::peer_lab_config(&config);
@@ -318,6 +344,10 @@ fn main() -> Result<()> {
         bound.lab.has_connected_player_records() == connected_player_records,
         "connected-player record configuration did not apply"
     );
+    ensure!(
+        bound.lab.has_controller_possession_properties() == controller_possession_properties,
+        "controller possession configuration did not apply"
+    );
     if !startup.is_empty() {
         bound.lab.enable_controller_startup(&profile, startup)?;
     }
@@ -340,6 +370,7 @@ fn main() -> Result<()> {
         "authored_world": options.authored_world.report(),
         "controller_startup": options.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
         "connected_player_records": connected_player_records,
+        "controller_possession_properties": controller_possession_properties,
         "compatibility_proven": false,
     }))
     .err();
@@ -352,7 +383,7 @@ fn main() -> Result<()> {
         let now = Instant::now();
         if now >= next_progress {
             let lab = app.world().resource::<PeerLab>();
-            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"stats":lab.stats(),"compatibility_proven":false});
+            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"unreliable_actor_bunches":lab.unreliable_actor_bunch_counts(),"stats":lab.stats(),"compatibility_proven":false});
             native_join_capture::add_counts(
                 &mut progress,
                 lab.private_rpc82_capture_counts(),
@@ -610,6 +641,46 @@ mod tests {
     }
 
     #[test]
+    fn controller_possession_properties_default_on_and_fail_closed_before_networking() {
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(default.controller_possession_properties);
+        assert!(default.controller_possession_properties(&profile).unwrap());
+        let off = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--controller-possession-properties",
+            "false",
+        ])
+        .unwrap();
+        assert!(!off.controller_possession_properties(&profile).unwrap());
+        for value in ["maybe", ""] {
+            assert!(
+                Options::try_parse_from([
+                    "probe",
+                    "--name",
+                    "Authored",
+                    "--controller-possession-properties",
+                    value,
+                ])
+                .is_err()
+            );
+        }
+        let mut no_pawn = profile.clone();
+        no_pawn.pawn = None;
+        assert!(default.controller_possession_properties(&no_pawn).is_err());
+        assert!(!off.controller_possession_properties(&no_pawn).unwrap());
+        let mut no_controller = profile;
+        no_controller.player_controller = None;
+        assert!(
+            default
+                .controller_possession_properties(&no_controller)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn stopped_summary_reports_counts_that_only_shutdown_moves() {
         use icarus_bevy::experimental::{handshake::initial_request, peer_lab::PeerLabConfig};
         let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
@@ -662,6 +733,7 @@ mod tests {
             "sessions_before_shutdown",
             "readiness_before_shutdown",
             "controller_fields_before_shutdown",
+            "unreliable_actor_bunches_before_shutdown",
             "stats_before_shutdown",
             "peak_peers",
         ] {

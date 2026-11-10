@@ -1740,8 +1740,8 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
     });
     let (replies, _) = with_server(&mut app, move || {
         [
-            join_pinned_replies(address, pinned, 7),
-            join_pinned_replies(address, pinned, 7),
+            join_pinned_replies(address, pinned, 8),
+            join_pinned_replies(address, pinned, 8),
         ]
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
@@ -1787,8 +1787,8 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
     for (index, datagrams) in replies.iter().enumerate() {
         assert_eq!(
             datagrams.len(),
-            7,
-            "controller, pawn, game state, player state, three managers"
+            8,
+            "controller, pawn, possession properties, game state, player state, three managers"
         );
         let mut exports = ConnectionExports::new();
         let controller_open = compose_player_controller_open(
@@ -1813,9 +1813,45 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
         assert_eq!(pawn_body.header.channel_index, PAWN_CHANNEL_INDEX);
         assert_eq!(Some(&pawn_exports.payload), pawn.exports.as_ref());
         assert_eq!(pawn_body.payload, pawn.bunch.payload);
+        // Then the controller possession properties naming that pawn (on by
+        // default, F-1074), bit for bit.
+        let packet = read_packet(&datagrams[2], &to_client).unwrap();
+        let [possession] = packet.bunches.as_slice() else {
+            panic!("the possession properties travel as one bunch");
+        };
+        assert_eq!(
+            possession.header.channel_index, controller.channel_index,
+            "on the controller channel"
+        );
+        assert!(possession.header.reliable && !possession.header.open);
+        let pawn_guid = cache
+            .actor_guid(icarus_bevy::experimental::peer_lab::pawn_key(
+                index as u32 + 1,
+            ))
+            .unwrap();
+        let possession_codec = icarus_bevy::experimental::rep_layout::RepLayoutCodec {
+            actor: ActorChannelCodec {
+                engine_net_version: profile.engine_network_version,
+                exports_enabled: false,
+                has_level: true,
+                order: ByteOrder::Little,
+                limits: ActorChannelLimits::default(),
+            },
+            checksums: false,
+            limits: Default::default(),
+        };
+        assert_eq!(
+            possession.payload,
+            icarus_bevy::experimental::session_open::compose_controller_possession_update(
+                pawn_guid,
+                &controller.actor_layout,
+                &possession_codec,
+            )
+            .unwrap()
+        );
         // The GameState carries the lab's world time; compose with the sent
         // value and compare everything else bit for bit.
-        let packet = read_packet(&datagrams[2], &to_client).unwrap();
+        let packet = read_packet(&datagrams[3], &to_client).unwrap();
         let [game_exports, game_body] = packet.bunches.as_slice() else {
             panic!("the GameState open travels as exports plus body");
         };
@@ -1866,7 +1902,7 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
             ByteOrder::Little,
         )
         .unwrap();
-        let packet = read_packet(&datagrams[3], &to_client).unwrap();
+        let packet = read_packet(&datagrams[4], &to_client).unwrap();
         let [state_exports, body] = packet.bunches.as_slice() else {
             panic!("the PlayerState open travels as exports plus body");
         };
@@ -1879,7 +1915,7 @@ fn pinned_joins_open_the_game_state_then_each_player_state() {
         let managers = compose_lab_managers(&profile, &mut cache, &mut exports);
         for ((manager, datagram), channel) in managers
             .iter()
-            .zip(&datagrams[4..])
+            .zip(&datagrams[5..])
             .zip(network::MANAGER_FIRST_CHANNEL..)
         {
             let packet = read_packet(datagram, &to_client).unwrap();
@@ -1969,8 +2005,8 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // Two sessions in turn: each gets both actors, under the same GUIDs.
     let ([replies, later], _) = with_server(&mut app, move || {
         [
-            join_pinned_replies(address, pinned, 9),
-            join_pinned_replies(address, pinned, 9),
+            join_pinned_replies(address, pinned, 10),
+            join_pinned_replies(address, pinned, 10),
         ]
     });
     let stats = app.world().resource::<PeerLab>().stats().clone();
@@ -1978,10 +2014,10 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     assert_eq!(stats.actor_updates_sent, 0);
     assert_eq!(
         replies.len(),
-        9,
-        "controller, pawn, game state, player state, three managers, then two actors"
+        10,
+        "controller, pawn, possession properties, game state, player state, three managers, then two actors"
     );
-    assert_eq!(later.len(), 9);
+    assert_eq!(later.len(), 10);
 
     let to_client = PacketConfig {
         receiver: PacketReceiver::Client,
@@ -1992,12 +2028,12 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     // the actors take the next free ones. The second open exports the same
     // archetype again unless the client acked the first one's packet in
     // between (F-796).
-    let packet = read_packet(&replies[7], &to_client).unwrap();
+    let packet = read_packet(&replies[8], &to_client).unwrap();
     let [exports, body] = packet.bunches.as_slice() else {
         panic!("the actor open travels as exports plus body");
     };
     assert_eq!(body.header.channel_index, 9);
-    let second = read_packet(&replies[8], &to_client).unwrap();
+    let second = read_packet(&replies[9], &to_client).unwrap();
     let second_body = second.bunches.last().unwrap();
     assert_eq!(second_body.header.channel_index, 10);
     match second.bunches.as_slice() {
@@ -2056,7 +2092,7 @@ fn replication_selections_open_archetyped_actors_on_free_channels() {
     assert!(matches!(remote_role.value, RepValue::Byte(1)));
     assert!(matches!(role.value, RepValue::Byte(3)));
     let actor_guids = |datagrams: &[Vec<u8>]| -> Vec<u32> {
-        let mut guids: Vec<u32> = datagrams[7..]
+        let mut guids: Vec<u32> = datagrams[8..]
             .iter()
             .map(|datagram| {
                 let packet = read_packet(datagram, &to_client).unwrap();
@@ -3840,6 +3876,149 @@ fn production_records_follow_the_switch_and_the_release_chain() {
     }
 }
 
+/// The controller possession updates (whole, reliable, nonopening
+/// controller-channel bunches with one actor property block) among
+/// `datagrams`, decoded against `layout` as `(handle, value)` entries.
+fn possession_updates(
+    profile: &ReleaseProfile,
+    layout: &[icarus_bevy::experimental::rep_layout::RepCommand],
+    datagrams: &[Vec<u8>],
+) -> Vec<Vec<(u32, icarus_bevy::experimental::rep_layout::RepValue)>> {
+    use icarus_bevy::experimental::{
+        actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
+        archive::ByteOrder,
+        packet::read_packet,
+        rep_layout::{RepLayoutCodec, read_rep_properties},
+        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+    };
+    let codec = RepLayoutCodec {
+        actor: ActorChannelCodec {
+            engine_net_version: profile.engine_network_version,
+            exports_enabled: false,
+            has_level: true,
+            order: ByteOrder::Little,
+            limits: Default::default(),
+        },
+        checksums: false,
+        limits: Default::default(),
+    };
+    let mut updates = Vec::new();
+    for bytes in datagrams {
+        let packet = read_packet(
+            bytes,
+            &PacketConfig {
+                receiver: PacketReceiver::Client,
+                ..probe_config().packet
+            },
+        )
+        .unwrap();
+        for bunch in packet.bunches {
+            let header = &bunch.header;
+            if header.channel_index != PLAYER_CONTROLLER_CHANNEL_INDEX
+                || !header.reliable
+                || header.open
+                || header.partial
+                || header.has_package_map_exports
+            {
+                continue;
+            }
+            let body =
+                read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor).unwrap();
+            let [block] = body.blocks.as_slice() else {
+                continue;
+            };
+            if !block.has_rep_layout {
+                continue;
+            }
+            assert_eq!(block.target, BlockTarget::Actor);
+            let mut reader = block.payload.reader();
+            let stream = read_rep_properties(&mut reader, layout, &codec).unwrap();
+            updates.push(
+                stream
+                    .entries
+                    .into_iter()
+                    .map(|entry| (entry.handle, entry.value))
+                    .collect(),
+            );
+        }
+    }
+    updates
+}
+
+/// `[network].controller_possession_properties` defaults to on: the
+/// production bind then sends exactly one possession update per joined
+/// player, naming one pawn as handles 17 and 20 (F-1074), and none when it is
+/// false; the player finalises and gets its record either way.
+#[test]
+fn production_bind_sends_one_possession_update_per_joined_player() {
+    use icarus_bevy::experimental::{peer_lab::PeerLabAdmission, rep_layout::RepValue};
+    assert!(NetworkConfig::default().controller_possession_properties);
+    let parsed: ServerConfig =
+        toml::from_str("[network]\ncontroller_possession_properties = false\n").unwrap();
+    assert!(!parsed.network.controller_possession_properties);
+    assert!(parsed.validate().is_ok());
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let layout = profile
+        .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+        .unwrap()
+        .unwrap()
+        .actor_layout;
+    for possession in [true, false] {
+        let config = NetworkConfig {
+            release_profile: Some(release_toml()),
+            controller_possession_properties: possession,
+            ..enabled(0)
+        };
+        let bound = network::bind(&config).unwrap().unwrap();
+        assert_eq!(bound.lab.has_controller_possession_properties(), possession);
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, bound.lab).unwrap();
+        let ((client, datagrams), _) = with_server(&mut app, move || {
+            let (mut client, mut datagrams) = join_pinned_open(address, pinned, 32);
+            datagrams.extend(exchange_profiles(&mut client, engine, 9, 3));
+            send_friends_list_updated(&mut client, engine);
+            datagrams.extend(
+                client
+                    .collect(Duration::from_millis(250), 32)
+                    .unwrap()
+                    .replies
+                    .into_iter()
+                    .map(|reply| reply.bytes),
+            );
+            (client, datagrams)
+        });
+        let updates = possession_updates(&profile, &layout, &datagrams);
+        assert_eq!(
+            updates.len(),
+            usize::from(possession),
+            "possession={possession}"
+        );
+        for entries in &updates {
+            let [(17, pawn), (20, character)] = entries.as_slice() else {
+                panic!("handles 17 and 20 only: {entries:?}");
+            };
+            assert!(matches!(pawn, RepValue::Object(_)));
+            assert_eq!(pawn, character);
+        }
+        let status = counts(&app);
+        let expected = u64::from(possession);
+        assert_eq!(status.controller_possession_updates_sent, expected);
+        assert_eq!(status.controller_possession_errors, 0);
+        assert_eq!(status.controller_possession_sends_deferred, 0);
+        assert_eq!(status.players_finalised, 1, "possession={possession}");
+        assert_eq!(status.connected_player_record_creations_sent, 1);
+        let readiness = app.world().resource::<PeerLab>().readiness_counts();
+        assert_eq!(
+            readiness.controller_possession.queued,
+            usize::from(possession)
+        );
+        assert_eq!(readiness.controller_possession.pending_send, 0);
+        with_server(&mut app, move || client.close().unwrap());
+    }
+}
+
 #[test]
 fn player_history_pressure_coalesces_appends_and_converges_after_ack_and_reconnect() {
     use icarus_bevy::{
@@ -5177,7 +5356,12 @@ fn the_initialising_probe_restores_its_saved_character_through_the_native_exchan
             json!({"event":"associated_prospect", "requested_slot":3}),
         ]
     );
-    assert!(notes.is_empty(), "{notes:?}");
+    // The only bunch the authored initialiser leaves unhandled is the one
+    // controller possession property update (on by default, F-1074).
+    assert_eq!(
+        notes,
+        std::collections::BTreeMap::from([("controller properties".to_owned(), 1)]),
+    );
     // The native server completed: the pawn took the saved UID.
     assert_eq!(pawn_uid_update(&profile, &datagrams), Some(70_001));
     let stats = app.world().resource::<PeerLab>().stats();

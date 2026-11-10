@@ -688,3 +688,86 @@ fn an_acked_outer_is_written_with_only_the_bare_checksum_flag() {
     let read = read_export_prefix(&mut payload.reader(), &codec).unwrap();
     assert_eq!(read, vec![archetype]);
 }
+
+/// The controller possession properties (F-1074) for every pinned release
+/// with a controller profile: one actor property block, no spawn, that the
+/// repository decoder reads against the survival controller's 30-handle
+/// layout as handle 17 `Pawn` and handle 20 `IcarusPlayerCharacter`, both the
+/// given pawn, and that re-encodes bit for bit.
+#[test]
+fn controller_possession_update_names_the_pawn_as_handles_17_and_20() {
+    use icarus_bevy::experimental::{
+        actor_channel::{
+            ActorBunchBody, BlockTarget, NetGuidRef, encode_actor_bunch_body, read_actor_bunch_body,
+        },
+        release::ReleaseProfile,
+        rep_layout::{RepLayoutCodec, RepValue, parse_rep_properties},
+        session_open::{
+            CONTROLLER_HANDLE_ICARUS_PLAYER_CHARACTER, CONTROLLER_HANDLE_PAWN,
+            compose_controller_possession_update,
+        },
+    };
+    assert_eq!(
+        (
+            CONTROLLER_HANDLE_PAWN,
+            CONTROLLER_HANDLE_ICARUS_PLAYER_CHARACTER
+        ),
+        (17, 20)
+    );
+    let pinned = ReleaseProfile::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+    )
+    .unwrap();
+    for profile in [
+        ReleaseProfile::release_3_0_32(),
+        ReleaseProfile::release_3_0_35(),
+        pinned,
+    ] {
+        let plan = profile
+            .player_controller_open_plan("/Game/Maps/Authored/Map", [0.0; 3])
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.actor_layout.len(), 30);
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let rep = RepLayoutCodec {
+                actor: ActorChannelCodec {
+                    engine_net_version: plan.engine_net_version,
+                    order,
+                    ..codec()
+                },
+                checksums: false,
+                limits: Default::default(),
+            };
+            for pawn in [2, 130, 70_000] {
+                let payload =
+                    compose_controller_possession_update(pawn, &plan.actor_layout, &rep).unwrap();
+                let body = read_actor_bunch_body(&mut payload.reader(), false, &rep.actor).unwrap();
+                assert!(body.spawn.is_none());
+                let [block] = body.blocks.as_slice() else {
+                    panic!("one block");
+                };
+                assert!(block.has_rep_layout);
+                assert_eq!(block.target, BlockTarget::Actor);
+                let stream =
+                    parse_rep_properties(&block.payload, &plan.actor_layout, &rep).unwrap();
+                let entries: Vec<_> = stream
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.handle, entry.value.clone()))
+                    .collect();
+                let reference = RepValue::Object(NetGuidRef::plain(pawn));
+                assert_eq!(entries, [(17, reference.clone()), (20, reference)]);
+                let again = encode_actor_bunch_body(
+                    &ActorBunchBody {
+                        spawn: None,
+                        blocks: body.blocks.clone(),
+                    },
+                    &rep.actor,
+                )
+                .unwrap();
+                assert_eq!(again.bytes(), payload.bytes());
+                assert_eq!(again.bit_len(), payload.bit_len());
+            }
+        }
+    }
+}
