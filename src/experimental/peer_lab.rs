@@ -244,12 +244,12 @@ use super::release::ReleaseProfile;
 use super::rep_layout::{RepLayoutCodec, RepValue};
 use super::rep_rpc::{
     BACKEND_PROXY_FIELD_INDEX_BOUND, BESTIARY_MANAGER_FIELD_INDEX_BOUND,
-    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, PLAYER_DATA_FIELD_INDEX_BOUND,
-    RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
+    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND, FriendsListRejection,
+    PLAYER_DATA_FIELD_INDEX_BOUND, RESPONSE_GET_CHARACTER_PROFILE, RESPONSE_GET_USER_PROFILE,
     SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX, SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX,
     SERVER_RECEIVE_BESTIARY_DATA, SERVER_RECEIVE_LOADOUT, SERVER_SHORT_TIMEOUT_FIELD_INDEX,
-    parse_begin_player_initialisation, parse_rpc_payload, read_field_header,
-    server_friends_list_updated_parameters,
+    friends_list_rejection, parse_begin_player_initialisation, parse_rpc_payload,
+    read_field_header, server_friends_list_updated_parameters,
 };
 use super::rep_rpc::{
     FieldHeader, RpcArgument, RpcItem, encode_rpc_payload, player_controller_rpc_parameters,
@@ -779,6 +779,19 @@ pub struct PeerLabStats {
     pub friends_lists_received: u64,
     /// Friends-list requests admitted to reliable controller transport (F-1051).
     pub friends_list_queries_queued: u64,
+    /// Admitted friends-list requests whose own reliable bunch a positive
+    /// packet ACK settled; a later query supersedes an unsettled receipt.
+    /// No client execution or response is implied.
+    pub friends_list_queries_acknowledged: u64,
+    /// Parsed `ServerFriendsListUpdated` calls ignored because the peer has
+    /// no registered player (also counted in `initialisation_calls_ignored`).
+    pub friends_lists_ignored_unregistered: u64,
+    /// Parsed calls ignored because friend IDs were already ready (also
+    /// counted in `initialisation_calls_ignored`).
+    pub friends_lists_ignored_already_ready: u64,
+    /// `ServerFriendsListUpdated` fields refused, by reason; each refusal
+    /// also counts its bunch in `actor_bunches_malformed`.
+    pub friends_list_rejections: FriendsListRejectionCounts,
     /// Completed players finalised once every joined controller sent its
     /// friends list (F-973).
     pub players_finalised: u64,
@@ -982,6 +995,10 @@ pub struct SessionCounts {
     pub friends_lists_received: u64,
     /// Friends-list requests admitted to reliable controller transport (F-1051).
     pub friends_list_queries_queued: u64,
+    pub friends_list_queries_acknowledged: u64,
+    pub friends_lists_ignored_unregistered: u64,
+    pub friends_lists_ignored_already_ready: u64,
+    pub friends_list_rejections: FriendsListRejectionCounts,
     pub players_finalised: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
@@ -1029,6 +1046,7 @@ pub struct SessionCounts {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ReadinessCounts {
     pub initialisation_transport: InitialisationTransportCounts,
+    pub friends_query: FriendsQueryReadiness,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
     /// Retained receipts after a positive ACK leaves the controller channel
@@ -1074,6 +1092,51 @@ pub struct InitialisationTransportCounts {
     pub completions_queued: usize,
     pub completions_settled: usize,
     pub completions_awaiting_ack: usize,
+}
+
+/// Live friends-list query (F-1051) gauges, one receipt per peer for its
+/// latest admitted query, tracked like [`InitialisationTransportCounts`].
+/// Settled means a positive packet ACK covered that query's reliable bunch;
+/// it proves no client execution.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FriendsQueryReadiness {
+    /// Queries held back from reliable transport, e.g. by send pressure.
+    pub pending_admission: usize,
+    pub queued: usize,
+    pub settled: usize,
+    pub awaiting_ack: usize,
+    /// Settled latest query, no newer query pending, and no accepted
+    /// `ServerFriendsListUpdated` since it was admitted.
+    pub awaiting_response: usize,
+}
+
+/// Refused `ServerFriendsListUpdated` fields by [`FriendsListRejection`];
+/// fixed keys, saturating counts, no payload values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FriendsListRejectionCounts {
+    pub truncated: u64,
+    pub array_count_over_limit: u64,
+    pub entry_limit_exceeded: u64,
+    pub string_length_over_limit: u64,
+    pub string_missing_terminator: u64,
+    pub string_invalid_encoding: u64,
+    pub trailing_bits: u64,
+    pub unclassified: u64,
+}
+
+impl FriendsListRejectionCounts {
+    fn record(&mut self, reason: FriendsListRejection) {
+        bump(match reason {
+            FriendsListRejection::Truncated => &mut self.truncated,
+            FriendsListRejection::ArrayCountOverLimit => &mut self.array_count_over_limit,
+            FriendsListRejection::EntryLimitExceeded => &mut self.entry_limit_exceeded,
+            FriendsListRejection::StringLengthOverLimit => &mut self.string_length_over_limit,
+            FriendsListRejection::StringMissingTerminator => &mut self.string_missing_terminator,
+            FriendsListRejection::StringInvalidEncoding => &mut self.string_invalid_encoding,
+            FriendsListRejection::TrailingBits => &mut self.trailing_bits,
+            FriendsListRejection::Unclassified => &mut self.unclassified,
+        });
+    }
 }
 
 #[derive(Default)]
@@ -1539,6 +1602,8 @@ impl ControllerFieldDiagnostics {
 struct PeerEntry {
     friends_query_pending: bool,
     friends_query_retry_ready: bool,
+    /// The last admitted friends query's reliable bunch (F-1051).
+    friends_query_receipt: InitialisationReceipt,
     initialisation_request_receipt: InitialisationReceipt,
     initialisation_completion_receipt: InitialisationReceipt,
     controller_field_diagnostics: ControllerFieldDiagnostics,
@@ -1814,11 +1879,15 @@ fn controller_initialisation_calls(
                 {
                     // Validate the complete bounded array before allowing its
                     // arrival to release connected-player finalisation.
+                    // The classified reason rides on the unchanged error.
                     parse_rpc_payload(
                         &field.payload,
                         &server_friends_list_updated_parameters(),
                         &codec,
-                    )?;
+                    )
+                    .map_err(|error| {
+                        error.context(friends_list_rejection(&field.payload, &codec))
+                    })?;
                     // Its friend IDs are not interpreted.
                     calls.push(ControllerCall::FriendsList);
                 } else if component == Some(0)
@@ -4681,6 +4750,10 @@ impl PeerLab {
             players_initialised: self.stats.players_initialised,
             friends_lists_received: self.stats.friends_lists_received,
             friends_list_queries_queued: self.stats.friends_list_queries_queued,
+            friends_list_queries_acknowledged: self.stats.friends_list_queries_acknowledged,
+            friends_lists_ignored_unregistered: self.stats.friends_lists_ignored_unregistered,
+            friends_lists_ignored_already_ready: self.stats.friends_lists_ignored_already_ready,
+            friends_list_rejections: self.stats.friends_list_rejections,
             players_finalised: self.stats.players_finalised,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
@@ -4815,6 +4888,15 @@ impl PeerLab {
             transport.completions_settled += usize::from(completion.settled);
             transport.completions_awaiting_ack +=
                 usize::from(completion.channel.is_some() && !completion.settled);
+            let friends = &mut counts.friends_query;
+            let query = &entry.friends_query_receipt;
+            friends.pending_admission += usize::from(entry.friends_query_pending);
+            friends.queued += usize::from(query.channel.is_some());
+            friends.settled += usize::from(query.settled);
+            friends.awaiting_ack += usize::from(query.channel.is_some() && !query.settled);
+            friends.awaiting_response += usize::from(
+                query.settled && !entry.friends_query_pending && !entry.profiles.friend_ids_ready,
+            );
             counts.controller_startup_actions_queued += entry.controller_startup_queued;
             counts.controller_startup_actions_settled += entry.controller_startup_settled;
             counts.controller_startup_actions_awaiting_ack +=
@@ -5055,6 +5137,7 @@ impl PeerLab {
                     PeerEntry {
                         friends_query_pending: false,
                         friends_query_retry_ready: false,
+                        friends_query_receipt: InitialisationReceipt::default(),
                         controller_field_diagnostics: ControllerFieldDiagnostics::default(),
                         auth_request: None,
                         auth_identity: None,
@@ -5184,6 +5267,15 @@ impl PeerLab {
                                 &entry.peer,
                                 &summary.released_actor_channels,
                             );
+                            let receipt = &mut entry.friends_query_receipt;
+                            let settled = receipt.settled;
+                            receipt.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                            if receipt.settled && !settled {
+                                bump(&mut self.stats.friends_list_queries_acknowledged);
+                            }
                         }
                         // Retain the receipt before subsequent calls can queue
                         // unrelated controller traffic. NAKs retain reliable
@@ -5355,19 +5447,28 @@ impl PeerLab {
                                 bump(&mut self.stats.actor_bunches_ignored);
                                 continue;
                             }
-                            let Ok((calls, ignored)) = controller_initialisation_calls(
+                            let parsed = controller_initialisation_calls(
                                 &bunch.payload,
                                 plan.engine_net_version,
                                 entry.peer.connection_byte_order(),
                                 [entry.backend_proxy, entry.player_data, entry.bestiary],
                                 &mut entry.controller_field_diagnostics,
-                            ) else {
-                                entry.controller_field_diagnostics.malformed_bunches = entry
-                                    .controller_field_diagnostics
-                                    .malformed_bunches
-                                    .saturating_add(1);
-                                bump(&mut self.stats.actor_bunches_malformed);
-                                continue;
+                            );
+                            let (calls, ignored) = match parsed {
+                                Ok(parsed) => parsed,
+                                Err(error) => {
+                                    if let Some(reason) =
+                                        error.downcast_ref::<FriendsListRejection>()
+                                    {
+                                        self.stats.friends_list_rejections.record(*reason);
+                                    }
+                                    entry.controller_field_diagnostics.malformed_bunches = entry
+                                        .controller_field_diagnostics
+                                        .malformed_bunches
+                                        .saturating_add(1);
+                                    bump(&mut self.stats.actor_bunches_malformed);
+                                    continue;
+                                }
                             };
                             self.stats.controller_fields_ignored = self
                                 .stats
@@ -5530,7 +5631,13 @@ impl PeerLab {
                     },
                     &codec.actor,
                 )?;
+                let previous = entry
+                    .peer
+                    .actor_reliable_sequence(channel)
+                    .context("controller channel missing")?;
                 let datagram = entry.peer.reliable_actor_bunch(channel, payload)?;
+                entry.friends_query_receipt =
+                    InitialisationReceipt::committed(&entry.peer, channel, previous);
                 entry.friends_query_pending = false;
                 entry.profiles.friend_ids_ready = false;
                 bump(&mut self.stats.friends_list_queries_queued);
@@ -5645,6 +5752,11 @@ impl PeerLab {
             ControllerCall::FriendsList => {
                 if entry.player.is_none() || entry.profiles.friend_ids_ready {
                     bump(&mut self.stats.initialisation_calls_ignored);
+                    bump(if entry.player.is_none() {
+                        &mut self.stats.friends_lists_ignored_unregistered
+                    } else {
+                        &mut self.stats.friends_lists_ignored_already_ready
+                    });
                     return;
                 }
                 entry.profiles.friend_ids_ready = true;
@@ -9048,6 +9160,185 @@ mod tests {
         assert_eq!(lab.stats.friends_list_queries_queued, 1);
     }
 
+    #[test]
+    fn friends_query_held_back_shows_pending_admission_until_queued() {
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.character_slot = Some(3);
+        entry.profiles.completed = true;
+        entry.profiles.friend_ids_ready = true;
+        for _ in 0..entry.peer.config().sent_capacity {
+            let datagram = entry.peer.ack_packet().unwrap();
+            lab.socket.send_to(&datagram, address).unwrap();
+            let mut bytes = [0; 2048];
+            let n = socket.recv(&mut bytes).unwrap();
+            let packet = super::super::packet::read_packet(
+                &bytes[..n],
+                &super::super::packet::PacketConfig {
+                    receiver: super::super::packet::Receiver::Client,
+                    ..lab.config.packet.packet
+                },
+            )
+            .unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        assert_eq!(lab.readiness_counts().friends_query, Default::default());
+        lab.query_connected_friends();
+        assert_eq!(
+            lab.readiness_counts().friends_query,
+            FriendsQueryReadiness {
+                pending_admission: 1,
+                ..Default::default()
+            }
+        );
+        let bytes = super::super::packet::write_packet(
+            &super::super::packet::Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        socket.send(&bytes).unwrap();
+        lab.poll();
+        lab.retry_friends_queries();
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+        assert_eq!(
+            lab.readiness_counts().friends_query,
+            FriendsQueryReadiness {
+                queued: 1,
+                awaiting_ack: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(lab.stats.friends_list_queries_acknowledged, 0);
+        lab.remove_peer(address).unwrap();
+        assert_eq!(lab.readiness_counts().friends_query, Default::default());
+    }
+
+    #[test]
+    fn friends_query_receipt_settles_on_its_own_bunch_ack_then_awaits_response() {
+        let (mut lab, socket, address, mut client) = initialisation_transport_peer();
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.character_slot = Some(3);
+        entry.profiles.completed = true;
+        let channel = entry.player_controller_channel.unwrap();
+        lab.query_connected_friends();
+        assert_eq!(lab.stats.friends_list_queries_queued, 1);
+        let awaiting_ack = FriendsQueryReadiness {
+            queued: 1,
+            awaiting_ack: 1,
+            ..Default::default()
+        };
+        assert_eq!(lab.readiness_counts().friends_query, awaiting_ack);
+        // A later reliable bunch on the same channel whose packet is lost:
+        // the channel stays unsettled while the query's own bunch settles.
+        let later = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .reliable_actor_bunch(
+                channel,
+                Payload::from_writer(super::super::packet::BitWriter::new()),
+            )
+            .unwrap();
+        assert!(lab.send(&later, address));
+        // NAK the query's packet first: nothing settles.
+        notify_startup_packets(&mut lab, &socket, &mut client, |_| false);
+        assert_eq!(lab.readiness_counts().friends_query, awaiting_ack);
+        assert_eq!(lab.stats.friends_list_queries_acknowledged, 0);
+        // Repair resends both bunches in one packet; lose a fresh later bunch.
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        let later = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .reliable_actor_bunch(
+                channel,
+                Payload::from_writer(super::super::packet::BitWriter::new()),
+            )
+            .unwrap();
+        assert!(lab.send(&later, address));
+        notify_startup_packets(&mut lab, &socket, &mut client, |index| index == 0);
+        assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+        assert_eq!(lab.stats.friends_list_queries_acknowledged, 1);
+        assert_eq!(
+            lab.readiness_counts().friends_query,
+            FriendsQueryReadiness {
+                queued: 1,
+                settled: 1,
+                awaiting_response: 1,
+                ..Default::default()
+            }
+        );
+        // The ACK alone neither readies friend IDs nor finalises.
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 0);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        assert_eq!(lab.stats.friends_lists_received, 1);
+        assert_eq!(
+            lab.readiness_counts().friends_query,
+            FriendsQueryReadiness {
+                queued: 1,
+                settled: 1,
+                ..Default::default()
+            }
+        );
+        // Settlement is counted once per admitted query: repairing the
+        // later bunch settles the channel without a second count.
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        ack_startup_packets(&mut lab, &socket, &mut client);
+        assert!(lab.peers[&address].peer.actor_channel_settled(channel));
+        assert_eq!(lab.stats.friends_list_queries_acknowledged, 1);
+        assert_eq!(lab.session_counts().friends_list_queries_acknowledged, 1);
+    }
+
+    #[test]
+    fn ignored_friends_lists_are_counted_apart_from_ignored_begin_calls() {
+        let (mut lab, _socket, address, _client) = initialisation_transport_peer();
+        lab.controller_call(address, ControllerCall::FriendsList);
+        assert_eq!(lab.stats.friends_lists_received, 1);
+        assert_eq!(lab.stats.initialisation_calls_ignored, 0);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        assert_eq!(lab.stats.friends_lists_ignored_already_ready, 1);
+        assert_eq!(lab.stats.friends_lists_ignored_unregistered, 0);
+        assert_eq!(lab.stats.initialisation_calls_ignored, 1);
+        lab.controller_call(address, ControllerCall::Begin(-1));
+        assert_eq!(lab.stats.initialisation_calls_ignored, 2);
+        assert_eq!(lab.stats.friends_lists_ignored_already_ready, 1);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.player = None;
+        entry.profiles.friend_ids_ready = false;
+        lab.controller_call(address, ControllerCall::FriendsList);
+        assert_eq!(lab.stats.friends_lists_ignored_unregistered, 1);
+        assert_eq!(lab.stats.friends_lists_ignored_already_ready, 1);
+        assert_eq!(lab.stats.initialisation_calls_ignored, 3);
+        assert_eq!(lab.stats.friends_lists_received, 1);
+        let counts = lab.session_counts();
+        assert_eq!(counts.friends_lists_ignored_unregistered, 1);
+        assert_eq!(counts.friends_lists_ignored_already_ready, 1);
+        assert_eq!(counts.initialisation_calls_ignored, 3);
+    }
+
     fn queue_initialisation_phase(lab: &mut PeerLab, address: SocketAddrV4, completion: bool) {
         if completion {
             let entry = lab.peers.get_mut(&address).unwrap();
@@ -12047,6 +12338,285 @@ mod tests {
                         }
                     );
                 }
+            }
+        }
+
+        /// Raw archive string frames: declared count, then units.
+        type StringFrames = Vec<(i32, Vec<u16>)>;
+
+        /// Authored friends payload bits: a presence bit, then optionally an
+        /// array count and raw string frames.
+        fn friends_bits(
+            order: ByteOrder,
+            array: Option<(u16, StringFrames)>,
+            trailing: bool,
+        ) -> Payload {
+            use super::super::super::rep_layout::{write_u16, write_u32};
+            let mut writer = BitWriter::new();
+            writer.write_bit(array.is_some());
+            if let Some((count, strings)) = array {
+                write_u16(&mut writer, count, order);
+                for (declared, units) in strings {
+                    write_u32(&mut writer, declared as u32, order);
+                    for unit in units {
+                        if declared < 0 {
+                            write_u16(&mut writer, unit, order);
+                        } else {
+                            writer.write_bits(u32::from(unit), 8);
+                        }
+                    }
+                }
+            }
+            if trailing {
+                writer.write_bit(true);
+            }
+            Payload::from_writer(writer)
+        }
+
+        fn friends_codec(order: ByteOrder) -> RepLayoutCodec {
+            RepLayoutCodec {
+                actor: actor_codec(0, order),
+                checksums: false,
+                limits: Default::default(),
+            }
+        }
+
+        fn rejection_cases(order: ByteOrder) -> Vec<(Payload, FriendsListRejection)> {
+            use FriendsListRejection as R;
+            let a = u16::from(b'A');
+            let mut short_count = BitWriter::new();
+            short_count.write_bit(true);
+            short_count.write_bits(0, 8);
+            vec![
+                (empty_payload(), R::Truncated),
+                (Payload::from_writer(short_count), R::Truncated),
+                (
+                    friends_bits(order, Some((2, vec![(1, vec![0])])), false),
+                    R::Truncated,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(5, vec![a, a])])), false),
+                    R::Truncated,
+                ),
+                (
+                    friends_bits(order, Some((4097, vec![])), false),
+                    R::ArrayCountOverLimit,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(65_537, vec![])])), false),
+                    R::StringLengthOverLimit,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(i32::MIN, vec![])])), false),
+                    R::StringLengthOverLimit,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(2, vec![a, a])])), false),
+                    R::StringMissingTerminator,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(-2, vec![a, a])])), false),
+                    R::StringMissingTerminator,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(2, vec![0x80, 0])])), false),
+                    R::StringInvalidEncoding,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(3, vec![a, 0, 0])])), false),
+                    R::StringInvalidEncoding,
+                ),
+                (
+                    friends_bits(order, Some((1, vec![(-2, vec![0xffff, 0])])), false),
+                    R::StringInvalidEncoding,
+                ),
+                (friends_bits(order, None, true), R::TrailingBits),
+                (
+                    friends_bits(order, Some((1, vec![(2, vec![a, 0])])), true),
+                    R::TrailingBits,
+                ),
+            ]
+        }
+
+        fn rejection_counts(reason: FriendsListRejection) -> FriendsListRejectionCounts {
+            let mut counts = FriendsListRejectionCounts::default();
+            counts.record(reason);
+            counts
+        }
+
+        #[test]
+        fn friends_rejection_counts_map_each_reason_to_one_key() {
+            use FriendsListRejection as R;
+            let reasons = [
+                R::Truncated,
+                R::ArrayCountOverLimit,
+                R::EntryLimitExceeded,
+                R::StringLengthOverLimit,
+                R::StringMissingTerminator,
+                R::StringInvalidEncoding,
+                R::TrailingBits,
+                R::Unclassified,
+            ];
+            let mut keys = std::collections::BTreeSet::new();
+            for reason in reasons {
+                let value = serde_json::to_value(rejection_counts(reason)).unwrap();
+                let object = value.as_object().unwrap();
+                assert_eq!(object.len(), reasons.len());
+                let set: Vec<_> = object.iter().filter(|(_, count)| **count != 0).collect();
+                assert_eq!(set.len(), 1);
+                assert_eq!(set[0].1, 1);
+                assert!(keys.insert(set[0].0.clone()));
+            }
+            let mut saturated = FriendsListRejectionCounts {
+                trailing_bits: u64::MAX,
+                ..Default::default()
+            };
+            saturated.record(R::TrailingBits);
+            assert_eq!(saturated.trailing_bits, u64::MAX);
+        }
+
+        #[test]
+        fn friends_rejection_classifier_agrees_with_the_parser() {
+            let parameters = server_friends_list_updated_parameters();
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                let codec = friends_codec(order);
+                for (payload, reason) in rejection_cases(order) {
+                    assert!(parse_rpc_payload(&payload, &parameters, &codec).is_err());
+                    assert_eq!(friends_list_rejection(&payload, &codec), reason);
+                }
+                for valid in [
+                    friends_payload(order, &[]),
+                    friends_payload(order, &["AUTHORED-FRIEND", "B"]),
+                    friends_bits(order, Some((0, vec![])), false),
+                    friends_bits(
+                        order,
+                        Some((2, vec![(0, vec![]), (-2, vec![0xd800, 0])])),
+                        false,
+                    ),
+                ] {
+                    assert!(parse_rpc_payload(&valid, &parameters, &codec).is_ok());
+                    assert_eq!(
+                        friends_list_rejection(&valid, &codec),
+                        FriendsListRejection::Unclassified
+                    );
+                }
+                // The entry budget: one for the array, one per string.
+                let mut tight = friends_codec(order);
+                tight.limits.max_entries = 2;
+                let two = friends_bits(order, Some((2, vec![(0, vec![]), (0, vec![])])), false);
+                assert!(parse_rpc_payload(&two, &parameters, &tight).is_err());
+                assert_eq!(
+                    friends_list_rejection(&two, &tight),
+                    FriendsListRejection::EntryLimitExceeded
+                );
+                // Deterministic authored variations: the classifier names a
+                // reason exactly when the parser rejects.
+                let mut state = 0x9e37_79b9_u32;
+                let mut next = |bound: u32| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state % bound
+                };
+                let declared = [-3, -2, -1, 0, 1, 2, 3, 65_537, i32::MIN];
+                let units = [0, u16::from(b'A'), 0x80, 0xffff];
+                for _ in 0..2000 {
+                    let mut strings = Vec::new();
+                    for _ in 0..next(4) {
+                        let count = declared[next(declared.len() as u32) as usize];
+                        let length = (count.unsigned_abs() as usize).min(3);
+                        let body: Vec<u16> = (0..length)
+                            .map(|_| units[next(units.len() as u32) as usize])
+                            .collect();
+                        strings.push((count, body));
+                    }
+                    let count = if next(16) == 0 {
+                        4097
+                    } else {
+                        strings.len() as u16 + u16::from(next(4) == 0)
+                    };
+                    let full = friends_bits(
+                        order,
+                        (next(8) != 0).then_some((count, strings)),
+                        next(4) == 0,
+                    );
+                    let keep = full.bit_len() - next(4).min(full.bit_len() as u32) as usize;
+                    let mut cut = BitWriter::new();
+                    let mut reader = full.reader();
+                    for _ in 0..keep {
+                        cut.write_bit(reader.read_bit());
+                    }
+                    let payload = Payload::from_writer(cut);
+                    assert_eq!(
+                        parse_rpc_payload(&payload, &parameters, &codec).is_err(),
+                        friends_list_rejection(&payload, &codec)
+                            != FriendsListRejection::Unclassified,
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn rejected_friends_responses_count_exactly_their_reason() {
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                for (payload, reason) in rejection_cases(order) {
+                    let mut lab = prospect_refresh_lab();
+                    lab.config.packet.codec.order = order;
+                    let (socket, address, mut client) = controller_peer(&mut lab);
+                    lab.peers.get_mut(&address).unwrap().profiles.completed = true;
+                    let payload = client_actor_body(
+                        &lab,
+                        vec![field_block(
+                            BlockTarget::Actor,
+                            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                            &[(SERVER_FRIENDS_LIST_UPDATED_FIELD_INDEX, payload)],
+                        )],
+                    );
+                    let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                    receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+                    lab.finalise_connected_players();
+                    assert_eq!(
+                        lab.stats.friends_list_rejections,
+                        rejection_counts(reason),
+                        "{reason:?}"
+                    );
+                    assert_eq!(
+                        lab.session_counts().friends_list_rejections,
+                        rejection_counts(reason)
+                    );
+                    assert_eq!(lab.stats.actor_bunches_malformed, 1);
+                    assert_eq!(lab.stats.friends_lists_received, 0);
+                    assert_eq!(lab.stats.friends_lists_ignored_unregistered, 0);
+                    assert_eq!(lab.stats.friends_lists_ignored_already_ready, 0);
+                    assert_eq!(lab.stats.players_finalised, 0);
+                    assert!(lab.has_peer(address));
+                    assert!(!lab.peers[&address].profiles.friend_ids_ready);
+                }
+                // A malformed Begin is not a friends rejection.
+                let mut lab = prospect_refresh_lab();
+                lab.config.packet.codec.order = order;
+                let (socket, address, mut client) = controller_peer(&mut lab);
+                let mut begin = BitWriter::new();
+                begin.write_bit(true);
+                let payload = client_actor_body(
+                    &lab,
+                    vec![field_block(
+                        BlockTarget::Actor,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &[(
+                            SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+                            Payload::from_writer(begin),
+                        )],
+                    )],
+                );
+                let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+                assert_eq!(lab.stats.actor_bunches_malformed, 1);
+                assert_eq!(
+                    lab.stats.friends_list_rejections,
+                    FriendsListRejectionCounts::default()
+                );
+                assert!(lab.has_peer(address));
             }
         }
 
