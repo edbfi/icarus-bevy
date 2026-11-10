@@ -3918,7 +3918,8 @@ impl PeerLab {
             // opens only on its owner's connection, and connection IDs are
             // never reissued to a later Join (until the u32 counter wraps), so
             // no live connection can name these identities again. Releasing
-            // them bounds the cache by live sessions; GUIDs are not reused.
+            // them bounds the cache by live sessions; GUIDs are not reused
+            // (F-1083).
             self.guid_cache.forget_actor(pawn_key(connection));
         }
         if let (Some(capture), Some(connection)) =

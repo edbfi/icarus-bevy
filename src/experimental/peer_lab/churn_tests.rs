@@ -830,7 +830,8 @@ fn leave_after_profiles_churn_retains_no_session_state() {
 #[test]
 fn eight_concurrent_peers_churn_retains_no_session_state() {
     let workers = 8;
-    let rounds = cycles().div_ceil(workers as u64);
+    // A small override still needs a warm-up round to compare against.
+    let rounds = cycles().div_ceil(workers as u64).max(WARMUP);
     let mut lab = lab();
     let run = concurrent(&mut lab, workers, rounds);
     run.assert_retained();
