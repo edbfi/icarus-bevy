@@ -62,7 +62,6 @@ fn network_config() -> NetworkConfig {
     }
 }
 
-/// [`network_config`] with level visibility actors on.
 /// Turn level visibility actors on through the lab API, as the bounded
 /// join probe does: production configuration refuses the switch.
 fn enable_levels(lab: &mut PeerLab) {

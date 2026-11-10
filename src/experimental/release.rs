@@ -600,8 +600,9 @@ impl ReleaseLevelActorsProfile {
     /// `ClassChecksum(AWorldSettings) = 3401274505`, computed with the
     /// retained checksum algorithm from public server 26425113 (3.0.35) and
     /// equal to every world-settings actor export of the retained 3.0.34
-    /// session, whose subclasses add no net properties. Built in only for
-    /// those two builds; other builds need an explicit `[level_actors]`.
+    /// session, whose subclasses add no net properties (M-1350). Built in
+    /// only for those two builds; other builds need an explicit
+    /// `[level_actors]`.
     pub fn icarus_world_settings() -> Self {
         Self {
             names: vec![
