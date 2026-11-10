@@ -6,7 +6,8 @@ execution, spawn, geometry or world-readiness proof.
 ## Probe output
 
 `native_join_probe`: progress every 5 s (`--progress-interval-seconds`, 1–60);
-stderr progress JSON, stdout final pre-shutdown counts.
+stderr progress JSON; stdout final `*_before_shutdown` counts plus
+`sessions_after_shutdown` (shutdown failures/closes).
 
 `controller_fields` (final: `controller_fields_before_shutdown`): ≤64 target/
 index/bit-count/disposition/count rows per peer/aggregate, plus overflow/malformed
@@ -96,6 +97,11 @@ own reliable bunch, once per query; delivery, not client execution.
 `actor_bunches_malformed`, drops its bunch and sends no requery.
 `friends_lists_ignored_{unregistered,already_ready}`: parsed responses ignored,
 also counted in `initialisation_calls_ignored`.
+`connected_player_*` (sessions/stats, F-1077): `records_created` at Begin;
+`record_creations_sent` per record and connection, `_acked` once its bunch is
+ACKed (packet delivery, not client application); `record_updates_sent` 0 in
+Mode A; `array_updates_sent` includes removals; `record_sends_deferred`
+(pressure); `records_removed`; `record_errors`: undrainable refusals.
 
 ## Readiness counts
 
@@ -123,3 +129,6 @@ held back from transport; `queued` = `settled` + `awaiting_ack`, where settled
 is the ACK above and a newer admission replaces an unsettled receipt;
 `awaiting_response`: settled, no newer query pending, no accepted field126
 since.
+`connected_player_records`: `registered`, `finalised`, `pending_send`
+(connections with an unadmitted change); `creations_queued` =
+`creations_settled` + `records_awaiting_ack`.

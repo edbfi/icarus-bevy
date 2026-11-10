@@ -16,10 +16,10 @@ F-1024 inert models; F-1034 replay. Bindings/cause: U-079.
 State/restart F-1036; query118/callback126 F-1051; fields66/86 F-1052.
 The retry finalises yet stays at Preparing geometry with no later client
 calls (F-1067), so friends/finalisation is not the wait. After 126 the
-original sends a connected-player record, then level actors (F-1070), but
-not its static RPC113 (F-1068); native sends no record or level actors
-(F-1071). Curtain inputs
-F-1069; visibility bindings/effects remain U-079.
+original sends a connected-player record (F-1072 to F-1075), then level
+actors (F-1070), but not its static RPC113 (F-1068); native sends the record,
+unproven with a client (F-1077), not level actors (F-1071). Curtain inputs
+F-1069/F-1076; visibility bindings/effects remain U-079.
 
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
@@ -41,4 +41,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1337.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1341.

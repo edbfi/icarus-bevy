@@ -22,9 +22,8 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   Receive framing has no independent content-block cap (F-1046); constructed
   partials default to 64 KiB, raised to 128 KiB by shipped configuration
   (F-1047), which native envelopes follow (F-1043). Public phases F-1045 and
-  private headers F-1042 are observation boundaries. The retry finalises
-  without world entry (F-1067). ACKs,
-  recognition and the false dedicated predicate prove no client execution.
+  private headers F-1042 are observation boundaries. ACKs, recognition and
+  the false dedicated predicate prove no client execution.
 
 - 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
   Legacy row indices do not transfer.
@@ -110,11 +109,10 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
 - Server relevancy, priority, tick rate and replication stages match across
   the older builds (F-761; selected server bindings F-745/F-748/F-749/F-751).
   Actor/Pawn/Controller/Beacon relevancy and Actor/Controller/Matinee priority
-  remain distinct. Driver stages are PrepConnections, BuildConsiderList,
-  PrioritizeActors, ProcessPrioritizedActors and inlined MarkRelevantActors.
-  Readiness checks connection state, viewer, recent receive time and channel
-  capacity. Consideration filters lifecycle/driver/timing state before
-  CallPreReplication; prioritization handles owner expiry and dormancy.
+  remain distinct. Readiness checks connection state, viewer, recent receive
+  time and channel capacity. Consideration filters lifecycle/driver/timing
+  state before CallPreReplication; prioritization handles owner expiry and
+  dormancy.
   RelevantTime and force-frame rules remain F-788/F-851. Saturation, startup
   level initialization and tear-off affect replication/close; no runtime
   relevancy/priority qualification follows (U-038). Numeric thresholds and
@@ -126,23 +124,23 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   2 s `ServerFPS` (82) and changed `NetworkingStatus` (68..79; F-810, F-1057,
   F-1058). Multi-bunch updates split as unreliable partials on consecutive
   packets (F-825; `LabPeer::actor_update_datagrams`).
+- `ConnectedPlayers` records (F-1072 to F-1075): a reliable GameState bunch
+  carries each class-named `UReplicatedConnectedPlayer` block, then handle 3
+  listing their GUIDs; native: F-1077.
 
 - Modifier time (F-991, F-994, F-996): authority rejects equal/unordered
   requests. Quantize f32 `s = seconds * 10`,
   `r = round_ties_even(-0.5 - (s + s))`, then `max(0, -(i32(r) >> 1))`.
   Out-of-range integer/u16 conversion retains wire (fresh restore starts at zero).
-  Accepted raw writes call OnRep even with unchanged wire. OnRep reconstructs
-  raw seconds as wire times binary32 0.1 only for a present nonauthority owner,
-  then requests the optional lifetime multicast. Tick's authority tag refusal
-  precedes countdown; intervals consume at most one period. AutoDestroy tests
-  role 3, not time. Listener effects, scheduling and refresh remain open (U-069).
+  OnRep: F-996; tick and AutoDestroy order: F-994. Listener effects,
+  scheduling and refresh remain open (U-069).
 
 - Internal-temperature setter ordering and notification boundary: F-997.
   TemperatureTick (F-999) samples only when elapsed time exceeds the interval,
   consumes one period, then adjusts internal temperature on every admitted call.
-  Stat reads and notifications preserve local order. Binary32 fractional state
-  uses asymmetric integer conversion; `temperature::tick_temperature` defines
-  the qualified arithmetic. Initial values and callee effects remain explicit.
+  Binary32 fractional state uses asymmetric integer conversion;
+  `temperature::tick_temperature` defines the qualified arithmetic. Initial
+  values and callee effects remain explicit.
 
 ## Candidate
 
@@ -159,6 +157,8 @@ scheduling or stock-client qualification.
   bunches (F-709 to F-711), `PackageMapState` mappings and scheduling policies;
   fixtures and randomized checks: F-763, F-764 (F-577, F-604, F-673, F-761,
   F-845).
+- Records: staged updates as fields fill, null controller references on other
+  connections, removal without a destroy (F-1073, F-1077; U-038).
 
 ## Open questions
 
@@ -172,4 +172,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330; earlier observations: cited findings.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340; earlier observations: cited findings.

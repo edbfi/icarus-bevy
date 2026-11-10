@@ -64,10 +64,10 @@ Last reconciled: 2026-11-10
   tags, selected class profiles and row registry are qualified (F-1031 to
   F-1033); connected behavior and visibility bindings still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048 and friends-query
-  path F-1051 are qualified; do not repeat static reads or run F-1067
-  unchanged. Next connected run: native connected-player record first
-  (F-1071); measure post-finalisation client calls (second 82 burst, 170,
-  backend 134/135/128; F-1070, M-1161). None clears visibility preconditions.
+  path F-1051 and record reads F-1072 to F-1076 are qualified; do not repeat
+  them or run F-1067 unchanged. Record F-1077 ships behind its switch,
+  unqualified with a stock client; the next connected run measures the
+  U-038/U-079 items. None clears visibility preconditions.
 
 ## Before enabling visibility dispatch or effects
 

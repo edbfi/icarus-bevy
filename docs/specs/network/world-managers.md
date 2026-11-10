@@ -40,12 +40,8 @@ Framing is in [actor channel bunches](actor-channel.md).
   `0x1418d39c0`/`0x1418d4000`/`0x1418d4470`/`0x1418d8460`,
   M-1029/ev_86a436f88d36, ev_c41fa5b50531, ev_7fedbcff43cb, ev_1cc2919010b1)
   runs `RunQuest` (F-864), populating `ActiveQuests` where `Check()` is false.
-  Across `3.0.31`/`3.0.32` server paks all `2,044` `D_Quests` checksums and CDO
-  guards match (`1,774` keep `4033596864` incl. `Quest` and case-resolved
-  `BPQ_Extermination_Croc_C`; `270` add `CPF_Net` without user-struct arrays),
-  and Kismet `Check()` compiles `1,635` pure + `44` false-only rules vs `365`
-  `Impure`, matching `8/8` M-707 quest opens + ch `126` bit for bit (F-934,
-  F-935, M-1030; U-074 resolved, U-076).
+  Quest checksums, CDO guards and `Check()` classes: F-935; M-707 quest opens
+  match bit for bit (F-934; U-074 resolved, U-076).
 - QuestManager (`Default__QuestManager`, checksum 3539440926): handles 19..26
   carry the save's C018 record: the faction mission's 1-byte
   `D_FactionMissions` row, nondefault difficulty, flags and delay,
@@ -56,10 +52,7 @@ Framing is in [actor channel bunches](actor-channel.md).
   mission the tables lack or an unopenable `C019` quest skips the QuestManager.
 - PlayerHistoryTracker (`Default__PlayerHistoryTracker`, checksum 243959002):
   handle 19 preserves C024 `SavedHistoryData`'s ordered `UserId`, `ChrSlot`
-  and `CachedCharacterName` (F-862). Original `AddPlayer` deduplicates by
-  case-insensitive user ID and slot without refreshing names (F-865).
-  Native History delivery coalesces temporary per-peer capacity refusals into
-  the latest reliable array after ACK/NAK progress; later opens include it (F-967).
+  and `CachedCharacterName` (F-862); `AddPlayer` F-865; native History F-967.
 - InventoryContainerManager (`Default__InventoryContainerManager`, checksum
   3504939521, no components): handle 19 `Inventories` lists its runtime
   `UInventory` subobjects' GUIDs in block order. Each block sends `bIsActive`,
@@ -88,19 +81,15 @@ Framing is in [actor channel bunches](actor-channel.md).
   captured blocks bit for bit (`run` fails closed on ticked custom stats,
   nested `13 >= 0` or static `Weight_+`; F-933, M-1028; U-075 resolved).
 - FLOD manager (`Default__BP_IcarusFLOD_Default_C`, checksum 519276901, no
-  components): the Blueprint archetype and its package are exported in the
-  open, the actor spawns at (0, 0, -100000) as captured, and handle 16 lists
-  the save's C013 `NumTiles` tile actors, keyed by position
-  (`ActorKey::FlodTile`) and given GUIDs at this open in array order
-  (F-914; `with_flod_tiles`).
+  components): open contents F-914; handle 16 lists the C013 `NumTiles` tile
+  actors, keyed by position (`ActorKey::FlodTile`; `with_flod_tiles`).
 - `run` (`DEFAULT_MAX_CHANNELS = 256` so multi-stage `C019` DAGs and managers
   fit above `0..=8`, F-858) opens the radiation, world-talent and disaster
   managers after each PlayerState, then atomically reserves and opens any
   stitched `C019` quests with `QuestManager`, followed by
   InventoryContainerManager, PlayerHistoryTracker and FLOD (F-859, F-861,
-  F-862, F-866, F-914, F-933, F-934). Across the 15 qualified prospects 6 open
-  8 quests each and 9 have 0 `C019` records (`0` skipped quests); list gaps,
-  unopenable/overflowing quests or unknown missions skip cleanly (F-867, F-934).
+  F-862, F-866, F-914, F-933, F-934). List gaps, unopenable/overflowing
+  quests or unknown missions skip cleanly; 15-prospect counts: F-867, F-934.
 
 ## Candidate
 
