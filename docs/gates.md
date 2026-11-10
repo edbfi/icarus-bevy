@@ -62,12 +62,12 @@ Last reconciled: 2026-11-10
   addresses and assumptions do not transfer automatically. The 3.0.35 pin's
   tags, selected class profiles and row registry are qualified (F-1031 to
   F-1033); connected behavior and visibility bindings still need qualification.
-- Matched receive/CharacterProfile guards F-1046 to F-1048 and friends-query
+- Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
-  F-1080 are qualified; do not repeat them or run F-1067 unchanged. Record
-  F-1077 ships behind its switch, unqualified with a stock client; the next
-  connected run measures the U-038/U-079 items, first whether a field-82 burst
-  follows the record's ACK (F-1080, F-1081). None clears visibility preconditions.
+  F-1080 are qualified and gate reads F-1086/F-1087 done; do not repeat them or
+  rerun F-1084 unchanged. Record F-1077 is ACKed but insufficient; the next
+  connected run first needs a native controller update with handles 17/20,
+  then measures the U-038/U-079 items. None clears visibility preconditions.
 
 ## Before enabling visibility dispatch or effects
 
