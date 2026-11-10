@@ -131,8 +131,8 @@ is the ACK above and a newer admission replaces an unsettled receipt;
 since.
 `controller_possession` (F-1088): `pending_send`; `queued` = `settled` +
 `awaiting_ack`. Counters `controller_possession_updates_{sent,acked}`,
-`_sends_deferred`, `_errors` (abandoned). `unreliable_actor_bunches`: client
-unreliable bunches since bind, all connections: per channel kind `bunches`,
+`_sends_deferred`, `_errors` (abandoned). `unreliable_actor_bunches` (probe
+opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
 `connected_player_records`: `registered`, `finalised`, `pending_send`
 (connections with an unadmitted change); `creations_queued` =

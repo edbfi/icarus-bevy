@@ -350,6 +350,8 @@ fn main() -> Result<()> {
         bound.lab.has_controller_possession_properties() == controller_possession_properties,
         "controller possession configuration did not apply"
     );
+    // Diagnostic for this probe only; the server leaves it off.
+    bound.lab.enable_unreliable_actor_bunch_counts();
     if !startup.is_empty() {
         bound.lab.enable_controller_startup(&profile, startup)?;
     }

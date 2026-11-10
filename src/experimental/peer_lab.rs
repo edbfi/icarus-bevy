@@ -2376,8 +2376,12 @@ pub struct PeerLab {
     /// Opt-in controller possession properties after each pawn open
     /// ([`PeerLab::enable_controller_possession_properties`]).
     controller_possession: bool,
-    /// Header-only counts of dropped client unreliable actor bunches.
+    /// Header-only counts of dropped client unreliable actor bunches, kept
+    /// only while `count_unreliable_actor_bunches` is set.
     unreliable_actor_bunches: UnreliableActorBunchCounts,
+    /// Opt-in ([`PeerLab::enable_unreliable_actor_bunch_counts`]): off by
+    /// default, so the receive path parses no dropped bunch for diagnostics.
+    count_unreliable_actor_bunches: bool,
     /// Opt-in world manager opens after the PlayerState: each manager's
     /// key, plan and channel (F-859).
     manager_opens: Vec<(ActorKey, ManagerOpenPlan, u32)>,
@@ -2539,6 +2543,7 @@ impl PeerLab {
             next_connected_player_record: 0,
             controller_possession: false,
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
+            count_unreliable_actor_bunches: false,
             manager_opens: Vec::new(),
             quest_open_base: None,
             quest_opens: Vec::new(),
@@ -4985,8 +4990,18 @@ impl PeerLab {
     /// since bind, by channel kind and controller field index: lab-wide over
     /// every connection, kept after sessions end, so they read cleanly only
     /// with one client connected (the probe's `unreliable_actor_bunches`).
+    /// All zero unless [`Self::enable_unreliable_actor_bunch_counts`] was
+    /// called.
     pub fn unreliable_actor_bunch_counts(&self) -> &UnreliableActorBunchCounts {
         &self.unreliable_actor_bunches
+    }
+
+    /// Count dropped client unreliable actor bunches by channel kind and
+    /// controller field from now on. A diagnostic for probes: it parses each
+    /// such controller bunch's headers on the receive path, so the server
+    /// leaves it off. The bunches stay dropped either way.
+    pub fn enable_unreliable_actor_bunch_counts(&mut self) {
+        self.count_unreliable_actor_bunches = true;
     }
 
     /// Configure at most 32 explicit actions once, before admitting any peers.
@@ -5956,7 +5971,9 @@ impl PeerLab {
                             .actor_duplicate_reliable
                             .saturating_add(summary.actor_duplicate_reliable as u64);
                         // Header-only counts; these bunches stay dropped.
-                        if !received.unreliable_actor_bunches().is_empty() {
+                        if self.count_unreliable_actor_bunches
+                            && !received.unreliable_actor_bunches().is_empty()
+                        {
                             let controller_codec =
                                 self.player_controller_open.as_ref().map(|plan| {
                                     actor_codec(
@@ -17119,6 +17136,18 @@ mod tests {
                 writer.write_bit(true);
                 writer
             });
+            // Off by default: the bunch is dropped as before and not counted.
+            let dropped = lab.stats.actor_bunches_dropped;
+            send(
+                &mut lab,
+                vec![unreliable(controller, false, camera.clone())],
+            );
+            assert_eq!(lab.stats.actor_bunches_dropped, dropped + 1);
+            assert_eq!(
+                lab.unreliable_actor_bunch_counts(),
+                &UnreliableActorBunchCounts::default()
+            );
+            lab.enable_unreliable_actor_bunch_counts();
             send(
                 &mut lab,
                 vec![
@@ -17176,7 +17205,8 @@ mod tests {
             assert_eq!(counts.controller_field_overflow, 0);
             assert_eq!(counts.controller_other_blocks, 0);
             // Still dropped exactly as before: nothing dispatched or diagnosed.
-            assert_eq!(lab.stats.actor_bunches_dropped, 7);
+            // Seven counted bunches plus the one sent before counting began.
+            assert_eq!(lab.stats.actor_bunches_dropped, dropped + 8);
             assert_eq!(lab.stats.controller_fields_ignored, 0);
             assert_eq!(lab.stats.actor_bunches_malformed, 0);
             let diagnostics = lab.controller_field_diagnostics(address).unwrap();
