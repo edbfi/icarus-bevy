@@ -205,9 +205,9 @@ use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
 use super::game_state_open::{
-    GameStateOpenPlan, GameStateOpenState, LockedMission, NetworkingStatus,
-    active_prospect_update_values, class_default, compose_game_state_open,
-    compose_game_state_update,
+    ConnectedPlayerState, ConnectedPlayersPlan, GameStateOpenPlan, GameStateOpenState,
+    LockedMission, NetworkingStatus, active_prospect_update_values, class_default,
+    compose_connected_players_update, compose_game_state_open, compose_game_state_update,
 };
 use super::handshake::decode;
 use super::handshake_lab::{
@@ -795,6 +795,31 @@ pub struct PeerLabStats {
     /// Completed players finalised once every joined controller sent its
     /// friends list (F-973).
     pub players_finalised: u64,
+    /// `UReplicatedConnectedPlayer` records registered at Begin acceptance
+    /// (`AddConnectedPlayer`), one per session, with
+    /// [`PeerLab::enable_connected_player_records`].
+    pub connected_player_records_created: u64,
+    /// Record creations (all seven handles) admitted to reliable GameState
+    /// transport, one per record per connection; Mode A sends a record once,
+    /// after its player is finalised.
+    pub connected_player_record_creations_sent: u64,
+    /// Admitted record creations whose reliable bunches a positive packet ACK
+    /// settled, counted once each. No client execution is implied.
+    pub connected_player_record_creations_acked: u64,
+    /// Record property updates (staged handle sets) admitted to transport.
+    /// Mode A sends none; reserved for the staged mode.
+    pub connected_player_record_updates_sent: u64,
+    /// `ConnectedPlayers` array (handle 3) updates admitted to transport,
+    /// including those created with a record and removal updates.
+    pub connected_player_array_updates_sent: u64,
+    /// Record or array sends held back by drainable transport pressure; the
+    /// retry sends the latest state after ACK/NAK progress.
+    pub connected_player_record_sends_deferred: u64,
+    /// Records removed with their session (`RemoveConnectedPlayer`).
+    pub connected_player_records_removed: u64,
+    /// Composition or framing refusals that cannot drain; nothing is retried
+    /// until the next record change.
+    pub connected_player_record_errors: u64,
     pub player_character_id_updates_sent: u64,
     /// Returning pawns given their saved UID (F-950).
     pub returning_pawns_restored: u64,
@@ -1000,6 +1025,15 @@ pub struct SessionCounts {
     pub friends_lists_ignored_already_ready: u64,
     pub friends_list_rejections: FriendsListRejectionCounts,
     pub players_finalised: u64,
+    /// `UReplicatedConnectedPlayer` record counters, as in [`PeerLabStats`].
+    pub connected_player_records_created: u64,
+    pub connected_player_record_creations_sent: u64,
+    pub connected_player_record_creations_acked: u64,
+    pub connected_player_record_updates_sent: u64,
+    pub connected_player_array_updates_sent: u64,
+    pub connected_player_record_sends_deferred: u64,
+    pub connected_player_records_removed: u64,
+    pub connected_player_record_errors: u64,
     pub player_character_id_updates_sent: u64,
     pub returning_pawns_restored: u64,
     pub returning_pawn_updates_sent: u64,
@@ -1047,6 +1081,7 @@ pub struct SessionCounts {
 pub struct ReadinessCounts {
     pub initialisation_transport: InitialisationTransportCounts,
     pub friends_query: FriendsQueryReadiness,
+    pub connected_player_records: ConnectedPlayerRecordReadiness,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
     /// Retained receipts after a positive ACK leaves the controller channel
@@ -1110,6 +1145,24 @@ pub struct FriendsQueryReadiness {
     pub awaiting_response: usize,
 }
 
+/// Live `UReplicatedConnectedPlayer` record gauges (Mode A). Queued and
+/// settled count record creations per connection, settled by a positive
+/// packet ACK of their own reliable bunches; they prove no client execution.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ConnectedPlayerRecordReadiness {
+    /// Live sessions with a registered record.
+    pub registered: usize,
+    /// Registered records whose player is finalised.
+    pub finalised: usize,
+    /// Connections with a record or array change not yet admitted to
+    /// transport (pressure, or a GameState channel not open yet).
+    pub pending_send: usize,
+    pub creations_queued: usize,
+    pub creations_settled: usize,
+    /// Queued record creations not yet ACKed.
+    pub records_awaiting_ack: usize,
+}
+
 /// Refused `ServerFriendsListUpdated` fields by [`FriendsListRejection`];
 /// fixed keys, saturating counts, no payload values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -1167,6 +1220,29 @@ impl InitialisationReceipt {
             ..Default::default()
         }
     }
+}
+
+/// This session's `UReplicatedConnectedPlayer` record
+/// (`work/connected-player-record-20261110`, spec section 4): registered at
+/// Begin acceptance, completed with the player, finalised with the player.
+/// Its values are read from the session when composed, so a send always
+/// carries the latest state.
+struct ConnectedPlayerRecord {
+    /// Runtime sub-object index under the GameState key: one driver-wide
+    /// dynamic GUID per record, never reused.
+    index: u32,
+    /// `ConnectionStartTime`: lab world seconds at registration (the exact
+    /// original clock is not bound, [I]).
+    start_time: f32,
+    /// `ConnectionCompleteTime`: lab world seconds at finalisation.
+    complete_time: Option<f32>,
+}
+
+/// One queued record-creation bunch on a connection's GameState channel and
+/// the number of records it creates.
+struct ConnectedPlayerReceipt {
+    receipt: InitialisationReceipt,
+    records: usize,
 }
 
 /// Independent live-player blockers, separate from the exclusive player phases.
@@ -1600,6 +1676,19 @@ impl ControllerFieldDiagnostics {
 }
 
 struct PeerEntry {
+    /// This session's own connected-player record.
+    connected_player: Option<ConnectedPlayerRecord>,
+    /// Record indices this connection was last sent in its array, in order.
+    connected_players_sent: Vec<u32>,
+    /// A record or array change for this connection awaits admission.
+    connected_players_pending: bool,
+    connected_players_retry_ready: bool,
+    /// Unsettled creation bunches; settled ones are counted and dropped.
+    connected_player_receipts: Vec<ConnectedPlayerReceipt>,
+    /// Records this connection created whose creation bunches settled.
+    connected_player_creations_settled: usize,
+    /// The committed PlayerController open's actor and PlayerState GUIDs.
+    controller_open_guids: Option<(u32, u32)>,
     friends_query_pending: bool,
     friends_query_retry_ready: bool,
     /// The last admitted friends query's reliable bunch (F-1051).
@@ -1726,6 +1815,15 @@ fn transport_capacity_can_drain(entry: &PeerEntry, error: &anyhow::Error, channe
         None => false,
     };
     temporary && !entry.peer.is_failed()
+}
+
+/// Whether a connection can carry connected-player records: its GameState
+/// open is committed (replica present) and its channel is open, not closing.
+fn connected_players_receivable(entry: &PeerEntry, channel: Option<u32>) -> bool {
+    entry.game_state.is_some()
+        && channel.is_some_and(|channel| {
+            entry.peer.has_actor_channel(channel) && !entry.peer.actor_channel_closing(channel)
+        })
 }
 
 fn defer_pawn_restore(
@@ -2069,6 +2167,11 @@ pub struct PeerLab {
     game_state_open: Option<GameStateSession>,
     /// Opt-in PlayerState open after the PlayerController open.
     player_state_open: Option<PlayerStateOpenPlan>,
+    /// Opt-in `UReplicatedConnectedPlayer` records under the GameState's
+    /// `ConnectedPlayers` ([`PeerLab::enable_connected_player_records`]).
+    connected_players: Option<ConnectedPlayersPlan>,
+    /// The next record's sub-object index under the GameState key.
+    next_connected_player_record: u32,
     /// Opt-in world manager opens after the PlayerState: each manager's
     /// key, plan and channel (F-859).
     manager_opens: Vec<(ActorKey, ManagerOpenPlan, u32)>,
@@ -2226,6 +2329,8 @@ impl PeerLab {
             next_pawn_object_id: Some(crate::actor_uids::FIRST_NATIVE_OBJECT_ID),
             game_state_open: None,
             player_state_open: None,
+            connected_players: None,
+            next_connected_player_record: 0,
             manager_opens: Vec::new(),
             quest_open_base: None,
             quest_opens: Vec::new(),
@@ -3793,6 +3898,15 @@ impl PeerLab {
     // original's FreeUniqueID call timing has not been established.
     fn remove_peer(&mut self, address: SocketAddrV4) -> Option<PeerEntry> {
         let entry = self.peers.remove(&address)?;
+        if let Some(record) = &entry.connected_player {
+            // `RemoveConnectedPlayer` drops the record from the array; the
+            // remaining connections that listed it get the shrunk array at the
+            // next retry pass. No sub-object destroy is sent ([I]: none was
+            // observed and S2 had one player).
+            bump(&mut self.stats.connected_player_records_removed);
+            let index = record.index;
+            self.mark_connected_players_due(|other| other.connected_players_sent.contains(&index));
+        }
         if let (Some(capture), Some(connection)) =
             (&mut self.private_rpc82_capture, entry.connection_id)
         {
@@ -4559,6 +4673,56 @@ impl PeerLab {
     /// Actions retain caller order and start only after all initial opens queue
     /// successfully and the controller and referenced pawn channels settle.
     /// This conservative ACK policy does not establish geometry or possession.
+    /// Replicate each joined player's `UReplicatedConnectedPlayer` record
+    /// under the GameState's `ConnectedPlayers` (Mode A of
+    /// `work/connected-player-record-20261110/spec.md`): a record registers
+    /// at Begin acceptance and, once its player is finalised (F-973), one
+    /// reliable GameState-channel bunch creates it with all seven handles and
+    /// sends the whole array. Requires the PlayerController, pawn, GameState
+    /// and PlayerState opens. A connection receives a record only once the
+    /// controller, pawn and PlayerState it references are open on it; the lab
+    /// opens those only on their owner's connection, so today each connection
+    /// lists its own record. Must be configured before any peer exists.
+    pub fn enable_connected_player_records(&mut self, plan: ConnectedPlayersPlan) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "connected-player records are configured before admission"
+        );
+        ensure!(
+            self.player_controller_open.is_some()
+                && self.pawn_open.is_some()
+                && self.game_state_open.is_some()
+                && self.player_state_open.is_some(),
+            "connected-player records need the controller, pawn, GameState and PlayerState opens"
+        );
+        ensure!(
+            !plan.record_class.is_empty()
+                && plan.record_class[0].checksum != 0
+                && plan.record_layout.len() == 7
+                && plan.component_layout.len() == 3,
+            "invalid connected-player record plan"
+        );
+        self.connected_players = Some(plan);
+        Ok(())
+    }
+
+    /// Turn connected-player records off for a comparison run; the lab then
+    /// behaves as without [`enable_connected_player_records`](Self::enable_connected_player_records).
+    /// Must be called before any peer exists.
+    pub fn disable_connected_player_records(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "connected-player records are configured before admission"
+        );
+        self.connected_players = None;
+        Ok(())
+    }
+
+    /// Whether joined players' connected-player records are replicated.
+    pub fn has_connected_player_records(&self) -> bool {
+        self.connected_players.is_some()
+    }
+
     pub fn enable_controller_startup(
         &mut self,
         profile: &ReleaseProfile,
@@ -4755,6 +4919,20 @@ impl PeerLab {
             friends_lists_ignored_already_ready: self.stats.friends_lists_ignored_already_ready,
             friends_list_rejections: self.stats.friends_list_rejections,
             players_finalised: self.stats.players_finalised,
+            connected_player_records_created: self.stats.connected_player_records_created,
+            connected_player_record_creations_sent: self
+                .stats
+                .connected_player_record_creations_sent,
+            connected_player_record_creations_acked: self
+                .stats
+                .connected_player_record_creations_acked,
+            connected_player_record_updates_sent: self.stats.connected_player_record_updates_sent,
+            connected_player_array_updates_sent: self.stats.connected_player_array_updates_sent,
+            connected_player_record_sends_deferred: self
+                .stats
+                .connected_player_record_sends_deferred,
+            connected_player_records_removed: self.stats.connected_player_records_removed,
+            connected_player_record_errors: self.stats.connected_player_record_errors,
             player_character_id_updates_sent: self.stats.player_character_id_updates_sent,
             returning_pawns_restored: self.stats.returning_pawns_restored,
             returning_pawn_updates_sent: self.stats.returning_pawn_updates_sent,
@@ -4897,6 +5075,20 @@ impl PeerLab {
             friends.awaiting_response += usize::from(
                 query.settled && !entry.friends_query_pending && !entry.profiles.friend_ids_ready,
             );
+            let records = &mut counts.connected_player_records;
+            if let Some(record) = &entry.connected_player {
+                records.registered += 1;
+                records.finalised += usize::from(record.complete_time.is_some());
+            }
+            records.pending_send += usize::from(entry.connected_players_pending);
+            let awaiting: usize = entry
+                .connected_player_receipts
+                .iter()
+                .map(|pending| pending.records)
+                .sum();
+            records.creations_queued += entry.connected_player_creations_settled + awaiting;
+            records.creations_settled += entry.connected_player_creations_settled;
+            records.records_awaiting_ack += awaiting;
             counts.controller_startup_actions_queued += entry.controller_startup_queued;
             counts.controller_startup_actions_settled += entry.controller_startup_settled;
             counts.controller_startup_actions_awaiting_ack +=
@@ -5135,6 +5327,13 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        connected_player: None,
+                        connected_players_sent: Vec::new(),
+                        connected_players_pending: false,
+                        connected_players_retry_ready: false,
+                        connected_player_receipts: Vec::new(),
+                        connected_player_creations_settled: 0,
+                        controller_open_guids: None,
                         friends_query_pending: false,
                         friends_query_retry_ready: false,
                         friends_query_receipt: InitialisationReceipt::default(),
@@ -5276,6 +5475,25 @@ impl PeerLab {
                             if receipt.settled && !settled {
                                 bump(&mut self.stats.friends_list_queries_acknowledged);
                             }
+                            // Each record creation settles once, on a positive
+                            // ACK of its own bunch; NAKs leave repair to the
+                            // reliable layer and settle nothing.
+                            let mut settled_records = 0;
+                            entry.connected_player_receipts.retain_mut(|pending| {
+                                pending.receipt.observe_positive_ack(
+                                    &entry.peer,
+                                    &summary.released_actor_channels,
+                                );
+                                if pending.receipt.settled {
+                                    settled_records += pending.records;
+                                }
+                                !pending.receipt.settled
+                            });
+                            entry.connected_player_creations_settled += settled_records;
+                            self.stats.connected_player_record_creations_acked = self
+                                .stats
+                                .connected_player_record_creations_acked
+                                .saturating_add(settled_records as u64);
                         }
                         // Retain the receipt before subsequent calls can queue
                         // unrelated controller traffic. NAKs retain reliable
@@ -5312,6 +5530,9 @@ impl PeerLab {
                             }
                             if entry.friends_query_pending {
                                 entry.friends_query_retry_ready = true;
+                            }
+                            if entry.connected_players_pending {
+                                entry.connected_players_retry_ready = true;
                             }
                             if entry.pending_profile_exchange.is_some() {
                                 entry.profile_exchange_retry_ready = true;
@@ -5746,6 +5967,7 @@ impl PeerLab {
                 }
                 entry.character_slot = Some(slot);
                 bump(&mut self.stats.initialisation_slots_recorded);
+                self.register_connected_player(address);
                 self.query_connected_friends();
                 self.request_profile(address, ProfileKind::User);
             }
@@ -6058,14 +6280,296 @@ impl PeerLab {
             .filter(|(_, entry)| entry.profiles.completed && !entry.profiles.finalised)
             .map(|(address, _)| *address)
             .collect();
+        let world_seconds = self.started.elapsed().as_secs_f32();
+        let mut records_finalised = false;
         for address in ready {
             let Some(entry) = self.peers.get_mut(&address) else {
                 continue;
             };
             entry.profiles.finalised = true;
+            // `FinaliseConnectedPlayerInitialisation` writes the completion time.
+            if let Some(record) = &mut entry.connected_player {
+                record.complete_time = Some(world_seconds);
+                records_finalised = true;
+            }
             bump(&mut self.stats.players_finalised);
             self.restore_returning_pawn_uid(address);
             self.add_new_player_to_history(address);
+        }
+        if records_finalised {
+            // Only connections that can carry records now; one whose GameState
+            // commits later is marked then (`connected_player_actor_opened`).
+            let channel = self
+                .game_state_open
+                .as_ref()
+                .map(|session| session.channel_index);
+            self.mark_connected_players_due(|entry| connected_players_receivable(entry, channel));
+            self.retry_connected_player_records();
+        }
+    }
+
+    /// An actor a record can reference or carry (controller, pawn, GameState,
+    /// PlayerState) was committed on `address`'s connection: once any record
+    /// is finalised, that connection's array may now change, so it alone is
+    /// marked for the next pass. No scan runs per poll.
+    fn connected_player_actor_opened(&mut self, address: SocketAddrV4) {
+        if self.connected_players.is_none()
+            || !self.peers.values().any(|entry| {
+                entry
+                    .connected_player
+                    .as_ref()
+                    .is_some_and(|record| record.complete_time.is_some())
+            })
+        {
+            return;
+        }
+        if let Some(entry) = self.peers.get_mut(&address) {
+            entry.connected_players_pending = true;
+            entry.connected_players_retry_ready = true;
+        }
+    }
+
+    /// `AddConnectedPlayer` on Begin acceptance: one record per session, with
+    /// its start time. Mode A sends nothing yet.
+    fn register_connected_player(&mut self, address: SocketAddrV4) {
+        if self.connected_players.is_none() {
+            return;
+        }
+        let start_time = self.started.elapsed().as_secs_f32();
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        if entry.connected_player.is_some() {
+            return;
+        }
+        let Some(next) = self.next_connected_player_record.checked_add(1) else {
+            bump(&mut self.stats.connected_player_record_errors);
+            return;
+        };
+        entry.connected_player = Some(ConnectedPlayerRecord {
+            index: self.next_connected_player_record,
+            start_time,
+            complete_time: None,
+        });
+        self.next_connected_player_record = next;
+        bump(&mut self.stats.connected_player_records_created);
+    }
+
+    /// Mark the connections selected by `which` for a record/array pass.
+    fn mark_connected_players_due(&mut self, which: impl Fn(&PeerEntry) -> bool) {
+        if self.connected_players.is_none() {
+            return;
+        }
+        for entry in self.peers.values_mut() {
+            if which(entry) {
+                entry.connected_players_pending = true;
+                entry.connected_players_retry_ready = true;
+            }
+        }
+    }
+
+    /// The record of `owner` as `viewer` may receive it, or `None` while it
+    /// must not be sent there: Mode A sends only finalised records, and only
+    /// once the controller, pawn and PlayerState the record references are
+    /// open on the viewer's connection (S2 order; checked as
+    /// `complete_player_initialisation` checks its opens). The lab opens those
+    /// actors only on their owner's connection, so cross-connection records
+    /// are deferred until those actors are opened there; until then each
+    /// connection lists only its own record. A later open re-marks the
+    /// connection (`connected_player_actor_opened`). Were another player's
+    /// record to qualify, its controller reference would be null: [I]
+    /// controllers are relevant only to their owner, and the client gate
+    /// skips a null controller.
+    fn connected_player_for(
+        &self,
+        owner: &PeerEntry,
+        viewer: &PeerEntry,
+        same: bool,
+    ) -> Result<Option<(u32, ConnectedPlayerState)>> {
+        let Some(record) = &owner.connected_player else {
+            return Ok(None);
+        };
+        let Some(complete_time) = record.complete_time else {
+            return Ok(None);
+        };
+        let open = |channel: Option<u32>| {
+            channel.is_some_and(|channel| {
+                viewer.peer.has_actor_channel(channel)
+                    && !viewer.peer.actor_channel_closing(channel)
+            })
+        };
+        let pawn_channel = self.pawn_open.as_ref().map(|(_, channel, _)| *channel);
+        if !same
+            || !owner.profiles.completed
+            || !open(owner.player_controller_channel)
+            || !open(owner.player_state_channel)
+            || !open(pawn_channel)
+        {
+            return Ok(None);
+        }
+        let (controller, player_state) = owner
+            .controller_open_guids
+            .context("no committed controller open")?;
+        let character = owner
+            .controller_startup_pawn_guid
+            .context("no committed pawn open")?;
+        let user = login_user_id(owner.login_unique_id.as_ref().context("no login user ID")?);
+        Ok(Some((
+            record.index,
+            ConnectedPlayerState {
+                player_id: ArchiveText::new(&user).context("login user ID exceeds codec limits")?,
+                chr_slot: owner.profiles.character_slot.context("no profile slot")?,
+                controller: same.then_some(controller),
+                character,
+                player_state,
+                connection_start_time: record.start_time,
+                connection_complete_time: complete_time,
+            },
+        )))
+    }
+
+    /// Admit each due connection's record/array change to reliable GameState
+    /// transport, composed from the current state, so a retry never sends a
+    /// stale intermediate. Capacity refusal keeps the change pending until
+    /// ACK/NAK progress (as [`retry_friends_queries`](Self::retry_friends_queries));
+    /// a NAK of an admitted bunch is repaired by the reliable layer.
+    fn retry_connected_player_records(&mut self) {
+        if self.connected_players.is_none() {
+            return;
+        }
+        let ready: Vec<SocketAddrV4> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                (entry.connected_players_pending
+                    && std::mem::take(&mut entry.connected_players_retry_ready))
+                .then_some(*address)
+            })
+            .collect();
+        for address in ready {
+            self.send_connected_players(address);
+        }
+    }
+
+    fn send_connected_players(&mut self, address: SocketAddrV4) {
+        let (Some(plan), Some(session)) = (&self.connected_players, &self.game_state_open) else {
+            return;
+        };
+        let Some(viewer) = self.peers.get(&address) else {
+            return;
+        };
+        let channel = session.channel_index;
+        if !connected_players_receivable(viewer, Some(channel)) {
+            // No GameState here yet (or it is closing): nothing is pending
+            // for this connection until its GameState open commits, which
+            // marks it again.
+            if let Some(entry) = self.peers.get_mut(&address) {
+                entry.connected_players_pending = false;
+            }
+            return;
+        }
+        let mut desired = Vec::new();
+        let mut failed = false;
+        for (owner_address, owner) in &self.peers {
+            match self.connected_player_for(owner, viewer, *owner_address == address) {
+                Ok(Some(record)) => desired.push(record),
+                Ok(None) => {}
+                Err(_) => failed = true,
+            }
+        }
+        // Registration order is array order, as `AddConnectedPlayer` appends.
+        desired.sort_unstable_by_key(|(index, _)| *index);
+        let array: Vec<u32> = desired.iter().map(|(index, _)| *index).collect();
+        let created: Vec<(u32, ConnectedPlayerState)> = desired
+            .into_iter()
+            .filter(|(index, _)| !viewer.connected_players_sent.contains(index))
+            .collect();
+        let world_seconds = self.started.elapsed().as_secs_f32();
+        let (key, engine_order) = (session.state.key, viewer.peer.connection_byte_order());
+        let unchanged = created.is_empty() && array == viewer.connected_players_sent;
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        if failed {
+            bump(&mut self.stats.connected_player_record_errors);
+        }
+        if unchanged {
+            entry.connected_players_pending = false;
+            return;
+        }
+        let mut cache = self.guid_cache.clone();
+        let mut exports = entry.exports.clone();
+        // The bunch keeps S2's shape: a GameState actor block first, carrying
+        // the world time the unreliable update path also sends. It does not
+        // change what that path tracks as sent.
+        let actor_values = BTreeMap::from([(
+            super::game_state_open::handle::WORLD_TIME_SECONDS,
+            RepValue::Float(world_seconds.to_bits()),
+        )]);
+        let sent = compose_connected_players_update(
+            &mut cache,
+            &mut exports,
+            &session.plan,
+            plan,
+            key,
+            &actor_values,
+            &created,
+            &array,
+            engine_order,
+        )
+        .and_then(|update| {
+            let previous = entry
+                .peer
+                .actor_reliable_sequence(channel)
+                .context("GameState channel missing")?;
+            let sent = entry.peer.reliable_actor_update_datagrams(
+                channel,
+                update.payload,
+                update.exports.as_slice(),
+            )?;
+            Ok((sent, previous))
+        });
+        match sent {
+            Ok((sent, previous)) => {
+                commit_exports(&mut exports, &sent);
+                entry.exports = exports;
+                entry.ack_pending = false;
+                if !created.is_empty() {
+                    entry
+                        .connected_player_receipts
+                        .push(ConnectedPlayerReceipt {
+                            receipt: InitialisationReceipt::committed(
+                                &entry.peer,
+                                channel,
+                                previous,
+                            ),
+                            records: created.len(),
+                        });
+                }
+                entry.connected_players_sent = array;
+                entry.connected_players_pending = false;
+                self.guid_cache = cache;
+                self.stats.connected_player_record_creations_sent = self
+                    .stats
+                    .connected_player_record_creations_sent
+                    .saturating_add(created.len() as u64);
+                bump(&mut self.stats.connected_player_array_updates_sent);
+                // Queued for reliable repair: a failed socket send only counts.
+                self.send_all(&sent, address);
+            }
+            Err(error) => {
+                if transport_capacity_can_drain(entry, &error, channel) {
+                    entry.connected_players_retry_ready = false;
+                    bump(&mut self.stats.connected_player_record_sends_deferred);
+                } else {
+                    entry.connected_players_pending = false;
+                    bump(&mut self.stats.connected_player_record_errors);
+                    if entry.peer.is_failed() {
+                        self.remove_peer(address);
+                        bump(&mut self.stats.peers_failed);
+                    }
+                }
+            }
         }
     }
 
@@ -6928,6 +7432,7 @@ impl PeerLab {
             }
         };
         entry.player_controller_channel = Some(plan.channel_index);
+        entry.controller_open_guids = Some((guids.actor, guids.player_state));
         entry.backend_proxy = guids.components.first().copied();
         entry.player_data = guids.components.get(1).copied();
         entry.bestiary = guids.components.get(2).copied();
@@ -6942,6 +7447,7 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_controller_opens_sent);
         }
+        self.connected_player_actor_opened(address);
         InitialOpenOutcome::Committed(channel)
     }
 
@@ -7044,6 +7550,7 @@ impl PeerLab {
             bump(&mut self.stats.pawn_opens_sent);
             self.complete_player_initialisation(address);
         }
+        self.connected_player_actor_opened(address);
         InitialOpenOutcome::Committed(channel)
     }
 
@@ -7115,6 +7622,7 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.game_state_opens_sent);
         }
+        self.connected_player_actor_opened(address);
         InitialOpenOutcome::Committed(channel)
     }
 
@@ -7196,6 +7704,7 @@ impl PeerLab {
         if self.send_all(&sent, address) {
             bump(&mut self.stats.player_state_opens_sent);
         }
+        self.connected_player_actor_opened(address);
         // The RPC carrying this open's capacity-releasing ACK was processed
         // before retries. Begin exactly once now that its dependency exists.
         let begin = self
@@ -7522,6 +8031,7 @@ impl PeerLab {
         self.retry_pending_profile_exchanges();
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
+        self.retry_connected_player_records();
         self.retry_pending_player_history();
         self.update_pawn_properties();
         self.send_acks();
@@ -9337,6 +9847,983 @@ mod tests {
         assert_eq!(counts.friends_lists_ignored_unregistered, 1);
         assert_eq!(counts.friends_lists_ignored_already_ready, 1);
         assert_eq!(counts.initialisation_calls_ignored, 3);
+    }
+
+    /// A lab with every open a connected-player record references and Mode A
+    /// records configured before any peer exists.
+    fn record_lab(enabled: bool) -> PeerLab {
+        let mut lab = prospect_refresh_lab();
+        let profile = ReleaseProfile::release_3_0_32();
+        let map = PeerLabAdmission::default().map_url;
+        lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
+            .unwrap();
+        lab.enable_pawn_open(
+            profile.pawn_open_plan(map).unwrap().unwrap(),
+            super::super::pawn_open::PAWN_CHANNEL_INDEX,
+            PawnContent::default(),
+        )
+        .unwrap();
+        if enabled {
+            lab.enable_connected_player_records(
+                ReleaseProfile::release_3_0_35()
+                    .connected_players_plan()
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        lab
+    }
+
+    /// A joined peer with its GameState, controller, pawn and PlayerState open
+    /// and acked, an authored login ID and profile slot 3; no Begin yet.
+    fn record_peer(
+        lab: &mut PeerLab,
+        connection: u32,
+        user: &str,
+    ) -> (
+        UdpSocket,
+        SocketAddrV4,
+        super::super::sequencing::PacketSequencer,
+    ) {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(lab.local_addr().unwrap()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (address, client) = record_peer_on(lab, &socket, connection, user);
+        (socket, address, client)
+    }
+
+    /// The stateless handshake on `socket`: a new peer, or a replacement
+    /// (new cookie) of the peer this address already has.
+    fn handshake_peer_on(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+    ) -> (SocketAddrV4, super::super::sequencing::PacketSequencer) {
+        use super::super::{
+            handshake::initial_request, packet_lab::client_cookie_seeds,
+            sequencing::PacketSequencer,
+        };
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!("IPv4 loopback")
+        };
+        // A rejoining address may still have its old session's data packets
+        // in flight; only the handshake replies matter here.
+        let handshake = |buffer: &mut [u8; 2048]| loop {
+            let length = socket.recv(buffer).unwrap();
+            if let Ok(reply) = decode(&buffer[..length]) {
+                return (reply, length);
+            }
+        };
+        let mut buffer = [0; 2048];
+        socket.send(&initial_request()).unwrap();
+        lab.poll();
+        let (challenge, length) = handshake(&mut buffer);
+        let cookie = challenge.cookie;
+        socket.send(&buffer[..length]).unwrap();
+        lab.poll();
+        let (acknowledgement, _) = handshake(&mut buffer);
+        assert_eq!(acknowledgement.cookie, cookie);
+        let (incoming, outgoing) = client_cookie_seeds(&cookie);
+        (
+            address,
+            PacketSequencer::new(incoming, outgoing, 64).unwrap(),
+        )
+    }
+
+    /// [`record_peer`] on an existing socket: handshake, then the real
+    /// initial-open sequence (controller, pawn, GameState, PlayerState), acked.
+    fn record_peer_on(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        connection: u32,
+        user: &str,
+    ) -> (SocketAddrV4, super::super::sequencing::PacketSequencer) {
+        use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+        let (address, mut client) = handshake_peer_on(lab, socket);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.connection_id = Some(connection);
+        entry.player = Some(RegisteredPlayer {
+            player_id: connection as i32,
+            name_units: "AUTHORED-RECORD".encode_utf16().collect(),
+        });
+        entry.login_unique_id = Some(UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+            value: NetIdValue::Text(ArchiveText::text(user).unwrap()),
+        });
+        entry.profiles.character_slot = Some(3);
+        assert!(lab.send_player_controller_open(address));
+        assert!(lab.peers[&address].game_state.is_some());
+        ack_startup_packets(lab, socket, &mut client);
+        (address, client)
+    }
+
+    /// Begin, both initialisation answers (completion) and the friends list:
+    /// the authored session reaches finalisation's preconditions.
+    fn complete_record_player(lab: &mut PeerLab, address: SocketAddrV4) {
+        lab.controller_call(address, ControllerCall::Begin(3));
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.profiles.outstanding = None;
+        entry.profiles.has_loadout = true;
+        entry.profiles.has_bestiary = true;
+        lab.complete_player_initialisation(address);
+        assert!(lab.peers[&address].profiles.completed);
+    }
+
+    /// Read every outstanding datagram of `address`, notifying the lab as
+    /// `delivered` says, and return the bunches they carried in order.
+    fn deliver_bunches(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        client: &mut super::super::sequencing::PacketSequencer,
+        delivered: impl Fn(usize) -> bool,
+    ) -> Vec<super::super::packet::Bunch> {
+        use super::super::packet::{Packet, Receiver, read_packet, write_packet};
+        let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let count = lab.peers[&address]
+            .peer
+            .sequencer()
+            .notify()
+            .sent_records()
+            .len();
+        let config = super::super::packet::PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        let mut bunches = Vec::new();
+        for index in 0..count {
+            let mut bytes = [0; 2048];
+            let length = socket.recv(&mut bytes).unwrap();
+            let packet = read_packet(&bytes[..length], &config).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, delivered(index)).unwrap();
+            bunches.extend(packet.bunches);
+        }
+        if count > 0 {
+            let bytes = write_packet(
+                &Packet {
+                    magic: 0,
+                    header: client.header().unwrap(),
+                    info: None,
+                    bunches: vec![],
+                },
+                &lab.config.packet.packet,
+            )
+            .unwrap();
+            client.commit().unwrap();
+            receive_authored_at(lab, socket, &bytes, Instant::now());
+        }
+        bunches
+    }
+
+    fn game_state_channel(lab: &PeerLab) -> u32 {
+        lab.game_state_open.as_ref().unwrap().channel_index
+    }
+
+    /// Reliable, non-opening GameState-channel bunch bodies (export parts
+    /// excluded), decoded.
+    fn record_bodies(
+        lab: &PeerLab,
+        bunches: &[super::super::packet::Bunch],
+    ) -> Vec<ActorBunchBody> {
+        let channel = game_state_channel(lab);
+        let codec = actor_codec(17, super::super::archive::ByteOrder::Little);
+        bunches
+            .iter()
+            .filter(|bunch| {
+                bunch.header.channel_index == channel
+                    && bunch.header.reliable
+                    && !bunch.header.open
+                    && !bunch.header.has_package_map_exports
+            })
+            .map(|bunch| {
+                super::super::actor_channel::read_actor_bunch_body(
+                    &mut bunch.payload.reader(),
+                    false,
+                    &codec,
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn record_codec() -> RepLayoutCodec {
+        RepLayoutCodec {
+            actor: actor_codec(17, super::super::archive::ByteOrder::Little),
+            checksums: false,
+            limits: Default::default(),
+        }
+    }
+
+    /// The record GUIDs a decoded `ConnectedPlayers` block lists.
+    fn listed_records(lab: &PeerLab, block: &ContentBlock) -> Vec<u32> {
+        let plan = lab.connected_players.as_ref().unwrap();
+        let stream = super::super::rep_layout::parse_rep_properties(
+            &block.payload,
+            &plan.component_layout,
+            &record_codec(),
+        )
+        .unwrap();
+        let [entry] = stream.entries.as_slice() else {
+            panic!("only the array handle");
+        };
+        assert_eq!(entry.handle, 3);
+        let RepValue::DynamicArray(array) = &entry.value else {
+            panic!("an array");
+        };
+        assert_eq!(usize::from(array.count), array.stream.entries.len());
+        array
+            .stream
+            .entries
+            .iter()
+            .map(|element| match &element.value {
+                RepValue::Object(reference) => reference.guid,
+                other => panic!("object element expected, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn connected_player_record_waits_for_finalisation_then_is_created_once() {
+        let mut lab = record_lab(true);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredRecordUser");
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness::default()
+        );
+        complete_record_player(&mut lab, address);
+        // Registered at Begin; Mode A sends nothing before finalisation.
+        assert_eq!(lab.stats.connected_player_records_created, 1);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness {
+                registered: 1,
+                ..Default::default()
+            }
+        );
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(record_bodies(&lab, &bunches).is_empty());
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 0, "friends list outstanding");
+        lab.retry_connected_player_records();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 1);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness {
+                registered: 1,
+                finalised: 1,
+                creations_queued: 1,
+                records_awaiting_ack: 1,
+                ..Default::default()
+            }
+        );
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let channel = game_state_channel(&lab);
+        let exports: Vec<_> = bunches
+            .iter()
+            .filter(|bunch| bunch.header.channel_index == channel)
+            .map(|bunch| bunch.header.has_package_map_exports)
+            .collect();
+        // The class export precedes the body on the same reliable channel.
+        assert_eq!(exports, [true, false]);
+        let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+        let [actor, record, component] = body.blocks.as_slice() else {
+            panic!("three blocks");
+        };
+        assert_eq!(actor.target, BlockTarget::Actor);
+        let plan = lab.connected_players.clone().unwrap();
+        let entry = &lab.peers[&address];
+        let (controller, player_state) = entry.controller_open_guids.unwrap();
+        let BlockTarget::SubObject {
+            object,
+            class: super::super::actor_channel::SubObjectClass::Class(_),
+        } = &record.target
+        else {
+            panic!("a class-named record block");
+        };
+        let values = super::super::rep_layout::parse_rep_properties(
+            &record.payload,
+            &plan.record_layout,
+            &record_codec(),
+        )
+        .unwrap();
+        let handles: Vec<u32> = values.entries.iter().map(|entry| entry.handle).collect();
+        assert_eq!(handles, [1, 2, 3, 4, 5, 6, 7]);
+        let value = |handle: usize| values.entries[handle - 1].value.clone();
+        assert_eq!(
+            value(1),
+            RepValue::Str(ArchiveText::text("AuthoredRecordUser").unwrap())
+        );
+        assert_eq!(value(2), RepValue::Int(3));
+        assert_eq!(
+            value(3),
+            RepValue::Object(super::super::actor_channel::NetGuidRef::plain(controller))
+        );
+        assert_eq!(
+            value(4),
+            RepValue::Object(super::super::actor_channel::NetGuidRef::plain(
+                entry.controller_startup_pawn_guid.unwrap()
+            ))
+        );
+        assert_eq!(
+            value(5),
+            RepValue::Object(super::super::actor_channel::NetGuidRef::plain(player_state))
+        );
+        let (RepValue::Float(start), RepValue::Float(complete)) = (value(6), value(7)) else {
+            panic!("float times");
+        };
+        assert!(f32::from_bits(complete) >= f32::from_bits(start));
+        assert_eq!(listed_records(&lab, component), [object.guid]);
+        // A positive ACK settles the creation once.
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness {
+                registered: 1,
+                finalised: 1,
+                creations_queued: 1,
+                creations_settled: 1,
+                ..Default::default()
+            }
+        );
+        // Nothing changes on later passes, finalisation or requeries.
+        lab.finalise_connected_players();
+        lab.mark_connected_players_due(|_| true);
+        lab.retry_connected_player_records();
+        lab.controller_call(address, ControllerCall::Begin(3));
+        assert!(deliver_bunches(&mut lab, &socket, &mut client, |_| true).is_empty());
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        assert_eq!(lab.stats.connected_player_records_created, 1);
+        assert_eq!(lab.stats.connected_player_record_updates_sent, 0);
+        assert_eq!(lab.stats.connected_player_record_errors, 0);
+        let counts = lab.session_counts();
+        assert_eq!(counts.connected_player_record_creations_sent, 1);
+        assert_eq!(counts.connected_player_record_creations_acked, 1);
+        let text = serde_json::to_string(&lab.readiness_counts()).unwrap();
+        assert!(!text.contains("AuthoredRecordUser"));
+        lab.remove_peer(address).unwrap();
+        assert_eq!(lab.stats.connected_player_records_removed, 1);
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    /// Reachable only by hand: the real sequence opens the controller, pawn
+    /// and PlayerState before Begin and completion, so a finalised record
+    /// cannot lack them. Narrow check that opening them later re-triggers the
+    /// record, which is then sent once.
+    #[test]
+    fn connected_player_record_follows_when_its_actors_open() {
+        use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+        let mut lab = record_lab(true);
+        // GameState open; no controller, pawn or PlayerState yet.
+        let (socket, address, mut client) = acked_game_state_peer(&mut lab);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.connection_id = Some(1);
+        entry.player = Some(RegisteredPlayer {
+            player_id: 1,
+            name_units: vec![],
+        });
+        entry.login_unique_id = Some(UniqueNetId {
+            kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+            value: NetIdValue::Text(ArchiveText::text("AuthoredLateActors").unwrap()),
+        });
+        entry.profiles.completed = true;
+        entry.profiles.friend_ids_ready = true;
+        entry.profiles.character_slot = Some(3);
+        entry.connected_player = Some(ConnectedPlayerRecord {
+            index: 0,
+            start_time: 1.0,
+            complete_time: None,
+        });
+        lab.next_connected_player_record = 1;
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        assert!(!lab.peers[&address].connected_players_pending);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records.pending_send,
+            0
+        );
+        // The real opens: each commit marks this connection again.
+        let game_state = lab.game_state_open.take();
+        assert!(lab.send_player_controller_open(address));
+        lab.game_state_open = game_state;
+        assert!(lab.peers[&address].connected_players_pending);
+        lab.retry_connected_player_records();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_errors, 0);
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+        let plan = lab.connected_players.clone().unwrap();
+        let values = super::super::rep_layout::parse_rep_properties(
+            &body.blocks[1].payload,
+            &plan.record_layout,
+            &record_codec(),
+        )
+        .unwrap();
+        let entry = &lab.peers[&address];
+        let (controller, player_state) = entry.controller_open_guids.unwrap();
+        let object = |guid| RepValue::Object(super::super::actor_channel::NetGuidRef::plain(guid));
+        assert_eq!(values.entries[2].value, object(controller));
+        assert_eq!(
+            values.entries[3].value,
+            object(entry.controller_startup_pawn_guid.unwrap())
+        );
+        assert_eq!(values.entries[4].value, object(player_state));
+        lab.mark_connected_players_due(|_| true);
+        lab.retry_connected_player_records();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+    }
+
+    /// A connection without a GameState is neither marked nor re-armed when
+    /// another player finalises; its later initial-open commits mark it, and
+    /// it then lists exactly its own record.
+    #[test]
+    fn connections_without_a_game_state_are_not_armed_until_it_commits() {
+        let mut lab = record_lab(true);
+        let (first_socket, first, mut first_client) = record_peer(&mut lab, 1, "AuthoredReady");
+        complete_record_player(&mut lab, first);
+        lab.controller_call(first, ControllerCall::FriendsList);
+        // A second connection is still joining: handshake only.
+        let second_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        second_socket.connect(lab.local_addr().unwrap()).unwrap();
+        second_socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (second, mut second_client) = handshake_peer_on(&mut lab, &second_socket);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        let joining = &lab.peers[&second];
+        assert!(!joining.connected_players_pending);
+        assert!(!joining.connected_players_retry_ready);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records.pending_send,
+            0
+        );
+        // Packet progress on the joining connection arms nothing.
+        let probe = lab
+            .peers
+            .get_mut(&second)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&probe, second));
+        deliver_bunches(&mut lab, &second_socket, &mut second_client, |_| true);
+        assert!(!lab.peers[&second].connected_players_retry_ready);
+        // It joins through the real initial opens: their commits (GameState
+        // included) mark it; the first player's record is not visible there,
+        // so nothing is sent and nothing stays pending.
+        {
+            use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
+            let entry = lab.peers.get_mut(&second).unwrap();
+            entry.connection_id = Some(2);
+            entry.player = Some(RegisteredPlayer {
+                player_id: 2,
+                name_units: vec![],
+            });
+            entry.login_unique_id = Some(UniqueNetId {
+                kind: NetIdType::Named(ArchiveText::text("NULL").unwrap()),
+                value: NetIdValue::Text(ArchiveText::text("AuthoredLate").unwrap()),
+            });
+            entry.profiles.character_slot = Some(3);
+        }
+        assert!(lab.send_player_controller_open(second));
+        assert!(lab.peers[&second].game_state.is_some());
+        assert!(lab.peers[&second].connected_players_pending);
+        lab.retry_connected_player_records();
+        assert!(!lab.peers[&second].connected_players_pending);
+        assert!(lab.peers[&second].connected_players_sent.is_empty());
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 1);
+        ack_startup_packets(&mut lab, &second_socket, &mut second_client);
+        // Once it finalises, it lists exactly its own record.
+        complete_record_player(&mut lab, second);
+        lab.controller_call(first, ControllerCall::FriendsList);
+        lab.controller_call(second, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 2);
+        let second_index = lab.peers[&second].connected_player.as_ref().unwrap().index;
+        let first_index = lab.peers[&first].connected_player.as_ref().unwrap().index;
+        assert_eq!(lab.peers[&second].connected_players_sent, [second_index]);
+        assert_eq!(lab.peers[&first].connected_players_sent, [first_index]);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 2);
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 2);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records.pending_send,
+            0
+        );
+        deliver_bunches(&mut lab, &first_socket, &mut first_client, |_| true);
+    }
+
+    /// The same address rejoins through the cookie-replacement handshake: the
+    /// old record is removed, the new session registers one record and, once
+    /// finalised, sends it once under a new record GUID.
+    #[test]
+    fn reconnect_replaces_the_connected_player_record() {
+        let mut lab = record_lab(true);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredReconnect");
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+        let BlockTarget::SubObject { object: old, .. } = &body.blocks[1].target else {
+            panic!("record block");
+        };
+        let old_guid = old.guid;
+        let old_index = lab.peers[&address].connected_player.as_ref().unwrap().index;
+        let before = lab.stats.clone();
+        assert_eq!(
+            (
+                before.connected_player_records_created,
+                before.connected_player_record_creations_sent,
+                before.connected_player_record_creations_acked,
+                before.connected_player_records_removed,
+            ),
+            (1, 1, 1, 0)
+        );
+        // Rejoin from the same address: a new cookie replaces the peer.
+        let (rejoined, mut client) = record_peer_on(&mut lab, &socket, 2, "AuthoredReconnect");
+        assert_eq!(rejoined, address);
+        assert_eq!(lab.stats.peers_replaced, 1);
+        assert_eq!(lab.stats.connected_player_records_removed, 1);
+        assert!(lab.peers[&address].connected_player.is_none());
+        assert!(lab.peers[&address].connected_players_sent.is_empty());
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness::default()
+        );
+        complete_record_player(&mut lab, address);
+        assert_eq!(lab.stats.connected_player_records_created, 2);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 2);
+        let new_index = lab.peers[&address].connected_player.as_ref().unwrap().index;
+        assert_ne!(new_index, old_index);
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+        let BlockTarget::SubObject { object: new, .. } = &body.blocks[1].target else {
+            panic!("record block");
+        };
+        assert_ne!(new.guid, old_guid);
+        assert_eq!(
+            listed_records(&lab, body.blocks.last().unwrap()),
+            [new.guid]
+        );
+        assert_eq!(
+            (
+                lab.stats.connected_player_records_created,
+                lab.stats.connected_player_record_creations_sent,
+                lab.stats.connected_player_record_creations_acked,
+                lab.stats.connected_player_records_removed,
+                lab.stats.connected_player_array_updates_sent,
+            ),
+            (2, 2, 2, 1, 2)
+        );
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness {
+                registered: 1,
+                finalised: 1,
+                creations_queued: 1,
+                creations_settled: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    /// Make the world time due on `address` and lift the update-pass rate
+    /// limit, so `update_game_state` sends exactly when the channel permits.
+    fn force_clock_due(lab: &mut PeerLab, address: SocketAddrV4) {
+        use super::super::game_state_open::handle::WORLD_TIME_SECONDS;
+        lab.game_state_open.as_mut().unwrap().updated_at = None;
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry
+            .game_state
+            .as_mut()
+            .unwrap()
+            .sent
+            .remove(&WORLD_TIME_SECONDS);
+    }
+
+    /// Unreliable GameState updates wait for every reliable bunch on the
+    /// GameState channel (`actor_channel_settled`): while a record creation is
+    /// unacknowledged, including after a NAK until its repair is ACKed, no
+    /// clock update goes out; it resumes on the repair's ACK.
+    #[test]
+    fn clock_updates_pause_until_the_record_bunch_settles() {
+        let mut lab = record_lab(true);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredClock");
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let channel = game_state_channel(&lab);
+        force_clock_due(&mut lab, address);
+        lab.update_game_state();
+        assert_eq!(lab.stats.game_state_updates_sent, 1, "updates flow before");
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert!(!lab.peers[&address].peer.actor_channel_settled(channel));
+        force_clock_due(&mut lab, address);
+        lab.update_game_state();
+        assert_eq!(lab.stats.game_state_updates_sent, 1, "paused while unacked");
+        // Lose it: still paused until the repair is acknowledged.
+        deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+        force_clock_due(&mut lab, address);
+        lab.update_game_state();
+        assert_eq!(lab.stats.game_state_updates_sent, 1, "paused after the NAK");
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        force_clock_due(&mut lab, address);
+        lab.update_game_state();
+        assert_eq!(lab.stats.game_state_updates_sent, 1, "paused during repair");
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(lab.peers[&address].peer.actor_channel_settled(channel));
+        force_clock_due(&mut lab, address);
+        lab.update_game_state();
+        assert_eq!(lab.stats.game_state_updates_sent, 2, "resumes on the ACK");
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+    }
+
+    #[test]
+    fn each_connection_lists_only_records_whose_actors_are_open_on_it() {
+        let mut lab = record_lab(true);
+        let (first_socket, first, mut first_client) = record_peer(&mut lab, 1, "AuthoredFirst");
+        let (second_socket, second, mut second_client) = record_peer(&mut lab, 2, "AuthoredSecond");
+        complete_record_player(&mut lab, first);
+        complete_record_player(&mut lab, second);
+        // Both Begins requeried every registered controller (F-1051).
+        lab.controller_call(first, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 0);
+        lab.controller_call(second, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 2);
+        // One record per peer; each connection gets only its own, because the
+        // other player's pawn and PlayerState are not open on it.
+        assert_eq!(lab.stats.connected_player_records_created, 2);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 2);
+        let first_index = lab.peers[&first].connected_player.as_ref().unwrap().index;
+        let second_index = lab.peers[&second].connected_player.as_ref().unwrap().index;
+        assert_ne!(first_index, second_index);
+        assert_eq!(lab.peers[&first].connected_players_sent, [first_index]);
+        assert_eq!(lab.peers[&second].connected_players_sent, [second_index]);
+        for (socket, client) in [
+            (&first_socket, &mut first_client),
+            (&second_socket, &mut second_client),
+        ] {
+            let bunches = deliver_bunches(&mut lab, socket, client, |_| true);
+            let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+            let component = body.blocks.last().unwrap();
+            assert_eq!(listed_records(&lab, component).len(), 1);
+        }
+        // A later joiner registers its own record; existing connections'
+        // arrays do not change, so nothing is sent to them.
+        let (third_socket, third, mut third_client) = record_peer(&mut lab, 3, "AuthoredThird");
+        complete_record_player(&mut lab, third);
+        for address in [first, second, third] {
+            lab.controller_call(address, ControllerCall::FriendsList);
+        }
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 3);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 3);
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 3);
+        let third_index = lab.peers[&third].connected_player.as_ref().unwrap().index;
+        assert_eq!(lab.peers[&third].connected_players_sent, [third_index]);
+        for (socket, client) in [
+            (&first_socket, &mut first_client),
+            (&second_socket, &mut second_client),
+        ] {
+            let bunches = deliver_bunches(&mut lab, socket, client, |_| true);
+            assert!(record_bodies(&lab, &bunches).is_empty());
+        }
+        let bunches = deliver_bunches(&mut lab, &third_socket, &mut third_client, |_| true);
+        assert_eq!(record_bodies(&lab, &bunches).len(), 1);
+        // A connection that listed a departing record gets the shrunk array
+        // (array only, no record block, no sub-object destroy); the others
+        // get nothing. The lab's visibility rule never lists another
+        // player's record today, so the listing is authored here.
+        lab.peers.get_mut(&first).unwrap().connected_players_sent = vec![first_index, second_index];
+        lab.remove_peer(second).unwrap();
+        assert_eq!(lab.stats.connected_player_records_removed, 1);
+        assert!(lab.peers[&first].connected_players_pending);
+        assert!(!lab.peers[&third].connected_players_pending);
+        lab.retry_connected_player_records();
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 4);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 3);
+        let bunches = deliver_bunches(&mut lab, &first_socket, &mut first_client, |_| true);
+        let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+        let [actor, component] = body.blocks.as_slice() else {
+            panic!("actor and component blocks only");
+        };
+        assert_eq!(actor.target, BlockTarget::Actor);
+        let first_guid = lab
+            .guid_cache
+            .clone()
+            .subobject_guid(ActorKey::Session(0), first_index)
+            .unwrap();
+        assert_eq!(listed_records(&lab, component), [first_guid]);
+        assert_eq!(lab.peers[&first].connected_players_sent, [first_index]);
+        assert!(deliver_bunches(&mut lab, &third_socket, &mut third_client, |_| true).is_empty());
+        // Removal drops the record from the gauges (the cookie-replacement
+        // reconnect is `reconnect_replaces_the_connected_player_record`).
+        lab.remove_peer(third).unwrap();
+        assert_eq!(lab.stats.connected_player_records_removed, 2);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records.registered,
+            1
+        );
+    }
+
+    #[test]
+    fn connected_player_record_pressure_retries_once_with_the_latest_state() {
+        let mut lab = record_lab(true);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredPressure");
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        for _ in 0..entry.peer.config().sent_capacity {
+            let datagram = entry.peer.ack_packet().unwrap();
+            lab.socket.send_to(&datagram, address).unwrap();
+            let mut bytes = [0; 2048];
+            let n = socket.recv(&mut bytes).unwrap();
+            let packet = super::super::packet::read_packet(
+                &bytes[..n],
+                &super::super::packet::PacketConfig {
+                    receiver: super::super::packet::Receiver::Client,
+                    ..lab.config.packet.packet
+                },
+            )
+            .unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, true).unwrap();
+        }
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.players_finalised, 1);
+        assert_eq!(lab.stats.connected_player_record_sends_deferred, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records.pending_send,
+            1
+        );
+        // No packet progress: retries do not spin.
+        for _ in 0..3 {
+            lab.retry_connected_player_records();
+        }
+        assert_eq!(lab.stats.connected_player_record_sends_deferred, 1);
+        // State changes while deferred are what the retry carries.
+        lab.peers.get_mut(&address).unwrap().profiles.character_slot = Some(4);
+        let bytes = super::super::packet::write_packet(
+            &super::super::packet::Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: vec![],
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        client.commit().unwrap();
+        socket.send(&bytes).unwrap();
+        lab.poll();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_sends_deferred, 1);
+        assert_eq!(lab.stats.connected_player_record_errors, 0);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records.pending_send,
+            0
+        );
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let [body] = record_bodies(&lab, &bunches).try_into().unwrap();
+        let plan = lab.connected_players.clone().unwrap();
+        let values = super::super::rep_layout::parse_rep_properties(
+            &body.blocks[1].payload,
+            &plan.record_layout,
+            &record_codec(),
+        )
+        .unwrap();
+        assert_eq!(values.entries[1].value, RepValue::Int(4));
+        lab.retry_connected_player_records();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+    }
+
+    #[test]
+    fn connected_player_record_nak_is_repaired_without_recomposition() {
+        let mut lab = record_lab(true);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredRepair");
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        // Lose every datagram of the creation.
+        let lost = deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+        let [original] = record_bodies(&lab, &lost).try_into().unwrap();
+        assert!(lab.readiness_counts().resend_bunches_pending > 0);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 0);
+        assert_eq!(
+            lab.readiness_counts()
+                .connected_player_records
+                .records_awaiting_ack,
+            1
+        );
+        for _ in 0..3 {
+            lab.mark_connected_players_due(|_| true);
+            lab.retry_connected_player_records();
+        }
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(lab.stats.connected_player_array_updates_sent, 1);
+        // The reliable layer resends the same bunch unchanged.
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        let repaired = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        let [resent] = record_bodies(&lab, &repaired).try_into().unwrap();
+        assert_eq!(resent, original);
+        assert_eq!(lab.readiness_counts().resend_bunches_pending, 0);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        // A later ACK does not count the creation again.
+        let more = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&more, address));
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        assert_eq!(
+            lab.readiness_counts().connected_player_records,
+            ConnectedPlayerRecordReadiness {
+                registered: 1,
+                finalised: 1,
+                creations_queued: 1,
+                creations_settled: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    /// Every bunch the client receives in one authored join-to-finalisation
+    /// run, by channel; GameState payloads, which carry the lab clock, by
+    /// length only.
+    fn record_scenario(mode: Option<bool>) -> Vec<(u32, bool, bool, bool, usize, Vec<u8>)> {
+        let mut lab = record_lab(mode.is_some());
+        if mode == Some(false) {
+            lab.disable_connected_player_records().unwrap();
+        }
+        let channel = game_state_channel(&lab);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredScenario");
+        let mut bunches = Vec::new();
+        complete_record_player(&mut lab, address);
+        bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        lab.retry_connected_player_records();
+        bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        bunches
+            .into_iter()
+            .map(|bunch| {
+                let header = &bunch.header;
+                let bytes = if header.channel_index == channel {
+                    Vec::new()
+                } else {
+                    bunch.payload.bytes().to_vec()
+                };
+                (
+                    header.channel_index,
+                    header.reliable,
+                    header.open,
+                    header.has_package_map_exports,
+                    bunch.payload.bit_len(),
+                    bytes,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn disabled_connected_player_records_send_exactly_the_previous_bunches() {
+        let before = record_scenario(None);
+        let disabled = record_scenario(Some(false));
+        assert!(!before.is_empty());
+        assert_eq!(disabled, before);
+        // Enabled, the run differs only by the GameState-channel record
+        // bunches: every other bunch is unchanged and in the same order.
+        let enabled = record_scenario(Some(true));
+        let channel = game_state_channel(&record_lab(false));
+        let (records, others): (Vec<_>, Vec<_>) = enabled
+            .into_iter()
+            .partition(|bunch| bunch.0 == channel && bunch.1 && !bunch.2);
+        assert_eq!(others, before);
+        assert_eq!(
+            records.iter().map(|bunch| bunch.3).collect::<Vec<_>>(),
+            [true, false]
+        );
+        let mut lab = record_lab(true);
+        let (_socket, address, _client) = record_peer(&mut lab, 1, "AuthoredLate");
+        assert!(lab.disable_connected_player_records().is_err());
+        assert!(
+            lab.enable_connected_player_records(
+                ReleaseProfile::release_3_0_35()
+                    .connected_players_plan()
+                    .unwrap()
+                    .unwrap()
+            )
+            .is_err()
+        );
+        assert!(lab.has_connected_player_records());
+        let _ = address;
+    }
+
+    #[test]
+    fn connected_player_records_require_the_referenced_opens_and_a_valid_plan() {
+        let plan = ReleaseProfile::release_3_0_35()
+            .connected_players_plan()
+            .unwrap()
+            .unwrap();
+        // The GameState and controller, but no pawn or PlayerState open.
+        assert!(
+            prospect_refresh_lab()
+                .enable_connected_player_records(plan.clone())
+                .is_err()
+        );
+        let mut lab = record_lab(false);
+        let mut bad = plan.clone();
+        bad.record_class[0].checksum = 0;
+        assert!(lab.enable_connected_player_records(bad).is_err());
+        let mut bad = plan.clone();
+        bad.record_layout.pop();
+        assert!(lab.enable_connected_player_records(bad).is_err());
+        assert!(!lab.has_connected_player_records());
+        lab.enable_connected_player_records(plan).unwrap();
+        assert!(lab.has_connected_player_records());
     }
 
     fn queue_initialisation_phase(lab: &mut PeerLab, address: SocketAddrV4, completion: bool) {

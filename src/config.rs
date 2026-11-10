@@ -88,6 +88,12 @@ pub struct NetworkConfig {
     /// when networking is disabled; absence retains ordinary session behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authored_replication: Option<PathBuf>,
+    /// EXPERIMENTAL: replicate each finalised player's
+    /// `UReplicatedConnectedPlayer` record under the GameState's
+    /// `ConnectedPlayers` (Mode A). Default on; records still need a release
+    /// profile naming the record class and the pawn, GameState and PlayerState
+    /// opens, and are otherwise left off. `false` makes a comparison run.
+    pub connected_player_records: bool,
 }
 
 impl Default for NetworkConfig {
@@ -104,6 +110,7 @@ impl Default for NetworkConfig {
             data_pak: None,
             authored_gameplay: None,
             authored_replication: None,
+            connected_player_records: true,
         }
     }
 }

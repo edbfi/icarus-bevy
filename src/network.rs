@@ -1817,6 +1817,7 @@ fn bind_session(
                 _ => None,
             }
         };
+        let has_pawn = pawn.is_some();
         if let Some(pawn) = pawn {
             let content = pawn_content(tables.as_mut())?;
             let inventories = content.inventories.clone();
@@ -1871,8 +1872,23 @@ fn bind_session(
             // The server's own frame rate, measured as the original does.
             lab.enable_server_fps(ServerFpsMeter::new(DEFAULT_SAMPLES)?)?;
         }
+        let has_player_state = player_state.is_some();
         if let Some(player_state) = player_state {
             lab.enable_player_state_open(player_state)?;
+        }
+        // Connected-player records (`work/connected-player-record-20261110`,
+        // Mode A) whenever finalisation runs with every open a record
+        // references; the release must name the record class.
+        if network.connected_player_records
+            && has_pawn
+            && has_player_state
+            && lab.has_game_state_open()
+            && let Some(profile) = &profile
+            && let Some(records) = profile
+                .connected_players_plan()
+                .context("compose the connected-player record plan")?
+        {
+            lab.enable_connected_player_records(records)?;
         }
         // The GameState's managers, after the PlayerState (F-859).
         if lab.has_game_state_open()

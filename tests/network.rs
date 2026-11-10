@@ -3740,6 +3740,106 @@ fn new_players_append_history_for_every_open_tracker_and_later_opens() {
     });
 }
 
+/// The production bind enables connected-player records (Mode A) with the
+/// pinned release; a finalised player gets exactly one record creation, and
+/// `network.connected_player_records = false` finalises the same player
+/// without one.
+#[test]
+fn production_bind_creates_one_connected_player_record_after_finalisation() {
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    for records in [true, false] {
+        let config = NetworkConfig {
+            release_profile: Some(release_toml()),
+            connected_player_records: records,
+            ..enabled(0)
+        };
+        let bound = network::bind(&config).unwrap().unwrap();
+        assert_eq!(bound.lab.has_connected_player_records(), records);
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, bound.lab).unwrap();
+        let (client, _) = with_server(&mut app, move || {
+            let (mut client, _) = join_pinned_open(address, pinned, 32);
+            exchange_profiles(&mut client, engine, 9, 3);
+            send_friends_list_updated(&mut client, engine);
+            client.collect(Duration::from_millis(250), 32).unwrap();
+            client
+        });
+        let status = counts(&app);
+        assert_eq!(status.players_finalised, 1, "records={records}");
+        let expected = u64::from(records);
+        assert_eq!(status.connected_player_records_created, expected);
+        assert_eq!(status.connected_player_record_creations_sent, expected);
+        assert_eq!(status.connected_player_array_updates_sent, expected);
+        assert_eq!(status.connected_player_record_errors, 0);
+        assert_eq!(status.connected_player_record_sends_deferred, 0);
+        let readiness = app.world().resource::<PeerLab>().readiness_counts();
+        assert_eq!(
+            readiness.connected_player_records.registered,
+            usize::from(records)
+        );
+        assert_eq!(
+            readiness.connected_player_records.creations_queued,
+            usize::from(records)
+        );
+        with_server(&mut app, move || client.close().unwrap());
+        assert_eq!(
+            counts(&app).connected_player_records_removed,
+            expected,
+            "records={records}"
+        );
+    }
+}
+
+/// `[network].connected_player_records` defaults to on; the production bind
+/// leaves records off when it is false, and for a pinned build whose release
+/// carries no derived record class (3.0.32).
+#[test]
+fn production_records_follow_the_switch_and_the_release_chain() {
+    let defaults = NetworkConfig::default();
+    assert!(defaults.connected_player_records);
+    let parsed: ServerConfig =
+        toml::from_str("[network]\nconnected_player_records = false\n").unwrap();
+    assert!(!parsed.network.connected_player_records);
+    assert!(parsed.validate().is_ok());
+    let parsed: ServerConfig = toml::from_str("[network]\nenabled = true\n").unwrap();
+    assert!(parsed.network.connected_player_records);
+    let directory = tempfile::tempdir().unwrap();
+    let older = ReleaseProfile::release_3_0_32();
+    let path = directory.path().join("release-3032.toml");
+    fs::write(
+        &path,
+        format!(
+            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
+            older.pin.app_id,
+            older.pin.build_id,
+            older.pin.project_version,
+            older.pin.network_checksum
+        ),
+    )
+    .unwrap();
+    for (release, records, expected) in [
+        (release_toml(), true, true),
+        (release_toml(), false, false),
+        (path, true, false),
+    ] {
+        let config = NetworkConfig {
+            release_profile: Some(release.clone()),
+            connected_player_records: records,
+            ..enabled(0)
+        };
+        let bound = network::bind(&config).unwrap().unwrap();
+        assert!(bound.lab.has_game_state_open(), "{}", release.display());
+        assert_eq!(
+            bound.lab.has_connected_player_records(),
+            expected,
+            "{} records={records}",
+            release.display()
+        );
+    }
+}
+
 #[test]
 fn player_history_pressure_coalesces_appends_and_converges_after_ack_and_reconnect() {
     use icarus_bevy::{

@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 use super::{
     default_version_string_checksum,
-    game_state_open::{GameStateComponents, GameStateOpenPlan},
+    game_state_open::{ConnectedPlayersPlan, GameStateComponents, GameStateOpenPlan},
     manager_open::{
         ACTOR_STATE_CURRENT_BIOME, CONTAINER_INVENTORIES_HANDLE, ManagerComponent,
         ManagerInventories, ManagerOpenPlan, ManagerSlot, STAT_CONTAINER_HANDLE,
@@ -30,11 +30,12 @@ use super::{
         ICARUS_ZERO_ROW_TABLES, MovementLevel, PawnLayoutVersion, RepValue, RotationLevel,
         TagEncoding, actor_component_rep_layout, actor_rep_layout, actor_state_rep_layout,
         bp_icarus_player_character_survival_rep_layout_for_version,
-        bp_icarus_player_state_rep_layout, flod_rep_layout, icarus_game_state_survival_rep_layout,
-        icarus_player_controller_survival_rep_layout, inventory_container_manager_rep_layout,
-        inventory_rep_layout, inventory_slot_commands, player_character_state_rep_layout,
-        player_history_tracker_rep_layout, quest_manager_rep_layout, quest_rep_layout,
-        radiation_manager_rep_layout, weather_manager_component_rep_layout,
+        bp_icarus_player_state_rep_layout, connected_players_rep_layout, flod_rep_layout,
+        icarus_game_state_survival_rep_layout, icarus_player_controller_survival_rep_layout,
+        inventory_container_manager_rep_layout, inventory_rep_layout, inventory_slot_commands,
+        player_character_state_rep_layout, player_history_tracker_rep_layout,
+        quest_manager_rep_layout, quest_rep_layout, radiation_manager_rep_layout,
+        replicated_connected_player_rep_layout, weather_manager_component_rep_layout,
         world_talent_manager_rep_layout,
     },
     rep_rpc::{
@@ -593,6 +594,12 @@ pub struct ReleaseGameStateProfile {
     pub connected_players: ReleaseSubobject,
     pub dialogue_system: ReleaseSubobject,
     pub weather: ReleaseSubobject,
+    /// The class export chain of the `UReplicatedConnectedPlayer` records the
+    /// `ConnectedPlayers` component lists: `ReplicatedConnectedPlayer` with its
+    /// class network checksum, then `/Script/Icarus`. Optional in an explicit
+    /// `[game_state]` section; without it no record is sent.
+    #[serde(default)]
+    pub connected_player_record: Option<Vec<ReleasePathSegment>>,
 }
 
 impl ReleaseGameStateProfile {
@@ -626,7 +633,30 @@ impl ReleaseGameStateProfile {
             connected_players: subobject("ConnectedPlayers", 3_014_652_130),
             dialogue_system: subobject("DialogueSystem", 3_400_199_742),
             weather: subobject("WeatherComp", 3_554_357_950),
+            // Derived only for 3.0.34 and 3.0.35, which add it; older builds
+            // send no record.
+            connected_player_record: None,
         }
+    }
+
+    /// `ReplicatedConnectedPlayer` (class network checksum 3049816867, derived
+    /// with the retained checksum algorithm from public servers 26425113 and
+    /// 26313077, identical, and equal to the S2 export's checksum), then its
+    /// package `/Script/Icarus` (`work/connected-player-record-20261110`).
+    /// Not derived for 3.0.31 or 3.0.32, whose built-ins omit it.
+    pub fn connected_player_record_chain() -> Vec<ReleasePathSegment> {
+        vec![
+            ReleasePathSegment {
+                path: "ReplicatedConnectedPlayer".to_owned(),
+                checksum: 3_049_816_867,
+                no_load: false,
+            },
+            ReleasePathSegment {
+                path: "/Script/Icarus".to_owned(),
+                checksum: 0,
+                no_load: false,
+            },
+        ]
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -649,6 +679,9 @@ impl ReleaseGameStateProfile {
                 "duplicate game_state component {name}"
             );
             ensure!(component.checksum != 0, "component {name} needs a checksum");
+        }
+        if let Some(chain) = &self.connected_player_record {
+            validate_archetype("game_state connected_player_record", chain)?;
         }
         Ok(())
     }
@@ -1095,6 +1128,10 @@ impl ReleaseProfile {
             pawn.layout_version = PawnLayoutVersion::ReworkedCharacter;
             pawn.archetype[0].checksum = 537_502_963;
         }
+        if let Some(game_state) = &mut profile.game_state {
+            game_state.connected_player_record =
+                Some(ReleaseGameStateProfile::connected_player_record_chain());
+        }
         profile
     }
 
@@ -1173,9 +1210,11 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_game_state_for_build(build_id: u64) -> Option<ReleaseGameStateProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
+            25_793_607 | 25_793_767 | 25_956_137 => {
                 Some(ReleaseGameStateProfile::icarus_survival())
             }
+            26_313_077 => Self::release_3_0_34().game_state,
+            26_425_113 => Self::release_3_0_35().game_state,
             _ => None,
         }
     }
@@ -1577,6 +1616,24 @@ impl ReleaseProfile {
             ))?,
             weather_layout: self.row_layout(weather_manager_component_rep_layout())?,
             engine_net_version: self.engine_network_version,
+        }))
+    }
+
+    /// The GameState `ConnectedPlayers` record plan: the record class chain
+    /// and the `UReplicatedConnectedPlayer` and `UConnectedPlayers` layouts,
+    /// or `None` without `[game_state]` or its `connected_player_record`.
+    pub fn connected_players_plan(&self) -> Result<Option<ConnectedPlayersPlan>> {
+        let Some(chain) = self
+            .game_state
+            .as_ref()
+            .and_then(|game_state| game_state.connected_player_record.as_ref())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ConnectedPlayersPlan {
+            record_class: session_segments(chain),
+            record_layout: self.row_layout(replicated_connected_player_rep_layout())?,
+            component_layout: self.row_layout(connected_players_rep_layout())?,
         }))
     }
 
