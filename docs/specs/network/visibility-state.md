@@ -2,12 +2,13 @@
 
 ## Status
 
-Experimental: servers 26313077/26425113, F-1020/F-1023/F-1034; authored F-1021/F-1024.
-Last reconciled: 2026-11-07.
+Experimental: servers 26313077/26425113, F-1020/F-1023/F-1034/F-1078; client
+25793767 F-1079/F-1080; authored F-1021/F-1024.
+Last reconciled: 2026-11-10.
 
 ## Scope
 
-RPC82 framing and local handler/cache paths.
+RPC82 framing, local handler/cache paths and level-status call 62.
 
 ## Confirmed
 
@@ -63,6 +64,11 @@ RPC82 framing and local handler/cache paths.
   Append record+8 references to [Q+0xe0]; set source, Q+0xf0
   initialization/lifetime and map owner unbound by callbacks. Seven
   detached JS tests are proposal-only (M-1243).
+- F-1078: `AGameModeBase::ReplicateStreamingStatus` sends one 62 over every
+  server streaming level (count; per level FName as FString with number 0,
+  int32 LOD, loaded/visible/block-on-load bits), then 23. Clients skip
+  distance-dependent levels, streaming tiles themselves (F-1079) once their
+  record is finalised (F-1080).
 
 ## Candidate
 
@@ -73,23 +79,24 @@ F-1021: atomic exact-consumption staging; canonical packed ints, strict strings,
 [Capture](../../runbooks/network-readiness.md#private-selected-rpc82-capture)
 (F-1022) activates no decoder.
 
-F-1024 `experimental::visibility_state`: explicit names/tokens/helpers/policy/
-profile; unknowns or bounds reject atomically. Authored intentions/refresh order;
-destruction, MarkActive, graph bits, delegates/compaction and channel effects
-deferred. No dispatch or inferred wire identities.
+F-1024 `experimental::visibility_state` and detached
+`experimental::visibility_gather` (Gather as confirmed above, keeping duplicates;
+clear keeps the cache): authored, explicit identities/bindings. Destruction,
+MarkActive, graph bits, delegates/compaction and channel effects deferred; no
+dispatch or inferred wire identities.
 
-Detached `experimental::visibility_gather`: explicit owner/source/lifetime/
-initial name. Count<=0 skips; cache hit bypasses membership; accepted search
-updates cache. Append one reference/accepted record, preserving duplicates.
-Unknown/changed bindings or bounds reject atomically; clear preserves cache.
-Authored only; callbacks supply no inputs/effects.
+F-1081 (inferred): Preparing geometry may be the tile streaming between the
+record and the 82 burst; loading-text predicate unread.
 
 ## Open questions
 
 U-079/[gates](../../gates.md#before-enabling-visibility-dispatch-or-effects):
-no readiness/world-entry cause proof. M-1207 is count only.
+no readiness/world-entry cause proof. M-1207 is count only. Unread: a Blueprint
+override of the F-1080 gate; the level the native run's single 82 names (F-1067);
+3.0.35 client behaviour.
 
 ## Evidence
 
 M-1208, M-1209, M-1215, M-1217, M-1219, M-1221, M-1223 to M-1244, M-1246/M-1252.
 M-1240/M-1241/M-1243 are direct; M-1234/M-1242/M-1244 are empty REA bundles.
+M-1161, M-1342, M-1343 (F-1078 to F-1081).
