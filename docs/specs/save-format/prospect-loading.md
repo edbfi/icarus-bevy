@@ -109,8 +109,10 @@ Acceptance conditions for any importer
   flag and complete transform, with optional supported find policy and false
   skip-owner flag; any other field rejects. Independently authored inert
   geometry has no variables, and native-frame coordinates transfer without
-  conversion. Schema 5 storage: F-927. Original coordinates, official
-  loadability and faithful save import stay unqualified.
+  conversion. Schema 5 keeps the preserved source and immutable identity,
+  timestamp, root-presence and binding metadata beside mutable poses,
+  cross-checked on reload. Original coordinates, official loadability and
+  faithful save import stay unqualified.
 - `DecodedImportCandidate` retains migrated roots, exact recorder identities,
   decisions, optional typing and unchanged preserved bytes from one decode
   under explicit allowances (F-920; limits:
