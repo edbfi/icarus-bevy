@@ -209,6 +209,8 @@ fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::
         "controller_fields_before_shutdown".into(),
         json!(lab.controller_field_totals()),
     );
+    // Lab-wide over every connection since bind, not per session: it reads
+    // cleanly only with one client connected (the probe admits one).
     counts.insert(
         "unreliable_actor_bunches_before_shutdown".into(),
         json!(lab.unreliable_actor_bunch_counts()),

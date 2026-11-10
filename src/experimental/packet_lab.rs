@@ -575,6 +575,13 @@ impl LabPeer {
         self.failed
     }
 
+    /// Test-only: fail this transport as an earlier error would, without the
+    /// session layer noticing, to reach paths that guard a failed peer.
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(&mut self) {
+        self.failed = true;
+    }
+
     fn ensure_usable(&self) -> Result<()> {
         ensure!(
             !self.failed,
