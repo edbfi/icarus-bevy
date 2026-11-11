@@ -83,7 +83,8 @@ MarkActive, graph bits, delegates/compaction and channel effects deferred; no
 dispatch or inferred wire identities.
 
 F-1094: the answer's lag is the original's own tile loading (inferred).
-Refuted: the loading screen clears on finalisation alone (F-1096, F-1089).
+Loading screen: not cleared by finalisation alone, or another blocker
+remains (F-1096, F-1089).
 
 ## Open questions
 
