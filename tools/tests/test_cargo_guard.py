@@ -475,6 +475,29 @@ with g.build_lock(i) as b:
         for other in (Path("/checkout/target-old"), Path("/other/target")):
             self.assertFalse(guard.paths_overlap(base, other))
 
+    def test_resolver_matches_realpath(self) -> None:
+        tree = self.root / "resolver"
+        (tree / "real/sub").mkdir(parents=True)
+        _ = (tree / "real/sub/file").write_text("x")
+        (tree / "dirlink").symlink_to(tree / "real", target_is_directory=True)
+        (tree / "rel").symlink_to("real/sub", target_is_directory=True)
+        (tree / "real/sub/leaf").symlink_to("../sub/file")
+        (tree / "chain2").symlink_to("dirlink")
+        (tree / "chain1").symlink_to(tree / "chain2")
+        (tree / "dangling").symlink_to("nowhere/else")
+        (tree / "loop_a").symlink_to("loop_b")
+        (tree / "loop_b").symlink_to("loop_a")
+        names = ("real/sub/file", "dirlink/sub/file", "dirlink/sub/leaf", "dirlink/sub/missing", "rel/file", "rel/leaf",
+                 "chain1/sub/file", "chain1/missing/deeper", "missing/leaf", "dangling", "dangling/below",
+                 "loop_a", "loop_a/below", "dirlink", "chain1")
+        shared = guard.Resolver()
+        for name in names:
+            path = str(tree / name)
+            with self.subTest(path=name):
+                expected = os.path.realpath(path)
+                self.assertEqual(guard.Resolver().resolve(path), expected)
+                self.assertEqual(shared.resolve(path), expected)
+
     def test_shared_manifest_checks_each_lexical_parent(self) -> None:
         manifest = self.write("work/a/fixity.sha256", "a" * 64 + "  alias/payload\n")
         self.evidence("work/a/fixity.sha256")
