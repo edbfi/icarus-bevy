@@ -32,6 +32,10 @@ EV_A = "ev_" + "1" * 12 + "a" * 52
 EV_B = "ev_" + "1" * 12 + "b" * 52
 EV_C = "ev_" + "2" * 64
 UNK_A = "unk_" + "3" * 64
+# The active findings total in .agents/rules/docs.md "Caps", pinned here rather than read from the lint.
+ACTIVE_TOTAL_CAP = 192 * 1024
+OLD_ACTIVE_TOTAL_CAP = 128 * 1024
+FINDING_ROW = "| F-{:04d} | {} | observed | review | s | none | active |\n"
 
 
 def sha(text: str) -> str:
@@ -84,6 +88,28 @@ class Fixture:
         if not ledger.exists():
             self.write(ledger.relative_to(self.root).as_posix(), FINDINGS_HEAD)
         self.write(f"evidence/{category}/{number:03d}.jsonl", text)
+
+    def active_findings(self, total: int, files: int = 5) -> None:
+        """Write ``files`` active findings ledgers of exactly ``total`` ASCII bytes in all.
+
+        Each file stays under the per-file cap and each row under the row cap, so
+        only the total can trip a size check.
+        """
+        full = len(FINDING_ROW.format(1000, "c" * 250))
+        empty = len(FINDING_ROW.format(1000, ""))
+        number = 1000
+        for index in range(files):
+            size = total // files + (total % files if index == 0 else 0)
+            text = FINDINGS_HEAD
+            while size - len(text) > full + empty:
+                text += FINDING_ROW.format(number, "c" * 250)
+                number += 1
+            text += FINDING_ROW.format(number, "c" * (size - len(text) - empty))
+            number += 1
+            self.write(f"docs/ledgers/findings/part{index}.md", text)
+
+    def active_findings_bytes(self) -> int:
+        return sum(path.stat().st_size for path in (self.root / docs_lint.FINDINGS_DIR).glob("*.md"))
 
     def linter(self, *, local: bool = False, base: str = "HEAD", today: date = TODAY) -> docs_lint.Linter:
         linter = docs_lint.Linter(self.root, local=local, base=base, today=today)
@@ -197,6 +223,40 @@ class DocsLintTest(unittest.TestCase):
             warnings,
         )
 
+    def test_active_findings_total_just_under_cap(self) -> None:
+        fx = self.make()
+        fx.active_findings(ACTIVE_TOTAL_CAP - 1)
+        self.assertEqual(fx.active_findings_bytes(), ACTIVE_TOTAL_CAP - 1)
+        self.assertEqual(fx.lint(), [])
+
+    def test_active_findings_total_over_cap(self) -> None:
+        fx = self.make()
+        fx.active_findings(ACTIVE_TOTAL_CAP + 1)
+        self.assertEqual(fx.active_findings_bytes(), ACTIVE_TOTAL_CAP + 1)
+        problems = fx.lint()
+        expected = f"{docs_lint.FINDINGS_DIR}: active findings total {ACTIVE_TOTAL_CAP + 1} bytes; cap is {ACTIVE_TOTAL_CAP}"
+        self.assertEqual(problems, [expected])
+
+    def test_active_findings_review_warning_under_cap(self) -> None:
+        fx = self.make()
+        total = ACTIVE_TOTAL_CAP * 85 // 100
+        fx.active_findings(total)
+        self.assertEqual(fx.active_findings_bytes(), total)
+        linter = fx.linter()
+        self.assertEqual([problem.render() for problem in linter.problems], [])
+        warnings = [warning.render() for warning in linter.warnings]
+        expected = f"{docs_lint.FINDINGS_DIR}: {total} of {ACTIVE_TOTAL_CAP} bytes is over 80%; consolidate before adding"
+        self.assertIn(expected, warnings)
+
+    def test_active_findings_total_between_old_and_new_cap_accepted(self) -> None:
+        fx = self.make()
+        fx.active_findings(OLD_ACTIVE_TOTAL_CAP + 1)
+        self.assertEqual(fx.active_findings_bytes(), OLD_ACTIVE_TOTAL_CAP + 1)
+        linter = fx.linter()
+        self.assertEqual([problem.render() for problem in linter.problems], [])
+        warnings = [warning.render() for warning in linter.warnings]
+        self.assertFalse(any(warning.startswith(docs_lint.FINDINGS_DIR) for warning in warnings), warnings)
+
     def test_links_and_fragments(self) -> None:
         fx = self.make()
         fx.write("docs/a.md", "# A\n\n## Known section\n\n[ok](b.md#target) [bad](missing.md) [frag](b.md#nope) [self](#known-section) [out](../../etc)\n")
@@ -286,6 +346,7 @@ class DocsLintTest(unittest.TestCase):
         fx.write("docs/ledgers/findings/big.md", FINDINGS_HEAD + "".join(row.format(n) for n in range(1, 140)))
         fx.write("docs/ledgers/findings/more.md", FINDINGS_HEAD + "".join(row.format(n) for n in range(400, 539)))
         fx.write("docs/ledgers/findings/most.md", FINDINGS_HEAD + "".join(row.format(n) for n in range(600, 739)))
+        fx.write("docs/ledgers/findings/last.md", FINDINGS_HEAD + "".join(row.format(n) for n in range(800, 939)))
         self.assertTrue(any("active findings total" in problem for problem in fx.lint()))
 
     def test_legacy_layouts_rejected(self) -> None:

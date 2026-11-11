@@ -13,7 +13,7 @@ Lint: `python3 tools/docs_lint.py`. Startup reads stop at this map and
 | [runbooks/](runbooks/) | operating procedures | 16 KB each |
 | [specs/](specs/) | durable format and protocol facts (`save-format/`, `network/`) | 16 KB each, fixed headings |
 | [research/](research/) | one digest per question cluster (`save-format/`, `network/`, `foundation/`) | 8 KB each, fixed headings |
-| [ledgers/findings/](ledgers/findings/) | active findings by area; `retired/` keeps retired rows in full | 48 KB per active file, 128 KB active total, 64 KB per retired file |
+| [ledgers/findings/](ledgers/findings/) | active findings by area; `retired/` keeps retired rows in full | 48 KB per active file, 192 KB active total, 64 KB per retired file |
 | [ledgers/](ledgers/) | unknowns, bugs, compatibility; one row per item | 64 KB each; 400-byte rows |
 | [research/archive/](research/archive/) | dated reports, verbatim, frozen | none |
 | [history/](history/) | historical authorizations, verbatim, frozen | none |
