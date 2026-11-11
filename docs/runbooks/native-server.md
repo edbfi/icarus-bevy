@@ -112,7 +112,9 @@ Prospect/mode F-804; data F-993. Monotonic delivery timeout: sent records lack
 ACK/NAK progress despite traffic; `closed_by_delivery_stall`/`peers_delivery_stalled`
 separate from idle expiry (F-1013). A friends query unanswered for that timeout
 closes its peer despite ACKs, so others finalise: `closed_by_friends_query_timeout`
-(F-1115, N-019).
+(F-1115, N-019). A player's record waits for the client's ACK of its controller,
+possession update and pawn; an abandoned update closes the session instead:
+`closed_by_possession_abandoned` (F-1116).
 Removal releases a session's GUID identities; GUIDs are never reused (F-1083).
 
 `authored_gameplay`: regular JSON ≤8 MiB, e.g.
