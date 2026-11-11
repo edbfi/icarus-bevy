@@ -370,14 +370,18 @@ fn first_rule_and_state_are_per_connection_and_forgotten_on_removal() {
 #[test]
 fn a_full_pool_counts_losses_without_touching_the_other_pools() {
     let mut sink = PrivatePawnBunchCapture::from_file(tempfile::tempfile().unwrap());
+    // A never-seen shape finds the first pool full, falls back to the
+    // new-shape rule and finds that pool full too: a real loss.
     sink.used[Pool::First as usize].rows = POOLS[Pool::First as usize].rows;
+    sink.used[Pool::NewShape as usize].rows = POOLS[Pool::NewShape as usize].rows;
     unreliable(&mut sink, 0, &bunch(false, payload(8, 0)));
     let counts = sink.counts();
-    assert_eq!(counts.lost_first, 1);
+    assert_eq!(counts.first_pool_full, 1);
+    assert_eq!(counts.lost_new_shape, 1);
     assert_eq!(counts.lost_to_cap, 1, "visible before finish");
     assert_eq!(counts.observations, 0);
     assert_eq!(counts.output_bytes, 0);
-    // The reliable pool is untouched by the full first pool.
+    // The reliable pool is untouched by the full pools.
     tap(&mut sink, 0).observe(
         &bunch(true, payload(8, 0)),
         PawnBunchPhase::ReliableQueueRelease,
@@ -411,15 +415,47 @@ fn reliable_pool_full_is_a_counted_loss() {
 fn pool_byte_budget_refuses_a_row_that_would_cross_it() {
     let mut file = tempfile::tempfile().unwrap();
     let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
-    sink.used[Pool::First as usize].bytes = POOLS[Pool::First as usize].bytes - 10;
-    unreliable(&mut sink, 0, &bunch(false, payload(8, 0)));
+    sink.used[Pool::Reliable as usize].bytes = POOLS[Pool::Reliable as usize].bytes - 10;
+    tap(&mut sink, 0).observe(
+        &bunch(true, payload(8, 0)),
+        PawnBunchPhase::ReliableQueueRelease,
+        1,
+        Some(1),
+    );
     let counts = sink.finish();
-    assert_eq!(counts.lost_first, 1);
+    assert_eq!(counts.lost_reliable, 1);
     assert_eq!(counts.lost_to_cap, 1);
     assert_eq!(counts.observations, 0);
     assert_eq!(counts.output_bytes, 0);
     assert_eq!(counts.incomplete, 1);
     assert!(rows(&mut file).is_empty());
+}
+
+/// A first-pool refusal, by rows or by bytes, is never a loss: the bunch
+/// is kept by the shape rules or sampled out.
+#[test]
+fn a_full_first_pool_falls_back_to_the_shape_rules() {
+    let mut file = tempfile::tempfile().unwrap();
+    let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
+    sink.used[Pool::First as usize].bytes = POOLS[Pool::First as usize].bytes - 10;
+    let steady = bunch(false, payload(8, 0));
+    for _ in 0..=SHAPE_FIRST {
+        unreliable(&mut sink, 0, &steady);
+    }
+    let counts = sink.finish();
+    assert_eq!(counts.first_pool_full, SHAPE_FIRST + 1);
+    assert_eq!(counts.kept_first, 0);
+    assert_eq!(counts.kept_new_shape, SHAPE_FIRST);
+    assert_eq!(counts.sampled_out, 1);
+    assert_eq!(counts.lost_to_cap, 0);
+    assert_eq!(counts.incomplete, 0);
+    let rows = rows(&mut file);
+    assert_eq!(rows.len() as u64, SHAPE_FIRST);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row["keep_reason"], "new_shape");
+        assert_eq!(row["ordinal"], index as u64 + 1);
+        assert_eq!(row["shape_seen"], index as u64 + 1);
+    }
 }
 
 #[test]
@@ -474,4 +510,83 @@ fn counts_and_debug_expose_no_payload() {
     let text = serde_json::to_string(&sink.finish()).unwrap();
     assert!(!text.contains("payload_hex"));
     assert!(!format!("{sink:?}").contains("payload_hex"));
+}
+
+fn on(sink: &mut PrivatePawnBunchCapture, connection: u32, elapsed_ms: u64) -> PawnBunchTap<'_> {
+    PawnBunchTap {
+        connection_ordinal: connection,
+        ..tap(sink, elapsed_ms)
+    }
+}
+
+/// Review regression: a third connection's first bunches found the first
+/// pool (two connections' worth) full and were counted as lost, raising a
+/// false `lost_to_cap` alarm. They now fall back to the ordinary rules.
+#[test]
+fn reconnects_past_the_first_pool_fall_back_to_sampling_without_a_loss() {
+    const CONNECTIONS: u32 = 4;
+    let mut file = tempfile::tempfile().unwrap();
+    let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
+    let steady = bunch(false, payload(70, 0));
+    let per_connection = KEEP_FIRST + 100;
+    for connection in 1..=CONNECTIONS {
+        let start = u64::from(connection) * 1_000_000;
+        for n in 0..per_connection {
+            on(&mut sink, connection, start + n * 12).observe(
+                &steady,
+                PawnBunchPhase::UnreliableArrival,
+                9,
+                None,
+            );
+        }
+        // Each connection's state is fresh, so the pool fills after two.
+        assert_eq!(sink.counts().lost_to_cap, 0, "connection {connection}");
+    }
+    let at = u64::from(CONNECTIONS + 1) * 1_000_000;
+    on(&mut sink, CONNECTIONS, at).observe(
+        &bunch(true, payload(40, 0)),
+        PawnBunchPhase::ReliableQueueRelease,
+        1,
+        Some(1),
+    );
+    on(&mut sink, CONNECTIONS, at).observe(
+        &bunch(false, payload(41, 0)),
+        PawnBunchPhase::UnreliableArrival,
+        2,
+        None,
+    );
+    let counts = sink.finish();
+    assert_eq!(counts.lost_to_cap, 0);
+    assert_eq!(counts.incomplete, 0);
+    assert_eq!(counts.kept_first, POOLS[Pool::First as usize].rows);
+    let full = u64::from(CONNECTIONS) * KEEP_FIRST - POOLS[Pool::First as usize].rows;
+    assert_eq!(counts.first_pool_full, full);
+    // Connections 3 and 4 keep their steady shape's first SHAPE_FIRST by
+    // the new-shape rule; the late never-seen shape adds one more.
+    assert_eq!(counts.kept_new_shape, 2 * SHAPE_FIRST + 1);
+    assert_eq!(counts.kept_reliable, 1);
+    assert_eq!(counts.kept_interval, 0);
+    assert_eq!(
+        counts.sampled_out,
+        counts.seen - counts.observations,
+        "every fall-through is kept or sampled out"
+    );
+    let rows = rows(&mut file);
+    assert_eq!(rows.len() as u64, counts.observations);
+    let last: Vec<_> = rows[rows.len() - 2..]
+        .iter()
+        .map(|row| {
+            (
+                row["keep_reason"].clone(),
+                row["connection_ordinal"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        last,
+        [
+            ("reliable".into(), CONNECTIONS.into()),
+            ("new_shape".into(), CONNECTIONS.into())
+        ]
+    );
 }

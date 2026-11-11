@@ -21,7 +21,11 @@
 //! a rare unreliable shape:
 //!
 //! - **Reliable**: every reliable bunch is kept, in its own pool.
-//! - **First**: the connection's first [`KEEP_FIRST`] pawn bunches.
+//! - **First**: the connection's first [`KEEP_FIRST`] pawn bunches, while
+//!   the first pool has room (it holds two connections' worth: a join and
+//!   one retry). An unreliable bunch that finds it full falls back to the
+//!   shape rules below and is counted in `first_pool_full`; a reliable one
+//!   is kept regardless, in the reliable pool.
 //! - **Shapes**: an unreliable bunch's shape is its header flags, bit length
 //!   and first [`LEADING_BITS`] payload bits. Each connection tracks up to
 //!   [`MAX_SHAPES`] shapes and keeps the first [`SHAPE_FIRST`] bunches of each
@@ -36,10 +40,13 @@
 //! Each kept row is charged to one pool ([`POOLS`]: reliable, first,
 //! new shape, interval; reliable bunches always to the reliable pool). Pools
 //! partition [`MAX_OBSERVATIONS`] rows and [`MAX_OUTPUT_BYTES`], so no pool
-//! can consume another's share. A selected row refused by its pool or by
-//! [`MAX_PAYLOAD_BYTES`] is a loss: it is counted in `lost_<pool>` or
-//! `oversize` and in `lost_to_cap`, live, on every counts line. A run monitor
-//! alarms on `lost_to_cap > 0`; sampling alone never raises it.
+//! can consume another's share. A row refused by the reliable, new-shape or
+//! interval pool, or by [`MAX_PAYLOAD_BYTES`], is a loss: it is counted in
+//! `lost_reliable`, `lost_new_shape`, `lost_interval` or `oversize` and in
+//! `lost_to_cap`, live, on every counts line. A first-pool refusal is not a
+//! loss (it falls back, as above), so reconnects cannot raise a false alarm.
+//! A run monitor alarms on `lost_to_cap > 0`; sampling, including
+//! `first_pool_full`, never raises it.
 //!
 //! # Record format (JSONL, `format` 2)
 //!
@@ -51,7 +58,7 @@
 //! - `format` (2), `selection` (`"pawn_channel_bunches"`), `ordinal` (1-based
 //!   row number in this file).
 //! - `keep_reason`: `first`, `reliable`, `new_shape` or `interval` (see
-//!   Sampling).
+//!   Sampling; a reliable bunch within [`KEEP_FIRST`] is `first`).
 //! - `connection_ordinal` (the session's ordinal, never an address or
 //!   identity), `connection_seen` (1-based count of this connection's pawn
 //!   bunches seen, kept or not: gaps between rows show how many were
@@ -92,7 +99,8 @@ pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024;
 /// Encoded bytes (metadata, hex and newlines) written per file (the sum of
 /// the pools' bytes).
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-/// Pawn bunches kept unconditionally at the start of each connection.
+/// Pawn bunches kept at the start of each connection while the first pool
+/// has room.
 pub const KEEP_FIRST: u64 = 512;
 /// Leading payload bits in an unreliable bunch's shape.
 pub const LEADING_BITS: usize = 32;
@@ -113,7 +121,9 @@ pub struct PoolBudget {
     pub bytes: u64,
 }
 
-/// Budgets indexed by [`Pool`]: reliable, first, new shape, interval.
+/// Budgets indexed by [`Pool`]: reliable, first, new shape, interval. The
+/// first pool holds two connections' [`KEEP_FIRST`] rows (a join and one
+/// retry); later starts are sampled, so it need not grow with reconnects.
 pub const POOLS: [PoolBudget; 4] = [
     PoolBudget {
         rows: 2048,
@@ -159,16 +169,20 @@ pub struct PawnBunchCaptureCounts {
     pub kept_interval: u64,
     /// Skipped by the sampling rule (by design; not a loss).
     pub sampled_out: u64,
+    /// Unreliable bunches within [`KEEP_FIRST`] that found the first pool
+    /// full and fell back to the shape rules (then kept as `new_shape` or
+    /// `interval`, or `sampled_out`). Not a loss: a later connection's
+    /// start (a reconnect) is sampled like any other traffic.
+    pub first_pool_full: u64,
     /// Most unreliable shapes tracked by one connection.
     pub shapes_tracked_max: u64,
     /// Unreliable bunches whose shape was beyond [`MAX_SHAPES`]; sampled by
     /// the connection-wide interval instead.
     pub untracked_shape_bunches: u64,
-    /// Every selected row lost to a cap: the `lost_*` pools plus `oversize`.
-    /// The field to alarm on.
+    /// Every selected row lost to a cap: `lost_reliable`, `lost_new_shape`,
+    /// `lost_interval` and `oversize`. The field to alarm on.
     pub lost_to_cap: u64,
     pub lost_reliable: u64,
-    pub lost_first: u64,
     pub lost_new_shape: u64,
     pub lost_interval: u64,
     /// Selected but over [`MAX_PAYLOAD_BYTES`].
@@ -218,9 +232,37 @@ impl Pool {
             (false, KeepReason::Interval) => Self::Interval,
         }
     }
+
+    /// The loss a refusal by this pool counts as; `None` for the first
+    /// pool, whose refusals fall back to the shape rules instead.
+    fn loss(self) -> Option<Loss> {
+        match self {
+            Self::Reliable => Some(Loss::Reliable),
+            Self::First => None,
+            Self::NewShape => Some(Loss::NewShape),
+            Self::Interval => Some(Loss::Interval),
+        }
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A selected row lost to a cap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Loss {
+    Oversize,
+    Reliable,
+    NewShape,
+    Interval,
+}
+
+/// Whose interval clock a selected row restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mark {
+    None,
+    Shape(Shape),
+    Untracked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Shape {
     flags: u16,
     bits: usize,
@@ -244,41 +286,46 @@ fn due(last: Option<u64>, now: u64, interval: u64) -> bool {
     last.is_none_or(|at| now.saturating_sub(at) >= interval)
 }
 
-/// One sampling decision: the reason, or `None` when sampled out.
+/// One sampling decision. `first` asks for the first pool (unreliable
+/// bunches only); `reason` is the ordinary rule's choice, used when `first`
+/// is false or the first pool is full; `None` means sampled out.
 struct Selection {
+    first: bool,
     reason: Option<KeepReason>,
+    mark: Mark,
     shape_seen: Option<u64>,
     untracked: bool,
     shapes_tracked: usize,
 }
 
 impl ConnectionState {
+    /// Counts the bunch and decides; interval clocks move only in [`mark`].
+    ///
+    /// [`mark`]: Self::mark
     fn select(&mut self, reliable: bool, shape: Shape, now: u64) -> Selection {
         self.seen = self.seen.saturating_add(1);
         let first = self.seen <= KEEP_FIRST;
         if reliable {
+            // Always kept, in the reliable pool; `first` only names it.
             return Selection {
+                first: false,
                 reason: Some(if first {
                     KeepReason::First
                 } else {
                     KeepReason::Reliable
                 }),
+                mark: Mark::None,
                 shape_seen: None,
                 untracked: false,
                 shapes_tracked: self.shapes.len(),
             };
         }
         if !self.shapes.contains_key(&shape) && self.shapes.len() >= MAX_SHAPES {
-            let selected = first || due(self.untracked_last_selected_ms, now, KEEP_INTERVAL_MS);
-            if selected {
-                self.untracked_last_selected_ms = Some(now);
-            }
             return Selection {
-                reason: match (first, selected) {
-                    (true, _) => Some(KeepReason::First),
-                    (false, true) => Some(KeepReason::Interval),
-                    (false, false) => None,
-                },
+                first,
+                reason: due(self.untracked_last_selected_ms, now, KEEP_INTERVAL_MS)
+                    .then_some(KeepReason::Interval),
+                mark: Mark::Untracked,
                 shape_seen: None,
                 untracked: true,
                 shapes_tracked: self.shapes.len(),
@@ -288,26 +335,34 @@ impl ConnectionState {
             .max(SHAPE_INTERVAL_STEP_MS.saturating_mul(self.shapes.len().max(1) as u64));
         let state = self.shapes.entry(shape).or_default();
         state.seen = state.seen.saturating_add(1);
-        let reason = if first {
-            Some(KeepReason::First)
-        } else if state.seen <= SHAPE_FIRST {
+        let reason = if state.seen <= SHAPE_FIRST {
             Some(KeepReason::NewShape)
         } else if due(state.last_selected_ms, now, interval) {
             Some(KeepReason::Interval)
         } else {
             None
         };
-        // A selection lost to a cap also restarts the interval, so a full
-        // pool costs one counted loss per shape interval, not one per bunch.
-        if reason.is_some() {
-            state.last_selected_ms = Some(now);
-        }
-        let shape_seen = Some(state.seen);
         Selection {
+            first,
             reason,
-            shape_seen,
+            mark: Mark::Shape(shape),
+            shape_seen: Some(state.seen),
             untracked: false,
             shapes_tracked: self.shapes.len(),
+        }
+    }
+
+    /// A row was selected (kept or lost to a cap): restart its interval, so
+    /// a full pool costs one counted loss per interval, not one per bunch.
+    fn mark(&mut self, mark: Mark, now: u64) {
+        match mark {
+            Mark::None => {}
+            Mark::Untracked => self.untracked_last_selected_ms = Some(now),
+            Mark::Shape(shape) => {
+                if let Some(state) = self.shapes.get_mut(&shape) {
+                    state.last_selected_ms = Some(now);
+                }
+            }
         }
     }
 }
@@ -347,7 +402,7 @@ pub(crate) struct PawnBunchTap<'a> {
 }
 
 #[derive(Serialize)]
-struct Record {
+struct Record<'a> {
     format: u8,
     selection: &'static str,
     ordinal: u64,
@@ -372,7 +427,15 @@ struct Record {
     has_package_map_exports: bool,
     has_must_be_mapped_guids: bool,
     payload_bits: usize,
-    payload_hex: String,
+    payload_hex: &'a str,
+}
+
+/// Outcome of [`PrivatePawnBunchCapture::write_row`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowWrite {
+    Written,
+    NoRoom,
+    Failed,
 }
 
 impl PrivatePawnBunchCapture {
@@ -412,17 +475,67 @@ impl PrivatePawnBunchCapture {
         self.failed = true;
     }
 
-    fn lost(&mut self, pool: Option<Pool>) {
+    fn lost(&mut self, loss: Loss) {
         let counts = &mut self.counts;
-        let counter = match pool {
-            None => &mut counts.oversize,
-            Some(Pool::Reliable) => &mut counts.lost_reliable,
-            Some(Pool::First) => &mut counts.lost_first,
-            Some(Pool::NewShape) => &mut counts.lost_new_shape,
-            Some(Pool::Interval) => &mut counts.lost_interval,
+        let counter = match loss {
+            Loss::Oversize => &mut counts.oversize,
+            Loss::Reliable => &mut counts.lost_reliable,
+            Loss::NewShape => &mut counts.lost_new_shape,
+            Loss::Interval => &mut counts.lost_interval,
         };
         *counter = counter.saturating_add(1);
         counts.lost_to_cap = counts.lost_to_cap.saturating_add(1);
+    }
+
+    fn mark(&mut self, connection: u32, mark: Mark, now: u64) {
+        if let Some(state) = self.connections.get_mut(&connection) {
+            state.mark(mark, now);
+        }
+    }
+
+    /// Writes one row to `pool` if it has room; I/O failures disable
+    /// capture.
+    fn write_row(&mut self, pool: Pool, record: &Record<'_>, bit_len: usize) -> RowWrite {
+        let budget = POOLS[pool as usize];
+        if self.used[pool as usize].rows >= budget.rows {
+            return RowWrite::NoRoom;
+        }
+        let Ok(mut encoded) = serde_json::to_vec(record) else {
+            self.write_failed();
+            return RowWrite::Failed;
+        };
+        encoded.push(b'\n');
+        if self.used[pool as usize]
+            .bytes
+            .saturating_add(encoded.len() as u64)
+            > budget.bytes
+        {
+            return RowWrite::NoRoom;
+        }
+        // Charge every byte actually written, including a failed partial row.
+        let mut remaining = encoded.as_slice();
+        while !remaining.is_empty() {
+            match self.file.write(remaining) {
+                Ok(0) => {
+                    self.write_failed();
+                    return RowWrite::Failed;
+                }
+                Ok(n) => {
+                    self.counts.output_bytes += n as u64;
+                    self.used[pool as usize].bytes += n as u64;
+                    remaining = &remaining[n..];
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => {
+                    self.write_failed();
+                    return RowWrite::Failed;
+                }
+            }
+        }
+        self.used[pool as usize].rows += 1;
+        self.counts.observations += 1;
+        self.counts.retained_payload_bits += bit_len as u64;
+        RowWrite::Written
     }
 
     /// Session removal: its sampling state goes (bounded by live sessions).
@@ -512,29 +625,84 @@ impl PawnBunchTap<'_> {
         if selection.untracked {
             counts.untracked_shape_bunches = counts.untracked_shape_bunches.saturating_add(1);
         }
-        let Some(reason) = selection.reason else {
+        if !selection.first && selection.reason.is_none() {
             counts.sampled_out = counts.sampled_out.saturating_add(1);
             return;
-        };
-        let pool = Pool::of(bunch.header.reliable, reason);
+        }
+        let connection = self.connection_ordinal;
+        let reliable = bunch.header.reliable;
         if bit_len.div_ceil(8) > MAX_PAYLOAD_BYTES {
-            sink.lost(None);
+            sink.mark(connection, selection.mark, self.elapsed_ms);
+            sink.lost(Loss::Oversize);
             return;
         }
-        let budget = POOLS[pool as usize];
-        if sink.used[pool as usize].rows >= budget.rows {
-            sink.lost(Some(pool));
-            return;
+        let hex = payload_hex(bytes, bit_len);
+        let mut record = self.record(bunch, phase, packet_sequence, reliable_sequence, &hex);
+        record.connection_seen = connection_seen;
+        record.shape_seen = selection.shape_seen;
+        let sink = &mut *self.sink;
+        if selection.first {
+            record.keep_reason = KeepReason::First.as_str();
+            record.ordinal = sink.counts.observations + 1;
+            match sink.write_row(Pool::First, &record, bit_len) {
+                RowWrite::Written => {
+                    sink.mark(connection, selection.mark, self.elapsed_ms);
+                    sink.counts.kept_first += 1;
+                    return;
+                }
+                RowWrite::Failed => return,
+                // Not a loss: fall back to the shape rules below.
+                RowWrite::NoRoom => {
+                    sink.counts.first_pool_full = sink.counts.first_pool_full.saturating_add(1);
+                }
+            }
         }
+        let Some(reason) = selection.reason else {
+            sink.counts.sampled_out = sink.counts.sampled_out.saturating_add(1);
+            return;
+        };
+        sink.mark(connection, selection.mark, self.elapsed_ms);
+        let pool = Pool::of(reliable, reason);
+        record.keep_reason = reason.as_str();
+        record.ordinal = sink.counts.observations + 1;
+        match sink.write_row(pool, &record, bit_len) {
+            RowWrite::Written => {
+                let counter = match reason {
+                    KeepReason::First => &mut sink.counts.kept_first,
+                    KeepReason::Reliable => &mut sink.counts.kept_reliable,
+                    KeepReason::NewShape => &mut sink.counts.kept_new_shape,
+                    KeepReason::Interval => &mut sink.counts.kept_interval,
+                };
+                *counter += 1;
+            }
+            RowWrite::Failed => {}
+            RowWrite::NoRoom => {
+                if let Some(loss) = pool.loss() {
+                    sink.lost(loss);
+                }
+            }
+        }
+    }
+
+    /// The row for `bunch`; `keep_reason`, `ordinal` and the seen counts are
+    /// filled in by the caller.
+    fn record<'h>(
+        &self,
+        bunch: &Bunch,
+        phase: PawnBunchPhase,
+        packet_sequence: u16,
+        reliable_sequence: Option<i64>,
+        payload_hex: &'h str,
+    ) -> Record<'h> {
         let h = &bunch.header;
-        let record = Record {
+        Record {
             format: 2,
             selection: "pawn_channel_bunches",
-            ordinal: sink.counts.observations + 1,
-            keep_reason: reason.as_str(),
+            ordinal: 0,
+            keep_reason: "",
             connection_ordinal: self.connection_ordinal,
-            connection_seen,
-            shape_seen: selection.shape_seen,
+            connection_seen: 0,
+            shape_seen: None,
             channel: self.channel,
             observation_phase: match phase {
                 PawnBunchPhase::ReliableQueueRelease => "reliable_queue_release",
@@ -554,52 +722,9 @@ impl PawnBunchTap<'_> {
             paused: h.paused,
             has_package_map_exports: h.has_package_map_exports,
             has_must_be_mapped_guids: h.has_must_be_mapped_guids,
-            payload_bits: bit_len,
-            payload_hex: payload_hex(bytes, bit_len),
-        };
-        let Ok(mut encoded) = serde_json::to_vec(&record) else {
-            sink.write_failed();
-            return;
-        };
-        encoded.push(b'\n');
-        if sink.used[pool as usize]
-            .bytes
-            .saturating_add(encoded.len() as u64)
-            > budget.bytes
-        {
-            sink.lost(Some(pool));
-            return;
+            payload_bits: bunch.payload.bit_len(),
+            payload_hex,
         }
-        // Charge every byte actually written, including a failed partial row.
-        let mut remaining = encoded.as_slice();
-        while !remaining.is_empty() {
-            match sink.file.write(remaining) {
-                Ok(0) => {
-                    sink.write_failed();
-                    return;
-                }
-                Ok(n) => {
-                    sink.counts.output_bytes += n as u64;
-                    sink.used[pool as usize].bytes += n as u64;
-                    remaining = &remaining[n..];
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => {
-                    sink.write_failed();
-                    return;
-                }
-            }
-        }
-        sink.used[pool as usize].rows += 1;
-        sink.counts.observations += 1;
-        sink.counts.retained_payload_bits += bit_len as u64;
-        let counter = match reason {
-            KeepReason::First => &mut sink.counts.kept_first,
-            KeepReason::Reliable => &mut sink.counts.kept_reliable,
-            KeepReason::NewShape => &mut sink.counts.kept_new_shape,
-            KeepReason::Interval => &mut sink.counts.kept_interval,
-        };
-        *counter += 1;
     }
 }
 

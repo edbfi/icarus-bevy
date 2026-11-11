@@ -83,9 +83,11 @@ sequence, reliable sequence (raw and in order), every header flag, exact
 `payload_bits` and masked wire-order `payload_hex`: bit-exact for offline
 decoding.
 
-Per connection: the first 512 bunches; every reliable bunch; and per
-unreliable shape (flags, length, first 32 bits; up to 256 shapes) its first 4
-bunches, then one per max(10 s, 2 s x tracked shapes). Shapes past 256 are
+Per connection: the first 512 bunches while the first pool has room; every
+reliable bunch; and per unreliable shape (flags, length, first 32 bits; up to
+256 shapes) its first 4 bunches, then one per max(10 s, 2 s x tracked shapes).
+After two connections fill the first pool, a reconnect's early unreliable
+bunches fall back to the shape rules (`first_pool_full`; not a loss). Shapes past 256 are
 counted (`untracked_shape_bunches`) and share one 10 s interval. Per file,
 disjoint pools (rows / MiB): reliable 2,048 / 4, first 1,024 / 2, new shape
 2,048 / 4, interval 3,072 / 6 (8,192 rows, 16 MiB); 8 KiB payload per row.
@@ -94,9 +96,10 @@ bunches/s, interval rows last 8.5 h for one shape, 2.8 h for three alternating
 and 1.7 h for 200 (small rows; larger ones exhaust bytes sooner); reliable and
 new-shape rows remain kept after that (unit-tested).
 Counts (`private_pawn_bunches_capture` on progress, `native_join_frozen_movement`
-and final lines): `seen`, `kept_*`, `sampled_out` (by design), `lost_*` per
-pool, `oversize`, `incomplete`. Alarm on `lost_to_cap > 0`, live; sampling
-alone never raises it or `incomplete`. `connection_seen` and `shape_seen` show gaps.
+and final lines): `seen`, `kept_*`, `sampled_out` and `first_pool_full` (by
+design), `lost_reliable`, `lost_new_shape`, `lost_interval`, `oversize`,
+`incomplete`. Alarm on `lost_to_cap > 0` (their sum), live; sampling and
+reconnects never raise it or `incomplete`. `connection_seen` and `shape_seen` show gaps.
 
 ### Offline selected RPC82 replay
 
