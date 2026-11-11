@@ -12,7 +12,7 @@ from typing import override
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools import work_gc  # noqa: E402
+from tools import sha256_manifest, work_gc  # noqa: E402
 
 # main() reads the clock, so fixtures age relative to the real time.
 NOW = float(int(time.time()))
@@ -288,6 +288,8 @@ class WorkGcTest(unittest.TestCase):
             ("malformed", b"not a manifest line\n"),
             ("binary", b"\xff\xfe\x00"),
             ("truncated", f"{'0' * 64}  official/Bin/server.exe\n{'0' * 30}".encode()),
+            ("absolute", f"{'0' * 64}  /official/Bin/server.exe\n".encode()),
+            ("escaping", f"{'0' * 64}  ../../../official/Bin/server.exe\n".encode()),
         )
         for name, body in bodies:
             with self.subTest(name):
@@ -338,13 +340,13 @@ class WorkGcTest(unittest.TestCase):
         self.assert_held(copy)
         self.assert_held(sized)
         self.assertEqual(
-            work_gc.manifest_entries(self.root / "work/c/removed.sha256"),
+            [entry.path for entry in sha256_manifest.read_manifest(self.root, self.root / "work/c/removed.sha256") or []],
             ["official/Bin/server.exe", "official/Bin/server.exe", "sized/server.exe"],
         )
         for line in (f"{'1' * 21} too-long-size", "12  two-spaces", "12 trailing-space ", "-1 negative"):
             _ = self.write("work/c/bad.sha256", f"{'0' * 64}  official/Bin/server.exe\n{line}\n".encode())
-            with self.assertRaises(work_gc.ManifestError, msg=line):
-                _ = work_gc.manifest_entries(self.root / "work/c/bad.sha256")
+            with self.assertRaises(sha256_manifest.ManifestError, msg=line):
+                _ = sha256_manifest.read_manifest(self.root, self.root / "work/c/bad.sha256")
 
     def test_unusable_pin_manifest_outside_a_case_defers_every_case(self) -> None:
         copy = self.official_copy()

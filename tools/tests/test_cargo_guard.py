@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools import cargo_guard as guard
-from tools import docs_lint
 
 
 class CargoGuardTests(unittest.TestCase):
@@ -407,6 +406,32 @@ with g.build_lock(i) as b:
         with patch.object(guard, "git_text", return_value=records):
             guard.evidence_veto(self.info)
 
+    def test_any_manifest_entry_overlapping_target_vetoes_whatever_its_name(self) -> None:
+        # M-1290's shape: not named fixity.sha256, entries relative to the repository root.
+        for name, entry in (("official-fixity.sha256", "target/debug/artifact"), ("outputs.sha256", "target"),
+                            ("hashes.txt", "./target/release"), ("removed.sha256", "8 target/debug/old")):
+            with self.subTest(name=name):
+                line = entry if entry[0].isdigit() else "a" * 64 + "  " + entry
+                manifest = self.write(f"work/case/{name}", line + "\n")
+                self.evidence(f"work/case/{name}")
+                with self.assertRaisesRegex(guard.GuardError, "active fixity entry"):
+                    guard.evidence_veto(self.info)
+                manifest.unlink()
+
+    def test_unknown_manifest_of_any_name_refuses(self) -> None:
+        manifest = self.write("work/case/official-fixity.sha256", "a" * 64 + "  kept.log\ntruncated")
+        self.evidence("work/case/official-fixity.sha256")
+        with self.assertRaisesRegex(guard.GuardError, "unreadable fixity"):
+            guard.evidence_veto(self.info)
+        _ = manifest.write_text("a" * 64 + "  kept.log\n" + "a" * 64 + "  work/case/kept.log\n12 kept.log\n")
+        guard.evidence_veto(self.info)
+        # A row that is no manifest is read no further than its first line.
+        _ = self.write("work/case/notes.md", "authored notes\n")
+        self.evidence("work/case/notes.md")
+        with patch.object(Path, "read_text") as read:
+            guard.evidence_veto(self.info)
+        read.assert_not_called()
+
     def test_fixity_reads_hash_path_metadata_only(self) -> None:
         manifest = self.write("work/case/fixity.sha256", "a" * 64 + "  kept.log\n")
         _ = self.write("work/case/kept.log", "authored artifact; do not read")
@@ -422,7 +447,7 @@ with g.build_lock(i) as b:
     def test_present_malformed_unreadable_and_dangling_fixity_fail_closed(self) -> None:
         manifest = self.write("work/case/fixity.sha256", "malformed\n")
         self.evidence("work/case/fixity.sha256")
-        for content in ("malformed\n", "a" * 64 + "  ../escape\n", "a" * 64 + "  /absolute\n"):
+        for content in ("malformed\n", "a" * 64 + "  ../../../escape\n", "a" * 64 + "  /absolute\n", "\n"):
             _ = manifest.write_text(content)
             with self.subTest(content=content), self.assertRaisesRegex(guard.GuardError, "unreadable fixity"):
                 guard.evidence_veto(self.info)
@@ -439,7 +464,7 @@ with g.build_lock(i) as b:
             guard.evidence_veto(self.info)
         manifest.unlink()
         manifest.mkdir()
-        with self.assertRaisesRegex(guard.GuardError, "invalid or oversized fixity"):
+        with self.assertRaisesRegex(guard.GuardError, "unreadable fixity metadata: .*a directory"):
             guard.evidence_veto(self.info)
 
     def test_evidence_overlap_uses_components_not_string_prefixes(self) -> None:
@@ -449,6 +474,29 @@ with g.build_lock(i) as b:
             self.assertTrue(guard.paths_overlap(other, base))
         for other in (Path("/checkout/target-old"), Path("/other/target")):
             self.assertFalse(guard.paths_overlap(base, other))
+
+    def test_resolver_matches_realpath(self) -> None:
+        tree = self.root / "resolver"
+        (tree / "real/sub").mkdir(parents=True)
+        _ = (tree / "real/sub/file").write_text("x")
+        (tree / "dirlink").symlink_to(tree / "real", target_is_directory=True)
+        (tree / "rel").symlink_to("real/sub", target_is_directory=True)
+        (tree / "real/sub/leaf").symlink_to("../sub/file")
+        (tree / "chain2").symlink_to("dirlink")
+        (tree / "chain1").symlink_to(tree / "chain2")
+        (tree / "dangling").symlink_to("nowhere/else")
+        (tree / "loop_a").symlink_to("loop_b")
+        (tree / "loop_b").symlink_to("loop_a")
+        names = ("real/sub/file", "dirlink/sub/file", "dirlink/sub/leaf", "dirlink/sub/missing", "rel/file", "rel/leaf",
+                 "chain1/sub/file", "chain1/missing/deeper", "missing/leaf", "dangling", "dangling/below",
+                 "loop_a", "loop_a/below", "dirlink", "chain1")
+        shared = guard.Resolver()
+        for name in names:
+            path = str(tree / name)
+            with self.subTest(path=name):
+                expected = os.path.realpath(path)
+                self.assertEqual(guard.Resolver().resolve(path), expected)
+                self.assertEqual(shared.resolve(path), expected)
 
     def test_shared_manifest_checks_each_lexical_parent(self) -> None:
         manifest = self.write("work/a/fixity.sha256", "a" * 64 + "  alias/payload\n")
@@ -486,7 +534,7 @@ with g.build_lock(i) as b:
     def test_fixity_metadata_bytes_and_entries_are_bounded_across_rows(self) -> None:
         manifest = self.write("work/case/fixity.sha256", "a" * 64 + "  first\n" + "b" * 64 + "  second\n")
         self.evidence("work/case/fixity.sha256")
-        with patch.object(guard, "FIXITY_METADATA_BYTES", 1), patch.object(docs_lint, "read_fixity") as read:
+        with patch.object(guard, "FIXITY_METADATA_BYTES", 1), patch.object(Path, "read_text") as read:
             with self.assertRaisesRegex(guard.GuardError, "oversized fixity"):
                 guard.evidence_veto(self.info)
         read.assert_not_called()

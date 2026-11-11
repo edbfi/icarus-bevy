@@ -98,14 +98,16 @@ rows, not its bytes. Back up every active path to storage outside the repository
 named by `ICARUS_EVIDENCE_BACKUP`, then prove a restore into a scratch clone:
 
 ```bash
-python3 tools/docs_lint.py --list-local |
-  rsync -a -r --relative --files-from=- ./ "$ICARUS_EVIDENCE_BACKUP/"
+(set -o pipefail; python3 tools/docs_lint.py --list-local |
+  rsync -a -r --relative --files-from=- ./ "$ICARUS_EVIDENCE_BACKUP/")
 git clone -q . "$RESTORE_CHECK" && rsync -a "$ICARUS_EVIDENCE_BACKUP/" "$RESTORE_CHECK/"
 python3 tools/docs_lint.py --local --root "$RESTORE_CHECK"
 ```
 
-`--files-from` disables recursion unless `-r` is given. Back up after each session
-that adds rows; retire an artifact's row before deletion.
+`--files-from` disables recursion unless `-r` is given. A non-zero exit means
+the backup is incomplete: every listed file that exists was copied, but stderr
+names missing files or unreadable manifests to fix first. Back up after each
+session that adds rows; retire an artifact's row before deletion.
 
 ## Reference environments
 

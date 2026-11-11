@@ -60,9 +60,12 @@ import shutil
 import stat
 import sys
 import time
-import re
 import subprocess
 from typing import TypeIs, cast
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools import sha256_manifest  # noqa: E402
 
 MIB = 1024 * 1024
 
@@ -78,14 +81,8 @@ ORIGINAL_ROOTS: tuple[str, ...] = ("icarus-orig", "icarus-client-orig", "referen
 COPY_MIN_BYTES = MIB
 SETTLE_HOURS = 6.0
 CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
-# Same name as ``FIXITY_NAME`` in ``tools/docs_lint.py``, which verifies it.
+# The manifest ``--fixity`` writes; ``tools/sha256_manifest.py`` reads it and every other.
 FIXITY_NAME = "fixity.sha256"
-# Any ``sha256sum`` line, text or binary mode; such a manifest may name its files relative
-# to its own directory or to the repository root.
-MANIFEST_LINE = re.compile(r"([0-9a-fA-F]{64}) [ *](\S(?:.*\S)?)")
-# A ``<bytes> <path>`` size line, which some manifests append after their digest lines. At most
-# 20 digits (any 64-bit size), so it can never be read as a 64-digit digest line.
-SIZE_LINE = re.compile(r"([0-9]{1,20}) (\S(?:.*\S)?)")
 
 
 def _object_dict(value: object) -> TypeIs[dict[object, object]]:
@@ -178,9 +175,8 @@ class Pins:
 def evidence_pins(root: Path) -> Pins:
     """Every active ``local-private`` row's path, plus every file a sha256 manifest row lists.
 
-    A row is a manifest when its name says so (``*.sha256``, ``*fixity*``) or its first line
-    is a ``sha256sum`` line, whatever its name. Entries resolve both against the manifest's
-    directory and against the repository root, since both conventions are in use.
+    ``tools/sha256_manifest.py`` decides which rows are manifests and where their entries
+    live. A removal receipt's entries are pinned too: pinning an absent path costs nothing.
     """
     pins = Pins()
     for shard in sorted((root / "evidence").rglob("*.jsonl")):
@@ -193,78 +189,21 @@ def evidence_pins(root: Path) -> Pins:
             path = record.get("path")
             if record.get("status") != "active" or record.get("class") != "local-private" or not isinstance(path, str):
                 continue
-            target = normal(root / path)
+            target = sha256_manifest.normal(root / path)
             pins.paths.add(target)
             try:
-                entries = manifest_entries(target)
-            except ManifestError as error:
+                entries = sha256_manifest.read_manifest(root, target) or []
+            except sha256_manifest.ManifestError as error:
                 pins.problems[target] = f"{record.get('id', path)}: {error}"
                 continue
-            for rel in entries:
-                pins.paths.update(entry_paths(root, target, rel))
+            for entry in entries:
+                pins.paths.update(entry.candidates)
     return pins
 
 
 def protected_paths(root: Path) -> set[Path]:
     """Absolute paths that active ``local-private`` evidence rows pin."""
     return evidence_pins(root).paths
-
-
-def normal(path: Path) -> Path:
-    """``path`` with ``.``, ``..`` and repeated separators removed, without touching the filesystem."""
-    return Path(os.path.normpath(path))
-
-
-class ManifestError(ValueError):
-    """A pinned manifest whose entries cannot be known."""
-
-
-def looks_like_manifest(path: Path) -> bool:
-    name = path.name.lower()
-    return "sha256" in name or "fixity" in name
-
-
-def manifest_entries(path: Path) -> list[str]:
-    """Paths a sha256 manifest lists, as written; ``[]`` for a row that is not a manifest.
-
-    Raises ManifestError when a row that is, or is named like, a manifest cannot be read
-    or parsed, so its entries are unknown.
-    """
-    named = looks_like_manifest(path)
-    try:
-        if path.is_dir():
-            return []
-        if not path.is_file():
-            if named or path.is_symlink():
-                raise ManifestError("manifest is missing or not a regular file")
-            return []
-        with path.open("rb") as handle:
-            head = handle.read(4096)
-        first = next((line for line in head.splitlines() if line.strip()), b"")
-        if not named and MANIFEST_LINE.fullmatch(first.decode("utf-8", "replace")) is None:
-            return []
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise ManifestError(f"unreadable manifest: {error}") from error
-    entries: list[str] = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        match = MANIFEST_LINE.fullmatch(line) or SIZE_LINE.fullmatch(line)
-        if match is None:
-            raise ManifestError(f"line {number} is neither '<sha256>  <path>' nor '<bytes> <path>', so the files it pins are unknown")
-        entries.append(match.group(2))
-    if not entries:
-        raise ManifestError("manifest lists no files")
-    return entries
-
-
-def entry_paths(root: Path, manifest: Path, rel: str) -> set[Path]:
-    """Every path a manifest entry may mean; pinning a path that does not exist costs nothing."""
-    entry = Path(rel)
-    if entry.is_absolute():
-        return {normal(entry)}
-    return {normal(manifest.parent / entry), normal(root / entry)}
 
 
 def tracked_references(root: Path, name: str) -> list[str]:

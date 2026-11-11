@@ -30,9 +30,10 @@ Contracts and limitations:
 * Cleanup-only metadata checks reject mounts, foreign entries, symlinks, and
   regular-file hardlinks outside target. Ordinary allocated-byte snapshots
   deduplicate inodes and permit links. Active evidence is protected lexically
-  and after resolution across existing worktrees. Read bounded fixity hash/path
-  metadata when present, never referenced artifact contents; absent worktree/CI
-  manifests retain lexical protection.
+  and after resolution across existing worktrees. Read bounded sha256 manifest
+  hash/path metadata when present (tools/sha256_manifest.py decides which rows
+  are manifests, from the name or at most the first 4 KiB), never other artifact
+  contents; absent worktree/CI manifests retain lexical protection.
 * PREPARED identifies reusable partial artifacts before invoking Cargo; validation
   is a separate success flag. Failed commands/timeouts retain this identity.
   Persist needs_clean before CLEAN; retry retires it. Recover stale owned regular
@@ -80,7 +81,7 @@ from typing import TypeIs, cast
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import docs_lint, work_gc
+from tools import docs_lint, sha256_manifest, work_gc
 
 GIB = 1024**3
 RAM_FLOOR = 3 * GIB
@@ -454,20 +455,45 @@ def report_caches(info: Identity) -> None:
             print(f"cargo_guard: cache report unavailable: {root / 'target'}: {error}", file=sys.stderr)
 
 
-def paths_overlap(left: Path, right: Path) -> bool:
-    """Component comparison avoids allocating every ancestor for each evidence row."""
-    a, b = left.parts, right.parts
-    length = min(len(a), len(b))
-    return a[:length] == b[:length]
+def paths_overlap(left: Path | str, right: Path | str) -> bool:
+    """Component comparison as text avoids allocating every ancestor for each evidence row."""
+    shorter, longer = sorted((str(left), str(right)), key=len)
+    return longer == shorter or longer.startswith(shorter if shorter.endswith("/") else shorter + "/")
+
+
+class Resolver:
+    """``os.path.realpath`` for many absolute paths without ``.``/``..`` parts sharing directories.
+
+    A path resolves as its resolved parent joined with its name, each parent once; a
+    component that is a symlink resolves in full, so the result equals ``os.path.realpath``.
+    """
+
+    def __init__(self) -> None:
+        self.known: dict[str, str] = {}
+
+    def resolve(self, path: str) -> str:
+        known = self.known.get(path)
+        if known is None:
+            directory, name = os.path.split(path)
+            if not name or directory == path:
+                known = os.path.realpath(path)
+            elif os.path.islink(path):
+                known = os.path.realpath(path)
+            else:
+                known = os.path.join(self.resolve(directory), name)
+            self.known[path] = known
+        return known
 
 
 def evidence_veto(info: Identity) -> None:
     deadline = time.monotonic() + 30
     remaining_bytes = FIXITY_METADATA_BYTES
     remaining_entries = FIXITY_METADATA_ENTRIES
-    parsed_manifests: dict[Path, list[tuple[str, str]]] = {}
+    parsed_manifests: dict[Path, tuple[tuple[Path, Path], list[sha256_manifest.Entry]]] = {}
     checked_contexts: set[tuple[Path, Path]] = set()
     checked_paths: set[Path] = set()
+    resolver = Resolver()
+    target = str(info.target)
     for root in checkout_roots(info):
         for shard in evidence_shards(root / "evidence"):
             with shard.open(encoding="utf-8") as handle:
@@ -486,44 +512,51 @@ def evidence_veto(info: Identity) -> None:
                     protected = [path]
                     if path.name == work_gc.FIXITY_NAME:
                         protected.append(path.parent)
-                    if any(paths_overlap(info.target, entry) for entry in [*protected, *(item.resolve() for item in protected)]):
+                    resolved = [os.path.realpath(item) if ".." in item.parts else resolver.resolve(str(item)) for item in protected]
+                    if any(paths_overlap(target, entry) for entry in [*protected, *resolved]):
                         raise GuardError(f"active evidence overlaps target: {row.identifier}")
-                    if path.name == work_gc.FIXITY_NAME:
-                        resolved_manifest = path.resolve()
-                        context = (resolved_manifest, path.parent)
-                        if context in checked_contexts:
-                            continue
-                        checked_contexts.add(context)
-                        entries = parsed_manifests.get(resolved_manifest)
-                        if entries is None:
-                            size, entries = read_fixity_metadata(path, remaining_bytes, remaining_entries)
-                            parsed_manifests[resolved_manifest] = entries
-                            remaining_bytes -= size
-                            remaining_entries -= len(entries)
-                        # Parsing is shared, but each lexical parent is a distinct dependency context.
-                        for _, relative in entries:
-                            if time.monotonic() > deadline:
-                                raise GuardError("evidence metadata inventory exceeded 30 seconds")
-                            entry = path.parent / relative
-                            if paths_overlap(info.target, entry) or paths_overlap(info.target, entry.resolve()):
-                                raise GuardError(f"active fixity entry overlaps target: {path}: {relative}")
+                    resolved_manifest = Path(resolved[0])
+                    context = (resolved_manifest, path.parent)
+                    if context in checked_contexts:
+                        continue
+                    checked_contexts.add(context)
+                    parsed = parsed_manifests.get(resolved_manifest)
+                    if parsed is None:
+                        size, entries = read_fixity_metadata(root, path, remaining_bytes, remaining_entries)
+                        parsed = parsed_manifests[resolved_manifest] = ((root, path), entries)
+                        remaining_bytes -= size
+                        remaining_entries -= len(entries)
+                    # Candidates depend on the root and lexical path the manifest is reached through.
+                    parsed_in, entries = parsed
+                    top, directory = os.path.normpath(root), os.path.dirname(os.path.normpath(path))
+                    # Parsing is shared, but each lexical parent is a distinct dependency context.
+                    for entry in entries:
+                        if time.monotonic() > deadline:
+                            raise GuardError("evidence metadata inventory exceeded 30 seconds")
+                        candidates = (tuple(map(str, entry.candidates)) if parsed_in == (root, path)
+                                      else sha256_manifest.candidate_texts(top, directory, entry.path))
+                        if not candidates:
+                            raise GuardError(f"unreadable fixity metadata: {path}: {entry.path} leaves the repository")
+                        if any(paths_overlap(target, item) or paths_overlap(target, resolver.resolve(item)) for item in candidates):
+                            raise GuardError(f"active fixity entry overlaps target: {path}: {entry.path}")
 
 
-def read_fixity_metadata(path: Path, byte_budget: int, entry_budget: int) -> tuple[int, list[tuple[str, str]]]:
+def read_fixity_metadata(root: Path, path: Path, byte_budget: int, entry_budget: int) -> tuple[int, list[sha256_manifest.Entry]]:
     """Protect listed paths and aliases; unrelated case symlinks grant no veto."""
     try:
         try:
             _ = path.lstat()
         except FileNotFoundError:
             return 0, []  # Private manifests may be absent in secondary worktrees/CI.
-        metadata = path.stat()
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > byte_budget:
-            raise GuardError(f"invalid or oversized fixity metadata: {path}")
-        # Parse only hash/path metadata with the shared parser, never hash artifacts.
-        entries = docs_lint.read_fixity(path)
+        # Parse only hash/path metadata with the shared reader, never hash artifacts.
+        entries = sha256_manifest.read_manifest(root, path, max_bytes=byte_budget)
+        if entries is None:
+            return 0, []
         if len(entries) > entry_budget:
             raise GuardError("fixity metadata entry budget exceeded")
-        return metadata.st_size, entries
+        return path.stat().st_size, entries
+    except sha256_manifest.ManifestTooLarge as error:
+        raise GuardError(f"invalid or oversized fixity metadata: {path}") from error
     except (OSError, ValueError, RuntimeError) as error:
         if isinstance(error, GuardError):
             raise
