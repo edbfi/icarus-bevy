@@ -593,3 +593,44 @@ fn the_gated_level_visibility_switch_is_refused_by_the_binary() {
     assert!(!effective.network.level_visibility_actors);
     assert!(!state.exists());
 }
+
+/// Only the join probe can install the private pawn-channel bunch capture:
+/// the server binary has no such flag or configuration key, and refuses both
+/// before any state or capture file exists.
+#[test]
+fn the_server_binary_cannot_enable_the_private_pawn_bunch_capture() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    let output_path = directory.path().join("pawn-bunches.jsonl");
+    let flag = cli()
+        .arg("run")
+        .arg("--data-dir")
+        .arg(&state)
+        .arg("--private-pawn-bunches-output")
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(!flag.status.success());
+    let config = directory.path().join("server.toml");
+    fs::write(
+        &config,
+        format!(
+            "[network]\nprivate_pawn_bunches_output = {:?}\n",
+            output_path.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    for mode in ["check-config", "run"] {
+        let output = cli()
+            .arg(mode)
+            .arg("--config")
+            .arg(&config)
+            .arg("--data-dir")
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{mode}");
+    }
+    assert!(!state.exists());
+    assert!(!output_path.exists());
+}

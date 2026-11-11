@@ -67,6 +67,31 @@ retain that distinction for reassembly; offsets are complete-bunch-relative.
 Public `private_controller_headers_capture` contains counts only; retained
 payload bits stay zero (F-1042). Keep files private and bind executable/release.
 
+### Private pawn-channel bunches
+
+`--private-pawn-bunches-output work/<case>/pawn-bunches.jsonl` opts in; it
+combines with either selection above, under the same path rules and mode 0600.
+`run` has no such flag or key. The tap reads each client bunch on the player's
+own open pawn channel as the session releases it (reliable: in channel order,
+once, part by part; unreliable: on arrival), before any lab handling, and
+changes nothing sent or done. It keeps no decoder: the pawn's RPC field
+indices, such as the frozen-movement report's (F-1100), are not bound.
+
+JSONL `format` 1 (field list: `src/experimental/selected_rpc_capture/pawn_bunches.rs`)
+keeps receive times (lab ms, Unix ms), connection ordinal, channel, packet
+sequence, reliable sequence (raw and in order), every header flag, exact
+`payload_bits` and masked wire-order `payload_hex`: bit-exact for offline
+decoding.
+
+Per connection: the first 512 bunches; then every reliable bunch, every bunch
+whose flags, length or first 32 bits differ from the previous kept one, and one
+per 10 s. Pawn unreliable traffic can arrive every frame, nearly unchanged; the rule
+keeps a changed or reliable report and the change back.
+Caps: 8,192 rows, 8 KiB payload per row (`oversize`), 16 MiB. Counts:
+`private_pawn_bunches_capture` on progress, `native_join_frozen_movement` and
+final lines (`seen`, `kept_*`, `sampled_out`, `dropped`, `incomplete`).
+Sampling alone leaves `incomplete` 0; `connection_seen` shows gaps.
+
 ### Offline selected RPC82 replay
 
 Checkout root; existing parents, new report:

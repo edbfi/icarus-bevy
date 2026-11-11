@@ -101,6 +101,10 @@ struct Options {
     /// PRIVATE controller subobject headers only; no payloads or field identities.
     #[arg(long, conflicts_with = "private_rpc82_output")]
     private_controller_headers_output: Option<PathBuf>,
+    /// PRIVATE raw client bunches on the player's pawn channel (sampled, capped)
+    /// as JSONL, exclusively created under checkout work/.
+    #[arg(long)]
+    private_pawn_bunches_output: Option<PathBuf>,
     /// Explicit experimental controller calls, in flag order; at most 32.
     #[arg(long, value_enum)]
     controller_startup: Vec<StartupAction>,
@@ -370,6 +374,10 @@ fn main() -> Result<()> {
     } else {
         native_join_capture::prepare(options.private_rpc82_output.as_deref(), &work_root)?
     };
+    let pawn_capture = native_join_capture::prepare_pawn_bunches(
+        options.private_pawn_bunches_output.as_deref(),
+        &work_root,
+    )?;
     let query = UdpSocket::bind(options.query_bind).context("bind query listener")?;
     let tls = Tls::from_native_roots()?;
     let http = net::http_agent(&tls, &HttpTimeouts::default());
@@ -423,6 +431,9 @@ fn main() -> Result<()> {
     bound.lab.refresh_active_prospect(&prospect)?;
     if let Some(capture) = private_capture {
         bound.lab.install_private_rpc82_capture(capture)?;
+    }
+    if let Some(capture) = pawn_capture {
+        bound.lab.install_private_pawn_bunch_capture(capture)?;
     }
     // Independently authored empty-world initialization, supplied before any
     // connection is polled. Connected world entry remains unqualified.
@@ -495,13 +506,17 @@ fn main() -> Result<()> {
         let marks = frozen_movement_marks(lab);
         if marks != last_frozen_marks {
             last_frozen_marks = marks;
-            output_error = emit_progress(&json!({
+            let mut line = json!({
                 "event": "native_join_frozen_movement",
                 "unix_ms": unix_ms(),
                 "frozen_movement": lab.frozen_movement_observations(),
                 "compatibility_proven": false,
-            }))
-            .err();
+            });
+            native_join_capture::add_pawn_counts(
+                &mut line,
+                lab.private_pawn_bunch_capture_counts(),
+            );
+            output_error = emit_progress(&line).err();
         }
         if now >= next_progress && output_error.is_none() {
             let lab = app.world().resource::<PeerLab>();
@@ -510,6 +525,10 @@ fn main() -> Result<()> {
                 &mut progress,
                 lab.private_rpc82_capture_counts(),
                 header_capture,
+            );
+            native_join_capture::add_pawn_counts(
+                &mut progress,
+                lab.private_pawn_bunch_capture_counts(),
             );
             output_error = emit_progress(&progress).err();
             // Schedule from now: slow updates never create a catch-up burst.
@@ -529,6 +548,7 @@ fn main() -> Result<()> {
     let mut lab = app.world_mut().resource_mut::<PeerLab>();
     let before = counts_before_shutdown(&lab);
     let private_capture = lab.finish_private_rpc82_capture();
+    let pawn_capture = lab.finish_private_pawn_bunch_capture();
     let after = shut_down(&mut lab);
     let service_result = service.stop_and_join();
     let query_result = responder
@@ -548,6 +568,7 @@ fn main() -> Result<()> {
         object.extend(after);
     }
     native_join_capture::add_counts(&mut summary, private_capture, header_capture);
+    native_join_capture::add_pawn_counts(&mut summary, pawn_capture);
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, &summary)?;
     writeln!(&mut stdout)?;
@@ -555,6 +576,10 @@ fn main() -> Result<()> {
     ensure!(
         private_capture.is_none_or(|counts| counts.write_errors == 0),
         "private capture incomplete: write failure (see counts)"
+    );
+    ensure!(
+        pawn_capture.is_none_or(|counts| counts.write_errors == 0),
+        "private pawn bunch capture incomplete: write failure (see counts)"
     );
     service_result?;
     query_result?;
@@ -573,6 +598,7 @@ mod tests {
         let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
         assert!(default.private_controller_headers_output.is_none());
         assert!(default.private_rpc82_output.is_none());
+        assert!(default.private_pawn_bunches_output.is_none());
         let selected = Options::try_parse_from([
             "probe",
             "--name",
@@ -594,6 +620,29 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn private_pawn_bunch_capture_is_opt_in_and_combines_with_either_selection() {
+        for other in [
+            "--private-rpc82-output",
+            "--private-controller-headers-output",
+        ] {
+            let options = Options::try_parse_from([
+                "probe",
+                "--name",
+                "Authored",
+                "--private-pawn-bunches-output",
+                "work/authored/pawn-bunches.jsonl",
+                other,
+                "work/authored/other.jsonl",
+            ])
+            .unwrap();
+            assert_eq!(
+                options.private_pawn_bunches_output.as_deref(),
+                Some(std::path::Path::new("work/authored/pawn-bunches.jsonl"))
+            );
+        }
     }
 
     #[test]

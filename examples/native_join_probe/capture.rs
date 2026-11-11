@@ -2,7 +2,10 @@
 use std::path::{Component, Path};
 
 use anyhow::{Context, Result, ensure};
-use icarus_bevy::experimental::selected_rpc_capture::PrivateRpc82Capture;
+use icarus_bevy::experimental::selected_rpc_capture::{
+    PrivateRpc82Capture,
+    pawn_bunches::{PawnBunchCaptureCounts, PrivatePawnBunchCapture},
+};
 
 pub fn add_counts(
     summary: &mut serde_json::Value,
@@ -18,8 +21,23 @@ pub fn add_counts(
     }
 }
 
+/// Counts only, under `private_pawn_bunches_capture`.
+pub fn add_pawn_counts(summary: &mut serde_json::Value, counts: Option<PawnBunchCaptureCounts>) {
+    if let Some(counts) = counts {
+        summary["private_pawn_bunches_capture"] = serde_json::json!(counts);
+    }
+}
+
 pub fn prepare(output: Option<&Path>, work_root: &Path) -> Result<Option<PrivateRpc82Capture>> {
     prepare_impl(output, work_root, false, || {})
+}
+
+/// The pawn-channel bunch sink, under the same path rules and file mode.
+pub fn prepare_pawn_bunches(
+    output: Option<&Path>,
+    work_root: &Path,
+) -> Result<Option<PrivatePawnBunchCapture>> {
+    Ok(open_private(output, work_root, || {})?.map(PrivatePawnBunchCapture::from_file))
 }
 
 pub fn prepare_headers(
@@ -35,6 +53,21 @@ fn prepare_impl(
     headers: bool,
     before_create: impl FnOnce(),
 ) -> Result<Option<PrivateRpc82Capture>> {
+    Ok(open_private(output, work_root, before_create)?.map(|file| {
+        if headers {
+            PrivateRpc82Capture::from_header_file(file)
+        } else {
+            PrivateRpc82Capture::from_file(file)
+        }
+    }))
+}
+
+/// Exclusive mode-0600 creation confined beneath `work_root`.
+fn open_private(
+    output: Option<&Path>,
+    work_root: &Path,
+    before_create: impl FnOnce(),
+) -> Result<Option<std::fs::File>> {
     let Some(output) = output else {
         return Ok(None);
     };
@@ -77,12 +110,7 @@ fn prepare_impl(
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
     )
     .context("exclusive private capture creation failed")?;
-    let file = std::fs::File::from(file);
-    Ok(Some(if headers {
-        PrivateRpc82Capture::from_header_file(file)
-    } else {
-        PrivateRpc82Capture::from_file(file)
-    }))
+    Ok(Some(std::fs::File::from(file)))
 }
 
 #[cfg(test)]
@@ -104,6 +132,44 @@ mod tests {
         assert!(summary.get("private_controller_headers_capture").is_some());
         assert!(summary.get("private_rpc82_capture").is_none());
         assert!(!summary.to_string().contains("guid"));
+        assert!(fs::read(&path)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pawn_bunch_file_obeys_the_same_path_rules_and_mode() -> Result<()> {
+        use std::{fs, os::unix::fs::PermissionsExt, os::unix::fs::symlink};
+        let root = tempfile::tempdir()?;
+        let work = root.path().join("work");
+        let case = work.join("case");
+        fs::create_dir_all(&case)?;
+        // Omitted: nothing is created or installed.
+        assert!(prepare_pawn_bunches(None, &work)?.is_none());
+        let path = case.join("pawn-bunches.jsonl");
+        let mut capture = prepare_pawn_bunches(Some(&path), &work)?.unwrap();
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+        // Exclusive: an existing file is never reused or truncated.
+        assert!(prepare_pawn_bunches(Some(&path), &work).is_err());
+        // Outside work/, traversal, a missing parent, a symlinked parent and
+        // the work root itself are refused.
+        let outside = root.path().join("outside.jsonl");
+        assert!(prepare_pawn_bunches(Some(&outside), &work).is_err());
+        assert!(!outside.exists());
+        let traversal = case.join("..").join("..").join("escape.jsonl");
+        assert!(prepare_pawn_bunches(Some(&traversal), &work).is_err());
+        assert!(prepare_pawn_bunches(Some(&work.join("missing/p.jsonl")), &work).is_err());
+        let elsewhere = root.path().join("elsewhere");
+        fs::create_dir(&elsewhere)?;
+        symlink(&elsewhere, work.join("linked"))?;
+        assert!(prepare_pawn_bunches(Some(&work.join("linked/p.jsonl")), &work).is_err());
+        assert!(!elsewhere.join("p.jsonl").exists());
+        assert!(prepare_pawn_bunches(Some(&work), &work).is_err());
+        let mut summary = serde_json::json!({});
+        add_pawn_counts(&mut summary, None);
+        assert!(summary.get("private_pawn_bunches_capture").is_none());
+        add_pawn_counts(&mut summary, Some(capture.finish()));
+        assert_eq!(summary["private_pawn_bunches_capture"]["observations"], 0);
+        assert!(!summary.to_string().contains("payload_hex"));
         assert!(fs::read(&path)?.is_empty());
         Ok(())
     }

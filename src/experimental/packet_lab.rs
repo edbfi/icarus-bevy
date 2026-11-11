@@ -690,13 +690,16 @@ impl LabPeer {
     /// overflow, delivered otherwise). A stale or duplicate
     /// packet is reported as [`PacketDisposition::Rejected`], not an error.
     pub fn receive(&mut self, datagram: &[u8]) -> Result<PeerReceive> {
-        self.receive_with_capture(datagram, None)
+        self.receive_with_capture(datagram, None, None)
     }
 
+    /// [`receive`](Self::receive) with read-only private taps. Neither tap
+    /// can alter what the session sends or how it treats a bunch.
     pub(crate) fn receive_with_capture(
         &mut self,
         datagram: &[u8],
         capture: Option<&mut super::selected_rpc_capture::CaptureTap<'_>>,
+        pawn_capture: Option<&mut super::selected_rpc_capture::pawn_bunches::PawnBunchTap<'_>>,
     ) -> Result<PeerReceive> {
         self.ensure_usable()?;
         let (header, bunches) = self.read_bounded(datagram)?;
@@ -795,8 +798,13 @@ impl LabPeer {
         }
         let delivered = self.deliver(staged, &mut summary);
         let messages = self.fail_on_error(delivered)?;
-        let (actor_bunches, unreliable_actor_bunches, actors_accepted) =
-            self.deliver_actors(bunches, &mut summary, capture, header.sequence);
+        let (actor_bunches, unreliable_actor_bunches, actors_accepted) = self.deliver_actors(
+            bunches,
+            &mut summary,
+            capture,
+            pawn_capture,
+            header.sequence,
+        );
         let acked = self.sequencer.ack_seq(received.sequence, actors_accepted);
         self.fail_on_error(acked)?;
         summary.queued_reliable = self.control.queued_len();
@@ -814,8 +822,10 @@ impl LabPeer {
         bunches: Vec<Bunch>,
         summary: &mut ReceiveSummary,
         mut capture: Option<&mut super::selected_rpc_capture::CaptureTap<'_>>,
+        mut pawn_capture: Option<&mut super::selected_rpc_capture::pawn_bunches::PawnBunchTap<'_>>,
         releasing_packet_sequence: u16,
     ) -> (Vec<Bunch>, Vec<Bunch>, bool) {
+        use super::selected_rpc_capture::pawn_bunches::PawnBunchPhase;
         let mut delivered = Vec::new();
         let mut unreliable = Vec::new();
         let mut accepted = true;
@@ -830,6 +840,14 @@ impl LabPeer {
             summary.ignored_bunches -= 1;
             summary.actor_bunches += 1;
             let Some(raw) = bunch.header.reliable_sequence_raw else {
+                if let Some(tap) = pawn_capture.as_deref_mut() {
+                    tap.observe(
+                        &bunch,
+                        PawnBunchPhase::UnreliableArrival,
+                        releasing_packet_sequence,
+                        None,
+                    );
+                }
                 summary.actor_bunches_dropped += 1;
                 unreliable.push(bunch);
                 continue;
@@ -847,6 +865,14 @@ impl LabPeer {
                     for (offset, bunch) in bunches.into_iter().enumerate() {
                         if let Some(tap) = capture.as_deref_mut() {
                             tap.observe_released(&bunch, Some(releasing_packet_sequence));
+                        }
+                        if let Some(tap) = pawn_capture.as_deref_mut() {
+                            tap.observe(
+                                &bunch,
+                                PawnBunchPhase::ReliableQueueRelease,
+                                releasing_packet_sequence,
+                                Some(before + offset as i64 + 1),
+                            );
                         }
                         if let Some(bunch) =
                             self.complete_actor_bunch(bunch, before + offset as i64 + 1, summary)
@@ -2045,3 +2071,6 @@ mod actor_partial_budget_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod pawn_tap_tests;

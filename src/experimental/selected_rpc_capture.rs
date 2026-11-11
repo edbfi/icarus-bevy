@@ -1,5 +1,6 @@
 //! Explicitly selected PRIVATE actor-field-82 or subobject-header observation.
 //! Both modes share bounded staging, validation, ordered delivery and file I/O.
+//! [`pawn_bunches`] separately keeps raw pawn-channel bunches.
 //!
 //! Only the sink serializes raw values. Debug and public status expose counts.
 //! Offsets are relative to the complete (possibly reassembled) bunch payload,
@@ -18,6 +19,8 @@ use super::{
     rep_rpc::read_field_header,
     sequencing::{MAX_CONSTRUCTED_PARTIAL_BUNCH_BYTES, PartialBunchReassembler, PartialReceive},
 };
+
+pub mod pawn_bunches;
 
 pub const MAX_OBSERVATIONS: usize = 16;
 pub const MAX_FIELD_BYTES: usize = 8 * 1024;

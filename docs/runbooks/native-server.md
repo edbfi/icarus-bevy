@@ -67,6 +67,9 @@ omits it, the probe refuses). After the player's own record ACK plus
 `bServerFrozenMovement` false, resent on NAK. Probe line
 `native_join_frozen_movement` (`unix_ms`, per-session times) on schedule, send,
 ACK or abandonment.
+Private pawn-channel bunches: probe-only
+`--private-pawn-bunches-output work/<case>/pawn-bunches.jsonl`
+([format, caps](network-readiness.md#private-pawn-channel-bunches)).
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
