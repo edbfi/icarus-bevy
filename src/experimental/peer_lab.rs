@@ -14552,20 +14552,30 @@ mod tests {
 
     #[test]
     fn initialisation_transport_split_span_waits_for_repair_across_wire_sequence_wrap() {
-        use super::super::game_state_open::handle;
+        use super::super::{game_state_open::handle, sequencing::wire_reliable_sequence};
         let (mut lab, socket, address, mut client) = initialisation_transport_peer();
         let channel = lab.peers[&address].player_controller_channel.unwrap();
+        // Channels start at the cookie-derived outgoing packet ID & 0x3ff, and
+        // the lab draws a random cookie secret, so the start is random: drive
+        // to the next sequence whose wire value is 1022, never to absolute
+        // 1022, which setup alone may already have passed.
+        let start = lab.peers[&address]
+            .peer
+            .actor_reliable_sequence(channel)
+            .unwrap();
+        let target = start + (1022 + 1024 - wire_reliable_sequence(start)) % 1024;
+        assert_eq!(wire_reliable_sequence(target), 1022);
         while lab.peers[&address]
             .peer
             .actor_reliable_sequence(channel)
             .unwrap()
-            < 1022
+            < target
         {
             let previous = lab.peers[&address]
                 .peer
                 .actor_reliable_sequence(channel)
                 .unwrap();
-            for _ in 0..(1022 - previous).min(32) {
+            for _ in 0..(target - previous).min(32) {
                 let sent = lab
                     .peers
                     .get_mut(&address)
@@ -14586,8 +14596,10 @@ mod tests {
         );
         lab.request_initialisation(address);
         let receipt = &lab.peers[&address].initialisation_request_receipt;
-        assert_eq!(receipt.first, 1023);
-        assert!(receipt.last >= 1024);
+        assert_eq!(receipt.first, target + 1);
+        assert_eq!(wire_reliable_sequence(receipt.first), 1023);
+        assert!(receipt.last > receipt.first);
+        assert!(wire_reliable_sequence(receipt.last) < wire_reliable_sequence(receipt.first));
         notify_startup_packets(&mut lab, &socket, &mut client, |index| index > 0);
         assert_eq!(
             lab.readiness_counts().initialisation_transport,
