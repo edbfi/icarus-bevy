@@ -5,7 +5,7 @@ foundation defects. No original defect is reproduced or fixed. Native
 persistence tests are preventative engineering, not fixes of the original.
 Full text before condensation: 16d1a9d:docs/ledgers/bugs.md.
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-11-11
 
 ## Reported campaigns
 
@@ -66,7 +66,7 @@ Defects in this repository's code; each fixed one has a regression test.
 | N-016 | Save inspection checked a regular path then blocked if replaced by FIFO before open | Nonblocking open and opened-handle admission; matched authored race/28 CLI/16 release cases pass; regular symlinks/privacy/caps retained | F-671 |
 | N-017 | A crash between writing and publishing a snapshot stranded its temporary file, and later saves never removed it (up to 64 MiB each) | Dedicated temporary prefix; post-commit cleanup removes stale prefixed regular files; power-loss harness asserts none remain | F-511 |
 | N-018 | A GameState update over one bunch was dropped, so past about 36 listed players run withheld the NetworkingStatus and 41 of 64 sessions never received it | Unreliable partial bunches on consecutive packets as the original sends them; 48-player lab and real-binary regressions | F-877, F-825 |
-| N-019 | Open, verified from code, loopback-untested: a joined peer that keeps ACKing but never answers friends query 118 resets both 30 s timeouts and stalls all finalisation; new joiners wait indefinitely. Accepted: a silent peer's delay up to 30 s (original 360 s, F-858; M-1353) | None; a per-query deadline must land before any run or deployment with more than one player slot | F-973, F-1051 |
+| N-019 | A joined peer that kept ACKing but never answered friends query 118 reset both 30 s timeouts and stalled all finalisation; new joiners waited indefinitely. Accepted: a silent peer's delay up to 30 s (original 360 s, F-858; M-1353) | Per-query deadline from the request, not extended by ACKs or re-queries; expiry removes the peer; authored loopback tests | F-973, F-1051, F-1115 |
 
 An intermittent `tests/cli.rs` failure in the pre-push hook at 46e64d4 lost its
 output and did not recur in 20 loaded runs (M-347); capture the full output if
