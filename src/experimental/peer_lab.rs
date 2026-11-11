@@ -2895,6 +2895,8 @@ impl GameStateSession {
 #[derive(Resource)]
 pub struct PeerLab {
     private_rpc82_capture: Option<super::selected_rpc_capture::PrivateRpc82Capture>,
+    private_pawn_bunch_capture:
+        Option<super::selected_rpc_capture::pawn_bunches::PrivatePawnBunchCapture>,
     controller_startup: Option<Vec<ControllerStartupAction>>,
     controller_startup_bound: u32,
     socket: UdpSocket,
@@ -3026,6 +3028,38 @@ impl PeerLab {
             .as_mut()
             .map(|capture| capture.finish())
     }
+
+    /// Explicit private pawn-channel bunch sink, also restricted to
+    /// pre-admission setup. Nothing in the server configuration installs it.
+    pub fn install_private_pawn_bunch_capture(
+        &mut self,
+        capture: super::selected_rpc_capture::pawn_bunches::PrivatePawnBunchCapture,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty()
+                && self.peak_peers == 0
+                && self.private_pawn_bunch_capture.is_none(),
+            "capture installation requires fresh lab"
+        );
+        self.private_pawn_bunch_capture = Some(capture);
+        Ok(())
+    }
+
+    pub fn private_pawn_bunch_capture_counts(
+        &self,
+    ) -> Option<super::selected_rpc_capture::pawn_bunches::PawnBunchCaptureCounts> {
+        self.private_pawn_bunch_capture
+            .as_ref()
+            .map(|capture| capture.counts())
+    }
+
+    pub fn finish_private_pawn_bunch_capture(
+        &mut self,
+    ) -> Option<super::selected_rpc_capture::pawn_bunches::PawnBunchCaptureCounts> {
+        self.private_pawn_bunch_capture
+            .as_mut()
+            .map(|capture| capture.finish())
+    }
     /// Validate `config` and bind IPv4 loopback only; zero selects an
     /// ephemeral port. A fresh random cookie secret is drawn per lab.
     pub fn bind(port: u16, config: PeerLabConfig) -> Result<Self> {
@@ -3092,6 +3126,7 @@ impl PeerLab {
     fn with_socket(socket: UdpSocket, authority: CookieAuthority, config: PeerLabConfig) -> Self {
         Self {
             private_rpc82_capture: None,
+            private_pawn_bunch_capture: None,
             socket,
             authenticator: None,
             authority,
@@ -4723,6 +4758,11 @@ impl PeerLab {
         }
         if let (Some(capture), Some(connection)) =
             (&mut self.private_rpc82_capture, entry.connection_id)
+        {
+            capture.forget_connection(connection);
+        }
+        if let (Some(capture), Some(connection)) =
+            (&mut self.private_pawn_bunch_capture, entry.connection_id)
         {
             capture.forget_connection(connection);
         }
@@ -6543,10 +6583,27 @@ impl PeerLab {
                 components: [entry.backend_proxy, entry.player_data, entry.bestiary],
             })
         });
-        let messages = match entry
-            .peer
-            .receive_with_capture(&self.buffer[..length], capture.as_mut())
-        {
+        // Only the joining player's own open pawn channel, as counted below.
+        let mut pawn_capture = self.private_pawn_bunch_capture.as_mut().and_then(|sink| {
+            entry.controller_startup_pawn_guid?;
+            Some(super::selected_rpc_capture::pawn_bunches::PawnBunchTap {
+                sink,
+                channel: self.pawn_open.as_ref()?.1,
+                connection_ordinal: entry.connection_id?,
+                elapsed_ms: now
+                    .saturating_duration_since(self.started)
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64,
+                unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |time| time.as_millis().min(u128::from(u64::MAX)) as u64),
+            })
+        });
+        let messages = match entry.peer.receive_with_capture(
+            &self.buffer[..length],
+            capture.as_mut(),
+            pawn_capture.as_mut(),
+        ) {
             Ok(received) => {
                 let summary = received.summary();
                 match summary.disposition {
@@ -19035,6 +19092,7 @@ mod tests {
         }
     }
     mod level_visibility;
+    mod pawn_capture;
 }
 
 #[cfg(test)]
