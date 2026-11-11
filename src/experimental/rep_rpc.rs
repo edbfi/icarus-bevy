@@ -381,6 +381,13 @@ pub const SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX: u32 = 124;
 /// Recognition alone grants no timeout behavior.
 pub const SERVER_SHORT_TIMEOUT_FIELD_INDEX: u32 = 78;
 
+/// `APlayerController::ServerUpdateLevelVisibility(LevelVisibility)` on the
+/// pinned Survival PlayerController (F-1052): one conditional custom struct
+/// parameter, decoded only by [`super::visibility::parse_visibility_rpc82`]
+/// (F-1020, F-1021). The client reports each streamed level it made visible
+/// or hid (F-1080, F-1081).
+pub const SERVER_UPDATE_LEVEL_VISIBILITY_FIELD_INDEX: u32 = 82;
+
 /// Reliable NetServer RPC `AIcarusPlayerController::ServerFriendsListUpdated(
 /// NewFriendIds: TArray<FString>)`, local field 25 after
 /// `Server_BeginPlayerInitialisation`'s 23. Its call makes the controller's

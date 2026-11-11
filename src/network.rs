@@ -39,7 +39,11 @@
 //! (F-1077). With `[network] controller_possession_properties` on (the
 //! default), each pawn open is followed by one reliable PlayerController
 //! property update naming that pawn as `Pawn` and `IcarusPlayerCharacter`
-//! (F-1074). Nothing else replicates.
+//! (F-1074). Level visibility actors (dispatching the client's field-82
+//! level visibility reports and opening each newly visible level's
+//! world-settings actors) are gated: `[network] level_visibility_actors =
+//! true` is refused, and only the bounded join probe enables them through
+//! the lab. Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
@@ -1900,6 +1904,10 @@ fn bind_session(
         if network.controller_possession_properties && has_pawn {
             lab.enable_controller_possession_properties()?;
         }
+        // Level visibility actors are gated and never enabled here:
+        // `network.validate()` refuses `level_visibility_actors = true`, and a
+        // release's `[level_actors]` identities enable nothing by themselves.
+        // Only the bounded join probe calls the lab API.
         // The GameState's managers, after the PlayerState (F-859).
         if lab.has_game_state_open()
             && let (Some(profile), Some(admission)) = (&profile, &config.admission)

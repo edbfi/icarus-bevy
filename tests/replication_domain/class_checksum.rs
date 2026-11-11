@@ -450,3 +450,20 @@ fn bestiary_manager_component_matches_the_controller_subobject_checksum() {
     ];
     assert_eq!(class_checksum(actor_component, &own), 2_451_266_650);
 }
+
+/// `AWorldSettings`' own replicated properties (public engine layout, in
+/// rep-layout handle order 16..20, F-703): the class checksum the level
+/// visibility actors export. `AInfo` adds none, nor do the Icarus subclasses.
+#[test]
+fn world_settings_chain_matches_the_level_actor_checksum() {
+    let actor = class_checksum(0, &actor());
+    let info = class_checksum(actor, &[]);
+    let world_settings = [
+        P::leaf("bHighPriorityLoading", "uint8", 1000),
+        P::leaf("WorldGravityZ", "float", 1004),
+        P::leaf("TimeDilation", "float", 1008),
+        P::leaf("MatineeTimeDilation", "float", 1012),
+        P::leaf("PauserPlayerState", &cpp::object("APlayerState"), 1016),
+    ];
+    assert_eq!(class_checksum(info, &world_settings), 3_401_274_505);
+}

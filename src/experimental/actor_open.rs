@@ -493,3 +493,54 @@ pub fn compose_component_actor_open(
         },
     ))
 }
+
+/// One static actor (a stably named object of a loaded level) opened on a
+/// fresh channel: the original names it by its outer chain, leaf first
+/// (actor, `PersistentLevel`, world, package), and its spawn is the static
+/// GUID alone, with no archetype, level or transform (F-845's static branch).
+#[derive(Clone, Debug)]
+pub struct StaticActorOpen {
+    /// The actor's chain, leaf first: the actor with its class network
+    /// checksum, then its level's chain.
+    pub chain: Vec<PathSegment>,
+    /// The open's content blocks (for level visibility actors only the
+    /// roles, [`super::session_open::actor_role_block`]).
+    pub blocks: Vec<ContentBlock>,
+    pub engine_net_version: u32,
+}
+
+/// Compose `open` for one connection on `channel_index` in the connection's
+/// byte `order`: the static GUID of the chain's leaf, exported with its
+/// outers while the connection has not acked them ([`ConnectionExports`],
+/// F-796; a bunch exports each GUID once), then the open bunch. Returns the
+/// composition and the actor's static GUID. Static identities it creates
+/// are tagged as the caller's own (forgettable while untouched by others);
+/// GUIDs are assigned in `cache` whatever the outcome, so callers compose on
+/// copies and commit on success. Fails when the static GUID space is
+/// exhausted.
+pub fn compose_static_actor_open(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    open: &StaticActorOpen,
+    channel_index: u32,
+    order: super::archive::ByteOrder,
+) -> Result<(ComposedActorOpen, u32)> {
+    ensure!(
+        open.chain.len() >= 2,
+        "a static actor chain names the actor and its outers"
+    );
+    let codec = actor_codec(open.engine_net_version, order);
+    exports.begin_bunch();
+    // The caller owns the static identities this creates, and may forget
+    // them unless another user touches them meanwhile.
+    let actor = cache.export_static_owned(exports, &open.chain)?;
+    let spawn = SpawnRecord {
+        actor: NetGuidRef::plain(actor.guid),
+        dynamic: None,
+    };
+    let composed = ComposedActorOpen {
+        exports: exports_of(std::slice::from_ref(&actor), &codec)?,
+        bunch: actor_open_bunch(spawn, open.blocks.clone(), channel_index, &codec)?,
+    };
+    Ok((composed, actor.guid))
+}

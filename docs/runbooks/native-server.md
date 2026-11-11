@@ -49,6 +49,10 @@ Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
 Password unvalidated: no real passwords.
 Diagnostics: [network readiness](network-readiness.md) (F-1045).
+Level visibility actors (answering field 82 with a level's world-settings
+actors; M-1350) are gated ([gates](../gates.md)): `[network]
+level_visibility_actors = true` is refused; only the probe's
+`--level-visibility-actors true` enables them, in a bounded run.
 Possession F-1088: `[network] controller_possession_properties` / probe
 `--controller-possession-properties`, default true, needs the pawn open.
 Records F-1077: `[network] connected_player_records` / probe
