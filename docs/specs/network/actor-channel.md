@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-10.
+Last reconciled: 2026-11-11.
 
 ## Scope
 
@@ -49,6 +49,9 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   (struct-delta bit, base key 0, no deletes, IDs from 1); empty slots send
   handles 2 and 10..18 (`experimental::pawn_open`). Vitals and inventories:
   F-836 (`network::pawn_content`); stats: F-839 (`pawn_stats`).
+- Frozen movement (F-1100): the client pawn has no movement mode while
+  replicated `bServerFrozenMovement` or its own terrain-anchor flag is set;
+  the native opens it true and, at F-1099's revision, never clears it.
 - GameState managers: [world managers spec](world-managers.md) (F-859, F-861,
   F-862).
 - GameState open values: active prospect 51..67 and C015 handles 34, 35, 39,
@@ -158,6 +161,9 @@ scheduling or stock-client qualification.
   F-845).
 - Records: staged updates as fields fill, null controller references on other
   connections, removal without a destroy (F-1073, F-1077; U-038).
+- Unfreeze: S2 replicates `bServerFrozenMovement` false once, near its last
+  field-82 answer and before per-frame camera updates (F-1099; one 3.0.34
+  session).
 
 ## Open questions
 
@@ -170,4 +176,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340; earlier observations: cited findings.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354, M-1355; earlier observations: cited findings.

@@ -65,8 +65,9 @@ Last reconciled: 2026-11-11
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 done; do not repeat them or
-  rerun F-1084/F-1089 unchanged. The next connected run needs the 82 answer
-  (F-1097, F-1098), gated below. None clears those preconditions.
+  rerun F-1084/F-1089 unchanged. The next connected run sends only the pawn
+  unfreeze (F-1099, F-1100); the 82 answer (F-1097, F-1098, F-1104) stays the
+  gated fallback below. None clears those preconditions.
 
 ## Before enabling visibility dispatch or effects
 
@@ -79,13 +80,20 @@ Last reconciled: 2026-11-11
   hide effects, never observed (native hides close nothing); Close and
   reentrancy, authored (no close on a name, exclusive poll), test-qualified
   only (F-1097, F-1098); client progress, seen to the tile reports (F-1089),
-  beyond only by a bounded connected run with the probe switch, once the
-  owner approves. The server binary refuses the switch; only the bounded
-  join probe enables it (F-1097). F-1023/F-1024: no live binding (U-079).
+  beyond only by bounded connected runs, once the owner approves: first the
+  unfreeze alone with the probe switch off (F-1099), then, if the screen
+  stays with the pawn unfrozen, a run with the probe switch (F-1104). The
+  server binary refuses the switch; only the bounded join probe enables it
+  (F-1097). F-1023/F-1024: no live binding (U-079).
 - Sending level-status call 62 is server-originated and outside this gate
-  (F-1078) but first needs the map's level list and order, per-level flags and
-  LOD, and name remapping bound; opening a level's actors after a field-82
-  report is a visibility effect and stays blocked.
+  (F-1078; lead decision under M-1353) but first needs the map's level list and
+  order, per-level flags and LOD, and name remapping bound, each from a source
+  input parity allows (F-828: the public dedicated-server distribution or
+  independently authored input), never client-only or packaged game data.
+  Outside this gate means building and testing it offline; sending it in a
+  connected run still needs that run's own case and approval. Opening a
+  level's actors after a field-82 report is a visibility effect and stays
+  blocked.
 
 ## Before deriving replication schema for the server
 
@@ -107,12 +115,17 @@ Last reconciled: 2026-11-11
 
 ## Before any original-server or client run
 
-- The standing instruction (2026-10-28, renewed through 2026-11-10; F-968,
-  M-1273, M-1307, M-1331, M-1334) authorizes offline and online research,
+- The standing instruction (given 2026-10-28, last renewed on 2026-11-10;
+  F-968, M-1273, M-1307, M-1331, M-1334) authorizes offline and online research,
   Steam/network access, matched official-server runs and connected
   stock-client scenarios against the original or native server without
   per-scenario approval, replacing the connected-test deferral (F-421; U-038,
   U-047, U-052). Prefer offline routes that answer equally well.
+- On 2026-11-11 the owner asked the lead to continue and make the pending
+  decisions (M-1353, quoted there); the lead applies this to offline research
+  only. It renews no online or connected-run authorization: the unfreeze-only
+  run and the prepared level-visibility connected run still await the owner's
+  explicit approval and participation.
 - Every run still needs its own `work/` case and current launcher session with
   scope, exact inputs and hashes, limits and literal commands; original
   execution only through the [launchers](runbooks/original-server-launcher.md);
