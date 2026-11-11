@@ -17,8 +17,11 @@ F-1091, routing F-1092; the original answers each report with two level actors
 
 State/restart F-1036; query118/callback126 F-1051; fields66/86 F-1052.
 Runs 1/2 finalise without tile reports (F-1084, F-1085); with controller
-17/20 run 3 reports tiles, UI unchanged (F-1089, F-1096). After 126 the original sends the record (F-1072 to
-F-1075), then level actors (F-1081), not RPC113 (F-1068). Clients stream
+17/20 run 3 reports tiles, UI unchanged (F-1089). The client's blockers
+clear on a fresh join (F-1101 to F-1103; the controller's inferred); the
+native never unfreezes the pawn as S2 does (F-1099, F-1100); no read path
+from the answer to entry (F-1104). After 126 the original sends the record
+(F-1072 to F-1075), then level actors (F-1081), not RPC113 (F-1068). Clients stream
 tiles (F-1078, F-1079) once their record finalises (F-1080). The native record
 matches (F-1077, F-1086), but its check needs controller IcarusPlayerCharacter,
 unsent until F-1088 (F-1087); 62, startup RPCs and level actors are missing
@@ -41,4 +44,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354, M-1355.
