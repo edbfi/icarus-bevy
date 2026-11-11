@@ -77,20 +77,26 @@ once, part by part; unreliable: on arrival), before any lab handling, and
 changes nothing sent or done. It keeps no decoder: the pawn's RPC field
 indices, such as the frozen-movement report's (F-1100), are not bound.
 
-JSONL `format` 1 (field list: `src/experimental/selected_rpc_capture/pawn_bunches.rs`)
+JSONL `format` 2 (fields and rules: `src/experimental/selected_rpc_capture/pawn_bunches.rs`)
 keeps receive times (lab ms, Unix ms), connection ordinal, channel, packet
 sequence, reliable sequence (raw and in order), every header flag, exact
 `payload_bits` and masked wire-order `payload_hex`: bit-exact for offline
 decoding.
 
-Per connection: the first 512 bunches; then every reliable bunch, every bunch
-whose flags, length or first 32 bits differ from the previous kept one, and one
-per 10 s. Pawn unreliable traffic can arrive every frame, nearly unchanged; the rule
-keeps a changed or reliable report and the change back.
-Caps: 8,192 rows, 8 KiB payload per row (`oversize`), 16 MiB. Counts:
-`private_pawn_bunches_capture` on progress, `native_join_frozen_movement` and
-final lines (`seen`, `kept_*`, `sampled_out`, `dropped`, `incomplete`).
-Sampling alone leaves `incomplete` 0; `connection_seen` shows gaps.
+Per connection: the first 512 bunches; every reliable bunch; and per
+unreliable shape (flags, length, first 32 bits; up to 256 shapes) its first 4
+bunches, then one per max(10 s, 2 s x tracked shapes). Shapes past 256 are
+counted (`untracked_shape_bunches`) and share one 10 s interval. Per file,
+disjoint pools (rows / MiB): reliable 2,048 / 4, first 1,024 / 2, new shape
+2,048 / 4, interval 3,072 / 6 (8,192 rows, 16 MiB); 8 KiB payload per row.
+Frequent traffic thus cannot crowd out a reliable report or a new shape. At 83
+bunches/s, interval rows last 8.5 h for one shape, 2.8 h for three alternating
+and 1.7 h for 200 (small rows; larger ones exhaust bytes sooner); reliable and
+new-shape rows remain kept after that (unit-tested).
+Counts (`private_pawn_bunches_capture` on progress, `native_join_frozen_movement`
+and final lines): `seen`, `kept_*`, `sampled_out` (by design), `lost_*` per
+pool, `oversize`, `incomplete`. Alarm on `lost_to_cap > 0`, live; sampling
+alone never raises it or `incomplete`. `connection_seen` and `shape_seen` show gaps.
 
 ### Offline selected RPC82 replay
 

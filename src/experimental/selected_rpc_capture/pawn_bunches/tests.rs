@@ -92,12 +92,13 @@ fn record_keeps_header_and_bit_exact_payload_with_masked_tail() {
     assert_eq!(counts.incomplete, 0);
     let rows = rows(&mut file);
     let [row] = &rows[..] else { panic!("one row") };
-    assert_eq!(row["format"], 1);
+    assert_eq!(row["format"], 2);
     assert_eq!(row["selection"], "pawn_channel_bunches");
     assert_eq!(row["ordinal"], 1);
     assert_eq!(row["keep_reason"], "first");
     assert_eq!(row["connection_ordinal"], 1);
     assert_eq!(row["connection_seen"], 1);
+    assert!(row["shape_seen"].is_null(), "reliable: no shape");
     assert_eq!(row["channel"], CHANNEL);
     assert_eq!(row["observation_phase"], "reliable_queue_release");
     assert_eq!(row["elapsed_ms"], 42);
@@ -140,21 +141,23 @@ fn other_channels_are_never_observed() {
 }
 
 #[test]
-fn sampling_keeps_first_then_reliable_changed_and_interval() {
+fn sampling_keeps_first_reliable_new_shapes_and_per_shape_interval() {
     let mut file = tempfile::tempfile().unwrap();
     let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
     let steady = bunch(false, payload(70, 0));
     for _ in 0..KEEP_FIRST {
         unreliable(&mut sink, 0, &steady);
     }
-    // Identical: sampled out.
+    // Same shape as the first ones (already past SHAPE_FIRST): sampled out.
     unreliable(&mut sink, 1, &steady);
-    unreliable(&mut sink, 2, &steady);
-    // Same length, different leading bits: kept; then the steady one again
-    // differs from that kept one: kept.
-    unreliable(&mut sink, 3, &bunch(false, payload(70, 1)));
-    unreliable(&mut sink, 4, &steady);
-    // A difference only after the leading bits: sampled out.
+    // A new shape (leading bits differ): its first SHAPE_FIRST are kept,
+    // interleaved with the steady shape, which stays sampled out.
+    let other = bunch(false, payload(70, 1));
+    for at in 0..SHAPE_FIRST + 1 {
+        unreliable(&mut sink, 2 + at, &other);
+        unreliable(&mut sink, 2 + at, &steady);
+    }
+    // A difference only after the leading bits is the same shape.
     let mut late = payload(70, 0).bytes().to_vec();
     late[6] ^= 0x01;
     let late = Payload::from_writer({
@@ -164,28 +167,29 @@ fn sampling_keeps_first_then_reliable_changed_and_interval() {
         }
         writer
     });
-    unreliable(&mut sink, 5, &bunch(false, late));
-    // Different length: kept.
-    unreliable(&mut sink, 6, &bunch(false, payload(71, 0)));
-    // A reliable bunch is always kept, even if it matches.
+    unreliable(&mut sink, 20, &bunch(false, late));
+    // A reliable bunch is always kept, even if it repeats.
     let reliable = bunch(true, payload(71, 0));
-    tap(&mut sink, 7).observe(&reliable, PawnBunchPhase::ReliableQueueRelease, 10, Some(2));
-    tap(&mut sink, 8).observe(&reliable, PawnBunchPhase::ReliableQueueRelease, 11, Some(3));
-    // Steady again: differs from the reliable one (flags), kept; then the
-    // interval keeps one only once KEEP_INTERVAL_MS has passed.
-    unreliable(&mut sink, 9, &steady);
-    unreliable(&mut sink, 9 + KEEP_INTERVAL_MS - 1, &steady);
-    unreliable(&mut sink, 9 + KEEP_INTERVAL_MS, &steady);
-    unreliable(&mut sink, 9 + KEEP_INTERVAL_MS + 1, &steady);
+    tap(&mut sink, 21).observe(&reliable, PawnBunchPhase::ReliableQueueRelease, 10, Some(2));
+    tap(&mut sink, 22).observe(&reliable, PawnBunchPhase::ReliableQueueRelease, 11, Some(3));
+    // Each shape's interval runs from its own last kept row: steady from
+    // the first phase (0 ms), other from its last new_shape row (5 ms).
+    unreliable(&mut sink, KEEP_INTERVAL_MS - 1, &steady);
+    unreliable(&mut sink, KEEP_INTERVAL_MS, &steady);
+    unreliable(&mut sink, KEEP_INTERVAL_MS + 1, &steady);
+    unreliable(&mut sink, KEEP_INTERVAL_MS + 2, &other);
+    unreliable(&mut sink, KEEP_INTERVAL_MS + 5, &other);
     let counts = sink.finish();
-    assert_eq!(counts.seen, KEEP_FIRST + 12);
+    assert_eq!(counts.seen, KEEP_FIRST + 19);
     assert_eq!(counts.kept_first, KEEP_FIRST);
-    assert_eq!(counts.kept_changed, 4);
+    assert_eq!(counts.kept_new_shape, SHAPE_FIRST);
     assert_eq!(counts.kept_reliable, 2);
-    assert_eq!(counts.kept_interval, 1);
-    assert_eq!(counts.sampled_out, 5);
-    assert_eq!(counts.observations, KEEP_FIRST + 7);
-    // Sampling is by design: the file is still complete.
+    assert_eq!(counts.kept_interval, 2);
+    assert_eq!(counts.sampled_out, 11);
+    assert_eq!(counts.shapes_tracked_max, 2);
+    assert_eq!(counts.observations, KEEP_FIRST + 8);
+    // Sampling is by design: nothing lost, the file is complete.
+    assert_eq!(counts.lost_to_cap, 0);
     assert_eq!(counts.incomplete, 0);
     let rows = rows(&mut file);
     assert_eq!(rows.len() as u64, counts.observations);
@@ -194,7 +198,28 @@ fn sampling_keeps_first_then_reliable_changed_and_interval() {
     assert_eq!(
         reasons,
         [
-            "changed", "changed", "changed", "reliable", "reliable", "changed", "interval"
+            "new_shape",
+            "new_shape",
+            "new_shape",
+            "new_shape",
+            "reliable",
+            "reliable",
+            "interval",
+            "interval"
+        ]
+    );
+    let shape_seen: Vec<_> = tail.iter().map(|row| row["shape_seen"].as_u64()).collect();
+    assert_eq!(
+        shape_seen,
+        [
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            None,
+            None,
+            Some(KEEP_FIRST + 9),
+            Some(7)
         ]
     );
     // connection_seen exposes the gaps left by sampling.
@@ -202,10 +227,125 @@ fn sampling_keeps_first_then_reliable_changed_and_interval() {
         .iter()
         .map(|row| row["connection_seen"].as_u64().unwrap() - KEEP_FIRST)
         .collect();
-    assert_eq!(seen, [3, 4, 6, 7, 8, 9, 11]);
+    assert_eq!(seen, [2, 4, 6, 8, 13, 14, 16, 19]);
     for (index, row) in rows.iter().enumerate() {
         assert_eq!(row["ordinal"], index as u64 + 1);
     }
+}
+
+/// Review regression: frequent alternating shapes once filled a shared row
+/// cap in about 100 s and a later reliable bunch was dropped. Now neither a
+/// reliable bunch nor a never-seen shape can be crowded out.
+#[test]
+fn frequent_alternating_shapes_cannot_crowd_out_a_late_report() {
+    let mut file = tempfile::tempfile().unwrap();
+    let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
+    let shapes: Vec<_> = (0..3).map(|seed| bunch(false, payload(70, seed))).collect();
+    // 83 per second (12 ms apart) for two hours.
+    let frames = 2 * 3600 * 1000 / 12;
+    for frame in 0..frames {
+        unreliable(&mut sink, frame * 12, &shapes[(frame % 3) as usize]);
+    }
+    let at = frames * 12;
+    tap(&mut sink, at).observe(
+        &bunch(true, payload(40, 0)),
+        PawnBunchPhase::ReliableQueueRelease,
+        1,
+        Some(1),
+    );
+    unreliable(&mut sink, at, &bunch(false, payload(41, 0)));
+    let counts = sink.finish();
+    assert_eq!(counts.lost_to_cap, 0);
+    assert_eq!(counts.incomplete, 0);
+    assert_eq!(counts.kept_reliable, 1);
+    assert_eq!(counts.kept_new_shape, 1);
+    let rows = rows(&mut file);
+    let reasons: Vec<_> = rows[rows.len() - 2..]
+        .iter()
+        .map(|row| row["keep_reason"].clone())
+        .collect();
+    assert_eq!(reasons, ["reliable", "new_shape"]);
+}
+
+/// Feed `shapes` round-robin at 83 per second until the first loss to a
+/// cap; returns its time. Then a reliable bunch and a never-seen shape are
+/// still kept.
+fn first_loss_ms(shapes: &[Bunch]) -> u64 {
+    let mut sink = PrivatePawnBunchCapture::from_file(tempfile::tempfile().unwrap());
+    let mut frame = 0u64;
+    while sink.counts().lost_to_cap == 0 {
+        unreliable(
+            &mut sink,
+            frame * 12,
+            &shapes[(frame as usize) % shapes.len()],
+        );
+        frame += 1;
+    }
+    let at = frame * 12;
+    let counts = sink.counts();
+    assert_eq!(counts.lost_interval, 1, "only the interval pool runs out");
+    tap(&mut sink, at).observe(
+        &bunch(true, payload(40, 0)),
+        PawnBunchPhase::ReliableQueueRelease,
+        1,
+        Some(1),
+    );
+    unreliable(&mut sink, at, &bunch(false, payload(9, 0)));
+    let after = sink.counts();
+    assert_eq!(after.kept_reliable, counts.kept_reliable + 1);
+    assert_eq!(after.kept_new_shape, counts.kept_new_shape + 1);
+    assert_eq!(after.lost_to_cap, 1);
+    assert_eq!(after.incomplete, 1);
+    at
+}
+
+/// The worst-case durations stated in the runbook: how long interval
+/// samples of the frequent traffic last before their pool runs out.
+#[test]
+fn interval_samples_last_hours_for_one_three_or_two_hundred_shapes() {
+    const HOUR: u64 = 3600 * 1000;
+    let one = [bunch(false, payload(70, 0))];
+    let three: Vec<_> = (0..3).map(|seed| bunch(false, payload(70, seed))).collect();
+    let many: Vec<_> = (0..200)
+        .map(|extra| bunch(false, payload(64 + extra, 0)))
+        .collect();
+    let one = first_loss_ms(&one);
+    let three = first_loss_ms(&three);
+    let many = first_loss_ms(&many);
+    assert!(one > HOUR * 85 / 10, "one shape: {one} ms");
+    assert!(three > HOUR * 28 / 10, "three shapes: {three} ms");
+    assert!(many > HOUR * 17 / 10, "200 shapes: {many} ms");
+}
+
+#[test]
+fn shapes_beyond_the_bound_fall_back_to_one_counted_interval() {
+    let mut file = tempfile::tempfile().unwrap();
+    let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
+    let steady = bunch(false, payload(8, 0));
+    for _ in 0..KEEP_FIRST {
+        unreliable(&mut sink, 0, &steady);
+    }
+    // Fill the shape table with distinct lengths, then three more shapes.
+    for extra in 1..MAX_SHAPES + 3 {
+        unreliable(&mut sink, 1, &bunch(false, payload(8 + extra, 0)));
+    }
+    unreliable(
+        &mut sink,
+        1 + KEEP_INTERVAL_MS,
+        &bunch(false, payload(9000, 0)),
+    );
+    let counts = sink.finish();
+    assert_eq!(counts.shapes_tracked_max, MAX_SHAPES as u64);
+    assert_eq!(counts.untracked_shape_bunches, 4);
+    assert_eq!(counts.kept_new_shape, MAX_SHAPES as u64 - 1);
+    // First untracked bunch and the one a full interval later.
+    assert_eq!(counts.kept_interval, 2);
+    assert_eq!(counts.sampled_out, 2);
+    assert_eq!(counts.lost_to_cap, 0);
+    let rows = rows(&mut file);
+    let last = rows.last().unwrap();
+    assert_eq!(last["keep_reason"], "interval");
+    assert!(last["shape_seen"].is_null(), "untracked");
 }
 
 #[test]
@@ -228,27 +368,56 @@ fn first_rule_and_state_are_per_connection_and_forgotten_on_removal() {
 }
 
 #[test]
-fn row_cap_drops_and_marks_incomplete() {
+fn a_full_pool_counts_losses_without_touching_the_other_pools() {
     let mut sink = PrivatePawnBunchCapture::from_file(tempfile::tempfile().unwrap());
-    sink.counts.observations = MAX_OBSERVATIONS as u64;
+    sink.used[Pool::First as usize].rows = POOLS[Pool::First as usize].rows;
     unreliable(&mut sink, 0, &bunch(false, payload(8, 0)));
-    let counts = sink.finish();
-    assert_eq!(counts.dropped, 1);
-    assert_eq!(counts.observations, MAX_OBSERVATIONS as u64);
+    let counts = sink.counts();
+    assert_eq!(counts.lost_first, 1);
+    assert_eq!(counts.lost_to_cap, 1, "visible before finish");
+    assert_eq!(counts.observations, 0);
     assert_eq!(counts.output_bytes, 0);
+    // The reliable pool is untouched by the full first pool.
+    tap(&mut sink, 0).observe(
+        &bunch(true, payload(8, 0)),
+        PawnBunchPhase::ReliableQueueRelease,
+        1,
+        Some(1),
+    );
+    let counts = sink.finish();
+    assert_eq!(counts.kept_first, 1);
+    assert_eq!(counts.observations, 1);
+    assert_eq!(counts.lost_to_cap, 1);
     assert_eq!(counts.incomplete, 1);
 }
 
 #[test]
-fn output_byte_cap_refuses_a_row_that_would_cross_it() {
+fn reliable_pool_full_is_a_counted_loss() {
+    let mut sink = PrivatePawnBunchCapture::from_file(tempfile::tempfile().unwrap());
+    sink.used[Pool::Reliable as usize].rows = POOLS[Pool::Reliable as usize].rows;
+    tap(&mut sink, 0).observe(
+        &bunch(true, payload(8, 0)),
+        PawnBunchPhase::ReliableQueueRelease,
+        1,
+        Some(1),
+    );
+    let counts = sink.counts();
+    assert_eq!(counts.lost_reliable, 1);
+    assert_eq!(counts.lost_to_cap, 1);
+    assert_eq!(counts.observations, 0);
+}
+
+#[test]
+fn pool_byte_budget_refuses_a_row_that_would_cross_it() {
     let mut file = tempfile::tempfile().unwrap();
     let mut sink = PrivatePawnBunchCapture::from_file(file.try_clone().unwrap());
-    sink.counts.output_bytes = MAX_OUTPUT_BYTES as u64 - 10;
+    sink.used[Pool::First as usize].bytes = POOLS[Pool::First as usize].bytes - 10;
     unreliable(&mut sink, 0, &bunch(false, payload(8, 0)));
     let counts = sink.finish();
-    assert_eq!(counts.dropped, 1);
+    assert_eq!(counts.lost_first, 1);
+    assert_eq!(counts.lost_to_cap, 1);
     assert_eq!(counts.observations, 0);
-    assert_eq!(counts.output_bytes, MAX_OUTPUT_BYTES as u64 - 10);
+    assert_eq!(counts.output_bytes, 0);
     assert_eq!(counts.incomplete, 1);
     assert!(rows(&mut file).is_empty());
 }
@@ -269,6 +438,7 @@ fn per_item_cap_counts_oversize_and_keeps_the_rest() {
     );
     let counts = sink.finish();
     assert_eq!(counts.oversize, 1);
+    assert_eq!(counts.lost_to_cap, 1);
     assert_eq!(counts.observations, 1);
     assert_eq!(counts.retained_payload_bits, (MAX_PAYLOAD_BYTES * 8) as u64);
     assert_eq!(counts.incomplete, 1);

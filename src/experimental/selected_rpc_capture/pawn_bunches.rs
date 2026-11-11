@@ -14,23 +14,50 @@
 //! and the tap returns nothing the session reads: what the server sends and
 //! how it treats the bunch are unchanged. I/O errors only disable capture.
 //!
-//! # Record format (JSONL, `format` 1)
+//! # Sampling (per connection) and budgets (per file)
+//!
+//! Losing the one report the run exists for to a cap is the failure this is
+//! designed against, so frequent traffic cannot crowd out a reliable bunch or
+//! a rare unreliable shape:
+//!
+//! - **Reliable**: every reliable bunch is kept, in its own pool.
+//! - **First**: the connection's first [`KEEP_FIRST`] pawn bunches.
+//! - **Shapes**: an unreliable bunch's shape is its header flags, bit length
+//!   and first [`LEADING_BITS`] payload bits. Each connection tracks up to
+//!   [`MAX_SHAPES`] shapes and keeps the first [`SHAPE_FIRST`] bunches of each
+//!   (`new_shape`), then at most one per shape interval (`interval`), the
+//!   longer of [`KEEP_INTERVAL_MS`] and [`SHAPE_INTERVAL_STEP_MS`] per tracked
+//!   shape, so many shapes share a bounded interval rate. Bunches of a shape
+//!   beyond the bound are counted (`untracked_shape_bunches`) and share one
+//!   connection-wide [`KEEP_INTERVAL_MS`] interval; they are never dropped
+//!   uncounted.
+//! - Everything else is `sampled_out`: by design, not a loss.
+//!
+//! Each kept row is charged to one pool ([`POOLS`]: reliable, first,
+//! new shape, interval; reliable bunches always to the reliable pool). Pools
+//! partition [`MAX_OBSERVATIONS`] rows and [`MAX_OUTPUT_BYTES`], so no pool
+//! can consume another's share. A selected row refused by its pool or by
+//! [`MAX_PAYLOAD_BYTES`] is a loss: it is counted in `lost_<pool>` or
+//! `oversize` and in `lost_to_cap`, live, on every counts line. A run monitor
+//! alarms on `lost_to_cap > 0`; sampling alone never raises it.
+//!
+//! # Record format (JSONL, `format` 2)
 //!
 //! One JSON object and `\n` per retained wire bunch; partial bunches are kept
 //! part by part (never reassembled), so an offline reader reassembles them
 //! from the flags and reliable sequences exactly as the receiver would.
+//! Format 1 (never released) had `keep_reason` `changed` and no `shape_seen`.
 //!
-//! - `format` (1), `selection` (`"pawn_channel_bunches"`), `ordinal` (1-based
+//! - `format` (2), `selection` (`"pawn_channel_bunches"`), `ordinal` (1-based
 //!   row number in this file).
-//! - `keep_reason`: `first` (one of the connection's first
-//!   [`KEEP_FIRST`] pawn bunches), `reliable`, `changed` (header flags, bit
-//!   length or the first [`LEADING_BITS`] payload bits differ from the
-//!   connection's previous kept bunch) or `interval` (the connection's
-//!   previous kept bunch is at least [`KEEP_INTERVAL_MS`] older).
+//! - `keep_reason`: `first`, `reliable`, `new_shape` or `interval` (see
+//!   Sampling).
 //! - `connection_ordinal` (the session's ordinal, never an address or
 //!   identity), `connection_seen` (1-based count of this connection's pawn
 //!   bunches seen, kept or not: gaps between rows show how many were
-//!   sampled out), `channel`.
+//!   sampled out), `shape_seen` (1-based count of this connection's bunches
+//!   of this unreliable shape; null for reliable bunches and untracked
+//!   shapes), `channel`.
 //! - `observation_phase`: `reliable_queue_release` or `unreliable_arrival`.
 //! - `elapsed_ms` (server monotonic milliseconds since the lab bound, the
 //!   clock of `native_join_frozen_movement`) and `unix_ms` (server wall
@@ -58,20 +85,68 @@ use serde::Serialize;
 
 use crate::experimental::packet::Bunch;
 
-/// Rows kept per file.
+/// Rows kept per file (the sum of the pools' rows).
 pub const MAX_OBSERVATIONS: usize = 8192;
 /// Payload bytes kept per row; larger bunches are counted as `oversize`.
 pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024;
-/// Encoded bytes (metadata, hex and newlines) written per file.
+/// Encoded bytes (metadata, hex and newlines) written per file (the sum of
+/// the pools' bytes).
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Pawn bunches kept unconditionally at the start of each connection.
 pub const KEEP_FIRST: u64 = 512;
-/// Leading payload bits compared by the change rule.
+/// Leading payload bits in an unreliable bunch's shape.
 pub const LEADING_BITS: usize = 32;
-/// One bunch is kept at least this often per connection, changed or not.
+/// Bunches of each tracked unreliable shape kept unconditionally.
+pub const SHAPE_FIRST: u64 = 4;
+/// Unreliable shapes tracked per connection.
+pub const MAX_SHAPES: usize = 256;
+/// Shortest interval between kept bunches of one shape.
 pub const KEEP_INTERVAL_MS: u64 = 10_000;
+/// Per tracked shape, added to each shape's interval (2 s x 200 shapes =
+/// 400 s each, so 0.5 interval rows per second in total).
+pub const SHAPE_INTERVAL_STEP_MS: u64 = 2_000;
 
-/// Public counts; no payload, identity or address.
+/// A row budget: one pool's share of the file's rows and bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolBudget {
+    pub rows: u64,
+    pub bytes: u64,
+}
+
+/// Budgets indexed by [`Pool`]: reliable, first, new shape, interval.
+pub const POOLS: [PoolBudget; 4] = [
+    PoolBudget {
+        rows: 2048,
+        bytes: 4 * 1024 * 1024,
+    },
+    PoolBudget {
+        rows: 1024,
+        bytes: 2 * 1024 * 1024,
+    },
+    PoolBudget {
+        rows: 2048,
+        bytes: 4 * 1024 * 1024,
+    },
+    PoolBudget {
+        rows: 3072,
+        bytes: 6 * 1024 * 1024,
+    },
+];
+
+// The pools partition the file's caps exactly.
+const _: () = {
+    let mut rows = 0;
+    let mut bytes = 0;
+    let mut index = 0;
+    while index < POOLS.len() {
+        rows += POOLS[index].rows;
+        bytes += POOLS[index].bytes;
+        index += 1;
+    }
+    assert!(rows == MAX_OBSERVATIONS as u64 && bytes == MAX_OUTPUT_BYTES as u64);
+};
+
+/// Public counts; no payload, identity or address. Live while the run goes.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize)]
 pub struct PawnBunchCaptureCounts {
     /// Pawn-channel bunches the tap saw.
@@ -80,38 +155,168 @@ pub struct PawnBunchCaptureCounts {
     pub observations: u64,
     pub kept_first: u64,
     pub kept_reliable: u64,
-    pub kept_changed: u64,
+    pub kept_new_shape: u64,
     pub kept_interval: u64,
     /// Skipped by the sampling rule (by design; not a loss).
     pub sampled_out: u64,
-    /// Selected but refused by the row or output-byte caps.
-    pub dropped: u64,
+    /// Most unreliable shapes tracked by one connection.
+    pub shapes_tracked_max: u64,
+    /// Unreliable bunches whose shape was beyond [`MAX_SHAPES`]; sampled by
+    /// the connection-wide interval instead.
+    pub untracked_shape_bunches: u64,
+    /// Every selected row lost to a cap: the `lost_*` pools plus `oversize`.
+    /// The field to alarm on.
+    pub lost_to_cap: u64,
+    pub lost_reliable: u64,
+    pub lost_first: u64,
+    pub lost_new_shape: u64,
+    pub lost_interval: u64,
     /// Selected but over [`MAX_PAYLOAD_BYTES`].
     pub oversize: u64,
     pub retained_payload_bits: u64,
     pub output_bytes: u64,
     pub write_errors: u64,
-    /// 1 until finished, or forever after a drop, oversize or write error.
+    /// 1 until finished, or forever after a loss to a cap or a write error.
     pub incomplete: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SampleKey {
+/// Why a row was kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeepReason {
+    First,
+    Reliable,
+    NewShape,
+    Interval,
+}
+
+impl KeepReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Reliable => "reliable",
+            Self::NewShape => "new_shape",
+            Self::Interval => "interval",
+        }
+    }
+}
+
+/// Which share of the file a row is charged to; indexes [`POOLS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pool {
+    Reliable,
+    First,
+    NewShape,
+    Interval,
+}
+
+impl Pool {
+    fn of(reliable: bool, reason: KeepReason) -> Self {
+        match (reliable, reason) {
+            (true, _) | (false, KeepReason::Reliable) => Self::Reliable,
+            (false, KeepReason::First) => Self::First,
+            (false, KeepReason::NewShape) => Self::NewShape,
+            (false, KeepReason::Interval) => Self::Interval,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Shape {
     flags: u16,
     bits: usize,
     leading: u64,
 }
 
 #[derive(Default)]
+struct ShapeState {
+    seen: u64,
+    last_selected_ms: Option<u64>,
+}
+
+#[derive(Default)]
 struct ConnectionState {
     seen: u64,
-    last: Option<(SampleKey, u64)>,
+    shapes: BTreeMap<Shape, ShapeState>,
+    untracked_last_selected_ms: Option<u64>,
+}
+
+fn due(last: Option<u64>, now: u64, interval: u64) -> bool {
+    last.is_none_or(|at| now.saturating_sub(at) >= interval)
+}
+
+/// One sampling decision: the reason, or `None` when sampled out.
+struct Selection {
+    reason: Option<KeepReason>,
+    shape_seen: Option<u64>,
+    untracked: bool,
+    shapes_tracked: usize,
+}
+
+impl ConnectionState {
+    fn select(&mut self, reliable: bool, shape: Shape, now: u64) -> Selection {
+        self.seen = self.seen.saturating_add(1);
+        let first = self.seen <= KEEP_FIRST;
+        if reliable {
+            return Selection {
+                reason: Some(if first {
+                    KeepReason::First
+                } else {
+                    KeepReason::Reliable
+                }),
+                shape_seen: None,
+                untracked: false,
+                shapes_tracked: self.shapes.len(),
+            };
+        }
+        if !self.shapes.contains_key(&shape) && self.shapes.len() >= MAX_SHAPES {
+            let selected = first || due(self.untracked_last_selected_ms, now, KEEP_INTERVAL_MS);
+            if selected {
+                self.untracked_last_selected_ms = Some(now);
+            }
+            return Selection {
+                reason: match (first, selected) {
+                    (true, _) => Some(KeepReason::First),
+                    (false, true) => Some(KeepReason::Interval),
+                    (false, false) => None,
+                },
+                shape_seen: None,
+                untracked: true,
+                shapes_tracked: self.shapes.len(),
+            };
+        }
+        let interval = KEEP_INTERVAL_MS
+            .max(SHAPE_INTERVAL_STEP_MS.saturating_mul(self.shapes.len().max(1) as u64));
+        let state = self.shapes.entry(shape).or_default();
+        state.seen = state.seen.saturating_add(1);
+        let reason = if first {
+            Some(KeepReason::First)
+        } else if state.seen <= SHAPE_FIRST {
+            Some(KeepReason::NewShape)
+        } else if due(state.last_selected_ms, now, interval) {
+            Some(KeepReason::Interval)
+        } else {
+            None
+        };
+        // A selection lost to a cap also restarts the interval, so a full
+        // pool costs one counted loss per shape interval, not one per bunch.
+        if reason.is_some() {
+            state.last_selected_ms = Some(now);
+        }
+        let shape_seen = Some(state.seen);
+        Selection {
+            reason,
+            shape_seen,
+            untracked: false,
+            shapes_tracked: self.shapes.len(),
+        }
+    }
 }
 
 /// Concrete file sink: callers cannot install an observer callback.
 pub struct PrivatePawnBunchCapture {
     file: File,
     counts: PawnBunchCaptureCounts,
+    used: [PoolBudget; 4],
     connections: BTreeMap<u32, ConnectionState>,
     failed: bool,
     finished: bool,
@@ -149,6 +354,7 @@ struct Record {
     keep_reason: &'static str,
     connection_ordinal: u32,
     connection_seen: u64,
+    shape_seen: Option<u64>,
     channel: u32,
     observation_phase: &'static str,
     elapsed_ms: u64,
@@ -176,6 +382,7 @@ impl PrivatePawnBunchCapture {
         Self {
             file,
             counts: PawnBunchCaptureCounts::default(),
+            used: [PoolBudget { rows: 0, bytes: 0 }; 4],
             connections: BTreeMap::new(),
             failed: false,
             finished: false,
@@ -184,12 +391,7 @@ impl PrivatePawnBunchCapture {
 
     pub fn counts(&self) -> PawnBunchCaptureCounts {
         PawnBunchCaptureCounts {
-            incomplete: u64::from(
-                !self.finished
-                    || self.failed
-                    || self.counts.dropped > 0
-                    || self.counts.oversize > 0,
-            ),
+            incomplete: u64::from(!self.finished || self.failed || self.counts.lost_to_cap > 0),
             ..self.counts
         }
     }
@@ -208,6 +410,19 @@ impl PrivatePawnBunchCapture {
     fn write_failed(&mut self) {
         self.counts.write_errors = self.counts.write_errors.saturating_add(1);
         self.failed = true;
+    }
+
+    fn lost(&mut self, pool: Option<Pool>) {
+        let counts = &mut self.counts;
+        let counter = match pool {
+            None => &mut counts.oversize,
+            Some(Pool::Reliable) => &mut counts.lost_reliable,
+            Some(Pool::First) => &mut counts.lost_first,
+            Some(Pool::NewShape) => &mut counts.lost_new_shape,
+            Some(Pool::Interval) => &mut counts.lost_interval,
+        };
+        *counter = counter.saturating_add(1);
+        counts.lost_to_cap = counts.lost_to_cap.saturating_add(1);
     }
 
     /// Session removal: its sampling state goes (bounded by live sessions).
@@ -280,47 +495,46 @@ impl PawnBunchTap<'_> {
         }
         let sink = &mut *self.sink;
         sink.counts.seen = sink.counts.seen.saturating_add(1);
-        let state = sink.connections.entry(self.connection_ordinal).or_default();
-        state.seen = state.seen.saturating_add(1);
-        let connection_seen = state.seen;
         let bit_len = bunch.payload.bit_len();
         let bytes = bunch.payload.bytes();
-        let key = SampleKey {
+        let shape = Shape {
             flags: flags(bunch),
             bits: bit_len,
             leading: leading(bytes, bit_len),
         };
-        let reason = if connection_seen <= KEEP_FIRST {
-            "first"
-        } else if bunch.header.reliable {
-            "reliable"
-        } else if state.last.is_none_or(|(last, _)| last != key) {
-            "changed"
-        } else if state
-            .last
-            .is_none_or(|(_, at)| self.elapsed_ms.saturating_sub(at) >= KEEP_INTERVAL_MS)
-        {
-            "interval"
-        } else {
-            sink.counts.sampled_out = sink.counts.sampled_out.saturating_add(1);
+        let state = sink.connections.entry(self.connection_ordinal).or_default();
+        let selection = state.select(bunch.header.reliable, shape, self.elapsed_ms);
+        let connection_seen = state.seen;
+        let counts = &mut sink.counts;
+        counts.shapes_tracked_max = counts
+            .shapes_tracked_max
+            .max(selection.shapes_tracked as u64);
+        if selection.untracked {
+            counts.untracked_shape_bunches = counts.untracked_shape_bunches.saturating_add(1);
+        }
+        let Some(reason) = selection.reason else {
+            counts.sampled_out = counts.sampled_out.saturating_add(1);
             return;
         };
+        let pool = Pool::of(bunch.header.reliable, reason);
         if bit_len.div_ceil(8) > MAX_PAYLOAD_BYTES {
-            sink.counts.oversize = sink.counts.oversize.saturating_add(1);
+            sink.lost(None);
             return;
         }
-        if sink.counts.observations >= MAX_OBSERVATIONS as u64 {
-            sink.counts.dropped = sink.counts.dropped.saturating_add(1);
+        let budget = POOLS[pool as usize];
+        if sink.used[pool as usize].rows >= budget.rows {
+            sink.lost(Some(pool));
             return;
         }
         let h = &bunch.header;
         let record = Record {
-            format: 1,
+            format: 2,
             selection: "pawn_channel_bunches",
             ordinal: sink.counts.observations + 1,
-            keep_reason: reason,
+            keep_reason: reason.as_str(),
             connection_ordinal: self.connection_ordinal,
             connection_seen,
+            shape_seen: selection.shape_seen,
             channel: self.channel,
             observation_phase: match phase {
                 PawnBunchPhase::ReliableQueueRelease => "reliable_queue_release",
@@ -348,13 +562,12 @@ impl PawnBunchTap<'_> {
             return;
         };
         encoded.push(b'\n');
-        if sink
-            .counts
-            .output_bytes
+        if sink.used[pool as usize]
+            .bytes
             .saturating_add(encoded.len() as u64)
-            > MAX_OUTPUT_BYTES as u64
+            > budget.bytes
         {
-            sink.counts.dropped = sink.counts.dropped.saturating_add(1);
+            sink.lost(Some(pool));
             return;
         }
         // Charge every byte actually written, including a failed partial row.
@@ -367,6 +580,7 @@ impl PawnBunchTap<'_> {
                 }
                 Ok(n) => {
                     sink.counts.output_bytes += n as u64;
+                    sink.used[pool as usize].bytes += n as u64;
                     remaining = &remaining[n..];
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -376,18 +590,16 @@ impl PawnBunchTap<'_> {
                 }
             }
         }
+        sink.used[pool as usize].rows += 1;
         sink.counts.observations += 1;
         sink.counts.retained_payload_bits += bit_len as u64;
         let counter = match reason {
-            "first" => &mut sink.counts.kept_first,
-            "reliable" => &mut sink.counts.kept_reliable,
-            "changed" => &mut sink.counts.kept_changed,
-            _ => &mut sink.counts.kept_interval,
+            KeepReason::First => &mut sink.counts.kept_first,
+            KeepReason::Reliable => &mut sink.counts.kept_reliable,
+            KeepReason::NewShape => &mut sink.counts.kept_new_shape,
+            KeepReason::Interval => &mut sink.counts.kept_interval,
         };
         *counter += 1;
-        if let Some(state) = sink.connections.get_mut(&self.connection_ordinal) {
-            state.last = Some((key, self.elapsed_ms));
-        }
     }
 }
 
