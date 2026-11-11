@@ -41,9 +41,11 @@ Contracts and limitations:
   aliases require review. Ordinary module changes do not alter layout identity.
   Cargo.lock/toolchain/profile/config/target layout changes fully retire
   the cache, including dependency artifacts, instead of accumulating generations.
-* Provisional own cap 10 GiB; others are report-only. Admission reserves
-  min(8 GiB, remaining cap), requiring >=2 GiB remaining. Cold=8 GiB reserve;
-  warm 4 GiB=6 GiB reserve; warm 8 GiB=2 GiB reserve. Local floor 30 GiB;
+* Provisional own cap 16 GiB; others are report-only. Admission reserves
+  min(8 GiB, remaining cap), requiring >=2 GiB remaining. Cold or warm up to
+  8 GiB=8 GiB reserve; warm 12 GiB=4 GiB reserve; warm 14 GiB=2 GiB reserve.
+  The owner's 2026-11-11 storage allowance raised the cap from 10 GiB to stop
+  retire-and-rebuild churn after one full suite (M-1360). Local floor 30 GiB;
   explicit CI floor 4 GiB. Floor/RAM/time poll every 250 ms; allocated bytes
   snapshot before/after only. Free-space deltas do not identify this cache's
   writes. This is no kernel quota: bursts and cap overshoot remain possible.
@@ -89,7 +91,7 @@ OWNED_RAM_LIMIT = 10 * GIB
 DISK_FLOOR = 30 * GIB
 RESERVE = 8 * GIB
 MIN_HEADROOM = 2 * GIB
-TARGET_BUDGET = 10 * GIB
+TARGET_BUDGET = 16 * GIB
 TIMEOUT = 1800.0
 POLL = 0.25
 SCHEMA = 2
@@ -664,7 +666,8 @@ def available_ram() -> int:
 def admission_reserve(allocated: int) -> int:
     remaining = TARGET_BUDGET - allocated
     if remaining < MIN_HEADROOM:
-        raise GuardError("own target needs at least 2 GiB transient headroom below provisional 10 GiB cap; review retirement")
+        raise GuardError(f"own target needs at least {MIN_HEADROOM / GIB:g} GiB transient headroom below "
+                         + f"provisional {TARGET_BUDGET / GIB:g} GiB cap; review retirement")
     return min(RESERVE, remaining)
 
 
@@ -826,7 +829,7 @@ def clean(info: Identity, env: Mapping[str, str], *, pass_fds: tuple[int, ...]) 
         info.target.mkdir(mode=0o700, exist_ok=True)
         write_state(info, None)
     if target_inventory(info.target)[0] > TARGET_BUDGET:
-        raise GuardError("residual target exceeds provisional 10 GiB after full Cargo cleanup")
+        raise GuardError(f"residual target exceeds provisional {TARGET_BUDGET / GIB:g} GiB after full Cargo cleanup")
 
 
 def execute(info: Identity, args: Sequence[str], env: Mapping[str, str], *, build_fd: int,
@@ -886,7 +889,7 @@ def execute(info: Identity, args: Sequence[str], env: Mapping[str, str], *, buil
         _ = read_state(info)
         check_space(info.root, policy=policy)
         if after > TARGET_BUDGET:
-            raise GuardError("own target exceeds provisional 10 GiB cap; review retirement")
+            raise GuardError(f"own target exceeds provisional {TARGET_BUDGET / GIB:g} GiB cap; review retirement")
         if generation(info, check_configuration(info, env), toolchain + rustc) != current:
             write_state(info, current, needs_clean=True)
             raise GuardError("build inputs changed during command; next build needs cleanup")

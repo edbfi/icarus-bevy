@@ -6,6 +6,14 @@ Preserve original inputs, private state, evidence and unfinished work under
 the existing project and scratch rules. Missing references, file extensions,
 case age and closed state alone never establish disposability.
 
+The owner stated on 2026-11-11 (M-1360) that this host is used mainly for this
+project and that its retained footprint may grow by about 20 to 30 GB during
+development while that growth is necessary. Baseline: `df -BG /` showed 152G
+used and 100G available of 252G that day. The allowance grants no deletion
+authority and lowers no floor or per-case limit; the session-close and milestone
+cleanup routines in [work rules](work.md) stay mandatory so the footprint does
+not grow without bound.
+
 Before substantial downloads, builds or experiments, run the
 [storage report](#reporting-procedure). Account for expected peak
 growth across active cases, copied binaries, official installations and all
