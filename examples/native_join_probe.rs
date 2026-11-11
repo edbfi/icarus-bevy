@@ -18,7 +18,7 @@ use anyhow::{Context, Result, ensure};
 use bevy::prelude::{App, MinimalPlugins};
 use clap::Parser;
 use icarus_bevy::{
-    config::NetworkConfig,
+    config::{MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS, NetworkConfig},
     experimental::{
         manager_open::{ManagerOpenPlan, ManagerSlot},
         peer_lab::{ControllerStartupAction, PeerLab},
@@ -129,6 +129,13 @@ struct Options {
     /// properties naming that pawn (unqualified); `false` makes a comparison run without them.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     controller_possession_properties: bool,
+    /// Once the player's own connected-player record is ACKed, send one pawn update setting
+    /// bServerFrozenMovement false (unqualified); `false` makes a comparison run without it.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    server_frozen_movement_release: bool,
+    /// Milliseconds between that ACK and the release, so a client change can be attributed.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS))]
+    server_frozen_movement_release_delay_ms: u64,
     /// Dispatch the client's level visibility reports (controller field 82) and open each
     /// newly visible level's world-settings actors (unqualified); off unless asked.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
@@ -196,6 +203,19 @@ impl Options {
         Ok(true)
     }
 
+    /// Pure preflight of `--server-frozen-movement-release`: the release
+    /// follows the player's own record ACK, so it needs records.
+    fn server_frozen_movement_release(&self, connected_player_records: bool) -> Result<bool> {
+        if !self.server_frozen_movement_release {
+            return Ok(false);
+        }
+        ensure!(
+            connected_player_records,
+            "the frozen-movement release follows the connected-player record; pass --server-frozen-movement-release false"
+        );
+        Ok(true)
+    }
+
     /// Pure preflight of `--level-visibility-actors`: enabled dispatch needs
     /// the release's level actor identities, its controller open and the
     /// qualified visibility decoder profile.
@@ -247,6 +267,10 @@ fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::
         "unreliable_actor_bunches_before_shutdown".into(),
         json!(lab.unreliable_actor_bunch_counts()),
     );
+    counts.insert(
+        "frozen_movement_before_shutdown".into(),
+        json!(lab.frozen_movement_observations()),
+    );
     counts.insert("stats_before_shutdown".into(), json!(lab.stats()));
     counts.insert("peak_peers".into(), json!(lab.peak_peer_count()));
     counts
@@ -263,6 +287,28 @@ fn shut_down(lab: &mut PeerLab) -> serde_json::Map<String, serde_json::Value> {
         json!(lab.session_counts()),
     );
     counts
+}
+
+/// The frozen-movement release counters whose change the probe reports
+/// at once: scheduled, sent, ACKed, abandoned.
+fn frozen_movement_marks(lab: &PeerLab) -> [u64; 4] {
+    let stats = lab.stats();
+    [
+        stats.frozen_movement_releases_scheduled,
+        stats.frozen_movement_releases_sent,
+        stats.frozen_movement_releases_acked,
+        stats.frozen_movement_release_errors,
+    ]
+}
+
+/// Wall-clock milliseconds since the Unix epoch, to line server events up
+/// with an operator's notes of the client's screen.
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            elapsed.as_millis().min(u128::from(u64::MAX)) as u64
+        })
 }
 
 fn emit_progress(value: &serde_json::Value) -> Result<()> {
@@ -287,6 +333,8 @@ fn main() -> Result<()> {
     let startup = options.startup_plan(&profile)?;
     let connected_player_records = options.connected_player_records(&profile)?;
     let controller_possession_properties = options.controller_possession_properties(&profile)?;
+    let frozen_movement_release =
+        options.server_frozen_movement_release(connected_player_records)?;
     let level_visibility_actors = options.level_visibility_actors(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
@@ -352,6 +400,8 @@ fn main() -> Result<()> {
         release_profile: Some(options.release),
         connected_player_records,
         controller_possession_properties,
+        server_frozen_movement_release: frozen_movement_release,
+        server_frozen_movement_release_delay_ms: options.server_frozen_movement_release_delay_ms,
         // Gated: the server configuration refuses it, so the probe enables
         // the lab switch itself below, before any connection exists.
         level_visibility_actors: false,
@@ -386,6 +436,13 @@ fn main() -> Result<()> {
         bound.lab.has_controller_possession_properties() == controller_possession_properties,
         "controller possession configuration did not apply"
     );
+    ensure!(
+        bound.lab.frozen_movement_release_delay()
+            == frozen_movement_release.then_some(Duration::from_millis(
+                options.server_frozen_movement_release_delay_ms
+            )),
+        "frozen-movement release configuration did not apply"
+    );
     if level_visibility_actors {
         bound.lab.enable_level_visibility_actors(&profile)?;
     }
@@ -407,6 +464,7 @@ fn main() -> Result<()> {
         thread::spawn(move || serve_queries(&query, &query_presence.advert, &query_presence.stop));
     let progress_interval = Duration::from_secs(options.progress_interval_seconds);
     let mut next_progress = Instant::now() + progress_interval;
+    let mut last_frozen_marks = [0_u64; 4];
     let mut output_error = emit_progress(&json!({
         "event": "native_join_ready",
         "game_port": options.game_bind.port(),
@@ -418,6 +476,8 @@ fn main() -> Result<()> {
         "controller_startup": options.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
         "connected_player_records": connected_player_records,
         "controller_possession_properties": controller_possession_properties,
+        "server_frozen_movement_release": frozen_movement_release,
+        "server_frozen_movement_release_delay_ms": options.server_frozen_movement_release_delay_ms,
         "level_visibility_actors": level_visibility_actors,
         "compatibility_proven": false,
     }))
@@ -429,9 +489,23 @@ fn main() -> Result<()> {
     {
         app.update();
         let now = Instant::now();
-        if now >= next_progress {
+        // One line as soon as a release is scheduled, sent, ACKed or
+        // abandoned, with server times, so a client change can be attributed.
+        let lab = app.world().resource::<PeerLab>();
+        let marks = frozen_movement_marks(lab);
+        if marks != last_frozen_marks {
+            last_frozen_marks = marks;
+            output_error = emit_progress(&json!({
+                "event": "native_join_frozen_movement",
+                "unix_ms": unix_ms(),
+                "frozen_movement": lab.frozen_movement_observations(),
+                "compatibility_proven": false,
+            }))
+            .err();
+        }
+        if now >= next_progress && output_error.is_none() {
             let lab = app.world().resource::<PeerLab>();
-            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"controller_fields":lab.controller_field_totals(),"unreliable_actor_bunches":lab.unreliable_actor_bunch_counts(),"stats":lab.stats(),"compatibility_proven":false});
+            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"frozen_movement":lab.frozen_movement_observations(),"controller_fields":lab.controller_field_totals(),"unreliable_actor_bunches":lab.unreliable_actor_bunch_counts(),"stats":lab.stats(),"compatibility_proven":false});
             native_join_capture::add_counts(
                 &mut progress,
                 lab.private_rpc82_capture_counts(),
@@ -726,6 +800,47 @@ mod tests {
                 .controller_possession_properties(&no_controller)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn frozen_movement_release_defaults_on_with_no_delay_and_needs_records() {
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(default.server_frozen_movement_release);
+        assert_eq!(default.server_frozen_movement_release_delay_ms, 0);
+        assert!(default.server_frozen_movement_release(true).unwrap());
+        // Without records nothing would trigger it: refused before networking.
+        assert!(default.server_frozen_movement_release(false).is_err());
+        let off = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--server-frozen-movement-release",
+            "false",
+        ])
+        .unwrap();
+        assert!(!off.server_frozen_movement_release(true).unwrap());
+        assert!(!off.server_frozen_movement_release(false).unwrap());
+        let delayed = Options::try_parse_from([
+            "probe",
+            "--name",
+            "Authored",
+            "--server-frozen-movement-release-delay-ms",
+            "10000",
+        ])
+        .unwrap();
+        assert_eq!(delayed.server_frozen_movement_release_delay_ms, 10_000);
+        for value in ["600001", "-1", "ten"] {
+            assert!(
+                Options::try_parse_from([
+                    "probe",
+                    "--name",
+                    "Authored",
+                    "--server-frozen-movement-release-delay-ms",
+                    value,
+                ])
+                .is_err()
+            );
+        }
     }
 
     #[test]

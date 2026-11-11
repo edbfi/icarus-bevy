@@ -817,6 +817,50 @@ pub fn compose_pawn_open(
     Ok(composed)
 }
 
+/// Frame a pawn property update carrying only `bServerFrozenMovement`
+/// (canonical handle 67, written at the plan's wire handle: 68 for the
+/// 3.0.34 and later layouts) on its open channel: an actor bunch body without
+/// spawn holding one actor block. The original opens the pawn with the flag
+/// true (F-797) and, in the retained 3.0.34 session (M-1161), later sends
+/// exactly this one-property update with `false`.
+pub fn compose_pawn_frozen_movement_update(
+    plan: &PawnOpenPlan,
+    frozen: bool,
+    order: ByteOrder,
+) -> Result<Payload> {
+    use super::actor_channel::{
+        ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body,
+    };
+    let codec = actor_codec(plan.engine_net_version, order);
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: RepLayoutLimits::default(),
+    };
+    let stream = PropertyStream {
+        entries: vec![RepEntry {
+            handle: plan
+                .layout_version
+                .wire_handle(handle::SERVER_FROZEN_MOVEMENT)?,
+            checksum: None,
+            value: RepValue::Bool(frozen),
+        }],
+        terminator_checksum: None,
+    };
+    let block = ContentBlock {
+        has_rep_layout: true,
+        target: BlockTarget::Actor,
+        payload: encode_rep_properties(&stream, &plan.layout, &rep_codec)?,
+    };
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![block],
+        },
+        &codec,
+    )
+}
+
 /// Frame a pawn property update carrying only `IcarusUID` (handle 46) on its
 /// open channel: an actor bunch body without spawn holding one actor block.
 /// The original changes a returning pawn's UID when its saved recorder

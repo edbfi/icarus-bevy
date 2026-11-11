@@ -230,7 +230,7 @@ use super::packet_lab::{
 };
 use super::pawn_open::{
     InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState, PawnTemperatureState,
-    compose_pawn_icarus_uid_update, compose_pawn_open,
+    compose_pawn_frozen_movement_update, compose_pawn_icarus_uid_update, compose_pawn_open,
 };
 use super::pawn_restore::{
     CurrentPawnState, compose_live_pawn_update, compose_restored_pawn_update, restore_saved_pawn,
@@ -871,6 +871,25 @@ pub struct PeerLabStats {
     /// pawn channel no longer open when due; that session's update is
     /// abandoned and its record no longer waits for it.
     pub controller_possession_errors: u64,
+    /// Frozen-movement releases scheduled: one per session, when a positive
+    /// ACK settles the creation of its own connected-player record, with
+    /// [`PeerLab::enable_frozen_movement_release`].
+    pub frozen_movement_releases_scheduled: u64,
+    /// Pawn property updates setting `bServerFrozenMovement` false admitted
+    /// to reliable pawn transport, at most one per session.
+    pub frozen_movement_releases_sent: u64,
+    /// Admitted releases whose own reliable bunch a positive packet ACK
+    /// settled, counted once each. No client application is implied.
+    pub frozen_movement_releases_acked: u64,
+    /// Releases held back by drainable transport pressure.
+    pub frozen_movement_release_sends_deferred: u64,
+    /// Composition or framing refusals that cannot drain, or a pawn channel
+    /// no longer open when due; that session's release is abandoned.
+    pub frozen_movement_release_errors: u64,
+    /// Client bunches on a connection's open pawn channel, reliable and
+    /// unreliable, counted by header only on every connection.
+    pub pawn_bunches_received_reliable: u64,
+    pub pawn_bunches_received_unreliable: u64,
     /// Level visibility reports (controller field 82, F-1052) dispatched with
     /// [`PeerLab::enable_level_visibility_actors`], by disposition; counts
     /// only, never names. A newly visible level added to the connection's set.
@@ -1151,6 +1170,14 @@ pub struct SessionCounts {
     pub controller_possession_updates_acked: u64,
     pub controller_possession_sends_deferred: u64,
     pub controller_possession_errors: u64,
+    /// Frozen-movement release and pawn inbound counters, as in [`PeerLabStats`].
+    pub frozen_movement_releases_scheduled: u64,
+    pub frozen_movement_releases_sent: u64,
+    pub frozen_movement_releases_acked: u64,
+    pub frozen_movement_release_sends_deferred: u64,
+    pub frozen_movement_release_errors: u64,
+    pub pawn_bunches_received_reliable: u64,
+    pub pawn_bunches_received_unreliable: u64,
     /// Level visibility report and level actor counters, as in [`PeerLabStats`].
     pub level_visibility_reports_added: u64,
     pub level_visibility_reports_duplicate: u64,
@@ -1216,6 +1243,7 @@ pub struct ReadinessCounts {
     pub friends_query: FriendsQueryReadiness,
     pub connected_player_records: ConnectedPlayerRecordReadiness,
     pub controller_possession: ControllerPossessionReadiness,
+    pub frozen_movement_release: FrozenMovementReleaseReadiness,
     pub level_visibility: LevelVisibilityReadiness,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
@@ -1305,6 +1333,22 @@ pub struct ConnectedPlayerRecordReadiness {
 pub struct ControllerPossessionReadiness {
     /// Sessions whose pawn open committed but whose update is not admitted
     /// yet (transport pressure).
+    pub pending_send: usize,
+    /// `queued` = `settled` + `awaiting_ack`.
+    pub queued: usize,
+    pub settled: usize,
+    pub awaiting_ack: usize,
+}
+
+/// Live frozen-movement release gauges
+/// ([`PeerLab::enable_frozen_movement_release`]), one receipt per session;
+/// settled means a positive packet ACK covered the update's reliable bunch,
+/// not that a client applied it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FrozenMovementReleaseReadiness {
+    /// Scheduled by the record's ACK, waiting out the configured delay.
+    pub awaiting_delay: usize,
+    /// Due but not admitted yet (transport pressure).
     pub pending_send: usize,
     /// `queued` = `settled` + `awaiting_ack`.
     pub queued: usize,
@@ -1572,6 +1616,74 @@ struct ConnectedPlayerRecord {
 struct ConnectedPlayerReceipt {
     receipt: InitialisationReceipt,
     records: usize,
+    /// The bunch creates the connection's own player's record.
+    own: bool,
+}
+
+/// One session's frozen-movement release
+/// ([`PeerLab::enable_frozen_movement_release`]): scheduled once when the
+/// creation of its own connected-player record settles, admitted once, then
+/// settled by a positive ACK of its own reliable bunch.
+#[derive(Default)]
+struct FrozenMovementRelease {
+    /// When the record creation settled (the trigger); set once.
+    record_acked_at: Option<Instant>,
+    /// When the release falls due; set with `record_acked_at`.
+    due_at: Option<Instant>,
+    /// Due and waiting for transport admission (pressure).
+    pending: bool,
+    retry_ready: bool,
+    /// The admitted update's own reliable bunch; its channel is set once
+    /// admitted, so a session sends at most one.
+    receipt: InitialisationReceipt,
+    sent_at: Option<Instant>,
+    acked_at: Option<Instant>,
+    /// The update could not be admitted for good.
+    failed: bool,
+}
+
+impl FrozenMovementRelease {
+    /// Scheduled, not yet due, admitted or abandoned.
+    fn awaiting_delay(&self, now: Instant) -> bool {
+        self.due_at.is_some_and(|due| due > now) && self.idle()
+    }
+
+    /// Neither pending, admitted nor abandoned.
+    fn idle(&self) -> bool {
+        !self.pending && self.receipt.channel.is_none() && !self.failed
+    }
+}
+
+/// Client-to-server bunches on one connection's pawn channel, counted by
+/// header only (their content is not decoded: the pawn's RPC field indices,
+/// such as `ServerUpdateClientFrozenMovement`'s, are not bound).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PawnInboundCounts {
+    /// Whole reliable bunches released to the session (otherwise ignored).
+    pub reliable_bunches: u64,
+    /// Unreliable bunches (dropped as before).
+    pub unreliable_bunches: u64,
+    /// Lab milliseconds of the latest such bunch.
+    pub last_bunch_ms: Option<u64>,
+}
+
+/// One live session's frozen-movement release and pawn-channel traffic, in
+/// lab milliseconds since bind; counts and times only. `connection` is the
+/// session's ordinal, never an address or identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct FrozenMovementObservation {
+    pub connection: u32,
+    /// The positive ACK that settled the creation of this player's own
+    /// connected-player record (the release's trigger).
+    pub record_acked_ms: Option<u64>,
+    pub release_due_ms: Option<u64>,
+    /// Admission of the `bServerFrozenMovement` = false update.
+    pub release_sent_ms: Option<u64>,
+    /// The positive ACK that settled that update's reliable bunch; not proof
+    /// that the client applied it.
+    pub release_acked_ms: Option<u64>,
+    pub release_failed: bool,
+    pub pawn_inbound: PawnInboundCounts,
 }
 
 /// Level visibility actors ([`PeerLab::enable_level_visibility_actors`]):
@@ -2148,6 +2260,10 @@ struct PeerEntry {
     controller_possession_receipt: InitialisationReceipt,
     /// The update could not be admitted for good; nothing waits for it.
     controller_possession_failed: bool,
+    /// Frozen-movement release ([`PeerLab::enable_frozen_movement_release`]).
+    frozen_release: FrozenMovementRelease,
+    /// Client-to-server bunches on this connection's pawn channel.
+    pawn_inbound: PawnInboundCounts,
     /// Case-folded packages this connection reported visible and that are
     /// still visible (at most [`MAX_VISIBLE_LEVELS`]).
     visible_levels: BTreeSet<String>,
@@ -2805,6 +2921,9 @@ pub struct PeerLab {
     /// Opt-in controller possession properties after each pawn open
     /// ([`PeerLab::enable_controller_possession_properties`]).
     controller_possession: bool,
+    /// Opt-in frozen-movement release with its delay after the record ACK
+    /// ([`PeerLab::enable_frozen_movement_release`]).
+    frozen_movement_release: Option<Duration>,
     /// Opt-in level visibility dispatch and actor opens
     /// ([`PeerLab::enable_level_visibility_actors`]); `None` leaves field 82
     /// ignored.
@@ -2980,6 +3099,7 @@ impl PeerLab {
             connected_players: None,
             next_connected_player_record: 0,
             controller_possession: false,
+            frozen_movement_release: None,
             level_visibility: None,
             level_actor_holders: BTreeMap::new(),
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
@@ -5429,6 +5549,80 @@ impl PeerLab {
         self.controller_possession
     }
 
+    /// Release each session's pawn from frozen movement. The pawn still opens
+    /// with `bServerFrozenMovement` true (F-797); when a positive ACK settles
+    /// the bunch that created the session's own connected-player record (the
+    /// lab's finalisation acknowledged, F-1077), and `delay` later, one
+    /// reliable pawn property update sets it false, as the retained 3.0.34
+    /// session does once. At most one per session; a NAK is repaired by the
+    /// reliable layer from the stored bytes. Unqualified with a stock client.
+    /// Needs the pawn open and connected-player records; must be called
+    /// before any peer exists.
+    pub fn enable_frozen_movement_release(&mut self, delay: Duration) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "the frozen-movement release is configured before admission"
+        );
+        ensure!(
+            self.pawn_open.is_some() && self.connected_players.is_some(),
+            "the frozen-movement release needs the pawn open and connected-player records"
+        );
+        ensure!(
+            delay <= Duration::from_millis(crate::config::MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS),
+            "the frozen-movement release delay exceeds its bound"
+        );
+        self.frozen_movement_release = Some(delay);
+        Ok(())
+    }
+
+    /// Turn the frozen-movement release off for a comparison run; the lab
+    /// then sends exactly what it sends without it. Must be called before any
+    /// peer exists.
+    pub fn disable_frozen_movement_release(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "the frozen-movement release is configured before admission"
+        );
+        self.frozen_movement_release = None;
+        Ok(())
+    }
+
+    /// The configured delay when each session's pawn is released from
+    /// frozen movement; `None` when it is not.
+    pub fn frozen_movement_release_delay(&self) -> Option<Duration> {
+        self.frozen_movement_release
+    }
+
+    /// Each live session's frozen-movement release and pawn-channel
+    /// traffic, by connection ordinal.
+    pub fn frozen_movement_observations(&self) -> Vec<FrozenMovementObservation> {
+        let ms = |at: Option<Instant>| {
+            at.map(|at| {
+                at.saturating_duration_since(self.started)
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64
+            })
+        };
+        let mut observations: Vec<_> = self
+            .peers
+            .values()
+            .filter_map(|entry| {
+                let release = &entry.frozen_release;
+                Some(FrozenMovementObservation {
+                    connection: entry.connection_id?,
+                    record_acked_ms: ms(release.record_acked_at),
+                    release_due_ms: ms(release.due_at),
+                    release_sent_ms: ms(release.sent_at),
+                    release_acked_ms: ms(release.acked_at),
+                    release_failed: release.failed,
+                    pawn_inbound: entry.pawn_inbound,
+                })
+            })
+            .collect();
+        observations.sort_unstable_by_key(|observation| observation.connection);
+        observations
+    }
+
     /// Dispatch level visibility reports and open each newly visible level's
     /// actors (level visibility actors). A client reports a streamed level it
     /// made visible or hid with controller field 82 (F-1052; it streams tiles
@@ -5750,6 +5944,15 @@ impl PeerLab {
             controller_possession_updates_acked: self.stats.controller_possession_updates_acked,
             controller_possession_sends_deferred: self.stats.controller_possession_sends_deferred,
             controller_possession_errors: self.stats.controller_possession_errors,
+            frozen_movement_releases_scheduled: self.stats.frozen_movement_releases_scheduled,
+            frozen_movement_releases_sent: self.stats.frozen_movement_releases_sent,
+            frozen_movement_releases_acked: self.stats.frozen_movement_releases_acked,
+            frozen_movement_release_sends_deferred: self
+                .stats
+                .frozen_movement_release_sends_deferred,
+            frozen_movement_release_errors: self.stats.frozen_movement_release_errors,
+            pawn_bunches_received_reliable: self.stats.pawn_bunches_received_reliable,
+            pawn_bunches_received_unreliable: self.stats.pawn_bunches_received_unreliable,
             level_visibility_reports_added: self.stats.level_visibility_reports_added,
             level_visibility_reports_duplicate: self.stats.level_visibility_reports_duplicate,
             level_visibility_reports_hidden: self.stats.level_visibility_reports_hidden,
@@ -5886,6 +6089,7 @@ impl PeerLab {
     /// retaining per-peer detail or allocating output proportional to traffic.
     pub fn readiness_counts(&self) -> ReadinessCounts {
         let mut counts = ReadinessCounts::default();
+        let now = Instant::now();
         for entry in self.peers.values() {
             let transport = &mut counts.initialisation_transport;
             let request = &entry.initialisation_request_receipt;
@@ -5927,6 +6131,14 @@ impl PeerLab {
             possession.queued += usize::from(receipt.channel.is_some());
             possession.settled += usize::from(receipt.settled);
             possession.awaiting_ack += usize::from(receipt.channel.is_some() && !receipt.settled);
+            let release = &mut counts.frozen_movement_release;
+            let frozen = &entry.frozen_release;
+            release.awaiting_delay += usize::from(frozen.awaiting_delay(now));
+            release.pending_send += usize::from(frozen.pending);
+            release.queued += usize::from(frozen.receipt.channel.is_some());
+            release.settled += usize::from(frozen.receipt.settled);
+            release.awaiting_ack +=
+                usize::from(frozen.receipt.channel.is_some() && !frozen.receipt.settled);
             let levels = &mut counts.level_visibility;
             levels.levels_visible += entry.visible_levels.len();
             levels.levels_with_actors += entry.level_actors.len();
@@ -6193,6 +6405,8 @@ impl PeerLab {
                         controller_possession_retry_ready: false,
                         controller_possession_receipt: InitialisationReceipt::default(),
                         controller_possession_failed: false,
+                        frozen_release: FrozenMovementRelease::default(),
+                        pawn_inbound: PawnInboundCounts::default(),
                         visible_levels: BTreeSet::new(),
                         level_actors: BTreeMap::new(),
                         level_actor_queue: VecDeque::new(),
@@ -6353,6 +6567,7 @@ impl PeerLab {
                             // ACK of its own bunch; NAKs leave repair to the
                             // reliable layer and settle nothing.
                             let mut settled_records = 0;
+                            let mut own_settled = false;
                             entry.connected_player_receipts.retain_mut(|pending| {
                                 pending.receipt.observe_positive_ack(
                                     &entry.peer,
@@ -6360,9 +6575,30 @@ impl PeerLab {
                                 );
                                 if pending.receipt.settled {
                                     settled_records += pending.records;
+                                    own_settled |= pending.own;
                                 }
                                 !pending.receipt.settled
                             });
+                            // The player's own record creation settled: its
+                            // frozen-movement release is scheduled, once.
+                            if own_settled
+                                && let Some(delay) = self.frozen_movement_release
+                                && entry.frozen_release.record_acked_at.is_none()
+                            {
+                                entry.frozen_release.record_acked_at = Some(now);
+                                entry.frozen_release.due_at = Some(now + delay);
+                                bump(&mut self.stats.frozen_movement_releases_scheduled);
+                            }
+                            let release = &mut entry.frozen_release;
+                            let settled = release.receipt.settled;
+                            release.receipt.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                            if release.receipt.settled && !settled {
+                                release.acked_at = Some(now);
+                                bump(&mut self.stats.frozen_movement_releases_acked);
+                            }
                             entry.connected_player_creations_settled += settled_records;
                             self.stats.connected_player_record_creations_acked = self
                                 .stats
@@ -6437,6 +6673,9 @@ impl PeerLab {
                             }
                             if entry.controller_possession_pending {
                                 entry.controller_possession_retry_ready = true;
+                            }
+                            if entry.frozen_release.pending {
+                                entry.frozen_release.retry_ready = true;
                             }
                             if !entry.level_actor_queue.is_empty() {
                                 entry.level_actors_retry_ready = true;
@@ -6566,6 +6805,43 @@ impl PeerLab {
                             .stats
                             .actor_duplicate_reliable
                             .saturating_add(summary.actor_duplicate_reliable as u64);
+                        // Pawn-channel traffic per connection, by header
+                        // only; the bunches' handling is unchanged.
+                        if let Some((_, pawn_channel, _)) = &self.pawn_open
+                            && entry.controller_startup_pawn_guid.is_some()
+                        {
+                            let on_pawn = |bunch: &&super::packet::Bunch| {
+                                bunch.header.channel_index == *pawn_channel
+                            };
+                            let reliable =
+                                received.actor_bunches().iter().filter(on_pawn).count() as u64;
+                            let unreliable = received
+                                .unreliable_actor_bunches()
+                                .iter()
+                                .filter(on_pawn)
+                                .count() as u64;
+                            if reliable + unreliable > 0 {
+                                let counts = &mut entry.pawn_inbound;
+                                counts.reliable_bunches =
+                                    counts.reliable_bunches.saturating_add(reliable);
+                                counts.unreliable_bunches =
+                                    counts.unreliable_bunches.saturating_add(unreliable);
+                                counts.last_bunch_ms = Some(
+                                    now.saturating_duration_since(self.started)
+                                        .as_millis()
+                                        .min(u128::from(u64::MAX))
+                                        as u64,
+                                );
+                                self.stats.pawn_bunches_received_reliable = self
+                                    .stats
+                                    .pawn_bunches_received_reliable
+                                    .saturating_add(reliable);
+                                self.stats.pawn_bunches_received_unreliable = self
+                                    .stats
+                                    .pawn_bunches_received_unreliable
+                                    .saturating_add(unreliable);
+                            }
+                        }
                         // Header-only counts; these bunches stay dropped.
                         if self.count_unreliable_actor_bunches
                             && !received.unreliable_actor_bunches().is_empty()
@@ -7462,6 +7738,8 @@ impl PeerLab {
         let world_seconds = self.started.elapsed().as_secs_f32();
         let (key, engine_order) = (session.state.key, viewer.peer.connection_byte_order());
         let unchanged = created.is_empty() && array == viewer.connected_players_sent;
+        let own_index = viewer.connected_player.as_ref().map(|record| record.index);
+        let own = created.iter().any(|(index, _)| Some(*index) == own_index);
         let Some(entry) = self.peers.get_mut(&address) else {
             return;
         };
@@ -7519,6 +7797,7 @@ impl PeerLab {
                                 previous,
                             ),
                             records: created.len(),
+                            own,
                         });
                 }
                 entry.connected_players_sent = array;
@@ -7661,6 +7940,90 @@ impl PeerLab {
                         bump(&mut self.stats.peers_failed);
                     } else {
                         self.connected_player_actor_opened(address);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Admit each session's due frozen-movement release: once its delay
+    /// after the record's ACK has passed, and again after ACK/NAK progress
+    /// when transport pressure held it back. A NAK of an admitted bunch is
+    /// repaired by the reliable layer from the stored bytes, never recomposed.
+    fn retry_frozen_movement_release(&mut self) {
+        if self.frozen_movement_release.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let ready: Vec<SocketAddrV4> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                let release = &mut entry.frozen_release;
+                if release.idle() && release.due_at.is_some_and(|due| due <= now) {
+                    release.pending = true;
+                    release.retry_ready = true;
+                }
+                (release.pending && std::mem::take(&mut release.retry_ready)).then_some(*address)
+            })
+            .collect();
+        for address in ready {
+            self.send_frozen_movement_release(address);
+        }
+    }
+
+    fn send_frozen_movement_release(&mut self, address: SocketAddrV4) {
+        let Some((plan, channel, _)) = &self.pawn_open else {
+            return;
+        };
+        let channel = *channel;
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        if entry.controller_startup_pawn_guid.is_none()
+            || !entry.peer.has_actor_channel(channel)
+            || entry.peer.actor_channel_closing(channel)
+        {
+            // No pawn left to release: abandoned.
+            entry.frozen_release.pending = false;
+            entry.frozen_release.failed = true;
+            bump(&mut self.stats.frozen_movement_release_errors);
+            return;
+        }
+        let sent =
+            compose_pawn_frozen_movement_update(plan, false, entry.peer.connection_byte_order())
+                .and_then(|payload| {
+                    let previous = entry
+                        .peer
+                        .actor_reliable_sequence(channel)
+                        .context("pawn channel missing")?;
+                    let sent = entry
+                        .peer
+                        .reliable_actor_bunch_datagrams(channel, payload)?;
+                    Ok((sent, previous))
+                });
+        match sent {
+            Ok((sent, previous)) => {
+                let release = &mut entry.frozen_release;
+                release.receipt = InitialisationReceipt::committed(&entry.peer, channel, previous);
+                release.pending = false;
+                release.sent_at = Some(Instant::now());
+                entry.ack_pending = false;
+                bump(&mut self.stats.frozen_movement_releases_sent);
+                // Queued for reliable repair: a failed socket send only counts.
+                self.send_all(&sent, address);
+            }
+            Err(error) => {
+                if transport_capacity_can_drain(entry, &error, channel) {
+                    entry.frozen_release.retry_ready = false;
+                    bump(&mut self.stats.frozen_movement_release_sends_deferred);
+                } else {
+                    entry.frozen_release.pending = false;
+                    entry.frozen_release.failed = true;
+                    bump(&mut self.stats.frozen_movement_release_errors);
+                    if entry.peer.is_failed() {
+                        self.remove_peer(address);
+                        bump(&mut self.stats.peers_failed);
                     }
                 }
             }
@@ -9553,6 +9916,7 @@ impl PeerLab {
         self.retry_pending_pawn_restores();
         self.finalise_connected_players();
         self.retry_connected_player_records();
+        self.retry_frozen_movement_release();
         self.retry_pending_player_history();
         self.update_pawn_properties();
         self.send_acks();
@@ -11737,6 +12101,217 @@ mod tests {
         lab.remove_peer(address).unwrap();
         assert_eq!(lab.stats.connected_player_records_removed, 1);
         assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+    }
+
+    /// The `bServerFrozenMovement` values of the whole reliable pawn property
+    /// updates among `bunches`, decoded against the lab's pawn layout.
+    fn frozen_releases(lab: &PeerLab, bunches: &[super::super::packet::Bunch]) -> Vec<RepValue> {
+        let (plan, channel, _) = lab.pawn_open.as_ref().unwrap();
+        let codec = record_codec();
+        let wire = plan
+            .layout_version
+            .wire_handle(super::super::pawn_open::handle::SERVER_FROZEN_MOVEMENT)
+            .unwrap();
+        bunches
+            .iter()
+            .filter(|bunch| bunch.header.channel_index == *channel && !bunch.header.open)
+            .map(|bunch| {
+                assert!(bunch.header.reliable && !bunch.header.partial);
+                let body = super::super::actor_channel::read_actor_bunch_body(
+                    &mut bunch.payload.reader(),
+                    false,
+                    &codec.actor,
+                )
+                .unwrap();
+                let [block] = body.blocks.as_slice() else {
+                    panic!("one block");
+                };
+                assert_eq!(block.target, BlockTarget::Actor);
+                let stream = super::super::rep_layout::parse_rep_properties(
+                    &block.payload,
+                    &plan.layout,
+                    &codec,
+                )
+                .unwrap();
+                let [entry] = stream.entries.as_slice() else {
+                    panic!("one property");
+                };
+                assert_eq!(entry.handle, wire);
+                entry.value.clone()
+            })
+            .collect()
+    }
+
+    /// The release is scheduled by the positive ACK of the player's own
+    /// record creation, never before; it is sent once after the delay, a NAK
+    /// is repaired by the reliable layer without a second release, and the
+    /// ACK of its own bunch settles it once.
+    #[test]
+    fn frozen_movement_release_follows_the_record_ack_after_its_delay_once() {
+        let mut lab = record_lab(true);
+        let delay = Duration::from_millis(120);
+        lab.enable_frozen_movement_release(delay).unwrap();
+        assert_eq!(lab.frozen_movement_release_delay(), Some(delay));
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredFrozenUser");
+        assert!(
+            lab.enable_frozen_movement_release(delay).is_err(),
+            "configured before admission"
+        );
+        complete_record_player(&mut lab, address);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+        // Finalised and the record sent, but not ACKed: nothing scheduled.
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_releases_scheduled, 0);
+        assert_eq!(
+            lab.readiness_counts().frozen_movement_release,
+            Default::default()
+        );
+        // A NAK of the record schedules nothing either.
+        deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+        assert_eq!(lab.stats.frozen_movement_releases_scheduled, 0);
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(frozen_releases(&lab, &bunches).is_empty());
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        assert_eq!(lab.stats.frozen_movement_releases_scheduled, 1);
+        // Waiting out the delay.
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 0);
+        assert_eq!(
+            lab.readiness_counts().frozen_movement_release,
+            FrozenMovementReleaseReadiness {
+                awaiting_delay: 1,
+                ..Default::default()
+            }
+        );
+        std::thread::sleep(delay + Duration::from_millis(10));
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 1);
+        assert_eq!(
+            lab.readiness_counts().frozen_movement_release,
+            FrozenMovementReleaseReadiness {
+                queued: 1,
+                awaiting_ack: 1,
+                ..Default::default()
+            }
+        );
+        let [observation] = lab.frozen_movement_observations()[..] else {
+            panic!("one session");
+        };
+        let acked = observation.record_acked_ms.unwrap();
+        let delay_ms = delay.as_millis() as u64;
+        assert_eq!(observation.release_due_ms, Some(acked + delay_ms));
+        assert!(observation.release_sent_ms.unwrap() >= acked + delay_ms);
+        // Lost: repaired from the stored bytes, not released again.
+        let lost = deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+        assert_eq!(frozen_releases(&lab, &lost), [RepValue::Bool(false)]);
+        assert_eq!(lab.stats.frozen_movement_releases_acked, 0);
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        let repaired = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(frozen_releases(&lab, &repaired), [RepValue::Bool(false)]);
+        assert_eq!(lab.stats.frozen_movement_releases_acked, 1);
+        assert_eq!(
+            lab.readiness_counts().frozen_movement_release,
+            FrozenMovementReleaseReadiness {
+                queued: 1,
+                settled: 1,
+                ..Default::default()
+            }
+        );
+        let [observation] = lab.frozen_movement_observations()[..] else {
+            panic!("one session");
+        };
+        assert!(observation.release_acked_ms >= observation.release_sent_ms);
+        assert!(!observation.release_failed);
+        // Never again: later passes, finalisation and record changes.
+        lab.finalise_connected_players();
+        lab.mark_connected_players_due(|_| true);
+        lab.retry_connected_player_records();
+        lab.retry_frozen_movement_release();
+        assert!(deliver_bunches(&mut lab, &socket, &mut client, |_| true).is_empty());
+        assert_eq!(lab.stats.frozen_movement_releases_scheduled, 1);
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 1);
+        assert_eq!(lab.stats.frozen_movement_releases_acked, 1);
+        assert_eq!(lab.stats.frozen_movement_release_errors, 0);
+        let counts = lab.session_counts();
+        assert_eq!(counts.frozen_movement_releases_sent, 1);
+        assert_eq!(counts.frozen_movement_releases_acked, 1);
+        lab.remove_peer(address).unwrap();
+        assert!(lab.frozen_movement_observations().is_empty());
+    }
+
+    /// Off (the lab default) sends nothing; the release needs records.
+    #[test]
+    fn frozen_movement_release_off_sends_nothing_and_needs_records() {
+        assert!(
+            record_lab(false)
+                .enable_frozen_movement_release(Duration::ZERO)
+                .is_err()
+        );
+        assert!(
+            record_lab(true)
+                .enable_frozen_movement_release(Duration::from_millis(600_001))
+                .is_err()
+        );
+        let mut lab = record_lab(true);
+        assert_eq!(lab.frozen_movement_release_delay(), None);
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredFrozenUser");
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert!(frozen_releases(&lab, &bunches).is_empty());
+        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+        lab.retry_frozen_movement_release();
+        assert!(deliver_bunches(&mut lab, &socket, &mut client, |_| true).is_empty());
+        assert_eq!(lab.stats.frozen_movement_releases_scheduled, 0);
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 0);
+        let [observation] = lab.frozen_movement_observations()[..] else {
+            panic!("one session");
+        };
+        assert_eq!(observation.record_acked_ms, None);
+    }
+
+    /// A pawn channel closed before the release falls due abandons it.
+    #[test]
+    fn frozen_movement_release_is_abandoned_without_an_open_pawn_channel() {
+        let mut lab = record_lab(true);
+        lab.enable_frozen_movement_release(Duration::ZERO).unwrap();
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredFrozenUser");
+        complete_record_player(&mut lab, address);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        // Hold the release back by hand, then lose the pawn.
+        lab.frozen_movement_release = None;
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        lab.frozen_movement_release = Some(Duration::ZERO);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        entry.frozen_release.record_acked_at = Some(Instant::now());
+        entry.frozen_release.due_at = Some(Instant::now());
+        entry.controller_startup_pawn_guid = None;
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 0);
+        assert_eq!(lab.stats.frozen_movement_release_errors, 1);
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_release_errors, 1, "once");
+        assert!(lab.frozen_movement_observations()[0].release_failed);
     }
 
     /// Reachable only by hand: the real sequence opens the controller, pawn
