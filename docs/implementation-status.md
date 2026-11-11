@@ -5,7 +5,7 @@ Checkpoint: [findings](ledgers/findings/), [unknowns](ledgers/unknowns.md),
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-11-10
+Last reconciled: 2026-11-11
 
 ## Summary
 
@@ -41,4 +41,4 @@ Digests: [foundation](research/foundation/foundation.md) and
 4. Network bounds F-841/F-975/F-1015/F-1016; restore F-973/F-978 to F-993/F-1054 to F-1056/F-1063/F-1064/F-1066; ticks/publication F-995 to F-1000. Next: environment/timing/callbacks U-069; new players F-947, refresh U-070, quests U-076, stock-client scenarios U-038/U-052.
 5. Replication replay/scheduling F-762/F-761, lifecycle/costs F-938/F-952. Rotation awaits qualification. Next: properties/poses U-025, physics, velocity and stock-client behavior. [Protocol](specs/network/actor-channel.md); [configuration](runbooks/native-server.md#network-sessions-experimental).
 6. Reliability F-1029/F-1030/F-872/F-873/F-875/F-833/F-932/M-1055/F-877. Next: wall-clock holds/controller receipts and physical power loss U-035; no ICARUS performance proof F-871.
-7. Profiles/tags/rows F-1031 to F-1033; friends query F-1051; fields66/86 F-1052; runs finalise, record ACKed, UI stalls F-1084/F-1085. Original after 126 F-1068/F-1081, record F-1072 to F-1075, curtain F-1069/F-1076, tile gate F-1078 to F-1080; native record F-1077/F-1086, possession F-1088, run 3 F-1089, gaps F-1082/F-1087. Next: level-visibility actors behind the gate, then a run (U-038/U-079); visibility F-1034 stays gated. [Gates](gates.md).
+7. Profiles/tags/rows F-1031 to F-1033; friends query F-1051; fields66/86 F-1052; runs finalise, record ACKed, UI stalls F-1084/F-1085. Original after 126 F-1068/F-1081, record F-1072 to F-1075, curtain F-1069/F-1076, tile gate F-1078 to F-1080; native record F-1077/F-1086, possession F-1088, run 3 F-1089, gaps F-1082/F-1087. Level-visibility actors exist probe-only (server refuses the key); their analysis M-1349/M-1350 is unrecorded because active findings are at the cap. Next, both user decisions: the findings cap, then a bounded run with the probe switch on (U-038/U-079); visibility F-1034 stays gated. [Gates](gates.md).

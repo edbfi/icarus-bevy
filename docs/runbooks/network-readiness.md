@@ -134,6 +134,14 @@ since.
 `_sends_deferred`, `_errors` (abandoned). `unreliable_actor_bunches` (probe
 opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
+`level_visibility` (probe-enabled, gated): `levels_visible`,
+`levels_with_actors`, `opens_{pending,awaiting_ack,settled,refused_waiting}`,
+`channels_held`, `channel_budget_remaining` (cap 128, 64 kept free). Counters
+`level_visibility_reports_{added,duplicate,hidden,over_bound,malformed,refused_name,absent}`
+(a malformed report is skipped, never its bunch) and
+`level_actor_opens_{sent,acked,deferred,refused,requeued,withdrawn}`,
+`level_actor_open_errors`, `level_hides_actors_kept`; `refused` counts once per
+cause. ACK is packet delivery, not client application.
 `connected_player_records`: `registered`, `finalised`, `pending_send`
 (connections with an unadmitted change); `creations_queued` =
 `creations_settled` + `records_awaiting_ack`.

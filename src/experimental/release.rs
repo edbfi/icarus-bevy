@@ -573,6 +573,81 @@ impl ReleasePlayerStateProfile {
     }
 }
 
+/// Per-release identities of level visibility actors (`[level_actors]`): the
+/// object names of the static world-settings-class actors the original opens
+/// in each level a client reports visible (field 82, F-1052), and the class
+/// network checksum (`F-776`) their exports carry. Each actor is named by the
+/// export chain `[name, PersistentLevel, world, package]`, the level part by
+/// [`map_level_chain`] from the reported package. No packaged level content
+/// is read: the names are authored constants of wire identities, uniform over
+/// every level observed so far; a level whose actors are named otherwise
+/// fails to resolve on the client.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseLevelActorsProfile {
+    /// Actor object names, opened in this order on fresh channels.
+    pub names: Vec<String>,
+    /// `ClassChecksum` of the actors' class.
+    pub checksum: u32,
+}
+
+/// Most actors a level may name: each one takes an actor channel per
+/// connection reporting the level.
+pub const MAX_LEVEL_ACTOR_NAMES: usize = 4;
+
+impl ReleaseLevelActorsProfile {
+    /// `IcarusWorldSettings_0` and `BP_IcarusWorldSettings_C` with
+    /// `ClassChecksum(AWorldSettings) = 3401274505`, computed with the
+    /// retained checksum algorithm from public server 26425113 (3.0.35) and
+    /// equal to every world-settings actor export of the retained 3.0.34
+    /// session, whose subclasses add no net properties (M-1350). Built in
+    /// only for those two builds; other builds need an explicit
+    /// `[level_actors]`.
+    pub fn icarus_world_settings() -> Self {
+        Self {
+            names: vec![
+                "IcarusWorldSettings_0".to_owned(),
+                "BP_IcarusWorldSettings_C".to_owned(),
+            ],
+            checksum: 3_401_274_505,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=MAX_LEVEL_ACTOR_NAMES).contains(&self.names.len()),
+            "level_actors needs 1..={MAX_LEVEL_ACTOR_NAMES} actor names"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for name in &self.names {
+            ensure!(
+                !name.is_empty()
+                    && name.is_ascii()
+                    && !name.contains(['/', '.', ':'])
+                    && name.len() <= 256,
+                "level_actors names must be plain nonempty ASCII object names"
+            );
+            ensure!(
+                seen.insert(name.to_ascii_lowercase()),
+                "duplicate level_actors name {name}"
+            );
+        }
+        ensure!(self.checksum != 0, "level_actors needs a class checksum");
+        Ok(())
+    }
+
+    /// The export chain of actor `index` in the level `package`, leaf first:
+    /// the actor (its class checksum), then `PersistentLevel`, the world and
+    /// the package ([`map_level_chain`], checksum 0); every segment
+    /// `no_load`, so each carries export flags 7 as the original's do.
+    pub fn actor_chain(&self, index: usize, package: &str) -> Result<Vec<PathSegment>> {
+        let name = self.names.get(index).context("level actor index")?;
+        let mut chain = vec![PathSegment::new(name, self.checksum, true)];
+        chain.extend(map_level_chain(package)?);
+        Ok(chain)
+    }
+}
+
 /// A replicated component of the GameState or the pawn: its name and class
 /// network checksum (`F-776`).
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -966,7 +1041,8 @@ impl ReleasePlayerControllerProfile {
 /// without a built-in or explicit `[player_controller]` section. Likewise
 /// `player_state`, `game_state` and `pawn` feed the PlayerState, GameState
 /// and pawn open plans and are `None` without a built-in or explicit
-/// `[player_state]`, `[game_state]` or `[pawn]` section.
+/// `[player_state]`, `[game_state]` or `[pawn]` section. `level_actors`
+/// names the actors a level visibility report opens (`[level_actors]`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseProfile {
     pub pin: ReleasePin,
@@ -981,6 +1057,10 @@ pub struct ReleaseProfile {
     pub game_state: Option<ReleaseGameStateProfile>,
     pub pawn: Option<ReleasePawnProfile>,
     pub managers: Option<ReleaseManagersProfile>,
+    /// Level visibility actor identities; `None` where not derived, which
+    /// leaves [`super::peer_lab::PeerLab::enable_level_visibility_actors`]
+    /// unable to run. Identities alone enable nothing.
+    pub level_actors: Option<ReleaseLevelActorsProfile>,
 }
 
 #[derive(Deserialize)]
@@ -1009,6 +1089,8 @@ struct ReleaseFile {
     pawn: Option<ReleasePawnProfile>,
     #[serde(default)]
     managers: Option<ReleaseManagersProfile>,
+    #[serde(default)]
+    level_actors: Option<ReleaseLevelActorsProfile>,
 }
 
 impl ReleasePin {
@@ -1072,6 +1154,8 @@ impl ReleaseProfile {
             game_state: Some(ReleaseGameStateProfile::icarus_survival()),
             pawn: Some(ReleasePawnProfile::icarus_survival()),
             managers: Some(ReleaseManagersProfile::icarus_survival()),
+            // Not derived for this build.
+            level_actors: None,
         }
     }
 
@@ -1106,6 +1190,8 @@ impl ReleaseProfile {
             game_state: Some(ReleaseGameStateProfile::icarus_survival()),
             pawn: Some(ReleasePawnProfile::icarus_survival()),
             managers: Some(ReleaseManagersProfile::icarus_survival()),
+            // Not derived for this build.
+            level_actors: None,
         }
     }
 
@@ -1132,6 +1218,7 @@ impl ReleaseProfile {
             game_state.connected_player_record =
                 Some(ReleaseGameStateProfile::connected_player_record_chain());
         }
+        profile.level_actors = Some(ReleaseLevelActorsProfile::icarus_world_settings());
         profile
     }
 
@@ -1219,6 +1306,16 @@ impl ReleaseProfile {
         }
     }
 
+    /// Built-in level visibility actor identities: only for 3.0.34 and
+    /// 3.0.35, where the checksum was derived and matched; `None` elsewhere,
+    /// so a pin bump never inherits them.
+    fn default_level_actors_for_build(build_id: u64) -> Option<ReleaseLevelActorsProfile> {
+        match build_id {
+            26_313_077 | 26_425_113 => Some(ReleaseLevelActorsProfile::icarus_world_settings()),
+            _ => None,
+        }
+    }
+
     /// Built-in pawn identifiers for a qualified build ID; `None` elsewhere,
     /// so a pin bump never inherits an older build's checksums.
     fn default_pawn_for_build(build_id: u64) -> Option<ReleasePawnProfile> {
@@ -1255,13 +1352,62 @@ impl ReleaseProfile {
         if let Some(managers) = &self.managers {
             managers.validate()?;
         }
+        if let Some(level_actors) = &self.level_actors {
+            level_actors.validate()?;
+        }
         Ok(())
+    }
+
+    /// Every package path (a chain segment starting with `/`) this release's
+    /// own opens may export: the archetype and class chains of the
+    /// PlayerController, PlayerState, GameState (with its game mode,
+    /// spectator and record classes), pawn (with its inventory class) and
+    /// managers. Known before any client connects; the map's level chain is
+    /// the caller's.
+    pub fn server_package_paths(&self) -> Vec<String> {
+        let mut chains: Vec<&[ReleasePathSegment]> = Vec::new();
+        if let Some(controller) = &self.player_controller {
+            chains.push(&controller.archetype);
+        }
+        if let Some(player_state) = &self.player_state {
+            chains.push(&player_state.archetype);
+        }
+        if let Some(game_state) = &self.game_state {
+            chains.extend([
+                game_state.archetype.as_slice(),
+                game_state.game_mode_class.as_slice(),
+                game_state.spectator_class.as_slice(),
+            ]);
+            if let Some(record) = &game_state.connected_player_record {
+                chains.push(record);
+            }
+        }
+        if let Some(pawn) = &self.pawn {
+            chains.extend([pawn.archetype.as_slice(), pawn.inventory_class.as_slice()]);
+        }
+        if let Some(managers) = &self.managers {
+            chains.extend([
+                managers.quest_manager.as_slice(),
+                managers.inventory_container_manager.as_slice(),
+                managers.player_history_tracker.as_slice(),
+                managers.flod.as_slice(),
+                managers.radiation_manager.as_slice(),
+                managers.world_talent_manager.as_slice(),
+                managers.disaster_controller.as_slice(),
+            ]);
+        }
+        chains
+            .into_iter()
+            .flatten()
+            .filter(|segment| segment.path.starts_with('/'))
+            .map(|segment| segment.path.clone())
+            .collect()
     }
 
     /// Parse a release TOML file (`[release]` plus optional `[tags]`,
     /// `[class_net_cache]`, `[row_handles]`, `[player_controller]`,
-    /// `[player_state]`, `[game_state]` and `[pawn]` sections) and validate
-    /// it.
+    /// `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and
+    /// `[level_actors]` sections) and validate it.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleaseFile>(text).context("release profile")?;
         let tags = match parsed.tags {
@@ -1291,6 +1437,9 @@ impl ReleaseProfile {
         let managers = parsed
             .managers
             .or_else(|| Self::default_managers_for_build(parsed.release.build_id));
+        let level_actors = parsed
+            .level_actors
+            .or_else(|| Self::default_level_actors_for_build(parsed.release.build_id));
         let profile = Self {
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
@@ -1303,6 +1452,7 @@ impl ReleaseProfile {
             game_state,
             pawn,
             managers,
+            level_actors,
         };
         profile.validate()?;
         Ok(profile)
