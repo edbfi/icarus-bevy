@@ -12,13 +12,14 @@ import tempfile
 from datetime import date
 from typing import final
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # Git hooks export GIT_INDEX_FILE and friends; fixture repositories (and the
 # lint's own git calls on them) must never act on the caller's repository.
 for _variable in [name for name in os.environ if name.startswith("GIT_")]:
     del os.environ[_variable]
-from tools import docs_lint  # noqa: E402
+from tools import docs_lint, sha256_manifest  # noqa: E402
 
 DIGEST = "a" * 64
 STATUS_LEGACY = "# Status\n\n## Summary\n\n## Milestones\n\n## Works\n\n## Does not work\n\n## Gates\n\n## Next tasks\n\nLast reconciled: 2026-10-13\n"
@@ -696,27 +697,140 @@ class DocsLintTest(unittest.TestCase):
                 self.assertEqual(docs_lint.main(["--root", str(fx.root), *argv]), 0)
             self.assertEqual(output.getvalue().strip(), expected)
 
+    def manifest_rows(self, fx: Fixture, *paths: str) -> None:
+        """Index rows M-001.. naming ``paths`` with their current digests."""
+        fx.shard("".join(record(n, path=path, sha256=hashlib.sha256((fx.root / path).read_bytes()).hexdigest()) for n, path in enumerate(paths, start=1)))
+
+    def list_local(self, fx: Fixture) -> tuple[int, list[str], str]:
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = docs_lint.main(["--root", str(fx.root), "--list-local"])
+        return status, output.getvalue().splitlines(), errors.getvalue()
+
     def test_fixity_manifest_rows(self) -> None:
         fx = self.make()
         fx.write("work/c/notes.md", "kept")
         fx.write("work/c/sub/out.json", "{}")
         fx.write("work/c/fixity.sha256", f"{sha('kept')}  notes.md\n{sha('{}')}  sub/out.json\n")
-        fx.write("work/d/fixity.sha256", f"{sha('x')}  gone.md\n{sha('y')}  ../c/notes.md\n")
+        fx.write("work/d/fixity.sha256", f"{sha('x')}  gone.md\n{sha('y')}  ../../../outside.md\n")
         fx.write("work/e/notes.md", "changed")
         fx.write("work/e/fixity.sha256", f"{sha('kept')}  notes.md\n")
-        rows = [("work/c/fixity.sha256", 1), ("work/d/fixity.sha256", 2), ("work/e/fixity.sha256", 3)]
-        fx.shard("".join(record(n, path=path, sha256=hashlib.sha256((fx.root / path).read_bytes()).hexdigest()) for path, n in rows))
+        self.manifest_rows(fx, "work/c/fixity.sha256", "work/d/fixity.sha256", "work/e/fixity.sha256")
         problems = fx.lint(local=True)
         self.assertFalse(any("M-001" in problem for problem in problems), problems)
-        self.assertTrue(any("M-002: unreadable fixity manifest: line 2 leaves the manifest directory" in problem for problem in problems), problems)
-        self.assertTrue(any("M-003: fixity entry digest mismatch: notes.md" in problem for problem in problems), problems)
+        self.assertTrue(any("M-002: unreadable sha256 manifest: line 2 leaves the repository" in problem for problem in problems), problems)
+        self.assertTrue(any("M-003: manifest entry digest mismatch: notes.md" in problem for problem in problems), problems)
         fx.write("work/d/fixity.sha256", f"{sha('x')}  gone.md\n")
-        fx.shard("".join(record(n, path=path, sha256=hashlib.sha256((fx.root / path).read_bytes()).hexdigest()) for path, n in rows[:2]))
-        self.assertTrue(any("M-002: fixity entry missing: gone.md" in problem for problem in fx.lint(local=True)))
+        self.manifest_rows(fx, "work/c/fixity.sha256", "work/d/fixity.sha256")
+        self.assertTrue(any("M-002: manifest entry missing: gone.md" in problem for problem in fx.lint(local=True)))
         listed = fx.linter().local_paths()
         self.assertIn("work/c/notes.md", listed)
         self.assertIn("work/c/sub/out.json", listed)
         self.assertIn("work/c/fixity.sha256", listed)
+
+    def test_any_manifest_row_is_verified_whatever_its_name(self) -> None:
+        # M-1290's shape: a manifest not named fixity.sha256 whose entries are repository-relative.
+        fx = self.make()
+        fx.write("work/r/official/Bin/server.exe", "server")
+        fx.write("work/r/official/Bin/changed.dll", "changed")
+        fx.write("work/r/official-fixity.sha256", "".join([
+            f"{sha('server')}  work/r/official/Bin/server.exe\n",
+            f"{sha('original')} *work/r/official/Bin/changed.dll\n",
+            f"{sha('gone')}  work/r/official/Bin/gone.pak\n",
+        ]))
+        fx.write("work/o/run.log", "log")
+        fx.write("work/o/outputs.sha256", f"{sha('log')}  ./run.log\n3 run.log\n")
+        fx.write("work/h/hashes.txt", f"{sha('other')}  ../o/run.log\n")
+        fx.write("work/h/notes.txt", "not a manifest\n")
+        self.manifest_rows(fx, "work/r/official-fixity.sha256", "work/o/outputs.sha256", "work/h/hashes.txt", "work/h/notes.txt")
+        problems = fx.lint(local=True)
+        self.assertTrue(any("M-001: manifest entry digest mismatch: work/r/official/Bin/changed.dll" in problem for problem in problems), problems)
+        self.assertTrue(any("M-001: manifest entry missing: work/r/official/Bin/gone.pak" in problem for problem in problems), problems)
+        self.assertFalse(any("server.exe" in problem for problem in problems), problems)
+        self.assertFalse(any("M-002" in problem or "M-004" in problem for problem in problems), problems)
+        # A file whose first line is a sha256sum line is a manifest whatever its name.
+        self.assertTrue(any("M-003: manifest entry digest mismatch: ../o/run.log" in problem for problem in problems), problems)
+        fx.write("work/o/outputs.sha256", f"{sha('log')}  ./run.log\n5 run.log\n")
+        self.manifest_rows(fx, "work/r/official-fixity.sha256", "work/o/outputs.sha256")
+        self.assertTrue(any("M-002: manifest entry size mismatch: run.log" in problem for problem in fx.lint(local=True)))
+
+    def test_ambiguous_entry_verifies_against_either_location(self) -> None:
+        # A case snapshot of a tracked file: the entry resolves both beside the manifest and at the root.
+        fx = self.make()
+        fx.write("Cargo.lock", "current")
+        fx.write("work/v/Cargo.lock", "snapshot")
+        fx.write("work/v/fixity.sha256", f"{sha('snapshot')}  Cargo.lock\n")
+        fx.write("work/w/fixity.sha256", f"{sha('neither')}  Cargo.lock\n")
+        self.manifest_rows(fx, "work/v/fixity.sha256", "work/w/fixity.sha256")
+        problems = fx.lint(local=True)
+        self.assertFalse(any("M-001" in problem for problem in problems), problems)
+        self.assertTrue(any("M-002: manifest entry digest mismatch: Cargo.lock" in problem for problem in problems), problems)
+
+    def test_unusable_manifest_rows_are_problems_never_silent(self) -> None:
+        bodies = {
+            "malformed": b"not a manifest line\n",
+            "binary": b"\xff\xfe\x00",
+            "truncated": f"{sha('x')}  a.md\n{'0' * 30}".encode(),
+            "absolute": f"{sha('x')}  /etc/passwd\n".encode(),
+            "empty": b"\n",
+        }
+        for name, body in bodies.items():
+            with self.subTest(name):
+                fx = self.make()
+                path = fx.root / f"work/{name}/fixity-{name}.sha256"
+                path.parent.mkdir(parents=True)
+                _ = path.write_bytes(body)
+                self.manifest_rows(fx, f"work/{name}/fixity-{name}.sha256")
+                problems = fx.lint(local=True)
+                self.assertTrue(any("M-001: unreadable sha256 manifest" in problem for problem in problems), problems)
+                status, listed, errors = self.list_local(fx)
+                self.assertEqual(status, 1)
+                self.assertIn(f"work/{name}/fixity-{name}.sha256", listed)
+                self.assertIn("M-001: unreadable sha256 manifest", errors)
+
+    def test_list_local_lists_every_listed_file_and_reports_missing_ones(self) -> None:
+        fx = self.make()
+        fx.write("work/r/official/Bin/server.exe", "server")
+        fx.write("work/r/official-fixity.sha256", f"{sha('server')}  work/r/official/Bin/server.exe\n{sha('gone')}  official/Bin/gone.pak\n")
+        fx.write("work/o/run.log", "log")
+        fx.write("work/o/outputs.sha256", f"{sha('log')}  ./run.log\n")
+        fx.write("work/bad/fixity.sha256", "junk\n")
+        self.manifest_rows(fx, "work/r/official-fixity.sha256", "work/o/outputs.sha256", "work/bad/fixity.sha256")
+        status, listed, errors = self.list_local(fx)
+        self.assertEqual(status, 1)
+        for path in ("work/r/official/Bin/server.exe", "work/o/run.log", "work/o/outputs.sha256", "work/bad/fixity.sha256"):
+            self.assertIn(path, listed)
+        self.assertNotIn("work/r/official/Bin/gone.pak", listed)
+        self.assertIn("M-001: manifest entry missing: official/Bin/gone.pak", errors)
+        self.assertIn("M-003: unreadable sha256 manifest", errors)
+        fx.write("work/r/official-fixity.sha256", f"{sha('server')}  work/r/official/Bin/server.exe\n")
+        fx.write("work/bad/fixity.sha256", f"{sha('log')}  ../o/run.log\n")
+        self.manifest_rows(fx, "work/r/official-fixity.sha256", "work/o/outputs.sha256", "work/bad/fixity.sha256")
+        self.assertEqual(self.list_local(fx)[::2], (0, ""))
+
+    def test_removal_receipt_records_absent_files_but_must_still_parse(self) -> None:
+        # M-1079's shape: digest lines then size lines for files deliberately removed.
+        fx = self.make()
+        fx.write("work/x/paks-removed.sha256", f"{sha('pak')}  Icarus/Content/Paks/a.pak\n3 Icarus/Content/Paks/a.pak\n")
+        self.manifest_rows(fx, "work/x/paks-removed.sha256")
+        problems = fx.lint(local=True)
+        self.assertTrue(any("M-001: manifest entry missing" in problem for problem in problems), problems)
+        with patch.object(sha256_manifest, "REMOVAL_RECEIPTS", frozenset({"M-001"})):
+            self.assertEqual(fx.lint(local=True), [])
+            self.assertEqual(self.list_local(fx), (0, ["work/x/paks-removed.sha256"], ""))
+            fx.write("work/x/paks-removed.sha256", "removed, sizes unknown\n")
+            self.manifest_rows(fx, "work/x/paks-removed.sha256")
+            self.assertTrue(any("M-001: unreadable sha256 manifest" in problem for problem in fx.lint(local=True)))
+
+    def test_entries_shared_by_manifests_are_hashed_once(self) -> None:
+        fx = self.make()
+        fx.write("work/c/big.bin", "big")
+        fx.write("work/c/a.sha256", f"{sha('big')}  big.bin\n")
+        fx.write("work/c/b.sha256", f"{sha('big')}  work/c/big.bin\n")
+        self.manifest_rows(fx, "work/c/a.sha256", "work/c/b.sha256")
+        with patch.object(docs_lint, "sha256_file", wraps=docs_lint.sha256_file) as digest:
+            self.assertEqual(fx.lint(local=True), [])
+        self.assertEqual([call.args[0] for call in digest.call_args_list].count(fx.root / "work/c/big.bin"), 1)
 
     def test_reconciled_date_required(self) -> None:
         fx = self.make()

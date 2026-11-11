@@ -117,7 +117,7 @@ and uniqueness across `docs/ledgers/findings/`, IDs removed since `--base`
 (default `HEAD`), new receipt findings, evidence detail in prose, glued tokens,
 dated filenames, provenance lines, read tiers, evidence records and their
 citations. `--local` also verifies active `local-private` paths, digests,
-bundle membership of listed IDs and every file a `fixity.sha256` row lists;
+bundle membership of listed IDs and every file a sha256 manifest row lists;
 `--next-id` allocates IDs and `--list-local` lists paths to back up, including
 those files. Paths of active `local-private` rows are never deleted
 by cleanup.

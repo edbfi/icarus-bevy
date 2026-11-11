@@ -22,8 +22,8 @@ The script reads files only. ``--warn`` reports every problem but exits 0, for
 use while a migration is in flight. ``--local`` additionally verifies that
 active ``local-private`` evidence exists on disk with matching digests and that
 the Evidence and unknown IDs listed on a ``rea-bundle`` row are members of that
-exported bundle, and that every file a ``fixity.sha256`` row lists still matches
-its digest. ``--base REF`` names the revision whose ledger and manifest IDs
+exported bundle, and that every file a sha256 manifest row lists still matches
+its digest and size (``tools/sha256_manifest.py``). ``--base REF`` names the revision whose ledger and manifest IDs
 must survive (default ``HEAD``); its findings may still use the legacy single
 ``findings.md``.
 
@@ -36,6 +36,10 @@ Usage::
     python3 tools/docs_lint.py --base origin/main
     python3 tools/docs_lint.py --next-id M      # next free M-, F- or U- ID
     python3 tools/docs_lint.py --list-local     # active local-private evidence paths
+
+``--list-local`` prints every active ``local-private`` path and every existing file
+its manifests list; it reports listed files that are missing and manifests it cannot
+read on stderr and then exits 1.
 """
 
 from __future__ import annotations
@@ -51,6 +55,10 @@ import re
 import subprocess
 import sys
 from typing import TypeIs, cast, final
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools import sha256_manifest  # noqa: E402
 
 KIB = 1024
 
@@ -114,10 +122,6 @@ LABEL_CAP = 160
 NOTE_CAP = 200
 LISTED_ID_LIMIT = 32
 BUNDLE_PARSE_CAP = 64 * KIB * KIB
-# A row naming this file pins every file it lists (``sha256sum`` format, paths
-# relative to its directory); ``tools/work_gc.py --fixity`` writes it.
-FIXITY_NAME = "fixity.sha256"
-FIXITY_LINE = re.compile(r"([0-9a-f]{64})  (\S(?:.*\S)?)")
 # M-001..M-270 predate the index; they may keep directory paths, unknown digests and long labels.
 LEGACY_LAST = 270
 RECORD_CLASSES: frozenset[str] = frozenset({"local-private", "tracked", "external"})
@@ -296,20 +300,6 @@ def glued_tokens(line: str) -> list[str]:
 
 class RecordError(ValueError):
     """A malformed evidence index line."""
-
-
-def read_fixity(path: Path) -> list[tuple[str, str]]:
-    """``(sha256, relative path)`` pairs of a fixity manifest; paths stay inside its directory."""
-    entries: list[tuple[str, str]] = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        match = FIXITY_LINE.fullmatch(line)
-        if match is None:
-            raise RecordError(f"line {number} is not '<sha256>  <path>'")
-        rel = match.group(2)
-        if rel.startswith("/") or ".." in Path(rel).parts:
-            raise RecordError(f"line {number} leaves the manifest directory")
-        entries.append((match.group(1), rel))
-    return entries
 
 
 def _object_dict(value: object) -> TypeIs[dict[object, object]]:
@@ -525,6 +515,10 @@ class Linter:
     rows: list[ManifestRow]
     manifest: dict[str, ManifestRow]
     shards: dict[str, str]
+    # Digests of files already hashed this run; many manifests list the same file.
+    digests: dict[Path, str]
+    # What --list-local could not list: missing listed files and unreadable manifests.
+    local_problems: list[str]
 
     def __init__(self, root: Path, *, local: bool, base: str = "HEAD", today: date | None = None) -> None:
         self.root = root
@@ -538,6 +532,8 @@ class Linter:
         self.rows = []
         self.manifest = {}
         self.shards = {}
+        self.digests = {}
+        self.local_problems = []
 
     # -- loading ----------------------------------------------------------
 
@@ -1048,26 +1044,45 @@ class Linter:
             if not row.legacy:
                 self.report(row.rel, row.line, f"{row.identifier}: local-private evidence is not a file: {row.path}")
             return
-        if row.sha256 is not None and sha256_file(path) != row.sha256:
+        if row.sha256 is not None and self.digest(path) != row.sha256:
             self.report(row.rel, row.line, f"{row.identifier}: local-private evidence digest mismatch: {row.path}")
             return
         if row.kind == "rea-bundle":
             self.check_bundle_membership(row, path)
-        if path.name == FIXITY_NAME:
-            self.check_fixity(row, path)
+        self.check_manifest_entries(row)
 
-    def check_fixity(self, row: ManifestRow, path: Path) -> None:
+    def digest(self, path: Path) -> str:
+        known = self.digests.get(path)
+        if known is None:
+            known = self.digests[path] = sha256_file(path)
+        return known
+
+    def manifest_entries(self, row: ManifestRow, report: Callable[[str], None]) -> list[sha256_manifest.Entry]:
+        """Entries a row's manifest pins; reports a manifest whose entries are unknown.
+
+        A removal receipt lists files deliberately removed: it must parse, but pins nothing.
+        """
         try:
-            entries = read_fixity(path)
-        except (RecordError, UnicodeDecodeError) as error:
-            self.report(row.rel, row.line, f"{row.identifier}: unreadable fixity manifest: {error}")
-            return
-        for digest, rel in entries:
-            listed = path.parent / rel
-            if not listed.is_file() or listed.is_symlink():
-                self.report(row.rel, row.line, f"{row.identifier}: fixity entry missing: {rel}")
-            elif sha256_file(listed) != digest:
-                self.report(row.rel, row.line, f"{row.identifier}: fixity entry digest mismatch: {rel}")
+            entries = sha256_manifest.read_manifest(self.root, self.root / row.path)
+        except sha256_manifest.ManifestError as error:
+            report(f"{row.identifier}: unreadable sha256 manifest: {error}")
+            return []
+        if entries is None or row.identifier in sha256_manifest.REMOVAL_RECEIPTS:
+            return []
+        return entries
+
+    def check_manifest_entries(self, row: ManifestRow) -> None:
+        def problem(message: str) -> None:
+            self.report(row.rel, row.line, message)
+
+        for entry in self.manifest_entries(row, problem):
+            files = [path for path in entry.candidates if path.is_file() and not path.is_symlink()]
+            if not files:
+                problem(f"{row.identifier}: manifest entry missing: {entry.path}")
+            elif entry.sha256 is not None and all(self.digest(path) != entry.sha256 for path in files):
+                problem(f"{row.identifier}: manifest entry digest mismatch: {entry.path}")
+            elif entry.size is not None and all(path.stat().st_size != entry.size for path in files):
+                problem(f"{row.identifier}: manifest entry size mismatch: {entry.path}")
 
     def check_bundle_membership(self, row: ManifestRow, path: Path) -> None:
         if path.stat().st_size > BUNDLE_PARSE_CAP:
@@ -1153,20 +1168,21 @@ class Linter:
         return f"{prefix}-{max(numbers, default=0) + 1:03d}"
 
     def local_paths(self) -> list[str]:
-        """Active local-private paths to back up, with every file a fixity manifest lists."""
+        """Active local-private paths to back up, with every existing file a sha256 manifest lists.
+
+        Listed files that are missing and manifests that cannot be read go to ``local_problems``.
+        """
         paths: set[str] = set()
+        root = sha256_manifest.normal(self.root)
         for row in self.manifest.values():
             if row.klass != "local-private" or row.status != "active":
                 continue
             paths.add(row.path)
-            manifest = self.root / row.path
-            if manifest.name == FIXITY_NAME and manifest.is_file():
-                try:
-                    entries = read_fixity(manifest)
-                except (RecordError, UnicodeDecodeError) as error:
-                    raise SystemExit(f"docs_lint: {row.identifier}: unreadable fixity manifest: {error}") from error
-                parent = Path(row.path).parent
-                paths.update((parent / rel).as_posix() for _digest, rel in entries)
+            for entry in self.manifest_entries(row, self.local_problems.append):
+                present = [path for path in entry.candidates if path.exists()]
+                if not present:
+                    self.local_problems.append(f"{row.identifier}: manifest entry missing: {entry.path}")
+                paths.update(path.relative_to(root).as_posix() for path in present)
         return sorted(paths)
 
     def check_reconciled(self) -> None:
@@ -1281,7 +1297,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         linter.load()
         lines = [linter.next_id(options.next_id)] if options.next_id is not None else linter.local_paths()
         print("\n".join(lines))
-        return 0
+        for problem in linter.local_problems:
+            print(f"docs_lint: {problem}", file=sys.stderr)
+        return 1 if linter.local_problems else 0
     total = linter.run()
     for problem in linter.problems:
         print(problem.render())
