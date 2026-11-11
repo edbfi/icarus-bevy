@@ -41,9 +41,11 @@
 //! property update naming that pawn as `Pawn` and `IcarusPlayerCharacter`
 //! (F-1074). With `[network] server_frozen_movement_release` on (the
 //! default) and records sent, the pawn, opened with movement frozen, is
-//! released by one reliable pawn property update setting
-//! `bServerFrozenMovement` false, `server_frozen_movement_release_delay_ms`
-//! after the player's own record creation is ACKed. Level visibility actors (dispatching the client's field-82
+//! released by one unreliable pawn property update setting
+//! `bServerFrozenMovement` false, sent again if NAKed,
+//! `server_frozen_movement_release_delay_ms` after the player's own record
+//! creation is ACKed, as the original does (F-1099; the client's freeze
+//! rule, F-1100). Level visibility actors (dispatching the client's field-82
 //! level visibility reports and opening each newly visible level's
 //! world-settings actors) are gated: `[network] level_visibility_actors =
 //! true` is refused, and only the bounded join probe enables them through

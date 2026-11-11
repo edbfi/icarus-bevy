@@ -3889,16 +3889,19 @@ fn possession_updates(
         icarus_bevy::experimental::session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
         layout,
         datagrams,
+        true,
     )
 }
 
-/// Whole, reliable, nonopening bunches on `channel` with one actor property
-/// block among `datagrams`, decoded against `layout` as `(handle, value)`.
+/// Whole, nonopening bunches on `channel`, reliable or unreliable as
+/// `reliable` says, with one actor property block among `datagrams`, decoded
+/// against `layout` as `(handle, value)`.
 fn actor_property_updates(
     profile: &ReleaseProfile,
     channel: u32,
     layout: &[icarus_bevy::experimental::rep_layout::RepCommand],
     datagrams: &[Vec<u8>],
+    reliable: bool,
 ) -> Vec<Vec<(u32, icarus_bevy::experimental::rep_layout::RepValue)>> {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
@@ -3930,7 +3933,7 @@ fn actor_property_updates(
         for bunch in packet.bunches {
             let header = &bunch.header;
             if header.channel_index != channel
-                || !header.reliable
+                || header.reliable != reliable
                 || header.open
                 || header.partial
                 || header.has_package_map_exports
@@ -4034,8 +4037,9 @@ fn production_bind_sends_one_possession_update_per_joined_player() {
     }
 }
 
-/// The frozen-movement releases among `datagrams`: whole reliable pawn
-/// property updates carrying only `bServerFrozenMovement`, with its value.
+/// The frozen-movement releases among `datagrams`: whole unreliable pawn
+/// property updates carrying only `bServerFrozenMovement` (sent unreliable,
+/// as the original sends it), with its value.
 fn frozen_movement_updates(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> Vec<bool> {
     use icarus_bevy::experimental::{
         pawn_open::{PAWN_CHANNEL_INDEX, handle},
@@ -4050,7 +4054,7 @@ fn frozen_movement_updates(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> V
         .layout_version
         .wire_handle(handle::SERVER_FROZEN_MOVEMENT)
         .unwrap();
-    actor_property_updates(profile, PAWN_CHANNEL_INDEX, &plan.layout, datagrams)
+    actor_property_updates(profile, PAWN_CHANNEL_INDEX, &plan.layout, datagrams, false)
         .into_iter()
         .map(|entries| match entries.as_slice() {
             [(found, RepValue::Bool(frozen))] if *found == wire => *frozen,
@@ -4158,6 +4162,7 @@ fn production_bind_releases_frozen_movement_once_after_the_record_ack() {
         assert_eq!(status.frozen_movement_releases_sent, release_count);
         assert_eq!(status.frozen_movement_releases_acked, release_count);
         assert_eq!(status.frozen_movement_release_errors, 0);
+        assert_eq!(status.frozen_movement_release_resends, 0);
         assert_eq!(status.frozen_movement_release_sends_deferred, 0);
         let lab = app.world().resource::<PeerLab>();
         let readiness = lab.readiness_counts().frozen_movement_release;

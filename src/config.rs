@@ -106,13 +106,13 @@ pub struct NetworkConfig {
     pub controller_possession_properties: bool,
     /// EXPERIMENTAL: release each player's pawn from frozen movement. The
     /// pawn still opens with `bServerFrozenMovement` true, as the original
-    /// does (F-797); once a positive ACK settles the bunch that created the
-    /// player's own connected-player record (its finalisation, F-1077), and
-    /// [`Self::server_frozen_movement_release_delay_ms`] later, one reliable
-    /// pawn property update sets it false, as the retained 3.0.34 session
-    /// does. Default on; unqualified with a stock client. Needs the pawn open
-    /// and connected-player records and is otherwise left off. `false` makes
-    /// a comparison run.
+    /// does (F-797, F-1099); once a positive ACK settles the bunch that
+    /// created the player's own connected-player record (its finalisation,
+    /// F-1077), and [`Self::server_frozen_movement_release_delay_ms`] later,
+    /// one unreliable pawn property update sets it false, as the original
+    /// does (F-1099), sent again if NAKed. Default on; unqualified with a
+    /// stock client. Needs the pawn open and connected-player records and is
+    /// otherwise left off. `false` makes a comparison run.
     pub server_frozen_movement_release: bool,
     /// Milliseconds between the record's ACK and the release, so a client
     /// change can be attributed to it; `0..=`[`MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS`].

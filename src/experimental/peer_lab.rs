@@ -875,12 +875,14 @@ pub struct PeerLabStats {
     /// ACK settles the creation of its own connected-player record, with
     /// [`PeerLab::enable_frozen_movement_release`].
     pub frozen_movement_releases_scheduled: u64,
-    /// Pawn property updates setting `bServerFrozenMovement` false admitted
-    /// to reliable pawn transport, at most one per session.
+    /// Unreliable pawn property updates setting `bServerFrozenMovement` false
+    /// first sent, at most one per session.
     pub frozen_movement_releases_sent: u64,
-    /// Admitted releases whose own reliable bunch a positive packet ACK
-    /// settled, counted once each. No client application is implied.
+    /// Releases whose latest copy a positive packet ACK covered, counted once
+    /// each. No client application is implied.
     pub frozen_movement_releases_acked: u64,
+    /// Copies of a release sent again after a NAK lost the previous one.
+    pub frozen_movement_release_resends: u64,
     /// Releases held back by drainable transport pressure.
     pub frozen_movement_release_sends_deferred: u64,
     /// Composition or framing refusals that cannot drain, or a pawn channel
@@ -1174,6 +1176,7 @@ pub struct SessionCounts {
     pub frozen_movement_releases_scheduled: u64,
     pub frozen_movement_releases_sent: u64,
     pub frozen_movement_releases_acked: u64,
+    pub frozen_movement_release_resends: u64,
     pub frozen_movement_release_sends_deferred: u64,
     pub frozen_movement_release_errors: u64,
     pub pawn_bunches_received_reliable: u64,
@@ -1341,19 +1344,19 @@ pub struct ControllerPossessionReadiness {
 }
 
 /// Live frozen-movement release gauges
-/// ([`PeerLab::enable_frozen_movement_release`]), one receipt per session;
-/// settled means a positive packet ACK covered the update's reliable bunch,
-/// not that a client applied it.
+/// ([`PeerLab::enable_frozen_movement_release`]), one release per session;
+/// settled means a positive packet ACK covered the update's latest copy, not
+/// that a client applied it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FrozenMovementReleaseReadiness {
     /// Scheduled by the record's ACK, waiting out the configured delay.
     pub awaiting_delay: usize,
-    /// Due but not admitted yet (transport pressure).
+    /// Due, or lost to a NAK, and not sent yet: the pawn channel still has
+    /// reliable bunches unACKed, or transport pressure.
     pub pending_send: usize,
-    /// `queued` = `settled` + `awaiting_ack`.
-    pub queued: usize,
-    pub settled: usize,
+    /// A copy sent, neither ACKed nor NAKed yet.
     pub awaiting_ack: usize,
+    pub settled: usize,
 }
 
 /// Live level visibility gauges ([`PeerLab::enable_level_visibility_actors`]),
@@ -1622,35 +1625,55 @@ struct ConnectedPlayerReceipt {
 
 /// One session's frozen-movement release
 /// ([`PeerLab::enable_frozen_movement_release`]): scheduled once when the
-/// creation of its own connected-player record settles, admitted once, then
-/// settled by a positive ACK of its own reliable bunch.
+/// creation of its own connected-player record settles, then sent once due
+/// as an unreliable pawn property update, as the original sends it (S2,
+/// M-1161). As UE re-sends a NAKed packet's still-current properties (and
+/// as [`GameStateReplica`] does), a NAK of the latest copy makes the
+/// property due again and its current value, still false, goes out again;
+/// the first positive ACK of a copy settles the release.
 #[derive(Default)]
 struct FrozenMovementRelease {
     /// When the record creation settled (the trigger); set once.
     record_acked_at: Option<Instant>,
     /// When the release falls due; set with `record_acked_at`.
     due_at: Option<Instant>,
-    /// Due and waiting for transport admission (pressure).
+    /// Due, or its latest copy NAKed, and not sent yet.
     pending: bool,
-    retry_ready: bool,
-    /// The admitted update's own reliable bunch; its channel is set once
-    /// admitted, so a session sends at most one.
-    receipt: InitialisationReceipt,
+    /// Held back by drainable transport pressure until ACK/NAK progress.
+    deferred: bool,
+    /// Packet IDs carrying the latest copy, while neither ACKed nor NAKed.
+    in_flight: Vec<u32>,
+    /// The first copy; set once, so a session releases at most once.
     sent_at: Option<Instant>,
     acked_at: Option<Instant>,
-    /// The update could not be admitted for good.
+    /// The pawn was gone when a copy fell due; nothing more is sent.
     failed: bool,
 }
 
 impl FrozenMovementRelease {
-    /// Scheduled, not yet due, admitted or abandoned.
+    /// Scheduled, not yet due, sent or abandoned.
     fn awaiting_delay(&self, now: Instant) -> bool {
         self.due_at.is_some_and(|due| due > now) && self.idle()
     }
 
-    /// Neither pending, admitted nor abandoned.
+    /// Neither pending, sent nor abandoned.
     fn idle(&self) -> bool {
-        !self.pending && self.receipt.channel.is_none() && !self.failed
+        !self.pending && self.sent_at.is_none() && !self.failed
+    }
+
+    /// Apply one packet outcome. A NAK of any part of the latest copy loses
+    /// it whole, so the release is due again; an ACK of its last outstanding
+    /// part settles it. Returns `Some(true)` when this settled the release
+    /// and `Some(false)` when it lost the copy.
+    fn observe(&mut self, packet_id: u32, acked: bool) -> Option<bool> {
+        let position = self.in_flight.iter().position(|id| *id == packet_id)?;
+        if !acked {
+            self.in_flight.clear();
+            self.pending = !self.failed;
+            return Some(false);
+        }
+        self.in_flight.swap_remove(position);
+        (self.in_flight.is_empty() && self.acked_at.is_none()).then_some(true)
     }
 }
 
@@ -1677,10 +1700,10 @@ pub struct FrozenMovementObservation {
     /// connected-player record (the release's trigger).
     pub record_acked_ms: Option<u64>,
     pub release_due_ms: Option<u64>,
-    /// Admission of the `bServerFrozenMovement` = false update.
+    /// The first copy of the `bServerFrozenMovement` = false update.
     pub release_sent_ms: Option<u64>,
-    /// The positive ACK that settled that update's reliable bunch; not proof
-    /// that the client applied it.
+    /// The positive ACK of a copy that settled it; not proof that the client
+    /// applied it.
     pub release_acked_ms: Option<u64>,
     pub release_failed: bool,
     pub pawn_inbound: PawnInboundCounts,
@@ -5553,9 +5576,10 @@ impl PeerLab {
     /// with `bServerFrozenMovement` true (F-797); when a positive ACK settles
     /// the bunch that created the session's own connected-player record (the
     /// lab's finalisation acknowledged, F-1077), and `delay` later, one
-    /// reliable pawn property update sets it false, as the retained 3.0.34
-    /// session does once. At most one per session; a NAK is repaired by the
-    /// reliable layer from the stored bytes. Unqualified with a stock client.
+    /// unreliable pawn property update sets it false, as the original does
+    /// once (F-1099). At most one release per session; a NAK of its latest
+    /// copy sends the still-current false again, and the first ACK of a copy
+    /// settles it. Unqualified with a stock client.
     /// Needs the pawn open and connected-player records; must be called
     /// before any peer exists.
     pub fn enable_frozen_movement_release(&mut self, delay: Duration) -> Result<()> {
@@ -5947,6 +5971,7 @@ impl PeerLab {
             frozen_movement_releases_scheduled: self.stats.frozen_movement_releases_scheduled,
             frozen_movement_releases_sent: self.stats.frozen_movement_releases_sent,
             frozen_movement_releases_acked: self.stats.frozen_movement_releases_acked,
+            frozen_movement_release_resends: self.stats.frozen_movement_release_resends,
             frozen_movement_release_sends_deferred: self
                 .stats
                 .frozen_movement_release_sends_deferred,
@@ -6135,10 +6160,8 @@ impl PeerLab {
             let frozen = &entry.frozen_release;
             release.awaiting_delay += usize::from(frozen.awaiting_delay(now));
             release.pending_send += usize::from(frozen.pending);
-            release.queued += usize::from(frozen.receipt.channel.is_some());
-            release.settled += usize::from(frozen.receipt.settled);
-            release.awaiting_ack +=
-                usize::from(frozen.receipt.channel.is_some() && !frozen.receipt.settled);
+            release.awaiting_ack += usize::from(!frozen.in_flight.is_empty());
+            release.settled += usize::from(frozen.acked_at.is_some());
             let levels = &mut counts.level_visibility;
             levels.levels_visible += entry.visible_levels.len();
             levels.levels_with_actors += entry.level_actors.len();
@@ -6589,16 +6612,6 @@ impl PeerLab {
                                 entry.frozen_release.due_at = Some(now + delay);
                                 bump(&mut self.stats.frozen_movement_releases_scheduled);
                             }
-                            let release = &mut entry.frozen_release;
-                            let settled = release.receipt.settled;
-                            release.receipt.observe_positive_ack(
-                                &entry.peer,
-                                &summary.released_actor_channels,
-                            );
-                            if release.receipt.settled && !settled {
-                                release.acked_at = Some(now);
-                                bump(&mut self.stats.frozen_movement_releases_acked);
-                            }
                             entry.connected_player_creations_settled += settled_records;
                             self.stats.connected_player_record_creations_acked = self
                                 .stats
@@ -6674,9 +6687,7 @@ impl PeerLab {
                             if entry.controller_possession_pending {
                                 entry.controller_possession_retry_ready = true;
                             }
-                            if entry.frozen_release.pending {
-                                entry.frozen_release.retry_ready = true;
-                            }
+                            entry.frozen_release.deferred = false;
                             if !entry.level_actor_queue.is_empty() {
                                 entry.level_actors_retry_ready = true;
                             }
@@ -6736,6 +6747,16 @@ impl PeerLab {
                                 entry.exports.received_ack(packet_id);
                             } else {
                                 entry.exports.received_nak(packet_id);
+                            }
+                            // The unreliable frozen-movement release: a NAK
+                            // makes it due again, an ACK of its copy settles.
+                            match entry.frozen_release.observe(packet_id, acked) {
+                                Some(true) => {
+                                    entry.frozen_release.acked_at = Some(now);
+                                    bump(&mut self.stats.frozen_movement_releases_acked);
+                                }
+                                Some(false) => entry.frozen_release.deferred = false,
+                                None => {}
                             }
                         }
                         // Losing any part loses the logical update. Only fields
@@ -7946,14 +7967,22 @@ impl PeerLab {
         }
     }
 
-    /// Admit each session's due frozen-movement release: once its delay
-    /// after the record's ACK has passed, and again after ACK/NAK progress
-    /// when transport pressure held it back. A NAK of an admitted bunch is
-    /// repaired by the reliable layer from the stored bytes, never recomposed.
+    /// Send each session's due frozen-movement release: once its delay after
+    /// the record's ACK has passed, and again when a NAK lost its latest
+    /// copy. Like GameState updates, a copy waits until every reliable bunch
+    /// on the pawn channel, its open included, is ACKed
+    /// (`actor_channel_settled`): the client drops unreliable bunches on a
+    /// channel it has not opened, and applies them at once, ahead of any
+    /// reliable bunch still being repaired. Transport pressure holds it back
+    /// until ACK/NAK progress.
     fn retry_frozen_movement_release(&mut self) {
         if self.frozen_movement_release.is_none() {
             return;
         }
+        let Some((_, channel, _)) = &self.pawn_open else {
+            return;
+        };
+        let channel = *channel;
         let now = Instant::now();
         let ready: Vec<SocketAddrV4> = self
             .peers
@@ -7962,9 +7991,15 @@ impl PeerLab {
                 let release = &mut entry.frozen_release;
                 if release.idle() && release.due_at.is_some_and(|due| due <= now) {
                     release.pending = true;
-                    release.retry_ready = true;
                 }
-                (release.pending && std::mem::take(&mut release.retry_ready)).then_some(*address)
+                let open = entry.controller_startup_pawn_guid.is_some()
+                    && entry.peer.has_actor_channel(channel)
+                    && !entry.peer.actor_channel_closing(channel);
+                let release = &entry.frozen_release;
+                (release.pending
+                    && !release.deferred
+                    && (!open || entry.peer.actor_channel_settled(channel)))
+                .then_some(*address)
             })
             .collect();
         for address in ready {
@@ -7990,32 +8025,33 @@ impl PeerLab {
             bump(&mut self.stats.frozen_movement_release_errors);
             return;
         }
+        // Unreliable, as the original sends it (S2, M-1161): the current
+        // value, false, composed afresh for each copy.
         let sent =
             compose_pawn_frozen_movement_update(plan, false, entry.peer.connection_byte_order())
-                .and_then(|payload| {
-                    let previous = entry
-                        .peer
-                        .actor_reliable_sequence(channel)
-                        .context("pawn channel missing")?;
-                    let sent = entry
-                        .peer
-                        .reliable_actor_bunch_datagrams(channel, payload)?;
-                    Ok((sent, previous))
-                });
+                .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
         match sent {
-            Ok((sent, previous)) => {
+            Ok(datagrams) => {
+                let now = Instant::now();
                 let release = &mut entry.frozen_release;
-                release.receipt = InitialisationReceipt::committed(&entry.peer, channel, previous);
                 release.pending = false;
-                release.sent_at = Some(Instant::now());
+                // A copy that fails to leave the socket is reported missing
+                // by the client's next ACK, which repairs it like a NAK.
+                release.in_flight = datagrams.iter().map(|(_, id)| *id).collect();
+                if release.sent_at.is_none() {
+                    release.sent_at = Some(now);
+                    bump(&mut self.stats.frozen_movement_releases_sent);
+                } else {
+                    bump(&mut self.stats.frozen_movement_release_resends);
+                }
                 entry.ack_pending = false;
-                bump(&mut self.stats.frozen_movement_releases_sent);
-                // Queued for reliable repair: a failed socket send only counts.
-                self.send_all(&sent, address);
+                for (datagram, _) in &datagrams {
+                    self.send(datagram, address);
+                }
             }
             Err(error) => {
                 if transport_capacity_can_drain(entry, &error, channel) {
-                    entry.frozen_release.retry_ready = false;
+                    entry.frozen_release.deferred = true;
                     bump(&mut self.stats.frozen_movement_release_sends_deferred);
                 } else {
                     entry.frozen_release.pending = false;
@@ -12103,8 +12139,8 @@ mod tests {
         assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
     }
 
-    /// The `bServerFrozenMovement` values of the whole reliable pawn property
-    /// updates among `bunches`, decoded against the lab's pawn layout.
+    /// The `bServerFrozenMovement` values of the whole unreliable pawn
+    /// property updates among `bunches`, decoded against the lab's pawn layout.
     fn frozen_releases(lab: &PeerLab, bunches: &[super::super::packet::Bunch]) -> Vec<RepValue> {
         let (plan, channel, _) = lab.pawn_open.as_ref().unwrap();
         let codec = record_codec();
@@ -12116,7 +12152,8 @@ mod tests {
             .iter()
             .filter(|bunch| bunch.header.channel_index == *channel && !bunch.header.open)
             .map(|bunch| {
-                assert!(bunch.header.reliable && !bunch.header.partial);
+                // Unreliable, as the original sends it (S2).
+                assert!(!bunch.header.reliable && !bunch.header.partial);
                 let body = super::super::actor_channel::read_actor_bunch_body(
                     &mut bunch.payload.reader(),
                     false,
@@ -12143,9 +12180,9 @@ mod tests {
     }
 
     /// The release is scheduled by the positive ACK of the player's own
-    /// record creation, never before; it is sent once after the delay, a NAK
-    /// is repaired by the reliable layer without a second release, and the
-    /// ACK of its own bunch settles it once.
+    /// record creation, never before; it is sent once after the delay,
+    /// unreliable; a NAK sends the still-current false again without a second
+    /// release, and the first ACK of a copy settles it once.
     #[test]
     fn frozen_movement_release_follows_the_record_ack_after_its_delay_once() {
         let mut lab = record_lab(true);
@@ -12200,11 +12237,12 @@ mod tests {
         assert_eq!(
             lab.readiness_counts().frozen_movement_release,
             FrozenMovementReleaseReadiness {
-                queued: 1,
                 awaiting_ack: 1,
                 ..Default::default()
             }
         );
+        // Nothing is retained for reliable repair.
+        assert_eq!(lab.readiness_counts().resend_bunches_pending, 0);
         let [observation] = lab.frozen_movement_observations()[..] else {
             panic!("one session");
         };
@@ -12212,25 +12250,27 @@ mod tests {
         let delay_ms = delay.as_millis() as u64;
         assert_eq!(observation.release_due_ms, Some(acked + delay_ms));
         assert!(observation.release_sent_ms.unwrap() >= acked + delay_ms);
-        // Lost: repaired from the stored bytes, not released again.
+        // Lost: the current value is due again and sent again, not
+        // released a second time.
         let lost = deliver_bunches(&mut lab, &socket, &mut client, |_| false);
         assert_eq!(frozen_releases(&lab, &lost), [RepValue::Bool(false)]);
         assert_eq!(lab.stats.frozen_movement_releases_acked, 0);
-        let repair = lab
-            .peers
-            .get_mut(&address)
-            .unwrap()
-            .peer
-            .ack_packet()
-            .unwrap();
-        assert!(lab.send(&repair, address));
+        assert_eq!(
+            lab.readiness_counts().frozen_movement_release,
+            FrozenMovementReleaseReadiness {
+                pending_send: 1,
+                ..Default::default()
+            }
+        );
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_release_resends, 1);
         let repaired = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
         assert_eq!(frozen_releases(&lab, &repaired), [RepValue::Bool(false)]);
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 1);
         assert_eq!(lab.stats.frozen_movement_releases_acked, 1);
         assert_eq!(
             lab.readiness_counts().frozen_movement_release,
             FrozenMovementReleaseReadiness {
-                queued: 1,
                 settled: 1,
                 ..Default::default()
             }
@@ -12249,10 +12289,12 @@ mod tests {
         assert_eq!(lab.stats.frozen_movement_releases_scheduled, 1);
         assert_eq!(lab.stats.frozen_movement_releases_sent, 1);
         assert_eq!(lab.stats.frozen_movement_releases_acked, 1);
+        assert_eq!(lab.stats.frozen_movement_release_resends, 1);
         assert_eq!(lab.stats.frozen_movement_release_errors, 0);
         let counts = lab.session_counts();
         assert_eq!(counts.frozen_movement_releases_sent, 1);
         assert_eq!(counts.frozen_movement_releases_acked, 1);
+        assert_eq!(counts.frozen_movement_release_resends, 1);
         lab.remove_peer(address).unwrap();
         assert!(lab.frozen_movement_observations().is_empty());
     }
@@ -12312,6 +12354,70 @@ mod tests {
         lab.retry_frozen_movement_release();
         assert_eq!(lab.stats.frozen_movement_release_errors, 1, "once");
         assert!(lab.frozen_movement_observations()[0].release_failed);
+    }
+
+    /// A due release, first copy or repair, waits while a reliable bunch on
+    /// the pawn channel is unACKed, as GameState updates do, and goes out
+    /// once that bunch is ACKed.
+    #[test]
+    fn frozen_movement_release_waits_for_the_pawn_channels_reliable_bunches() {
+        let mut lab = record_lab(true);
+        lab.enable_frozen_movement_release(Duration::ZERO).unwrap();
+        let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredFrozenUser");
+        complete_record_player(&mut lab, address);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        lab.controller_call(address, ControllerCall::FriendsList);
+        lab.finalise_connected_players();
+        // A reliable pawn bunch in flight when the record's ACK arrives.
+        let (plan, channel, _) = lab.pawn_open.as_ref().unwrap();
+        let (plan, channel) = (plan.clone(), *channel);
+        let payload = compose_pawn_frozen_movement_update(
+            &plan,
+            true,
+            super::super::archive::ByteOrder::Little,
+        )
+        .unwrap();
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let held = entry
+            .peer
+            .reliable_actor_bunch_datagrams(channel, payload)
+            .unwrap();
+        lab.send_all(&held, address);
+        // Deliver the record and lose the reliable pawn bunch.
+        let pawn_packet = lab.peers[&address]
+            .peer
+            .sequencer()
+            .notify()
+            .sent_records()
+            .len()
+            - 1;
+        deliver_bunches(&mut lab, &socket, &mut client, |index| index != pawn_packet);
+        assert_eq!(lab.stats.frozen_movement_releases_scheduled, 1);
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 0);
+        assert_eq!(
+            lab.readiness_counts().frozen_movement_release,
+            FrozenMovementReleaseReadiness {
+                pending_send: 1,
+                ..Default::default()
+            }
+        );
+        // The reliable layer repairs that bunch; once ACKed, the release goes.
+        let repair = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&repair, address));
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        lab.retry_frozen_movement_release();
+        assert_eq!(lab.stats.frozen_movement_releases_sent, 1);
+        let sent = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(frozen_releases(&lab, &sent), [RepValue::Bool(false)]);
+        assert_eq!(lab.stats.frozen_movement_releases_acked, 1);
+        assert_eq!(lab.stats.frozen_movement_release_resends, 0);
     }
 
     /// Reachable only by hand: the real sequence opens the controller, pawn

@@ -821,8 +821,8 @@ pub fn compose_pawn_open(
 /// (canonical handle 67, written at the plan's wire handle: 68 for the
 /// 3.0.34 and later layouts) on its open channel: an actor bunch body without
 /// spawn holding one actor block. The original opens the pawn with the flag
-/// true (F-797) and, in the retained 3.0.34 session (M-1161), later sends
-/// exactly this one-property update with `false`.
+/// true and later sends this one-property update with `false` (F-1099); the
+/// client moves only once it is false and its own anchor is valid (F-1100).
 pub fn compose_pawn_frozen_movement_update(
     plan: &PawnOpenPlan,
     frozen: bool,
