@@ -149,6 +149,13 @@
 //!   not an inference about the original server's timeout or retransmit timing.
 //!   Removal is local: a full ring cannot carry a close, so the client may
 //!   need to reconnect after its own connection timeout.
+//! - Native per-query deadline (N-019): a peer whose friends query (F-1051)
+//!   stays unanswered for longer than [`PeerLabConfig::idle_timeout`] is
+//!   removed the same way (`peers_friends_query_expired`). The clock starts
+//!   when the query is first requested and only an accepted answer stops it;
+//!   ACKs and re-queries never extend it, so no peer holds finalisation
+//!   (F-973) for others beyond that timeout. No such deadline was observed
+//!   in the original; F-858 records only a silent client's close.
 //! - After [`PeerLab::stop_admission`] no exact handshake form is answered
 //!   (`refused_draining`), so no peer is created or replaced; live peers keep
 //!   their packet state until [`PeerLab::shutdown`] notifies and removes them
@@ -583,8 +590,9 @@ pub struct PeerLabConfig {
     pub packet: PacketLabConfig,
     /// Peer-table capacity, `1..=MAX_PEERS_LIMIT`.
     pub max_peers: usize,
-    /// Nonzero interval for inbound-idle and stalled-delivery local removal.
-    /// Delivery progress uses ACK/NAK notifications, not incoming traffic alone.
+    /// Nonzero interval for inbound-idle, stalled-delivery and unanswered
+    /// friends-query (N-019) local removal. Delivery progress uses ACK/NAK
+    /// notifications, not incoming traffic alone.
     pub idle_timeout: Duration,
     /// Caller-supplied local network version compared with each Hello version
     /// (plain equality); a mismatch is answered with Upgrade. `None` skips the
@@ -688,6 +696,8 @@ pub struct PeerLabStats {
     pub peers_expired: u64,
     /// Outstanding delivery made no ACK/NAK progress within the native timeout.
     pub peers_delivery_stalled: u64,
+    /// Friends query (F-1051) unanswered within the native timeout (N-019).
+    pub peers_friends_query_expired: u64,
     /// Peers removed after a failed receive or ack.
     pub peers_failed: u64,
     /// Peers removed by ticket verification or a negative Steam auth outcome.
@@ -1109,6 +1119,8 @@ pub struct SessionCounts {
     pub closed_by_timeout: u64,
     /// Native delivery timeout, independent of incoming-packet activity.
     pub closed_by_delivery_stall: u64,
+    /// Native per-query deadline: friends query unanswered despite traffic.
+    pub closed_by_friends_query_timeout: u64,
     /// Sessions closed by a client control close bunch.
     pub closed_by_client: u64,
     /// Sessions closed after an Upgrade or Failure reply.
@@ -2308,6 +2320,10 @@ struct PeerEntry {
     friends_query_retry_ready: bool,
     /// The last admitted friends query's reliable bunch (F-1051).
     friends_query_receipt: InitialisationReceipt,
+    /// Native policy (N-019): when this peer's oldest unanswered friends query
+    /// was requested. Only an accepted `ServerFriendsListUpdated` clears it;
+    /// ACKs, NAKs, re-queries and other inbound traffic never move it.
+    friends_query_since: Option<Instant>,
     initialisation_request_receipt: InitialisationReceipt,
     initialisation_completion_receipt: InitialisationReceipt,
     controller_field_diagnostics: ControllerFieldDiagnostics,
@@ -5949,6 +5965,7 @@ impl PeerLab {
             refused_draining: self.stats.refused_draining,
             closed_by_timeout: self.stats.peers_expired,
             closed_by_delivery_stall: self.stats.peers_delivery_stalled,
+            closed_by_friends_query_timeout: self.stats.peers_friends_query_expired,
             closed_by_client: self.stats.peers_closed_by_client,
             closed_by_reply: self.stats.peers_closed,
             upgrades_sent: self.stats.upgrades_sent,
@@ -6400,6 +6417,28 @@ impl PeerLab {
         }
     }
 
+    /// Native policy (N-019): a peer whose friends query stays unanswered past
+    /// [`PeerLabConfig::idle_timeout`] is removed, however much it ACKs, so its
+    /// missing response cannot hold every player's finalisation (F-973).
+    fn expire_friends_queries(&mut self, now: Instant) {
+        let timeout = self.config.idle_timeout;
+        let expired: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(address, entry)| {
+                entry
+                    .friends_query_since
+                    .is_some_and(|since| now.saturating_duration_since(since) > timeout)
+                    .then_some(*address)
+            })
+            .collect();
+        for address in expired {
+            if self.remove_peer(address).is_some() {
+                bump(&mut self.stats.peers_friends_query_expired);
+            }
+        }
+    }
+
     /// Answer a handshake form; returns `false` when `bytes` is not one the
     /// authority answers.
     fn handshake(&mut self, address: SocketAddrV4, length: usize, now: Instant) -> bool {
@@ -6479,6 +6518,7 @@ impl PeerLab {
                         friends_query_pending: false,
                         friends_query_retry_ready: false,
                         friends_query_receipt: InitialisationReceipt::default(),
+                        friends_query_since: None,
                         controller_field_diagnostics: ControllerFieldDiagnostics::default(),
                         auth_request: None,
                         auth_identity: None,
@@ -7113,12 +7153,15 @@ impl PeerLab {
     /// Matched AddConnectedPlayer adds a player, then queries every registered
     /// player's controller (F-1051). Registration follows Begin, so the native
     /// registered set is the peers with a recorded character slot. Coalesce
-    /// unsent queries; reliable transport repairs admitted requests.
+    /// unsent queries; reliable transport repairs admitted requests. A
+    /// re-query keeps an unanswered query's deadline (N-019).
     fn query_connected_friends(&mut self) {
+        let now = Instant::now();
         for entry in self.peers.values_mut() {
             if entry.character_slot.is_some() {
                 entry.friends_query_pending = true;
                 entry.friends_query_retry_ready = true;
+                entry.friends_query_since.get_or_insert(now);
             }
         }
         self.retry_friends_queries();
@@ -7305,6 +7348,11 @@ impl PeerLab {
                     return;
                 }
                 entry.profiles.friend_ids_ready = true;
+                // An unsent pending query will clear readiness again, so
+                // only an answer with no query left to send ends the deadline.
+                if !entry.friends_query_pending {
+                    entry.friends_query_since = None;
+                }
                 bump(&mut self.stats.friends_lists_received);
             }
             ControllerCall::Profile(response) => {
@@ -9959,6 +10007,7 @@ impl PeerLab {
         let now = Instant::now();
         self.expire_idle(now);
         self.expire_stalled_delivery(now);
+        self.expire_friends_queries(now);
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
             let (length, source) = match self.socket.recv_from(&mut self.buffer) {
@@ -19103,6 +19152,7 @@ mod tests {
             assert!(!text.contains("AuthoredUnreliable"));
         }
     }
+    mod friends_query_deadline;
     mod level_visibility;
     mod pawn_capture;
 }
