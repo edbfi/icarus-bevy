@@ -64,17 +64,17 @@ Last reconciled: 2026-11-11
   F-1033); connected behavior and visibility bindings still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
-  F-1080 are qualified and gate reads F-1086/F-1087 done; do not repeat them or
-  rerun F-1084/F-1089 unchanged. The next connected run sends only the pawn
-  unfreeze (F-1099, F-1100); the 82 answer (F-1097, F-1098, F-1104) stays the
-  gated fallback below. None clears those preconditions.
+  F-1080 are qualified and gate reads F-1086/F-1087 and readiness reads
+  F-1110 to F-1126 done; do not repeat them or rerun F-1084/F-1089 unchanged.
+  The next connected run sends only the pawn unfreeze (F-1099, F-1100); the 82
+  answer (F-1097, F-1098, F-1104) stays the gated fallback below. None clears those preconditions.
 
 ## Before enabling visibility dispatch or effects
 
 - Bound: add payloads/provenance and client encoding (F-1085, F-1090);
   native bit1 (F-1090); Gather Q+0xe8/Q+0xf0, log-only delegate members
-  (F-1091); add-side actor/channel identities (F-1092, F-1093, F-1095).
-  Static only: D's final type, map owner (F-1091, F-1092). Weak/compaction:
+  (F-1091); add-side actor/channel identities (F-1092, F-1093, F-1095);
+  anchors ignore 62/82 (F-1113). Static only: D's final type, map owner (F-1091, F-1092). Weak/compaction:
   not applicable to effects (F-1091). Open: original live profile/layout/ops
   (replay F-1034 grants none; F-1020 to F-1022); reuse-0/hide payloads and
   hide effects, never observed (native hides close nothing); Close and
