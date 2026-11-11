@@ -97,7 +97,7 @@ PREFIX_CAPS: tuple[tuple[str, int], ...] = (
     ("docs/ledgers/findings/", 48 * KIB),
 )
 DIGEST_CAP = 8 * KIB
-ACTIVE_FINDINGS_CAP = 128 * KIB
+ACTIVE_FINDINGS_CAP = 192 * KIB
 LEDGER_ROW_CAP = 400
 AGGREGATE_CAP = 192 * KIB
 # Above this share of either aggregate cap, consolidate before adding.
