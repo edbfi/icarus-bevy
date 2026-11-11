@@ -5,7 +5,7 @@ action. This is their only home; status, plan and digests link here.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-10
+Last reconciled: 2026-11-11
 
 ## Before any C001 original-code case
 
@@ -65,23 +65,23 @@ Last reconciled: 2026-11-10
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 done; do not repeat them or
-  rerun F-1084/F-1089 unchanged. With F-1077 and F-1088 the client finalises
-  and reports tiles (F-1089), UI unchanged; the next connected run needs the
-  level-actor answer to 82, governed below. None clears those preconditions.
+  rerun F-1084/F-1089 unchanged. The next connected run needs the 82 answer
+  (F-1097, F-1098), gated below. None clears those preconditions.
 
 ## Before enabling visibility dispatch or effects
 
-- Before dispatch, bind actual 612-bit payload/provenance and live
-  normal profile/layout/ops; conditional replay (F-1034) grants no installation
-  (F-1020 to F-1022). Before effects, bind native bit1, D's live
-  receiver/final vptr, actual delegate members and actor/channel identities;
-  bind Gather Q+0xe8 source, Q+0xf0 initialization/lifetime and map owner,
-  external weak/compaction predicates; qualify Close,
-  reentrancy and client progress. F-1023 qualifies conditional installation/
-  registration and logging-only candidates, not live bindings; F-1024 logs intentions
-  (U-079). M-1207 counts the whole field including any outer bit, not custom
-  length; no payload retained. Offline case authorization/limits:
-  M-1211, M-1215, M-1217, M-1219, M-1221, M-1237, M-1240, M-1241, M-1243.
+- Bound: add payloads/provenance and client encoding (F-1085, F-1090);
+  native bit1 (F-1090); Gather Q+0xe8/Q+0xf0, log-only delegate members
+  (F-1091); add-side actor/channel identities (F-1092, F-1093, F-1095).
+  Static only: D's final type, map owner (F-1091, F-1092). Weak/compaction:
+  not applicable to effects (F-1091). Open: original live profile/layout/ops
+  (replay F-1034 grants none; F-1020 to F-1022); reuse-0/hide payloads and
+  hide effects, never observed (native hides close nothing); Close and
+  reentrancy, authored (no close on a name, exclusive poll), test-qualified
+  only (F-1097, F-1098); client progress, seen to the tile reports (F-1089),
+  beyond only by a bounded connected run with the probe switch, once the
+  owner approves. The server binary refuses the switch; only the bounded
+  join probe enables it (F-1097). F-1023/F-1024: no live binding (U-079).
 - Sending level-status call 62 is server-originated and outside this gate
   (F-1078) but first needs the map's level list and order, per-level flags and
   LOD, and name remapping bound; opening a level's actors after a field-82
