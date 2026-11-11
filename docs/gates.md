@@ -80,9 +80,10 @@ Last reconciled: 2026-11-11
   hide effects, never observed (native hides close nothing); Close and
   reentrancy, authored (no close on a name, exclusive poll), test-qualified
   only (F-1097, F-1098); client progress, seen to the tile reports (F-1089),
-  beyond only by bounded connected runs, once the owner approves: first the
-  unfreeze alone with the probe switch off (F-1099), then, if the screen
-  stays with the pawn unfrozen, a run with the probe switch (F-1104). The
+  beyond only by bounded connected runs: first the unfreeze alone with the
+  probe switch off (F-1099; authorized, see the runtime gate below), then, if
+  the screen stays with the pawn unfrozen, a run with the probe switch
+  (F-1104), once the owner approves it. The
   server binary refuses the switch; only the bounded join probe enables it
   (F-1097). F-1023/F-1024: no live binding (U-079).
 - Sending level-status call 62 is server-originated and outside this gate
@@ -115,17 +116,18 @@ Last reconciled: 2026-11-11
 
 ## Before any original-server or client run
 
-- The standing instruction (given 2026-10-28, last renewed on 2026-11-10;
-  F-968, M-1273, M-1307, M-1331, M-1334) authorizes offline and online research,
-  Steam/network access, matched official-server runs and connected
+- The standing instruction (given 2026-10-28, last renewed on 2026-11-11;
+  F-968, M-1273, M-1307, M-1331, M-1334, M-1359) authorizes offline and online
+  research, Steam/network access, matched official-server runs and connected
   stock-client scenarios against the original or native server without
   per-scenario approval, replacing the connected-test deferral (F-421; U-038,
   U-047, U-052). Prefer offline routes that answer equally well.
-- On 2026-11-11 the owner asked the lead to continue and make the pending
-  decisions (M-1353, quoted there); the lead applies this to offline research
-  only. It renews no online or connected-run authorization: the unfreeze-only
-  run and the prepared level-visibility connected run still await the owner's
-  explicit approval and participation.
+- The 2026-11-11 instruction (M-1359) renews online and connected-run
+  authorization. The prepared unfreeze-only run is authorized as a scenario
+  and waits only for the owner to be at a stock client; it lists a server
+  publicly without a password, so it starts only on the owner's word that they
+  are ready. The owner's delegation of the same day (M-1353) still covers the
+  offline decisions it lists.
 - Every run still needs its own `work/` case and current launcher session with
   scope, exact inputs and hashes, limits and literal commands; original
   execution only through the [launchers](runbooks/original-server-launcher.md);
