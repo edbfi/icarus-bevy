@@ -83,9 +83,14 @@ Last reconciled: 2026-11-11
   owner approves. The server binary refuses the switch; only the bounded
   join probe enables it (F-1097). F-1023/F-1024: no live binding (U-079).
 - Sending level-status call 62 is server-originated and outside this gate
-  (F-1078) but first needs the map's level list and order, per-level flags and
-  LOD, and name remapping bound; opening a level's actors after a field-82
-  report is a visibility effect and stays blocked.
+  (F-1078; lead decision under M-1353) but first needs the map's level list and
+  order, per-level flags and LOD, and name remapping bound, each from a source
+  input parity allows (F-828: the public dedicated-server distribution or
+  independently authored input), never client-only or packaged game data.
+  Outside this gate means building and testing it offline; sending it in a
+  connected run still needs that run's own case and approval. Opening a
+  level's actors after a field-82 report is a visibility effect and stays
+  blocked.
 
 ## Before deriving replication schema for the server
 
@@ -107,12 +112,17 @@ Last reconciled: 2026-11-11
 
 ## Before any original-server or client run
 
-- The standing instruction (2026-10-28, renewed through 2026-11-10; F-968,
-  M-1273, M-1307, M-1331, M-1334) authorizes offline and online research,
+- The standing instruction (given 2026-10-28, last renewed on 2026-11-10;
+  F-968, M-1273, M-1307, M-1331, M-1334) authorizes offline and online research,
   Steam/network access, matched official-server runs and connected
   stock-client scenarios against the original or native server without
   per-scenario approval, replacing the connected-test deferral (F-421; U-038,
   U-047, U-052). Prefer offline routes that answer equally well.
+- On 2026-11-11 the owner asked the lead to continue and make the pending
+  decisions (M-1353, quoted there); the lead applies this to offline research
+  only. It renews no online or connected-run authorization: the prepared
+  level-visibility connected run still awaits the owner's explicit approval
+  and participation.
 - Every run still needs its own `work/` case and current launcher session with
   scope, exact inputs and hashes, limits and literal commands; original
   execution only through the [launchers](runbooks/original-server-launcher.md);

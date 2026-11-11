@@ -36,6 +36,9 @@ UNK_A = "unk_" + "3" * 64
 ACTIVE_TOTAL_CAP = 192 * 1024
 OLD_ACTIVE_TOTAL_CAP = 128 * 1024
 FINDING_ROW = "| F-{:04d} | {} | observed | review | s | none | active |\n"
+# The current prose surface cap in .agents/rules/docs.md "Caps", pinned here rather than read from the lint.
+PROSE_SURFACE_CAP = 224 * 1024
+OLD_PROSE_SURFACE_CAP = 192 * 1024
 
 
 def sha(text: str) -> str:
@@ -107,6 +110,22 @@ class Fixture:
             text += FINDING_ROW.format(number, "c" * (size - len(text) - empty))
             number += 1
             self.write(f"docs/ledgers/findings/part{index}.md", text)
+
+    def prose_surface(self, total: int) -> None:
+        """Write prose files under ``docs/`` of exactly ``total`` ASCII bytes in all.
+
+        Each file stays under the per-file cap, so only the total can trip a size check.
+        """
+        head = "# Part\n\n"
+        largest = docs_lint.DEFAULT_FILE_CAP - 100
+        index = 0
+        while total > 0:
+            size = min(total, largest)
+            if 0 < total - size < len(head) + 2:
+                size -= len(head) + 2
+            self.write(f"docs/part{index}.md", head + "z" * (size - len(head) - 1) + "\n")
+            total -= size
+            index += 1
 
     def active_findings_bytes(self) -> int:
         return sum(path.stat().st_size for path in (self.root / docs_lint.FINDINGS_DIR).glob("*.md"))
@@ -205,6 +224,32 @@ class DocsLintTest(unittest.TestCase):
         self.assertFalse(any("current prose surface is" in problem.render() for problem in linter.problems))
         self.assertTrue(any("consolidate before adding" in warning for warning in warnings), warnings)
         self.assertFalse(any(warning.startswith(docs_lint.FINDINGS_DIR) for warning in warnings), warnings)
+
+    def prose_surface_lint(self, total: int) -> tuple[int, list[str], list[str]]:
+        fx = self.make()
+        fx.prose_surface(total)
+        linter = docs_lint.Linter(fx.root, local=False, base="HEAD", today=TODAY)
+        measured = linter.run()
+        problems = [problem.render() for problem in linter.problems]
+        return measured, problems, [warning.render() for warning in linter.warnings]
+
+    def test_prose_surface_just_under_cap(self) -> None:
+        measured, problems, _ = self.prose_surface_lint(PROSE_SURFACE_CAP - 1)
+        self.assertEqual(measured, PROSE_SURFACE_CAP - 1)
+        self.assertFalse(any("current prose surface is" in problem for problem in problems), problems)
+
+    def test_prose_surface_over_cap(self) -> None:
+        measured, problems, _ = self.prose_surface_lint(PROSE_SURFACE_CAP + 1)
+        self.assertEqual(measured, PROSE_SURFACE_CAP + 1)
+        expected = f"docs: current prose surface is {PROSE_SURFACE_CAP + 1} bytes; cap is {PROSE_SURFACE_CAP}"
+        self.assertIn(expected, problems)
+
+    def test_prose_surface_between_old_and_new_cap_accepted(self) -> None:
+        measured, problems, warnings = self.prose_surface_lint(OLD_PROSE_SURFACE_CAP + 1)
+        self.assertEqual(measured, OLD_PROSE_SURFACE_CAP + 1)
+        self.assertFalse(any("current prose surface is" in problem for problem in problems), problems)
+        expected = f"docs: {OLD_PROSE_SURFACE_CAP + 1} of {PROSE_SURFACE_CAP} bytes is over 80%; consolidate before adding"
+        self.assertIn(expected, warnings)
 
     def test_findings_review_warning(self) -> None:
         fx = self.make()
