@@ -12,7 +12,8 @@ recreate:
 * byte-identical copies (at least 1 MiB) of files under the original input roots.
 
 A candidate is never removed when it equals, contains or lies inside the path
-of an active ``local-private`` evidence row, when its case is declared open in
+of an active ``local-private`` evidence row or of a file such a row's sha256
+manifest lists, when its case is declared open in
 ``case.json``, when a running process uses the case, or when the case changed
 within the settle window. Age is only a guard, never a reason to delete.
 
@@ -23,8 +24,11 @@ and liveness is unknown, for the milestone checklist.
 
 ``--fixity DIR`` writes ``DIR/fixity.sha256`` listing every regular file under
 ``DIR`` except reproducible scratch, so an evidence row naming a whole directory
-can be superseded by a row naming that one digested file. Files a manifest
-lists are protected like the manifest itself.
+can be superseded by a row naming that one digested file. Files any pinned
+sha256 manifest lists are protected like the manifest itself, whatever the
+manifest's name and whether its entries are relative to its directory or to the
+repository root. A pinned manifest that is missing, unreadable or malformed
+defers its case (every case when it lies outside one) and is reported.
 
 ``--retire NAME...`` deletes whole cases or loose top-level files that no
 active evidence row covers and no tracked or untracked, non-ignored file
@@ -73,9 +77,11 @@ ORIGINAL_ROOTS: tuple[str, ...] = ("icarus-orig", "icarus-client-orig", "referen
 COPY_MIN_BYTES = MIB
 SETTLE_HOURS = 6.0
 CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
-# Same format and name as ``FIXITY_NAME`` in ``tools/docs_lint.py``, which verifies it.
+# Same name as ``FIXITY_NAME`` in ``tools/docs_lint.py``, which verifies it.
 FIXITY_NAME = "fixity.sha256"
-FIXITY_LINE = re.compile(r"([0-9a-f]{64})  (\S(?:.*\S)?)")
+# Any ``sha256sum`` line, text or binary mode; such a manifest may name its files relative
+# to its own directory or to the repository root.
+MANIFEST_LINE = re.compile(r"([0-9a-fA-F]{64}) [ *](\S(?:.*\S)?)")
 
 
 def _object_dict(value: object) -> TypeIs[dict[object, object]]:
@@ -156,9 +162,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def protected_paths(root: Path) -> set[Path]:
-    """Absolute paths of active ``local-private`` evidence rows under ``work/``."""
-    protected: set[Path] = set()
+@dataclass
+class Pins:
+    """What active ``local-private`` evidence rows pin, and the pin manifests that could not be read."""
+
+    paths: set[Path] = field(default_factory=set)
+    # Manifest path -> why its entries are unknown; nothing it might pin can be released.
+    problems: dict[Path, str] = field(default_factory=dict)
+
+
+def evidence_pins(root: Path) -> Pins:
+    """Every active ``local-private`` row's path, plus every file a sha256 manifest row lists.
+
+    A row is a manifest when its name says so (``*.sha256``, ``*fixity*``) or its first line
+    is a ``sha256sum`` line, whatever its name. Entries resolve both against the manifest's
+    directory and against the repository root, since both conventions are in use.
+    """
+    pins = Pins()
     for shard in sorted((root / "evidence").rglob("*.jsonl")):
         for line in shard.read_text(encoding="utf-8").splitlines():
             if not line.strip():
@@ -169,24 +189,78 @@ def protected_paths(root: Path) -> set[Path]:
             path = record.get("path")
             if record.get("status") != "active" or record.get("class") != "local-private" or not isinstance(path, str):
                 continue
-            if path.startswith(f"{WORK}/"):
-                protected.add(root / path.rstrip("/"))
-                protected.update(fixity_entries(root / path))
-    return protected
+            target = normal(root / path)
+            pins.paths.add(target)
+            try:
+                entries = manifest_entries(target)
+            except ManifestError as error:
+                pins.problems[target] = f"{record.get('id', path)}: {error}"
+                continue
+            for rel in entries:
+                pins.paths.update(entry_paths(root, target, rel))
+    return pins
 
 
-def fixity_entries(manifest: Path) -> list[Path]:
-    """Files a fixity manifest lists; an unreadable or escaping manifest stops the run."""
-    if manifest.name != FIXITY_NAME or not manifest.is_file():
-        return []
-    entries: list[Path] = []
-    for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
-        match = FIXITY_LINE.fullmatch(line)
-        rel = match.group(2) if match else ""
-        if not rel or rel.startswith("/") or ".." in Path(rel).parts:
-            raise SystemExit(f"work_gc: {manifest}:{number}: not a '<sha256>  <relative path>' line")
-        entries.append(manifest.parent / rel)
+def protected_paths(root: Path) -> set[Path]:
+    """Absolute paths that active ``local-private`` evidence rows pin."""
+    return evidence_pins(root).paths
+
+
+def normal(path: Path) -> Path:
+    """``path`` with ``.``, ``..`` and repeated separators removed, without touching the filesystem."""
+    return Path(os.path.normpath(path))
+
+
+class ManifestError(ValueError):
+    """A pinned manifest whose entries cannot be known."""
+
+
+def looks_like_manifest(path: Path) -> bool:
+    name = path.name.lower()
+    return "sha256" in name or "fixity" in name
+
+
+def manifest_entries(path: Path) -> list[str]:
+    """Paths a sha256 manifest lists, as written; ``[]`` for a row that is not a manifest.
+
+    Raises ManifestError when a row that is, or is named like, a manifest cannot be read
+    or parsed, so its entries are unknown.
+    """
+    named = looks_like_manifest(path)
+    try:
+        if path.is_dir():
+            return []
+        if not path.is_file():
+            if named or path.is_symlink():
+                raise ManifestError("manifest is missing or not a regular file")
+            return []
+        with path.open("rb") as handle:
+            head = handle.read(4096)
+        first = next((line for line in head.splitlines() if line.strip()), b"")
+        if not named and MANIFEST_LINE.fullmatch(first.decode("utf-8", "replace")) is None:
+            return []
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ManifestError(f"unreadable manifest: {error}") from error
+    entries: list[str] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        match = MANIFEST_LINE.fullmatch(line)
+        if match is None:
+            raise ManifestError(f"line {number} is not '<sha256>  <path>'")
+        entries.append(match.group(2))
+    if not entries:
+        raise ManifestError("manifest lists no files")
     return entries
+
+
+def entry_paths(root: Path, manifest: Path, rel: str) -> set[Path]:
+    """Every path a manifest entry may mean; pinning a path that does not exist costs nothing."""
+    entry = Path(rel)
+    if entry.is_absolute():
+        return {normal(entry)}
+    return {normal(manifest.parent / entry), normal(root / entry)}
 
 
 def tracked_references(root: Path, name: str) -> list[str]:
@@ -266,6 +340,31 @@ def is_within(path: Path, parent: Path) -> bool:
 
 def overlaps(path: Path, others: Iterable[Path]) -> bool:
     return any(is_within(path, other) or is_within(other, path) for other in others)
+
+
+class PathIndex:
+    """Containment queries over many paths in time proportional to path depth, not to their number."""
+
+    def __init__(self, paths: Iterable[Path]) -> None:
+        self.paths: frozenset[Path] = frozenset(paths)
+        ancestors: set[Path] = set()
+        for path in self.paths:
+            for parent in path.parents:
+                if parent in ancestors:
+                    break
+                ancestors.add(parent)
+        self.ancestors: frozenset[Path] = frozenset(ancestors)
+
+    def covers(self, path: Path) -> bool:
+        """Some indexed path equals or contains ``path``."""
+        return path in self.paths or any(parent in self.paths for parent in path.parents)
+
+    def inside(self, path: Path) -> bool:
+        """Some indexed path equals or lies inside ``path``."""
+        return path in self.paths or path in self.ancestors
+
+    def overlaps(self, path: Path) -> bool:
+        return self.covers(path) or self.inside(path)
 
 
 class OriginalIndex:
@@ -370,6 +469,8 @@ class Report:
     cases: list[Case]
     loose: list[Loose]
     live_known: bool
+    # Pinned manifests whose entries are unknown, relative to the root, with the reason.
+    pin_problems: dict[str, str] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
@@ -402,7 +503,16 @@ def scan(
     references: Callable[[Path, str], list[str]] = tracked_references,
 ) -> Report:
     work = root / WORK
-    protected = protected_paths(root)
+    pins = evidence_pins(root)
+    protected = PathIndex(pins.paths)
+    problems = {display(root, manifest): reason for manifest, reason in pins.problems.items()}
+    # An unusable pin manifest holds the case containing it; outside any case it holds every case.
+    unpinned: dict[str, list[str]] = {}
+    for manifest, reason in pins.problems.items():
+        parts = manifest.relative_to(work).parts if is_within(manifest, work) else ()
+        owner = parts[0] if len(parts) > 1 else ""
+        unpinned.setdefault(owner, []).append(f"unusable pin manifest {display(root, manifest)}: {reason}")
+    everywhere = unpinned.get("", [])
     running = live()
     originals = OriginalIndex([root / name for name in ORIGINAL_ROOTS])
     cases: list[Case] = []
@@ -411,26 +521,34 @@ def scan(
         if entry.name == LOG_DIR:
             continue
         if not entry.is_dir() or entry.is_symlink():
-            covered = any(is_within(entry, path) for path in protected)
+            covered = protected.covers(entry)
             size, newest = tree_size(entry)
             in_use = running is None or any(is_within(path, entry) for path in running)
             hold = "live" if in_use else "settling" if now - newest < settle_hours * 3600 else None
+            if everywhere:
+                hold = "; ".join(everywhere)
             loose.append(Loose(entry, size, references(root, entry.name), covered, hold))
             continue
         case = Case(entry.name, entry)
         case.size, case.newest = tree_size(entry)
         case.state, case.state_error = read_state(entry)
-        case.indexed = any(is_within(path, entry) for path in protected)
+        case.indexed = protected.inside(entry)
         case.live = running is None or any(is_within(path, entry) for path in running)
         case.guard = guard(case, now, settle_hours)
+        if held_by := [*unpinned.get(entry.name, []), *everywhere]:
+            case.guard = "; ".join(held_by)
         if not case.indexed:
             case.references = references(root, entry.name)
         for candidate in find_candidates(entry, originals):
-            (case.held if overlaps(candidate.path, protected) else case.candidates).append(candidate)
+            (case.held if protected.overlaps(candidate.path) else case.candidates).append(candidate)
         if case.guard is not None:
             case.deferred, case.candidates = case.candidates, []
         cases.append(case)
-    return Report(root, cases, loose, running is not None)
+    return Report(root, cases, loose, running is not None, problems)
+
+
+def display(root: Path, path: Path) -> str:
+    return path.relative_to(root).as_posix() if is_within(path, root) else str(path)
 
 
 def remove(path: Path, work: Path) -> None:
@@ -588,6 +706,8 @@ def render(report: Report) -> list[str]:
             lines.append(f"  {case.name}: {case.state_error}")
     if not report.live_known:
         lines.append("  /proc is unavailable: every case is treated as live")
+    for manifest, reason in sorted(report.pin_problems.items()):
+        lines.append(f"  unusable pin manifest {manifest}: {reason}; its case (every case if outside one) is deferred")
     lines.append(
         f"work_gc: {len(report.cases)} case(s), {mib(report.total)}; reproducible scratch eligible {mib(eligible)}, "
         + f"held by evidence {mib(sum(case.held_bytes for case in held))}, deferred {mib(deferred)}"
@@ -602,6 +722,7 @@ def as_json(report: Report) -> dict[str, object]:
     return {
         "total_bytes": report.total,
         "live_known": report.live_known,
+        "pin_problems": report.pin_problems,
         "loose": [
             {"path": item.path.relative_to(report.root).as_posix(), "bytes": item.size, "references": item.references}
             for item in report.loose

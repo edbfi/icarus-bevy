@@ -223,8 +223,105 @@ class WorkGcTest(unittest.TestCase):
             _ = work_gc.write_fixity(self.root, self.root / "work/b")
         self.assertFalse((self.root / "work/b/fixity.sha256").exists())
         _ = (self.root / "work/a/fixity.sha256").write_text("0" * 64 + "  ../escape\n")
-        with self.assertRaises(SystemExit):
-            _ = work_gc.protected_paths(self.root)
+        self.assertIn(self.root / "work/escape", work_gc.protected_paths(self.root))
+
+    def official_copy(self, case: str = "c") -> Path:
+        """A case like issue218: an installation whose files byte-match an original input."""
+        _ = self.write(f"work/{case}/case.json", b'{"state": "closed"}')
+        _ = self.write(f"work/{case}/notes.md", b"kept")
+        return self.write(f"work/{case}/official/Bin/server.exe", COPY)
+
+    def manifest(self, rel: str, *entries: str) -> Path:
+        return self.write(rel, "".join(f"{'0' * 64}  {entry}\n" for entry in entries).encode())
+
+    def assert_held(self, path: Path, case: str = "c") -> None:
+        report = self.scan()
+        found = self.case(report, case)
+        self.assertNotIn(path, [item.path for item in found.candidates])
+        self.assertIn(path, [item.path for item in found.held + found.deferred])
+        self.assertEqual(work_gc.prune(report, NOW), [])
+        self.assertTrue(path.exists())
+
+    def test_any_named_manifest_pins_what_it_lists(self) -> None:
+        copy = self.official_copy()
+        _ = self.manifest("work/c/official-fixity.sha256", "official/Bin/server.exe")
+        self.evidence("work/c/official-fixity.sha256")
+        self.age()
+        self.assert_held(copy)
+
+    def test_manifest_entries_may_be_repository_relative(self) -> None:
+        copy = self.official_copy()
+        _ = self.manifest("work/c/fixity.sha256", "work/c/official/Bin/server.exe")
+        self.evidence("work/c/fixity.sha256")
+        self.age()
+        self.assert_held(copy)
+
+    def test_issue218_layout_keeps_the_pinned_installation(self) -> None:
+        copy = self.official_copy()
+        _ = self.write("work/c/official-fixity.sha256", f"{'1' * 64} *work/c/official/Bin/server.exe\n".encode())
+        self.evidence("work/c/official-fixity.sha256")
+        self.age()
+        self.assert_held(copy)
+        self.assertTrue(self.case(self.scan(), "c").indexed)
+
+    def test_dot_relative_entries_are_pinned(self) -> None:
+        copy = self.official_copy()
+        _ = self.manifest("work/c/capture-fixity.sha256", "./official/Bin/server.exe")
+        self.evidence("work/c/capture-fixity.sha256")
+        self.age()
+        self.assert_held(copy)
+
+    def test_manifest_entries_outside_the_case_pin_the_other_case(self) -> None:
+        first = self.official_copy("b")
+        second = self.write("work/b/second/server.exe", COPY)
+        _ = self.write("work/a/notes.md")
+        _ = self.manifest("work/a/outputs.sha256", "work/b/official/Bin/server.exe", "../b/second/server.exe")
+        self.evidence("work/a/outputs.sha256")
+        self.age()
+        self.assert_held(first, "b")
+        self.assert_held(second, "b")
+        self.assertTrue(self.case(self.scan(), "b").indexed)
+
+    def test_unusable_pin_manifest_defers_its_case_and_says_why(self) -> None:
+        for name, body in (("missing", None), ("malformed", b"not a manifest line\n"), ("binary", b"\xff\xfe\x00")):
+            with self.subTest(name):
+                copy = self.official_copy(name)
+                if body is not None:
+                    _ = self.write(f"work/{name}/official-fixity.sha256", body)
+                _ = self.write("work/free/copy/server.exe", COPY)
+                self.evidence(f"work/{name}/official-fixity.sha256")
+                self.age()
+                report = self.scan()
+                case = self.case(report, name)
+                self.assertEqual(case.candidates, [])
+                self.assertIn(copy, [item.path for item in case.deferred])
+                self.assertIsNotNone(case.guard)
+                self.assertIn("official-fixity.sha256", case.guard or "")
+                self.assertEqual(len(self.case(report, "free").candidates), 1)
+                self.assertTrue(any("official-fixity.sha256" in line for line in work_gc.render(report)))
+                with self.assertRaises(SystemExit):
+                    _ = work_gc.retire(report, [name], NOW)
+                self.assertIn(f"work/{name}/official-fixity.sha256", report.pin_problems)
+
+    def test_unusable_pin_manifest_outside_a_case_defers_every_case(self) -> None:
+        copy = self.official_copy()
+        _ = self.write("work/loose-fixity.sha256", b"junk\n")
+        self.evidence("work/loose-fixity.sha256")
+        self.age()
+        self.assert_held(copy)
+
+    def test_manifest_detected_by_content_whatever_its_name(self) -> None:
+        copy = self.official_copy()
+        _ = self.manifest("work/c/hashes.txt", "official/Bin/server.exe")
+        self.evidence("work/c/hashes.txt")
+        self.age()
+        self.assert_held(copy)
+
+    def test_row_paths_are_normalised(self) -> None:
+        copy = self.official_copy()
+        self.evidence("./work/c/official//Bin/")
+        self.age()
+        self.assert_held(copy)
 
     def test_retire_checks_every_name_before_removing_any(self) -> None:
         for name in ("free", "indexed", "mentioned", "open"):
@@ -251,6 +348,14 @@ class WorkGcTest(unittest.TestCase):
         self.assertFalse((self.root / "work/free").exists())
         self.assertFalse((self.root / "work/stray.log").exists())
         self.assertEqual(len((self.root / "work/.gc/log.jsonl").read_text().splitlines()), 2)
+
+    def test_path_index_matches_pairwise_containment(self) -> None:
+        pinned = [Path("/r/work/a/x"), Path("/r/work/b/"), Path("/r/work/c/d/e")]
+        index = work_gc.PathIndex(pinned)
+        for probe in ("/r", "/r/work/a", "/r/work/a/x", "/r/work/a/x/y", "/r/work/a/xy", "/r/work/b/z", "/r/work/c/d", "/r/work/c/q"):
+            path = Path(probe)
+            self.assertEqual(index.covers(path), any(work_gc.is_within(path, pin) for pin in pinned), probe)
+            self.assertEqual(index.inside(path), any(work_gc.is_within(pin, path) for pin in pinned), probe)
 
     def test_failed_reference_search_counts_as_a_reference(self) -> None:
         self.assertNotEqual(work_gc.tracked_references(self.root, "anything"), [])
