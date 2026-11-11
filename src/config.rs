@@ -44,6 +44,8 @@ impl Default for ServerConfig {
 pub const MAX_NETWORK_PLAYERS: u32 = 64;
 /// Largest accepted `network.session_timeout_seconds`.
 pub const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
+/// Largest accepted `network.server_frozen_movement_release_delay_ms` (10 minutes).
+pub const MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS: u64 = 600_000;
 
 /// EXPERIMENTAL opt-in UDP session layer (`[network]`), built from the
 /// loopback peer lab. It demonstrates no ICARUS compatibility and runs no
@@ -102,6 +104,19 @@ pub struct NetworkConfig {
     /// Needs a release profile with the controller and pawn opens and is
     /// otherwise left off. `false` makes a comparison run.
     pub controller_possession_properties: bool,
+    /// EXPERIMENTAL: release each player's pawn from frozen movement. The
+    /// pawn still opens with `bServerFrozenMovement` true, as the original
+    /// does (F-797, F-1099); once a positive ACK settles the bunch that
+    /// created the player's own connected-player record (its finalisation,
+    /// F-1077), and [`Self::server_frozen_movement_release_delay_ms`] later,
+    /// one unreliable pawn property update sets it false, as the original
+    /// does (F-1099), sent again if NAKed. Default on; unqualified with a
+    /// stock client. Needs the pawn open and connected-player records and is
+    /// otherwise left off. `false` makes a comparison run.
+    pub server_frozen_movement_release: bool,
+    /// Milliseconds between the record's ACK and the release, so a client
+    /// change can be attributed to it; `0..=`[`MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS`].
+    pub server_frozen_movement_release_delay_ms: u64,
     /// RESERVED, must stay `false`: level visibility actors (dispatching a
     /// client's field-82 level visibility reports, F-1052, and opening each
     /// newly visible level's actors) are a visibility effect that
@@ -131,6 +146,8 @@ impl Default for NetworkConfig {
             authored_replication: None,
             connected_player_records: true,
             controller_possession_properties: true,
+            server_frozen_movement_release: true,
+            server_frozen_movement_release_delay_ms: 0,
             level_visibility_actors: false,
         }
     }
@@ -166,6 +183,10 @@ impl NetworkConfig {
             "network.session_timeout_seconds must be 1..={MAX_SESSION_TIMEOUT_SECONDS}"
         );
         ensure!(
+            self.server_frozen_movement_release_delay_ms <= MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS,
+            "network.server_frozen_movement_release_delay_ms must be 0..={MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS}"
+        );
+        ensure!(
             self.release_profile
                 .as_ref()
                 .is_none_or(|path| !path.as_os_str().is_empty()),
@@ -194,6 +215,10 @@ impl NetworkConfig {
 
     pub fn session_timeout(&self) -> Duration {
         Duration::from_secs(self.session_timeout_seconds)
+    }
+
+    pub fn server_frozen_movement_release_delay(&self) -> Duration {
+        Duration::from_millis(self.server_frozen_movement_release_delay_ms)
     }
 }
 

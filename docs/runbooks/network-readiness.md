@@ -131,7 +131,14 @@ is the ACK above and a newer admission replaces an unsettled receipt;
 since.
 `controller_possession` (F-1088): `pending_send`; `queued` = `settled` +
 `awaiting_ack`. Counters `controller_possession_updates_{sent,acked}`,
-`_sends_deferred`, `_errors` (abandoned). `unreliable_actor_bunches` (probe
+`_sends_deferred`, `_errors` (abandoned).
+`frozen_movement_release` (F-1099): `awaiting_delay`, `pending_send` (due or
+NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
+`settled`. Counters `frozen_movement_releases_{scheduled,sent,acked}`,
+`frozen_movement_release_{resends,sends_deferred,errors}`,
+`pawn_bunches_received_{reliable,unreliable}` (headers only). Probe
+`frozen_movement` per session: `record_acked_ms`, `release_{due,sent,acked}_ms`,
+`release_failed`, `pawn_inbound`. `unreliable_actor_bunches` (probe
 opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
 `level_visibility` (probe-enabled, gated): `levels_visible`,

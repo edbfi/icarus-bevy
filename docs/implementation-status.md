@@ -11,7 +11,8 @@ Last reconciled: 2026-11-11
 
 Native foundation only (F-487). Steam auth/control Join observed (F-1009);
 world entry still stalls: the client now finalises and reports terrain tiles
-(F-1089), but its loading screen stays.
+(F-1089), but its loading screen stays. `run` now unfreezes each pawn after
+its record ACK by default (F-1099), untested with a stock client.
 Compatibility remains unproven.
 
 Standing research authorization F-968 requires scoped cases.

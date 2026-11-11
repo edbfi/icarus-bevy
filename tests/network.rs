@@ -3884,12 +3884,30 @@ fn possession_updates(
     layout: &[icarus_bevy::experimental::rep_layout::RepCommand],
     datagrams: &[Vec<u8>],
 ) -> Vec<Vec<(u32, icarus_bevy::experimental::rep_layout::RepValue)>> {
+    actor_property_updates(
+        profile,
+        icarus_bevy::experimental::session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
+        layout,
+        datagrams,
+        true,
+    )
+}
+
+/// Whole, nonopening bunches on `channel`, reliable or unreliable as
+/// `reliable` says, with one actor property block among `datagrams`, decoded
+/// against `layout` as `(handle, value)`.
+fn actor_property_updates(
+    profile: &ReleaseProfile,
+    channel: u32,
+    layout: &[icarus_bevy::experimental::rep_layout::RepCommand],
+    datagrams: &[Vec<u8>],
+    reliable: bool,
+) -> Vec<Vec<(u32, icarus_bevy::experimental::rep_layout::RepValue)>> {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, BlockTarget, read_actor_bunch_body},
         archive::ByteOrder,
         packet::read_packet,
         rep_layout::{RepLayoutCodec, read_rep_properties},
-        session_open::PLAYER_CONTROLLER_CHANNEL_INDEX,
     };
     let codec = RepLayoutCodec {
         actor: ActorChannelCodec {
@@ -3914,8 +3932,8 @@ fn possession_updates(
         .unwrap();
         for bunch in packet.bunches {
             let header = &bunch.header;
-            if header.channel_index != PLAYER_CONTROLLER_CHANNEL_INDEX
-                || !header.reliable
+            if header.channel_index != channel
+                || header.reliable != reliable
                 || header.open
                 || header.partial
                 || header.has_package_map_exports
@@ -4015,6 +4033,197 @@ fn production_bind_sends_one_possession_update_per_joined_player() {
             usize::from(possession)
         );
         assert_eq!(readiness.controller_possession.pending_send, 0);
+        with_server(&mut app, move || client.close().unwrap());
+    }
+}
+
+/// The frozen-movement releases among `datagrams`: whole unreliable pawn
+/// property updates carrying only `bServerFrozenMovement` (sent unreliable,
+/// as the original sends it), with its value.
+fn frozen_movement_updates(profile: &ReleaseProfile, datagrams: &[Vec<u8>]) -> Vec<bool> {
+    use icarus_bevy::experimental::{
+        pawn_open::{PAWN_CHANNEL_INDEX, handle},
+        peer_lab::PeerLabAdmission,
+        rep_layout::RepValue,
+    };
+    let plan = profile
+        .pawn_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    let wire = plan
+        .layout_version
+        .wire_handle(handle::SERVER_FROZEN_MOVEMENT)
+        .unwrap();
+    actor_property_updates(profile, PAWN_CHANNEL_INDEX, &plan.layout, datagrams, false)
+        .into_iter()
+        .map(|entries| match entries.as_slice() {
+            [(found, RepValue::Bool(frozen))] if *found == wire => *frozen,
+            other => panic!("a pawn update other than the release: {other:?}"),
+        })
+        .collect()
+}
+
+fn replies(collected: icarus_bevy::experimental::probe_client::Collected) -> Vec<Vec<u8>> {
+    collected
+        .replies
+        .into_iter()
+        .map(|reply| reply.bytes)
+        .collect()
+}
+
+/// `[network].server_frozen_movement_release` defaults to on with no delay.
+/// Over the production bind and the project's own client, a joining player
+/// gets exactly one pawn update setting `bServerFrozenMovement` false (the
+/// pawn opened with it true), sent no earlier than the configured delay after
+/// its own connected-player record's ACK (none while the finalised player's
+/// record is unACKed), and that update's own ACK is counted; switched off it
+/// sends none.
+#[test]
+fn production_bind_releases_frozen_movement_once_after_the_record_ack() {
+    use icarus_bevy::experimental::peer_lab::FrozenMovementObservation;
+    let defaults = NetworkConfig::default();
+    assert!(defaults.server_frozen_movement_release);
+    assert_eq!(defaults.server_frozen_movement_release_delay_ms, 0);
+    let parsed: ServerConfig = toml::from_str(
+        "[network]\nserver_frozen_movement_release = false\nserver_frozen_movement_release_delay_ms = 10000\n",
+    )
+    .unwrap();
+    assert!(!parsed.network.server_frozen_movement_release);
+    assert_eq!(
+        parsed.network.server_frozen_movement_release_delay_ms,
+        10_000
+    );
+    assert!(parsed.validate().is_ok());
+    let over: ServerConfig =
+        toml::from_str("[network]\nserver_frozen_movement_release_delay_ms = 600001\n").unwrap();
+    assert!(over.validate().is_err());
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    for (release, delay_ms) in [(true, 0_u64), (false, 0), (true, 400)] {
+        let config = NetworkConfig {
+            release_profile: Some(release_toml()),
+            server_frozen_movement_release: release,
+            server_frozen_movement_release_delay_ms: delay_ms,
+            ..enabled(0)
+        };
+        let bound = network::bind(&config).unwrap().unwrap();
+        let delay = Duration::from_millis(delay_ms);
+        assert_eq!(
+            bound.lab.frozen_movement_release_delay(),
+            release.then_some(delay)
+        );
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        let address = network::install(&mut app, bound.lab).unwrap();
+        // Finalise (the friends list rides with Begin); the record follows,
+        // and the client has sent nothing since, so nothing ACKs it yet.
+        let ((client, before), _) = with_server(&mut app, move || {
+            let (mut client, mut datagrams) = join_pinned_open(address, pinned, 32);
+            datagrams.extend(exchange_profiles(&mut client, engine, 9, 3));
+            datagrams.extend(replies(
+                client.collect(Duration::from_millis(250), 32).unwrap(),
+            ));
+            (client, datagrams)
+        });
+        let label = format!("release={release} delay={delay_ms}");
+        let status = counts(&app);
+        assert_eq!(status.players_finalised, 1, "{label}");
+        assert_eq!(status.connected_player_record_creations_sent, 1);
+        assert_eq!(status.connected_player_record_creations_acked, 0);
+        assert_eq!(status.frozen_movement_releases_scheduled, 0);
+        assert!(
+            frozen_movement_updates(&profile, &before).is_empty(),
+            "finalised, record unACKed: no release yet ({label})"
+        );
+        // Keep ACKing until the release (if any) and its own ACK.
+        let ((client, datagrams), _) = with_server(&mut app, move || {
+            let mut client = client;
+            let mut datagrams = Vec::new();
+            for window in [
+                delay + Duration::from_millis(400),
+                Duration::from_millis(150),
+            ] {
+                client.keepalive().unwrap();
+                datagrams.extend(replies(client.collect(window, 32).unwrap()));
+            }
+            client.keepalive().unwrap();
+            (client, datagrams)
+        });
+        let status = counts(&app);
+        assert_eq!(status.connected_player_record_creations_acked, 1, "{label}");
+        let expected: &[bool] = if release { &[false] } else { &[] };
+        assert_eq!(
+            frozen_movement_updates(&profile, &datagrams),
+            expected,
+            "{label}"
+        );
+        let release_count = u64::from(release);
+        assert_eq!(status.frozen_movement_releases_scheduled, release_count);
+        assert_eq!(status.frozen_movement_releases_sent, release_count);
+        assert_eq!(status.frozen_movement_releases_acked, release_count);
+        assert_eq!(status.frozen_movement_release_errors, 0);
+        assert_eq!(status.frozen_movement_release_resends, 0);
+        assert_eq!(status.frozen_movement_release_sends_deferred, 0);
+        let lab = app.world().resource::<PeerLab>();
+        let readiness = lab.readiness_counts().frozen_movement_release;
+        assert_eq!(readiness.settled, usize::from(release));
+        assert_eq!(readiness.awaiting_delay + readiness.pending_send, 0);
+        let [observation] = lab.frozen_movement_observations()[..] else {
+            panic!("one session");
+        };
+        let FrozenMovementObservation {
+            record_acked_ms,
+            release_due_ms,
+            release_sent_ms,
+            release_acked_ms,
+            release_failed,
+            ..
+        } = observation;
+        assert!(!release_failed);
+        if release {
+            let acked = record_acked_ms.unwrap();
+            assert_eq!(release_due_ms, Some(acked + delay_ms));
+            assert!(release_sent_ms.unwrap() >= acked + delay_ms, "{label}");
+            assert!(release_acked_ms.unwrap() >= release_sent_ms.unwrap());
+        } else {
+            assert_eq!(
+                (record_acked_ms, release_sent_ms, release_acked_ms),
+                (None, None, None)
+            );
+        }
+        assert_eq!(observation.pawn_inbound.reliable_bunches, 0);
+        // Exactly once: further traffic and ACKs send no second release. One
+        // client bunch on the pawn channel is counted for its connection.
+        let (client, _) = with_server(&mut app, move || {
+            use icarus_bevy::experimental::{
+                packet::{BitWriter, Payload},
+                pawn_open::PAWN_CHANNEL_INDEX,
+            };
+            let mut client = client;
+            let mut body = BitWriter::new();
+            body.write_bit(false);
+            client
+                .send_actor_payload(PAWN_CHANNEL_INDEX, Payload::from_writer(body))
+                .unwrap();
+            assert!(
+                frozen_movement_updates(
+                    &ReleaseProfile::load(&release_toml()).unwrap(),
+                    &replies(client.collect(Duration::from_millis(200), 32).unwrap()),
+                )
+                .is_empty()
+            );
+            client.keepalive().unwrap();
+            client
+        });
+        assert_eq!(counts(&app).frozen_movement_releases_sent, release_count);
+        let lab = app.world().resource::<PeerLab>();
+        let [observation] = lab.frozen_movement_observations()[..] else {
+            panic!("one session");
+        };
+        assert_eq!(observation.pawn_inbound.reliable_bunches, 1, "{label}");
+        assert_eq!(observation.pawn_inbound.unreliable_bunches, 0);
+        assert!(observation.pawn_inbound.last_bunch_ms.is_some());
+        assert_eq!(lab.stats().pawn_bunches_received_reliable, 1);
         with_server(&mut app, move || client.close().unwrap());
     }
 }

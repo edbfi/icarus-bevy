@@ -39,7 +39,13 @@
 //! (F-1077). With `[network] controller_possession_properties` on (the
 //! default), each pawn open is followed by one reliable PlayerController
 //! property update naming that pawn as `Pawn` and `IcarusPlayerCharacter`
-//! (F-1074). Level visibility actors (dispatching the client's field-82
+//! (F-1074). With `[network] server_frozen_movement_release` on (the
+//! default) and records sent, the pawn, opened with movement frozen, is
+//! released by one unreliable pawn property update setting
+//! `bServerFrozenMovement` false, sent again if NAKed,
+//! `server_frozen_movement_release_delay_ms` after the player's own record
+//! creation is ACKed, as the original does (F-1099; the client's freeze
+//! rule, F-1100). Level visibility actors (dispatching the client's field-82
 //! level visibility reports and opening each newly visible level's
 //! world-settings actors) are gated: `[network] level_visibility_actors =
 //! true` is refused, and only the bounded join probe enables them through
@@ -1903,6 +1909,11 @@ fn bind_session(
         // the controller plan is present in this branch.
         if network.controller_possession_properties && has_pawn {
             lab.enable_controller_possession_properties()?;
+        }
+        // The frozen-movement release follows the player's own record ACK,
+        // so it needs records (and so the pawn open).
+        if network.server_frozen_movement_release && lab.has_connected_player_records() {
+            lab.enable_frozen_movement_release(network.server_frozen_movement_release_delay())?;
         }
         // Level visibility actors are gated and never enabled here:
         // `network.validate()` refuses `level_visibility_actors = true`, and a

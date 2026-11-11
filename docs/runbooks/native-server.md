@@ -59,6 +59,14 @@ Records F-1077: `[network] connected_player_records` / probe
 `--connected-player-records` (ready field), default true, need a release naming
 the record class (3.0.34/3.0.35 pins) plus pawn, PlayerState and GameState
 opens; else `run` omits them, the probe refuses. `false`: prior bunches.
+Unfreeze F-1099/F-1100: `[network] server_frozen_movement_release` / probe
+`--server-frozen-movement-release`, default true, needs records (else `run`
+omits it, the probe refuses). After the player's own record ACK plus
+`server_frozen_movement_release_delay_ms` (default 0, max 600000; probe
+`--server-frozen-movement-release-delay-ms`), one unreliable pawn update sets
+`bServerFrozenMovement` false, resent on NAK. Probe line
+`native_join_frozen_movement` (`unix_ms`, per-session times) on schedule, send,
+ACK or abandonment.
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.

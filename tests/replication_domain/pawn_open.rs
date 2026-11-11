@@ -118,3 +118,63 @@ fn pawn_open_writes_frozen_movement_at_the_selected_releases_wire_handle() {
         assert_eq!(tail[0].value, RepValue::Bool(true));
     }
 }
+
+/// The frozen-movement release is one actor property block, no spawn, that
+/// carries only `bServerFrozenMovement` at the release's wire handle: 67 in
+/// the legacy layout, 68 from 3.0.34 (the 3.0.35 pin inherits that layout).
+#[test]
+fn frozen_movement_update_writes_only_the_flag_at_the_selected_releases_wire_handle() {
+    use icarus_bevy::experimental::pawn_open::compose_pawn_frozen_movement_update;
+    for (profile, frozen_handle) in [
+        (ReleaseProfile::release_3_0_31(), 67),
+        (ReleaseProfile::release_3_0_32(), 67),
+        (ReleaseProfile::release_3_0_34(), 68),
+        (ReleaseProfile::release_3_0_35(), 68),
+    ] {
+        let plan = profile
+            .pawn_open_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .unwrap();
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let codec = ActorChannelCodec {
+                engine_net_version: profile.engine_network_version,
+                exports_enabled: false,
+                has_level: true,
+                order,
+                limits: ActorChannelLimits::default(),
+            };
+            for frozen in [false, true] {
+                let payload = compose_pawn_frozen_movement_update(&plan, frozen, order).unwrap();
+                let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
+                assert!(body.spawn.is_none());
+                let [block] = body.blocks.as_slice() else {
+                    panic!("one block");
+                };
+                assert_eq!(block.target, BlockTarget::Actor);
+                assert!(block.has_rep_layout);
+                // The handle, one bit and the terminator: 18 bits for the
+                // 3.0.34/35 handle 68, as the original's own update measures.
+                if frozen_handle == 68 {
+                    assert_eq!(block.payload.bit_len(), 18);
+                }
+                let mut reader = block.payload.reader();
+                let stream = read_rep_properties(
+                    &mut reader,
+                    &plan.layout,
+                    &RepLayoutCodec {
+                        actor: codec,
+                        checksums: false,
+                        limits: RepLayoutLimits::default(),
+                    },
+                )
+                .unwrap();
+                assert!(reader.at_end());
+                let [entry] = stream.entries.as_slice() else {
+                    panic!("one property");
+                };
+                assert_eq!(entry.handle, frozen_handle);
+                assert_eq!(entry.value, RepValue::Bool(frozen));
+            }
+        }
+    }
+}
