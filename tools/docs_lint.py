@@ -99,7 +99,7 @@ PREFIX_CAPS: tuple[tuple[str, int], ...] = (
 DIGEST_CAP = 8 * KIB
 ACTIVE_FINDINGS_CAP = 192 * KIB
 LEDGER_ROW_CAP = 400
-AGGREGATE_CAP = 192 * KIB
+AGGREGATE_CAP = 224 * KIB
 # Above this share of either aggregate cap, consolidate before adding.
 AGGREGATE_REVIEW_PERCENT = 80
 

@@ -20,4 +20,4 @@ Lint: `python3 tools/docs_lint.py`. Startup reads stop at this map and
 | [../evidence/](../evidence/README.md) | evidence index, one JSONL record per artifact; category folders mirror the findings ledgers; fetch by `grep -rhw --include='*.jsonl' M-ID evidence/` | 64 KB per shard, 2 KB records |
 
 The current prose surface (root `README.md` and everything here except archive,
-history and the ledgers, plus `evidence/README.md`) is capped at 192 KB in total.
+history and the ledgers, plus `evidence/README.md`) is capped at 224 KB in total.

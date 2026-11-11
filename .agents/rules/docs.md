@@ -103,7 +103,7 @@ Bytes: 16 KB per current-surface file, 8 KB per digest; active findings 48 KB
 per file and 192 KB in total, retired findings 64 KB per file; unknowns, bugs and
 compatibility 64 KB each; 400 bytes per ledger row; evidence shards 64 KB with
 numbered rollover per folder, records 2 KB, labels 160 characters; 2 KB for
-`evidence/README.md`; 192 KB for the current prose surface (every current file
+`evidence/README.md`; 224 KB for the current prose surface (every current file
 except the ledgers).
 Above 80% of either total the lint warns: consolidate before adding.
 Finding rows are fetched by ID, never as whole ledgers, so their total bounds no
