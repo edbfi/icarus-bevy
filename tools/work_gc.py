@@ -28,7 +28,8 @@ can be superseded by a row naming that one digested file. Files any pinned
 sha256 manifest lists are protected like the manifest itself, whatever the
 manifest's name and whether its entries are relative to its directory or to the
 repository root. A pinned manifest that is missing, unreadable or malformed
-defers its case (every case when it lies outside one) and is reported.
+defers every case and loose file, since its entries may name any of them, and
+is reported.
 
 ``--retire NAME...`` deletes whole cases or loose top-level files that no
 active evidence row covers and no tracked or untracked, non-ignored file
@@ -82,6 +83,9 @@ FIXITY_NAME = "fixity.sha256"
 # Any ``sha256sum`` line, text or binary mode; such a manifest may name its files relative
 # to its own directory or to the repository root.
 MANIFEST_LINE = re.compile(r"([0-9a-fA-F]{64}) [ *](\S(?:.*\S)?)")
+# A ``<bytes> <path>`` size line, which some manifests append after their digest lines. At most
+# 20 digits (any 64-bit size), so it can never be read as a 64-digit digest line.
+SIZE_LINE = re.compile(r"([0-9]{1,20}) (\S(?:.*\S)?)")
 
 
 def _object_dict(value: object) -> TypeIs[dict[object, object]]:
@@ -246,9 +250,9 @@ def manifest_entries(path: Path) -> list[str]:
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
-        match = MANIFEST_LINE.fullmatch(line)
+        match = MANIFEST_LINE.fullmatch(line) or SIZE_LINE.fullmatch(line)
         if match is None:
-            raise ManifestError(f"line {number} is not '<sha256>  <path>'")
+            raise ManifestError(f"line {number} is neither '<sha256>  <path>' nor '<bytes> <path>', so the files it pins are unknown")
         entries.append(match.group(2))
     if not entries:
         raise ManifestError("manifest lists no files")
@@ -505,14 +509,9 @@ def scan(
     work = root / WORK
     pins = evidence_pins(root)
     protected = PathIndex(pins.paths)
-    problems = {display(root, manifest): reason for manifest, reason in pins.problems.items()}
-    # An unusable pin manifest holds the case containing it; outside any case it holds every case.
-    unpinned: dict[str, list[str]] = {}
-    for manifest, reason in pins.problems.items():
-        parts = manifest.relative_to(work).parts if is_within(manifest, work) else ()
-        owner = parts[0] if len(parts) > 1 else ""
-        unpinned.setdefault(owner, []).append(f"unusable pin manifest {display(root, manifest)}: {reason}")
-    everywhere = unpinned.get("", [])
+    problems = {display(root, manifest): reason for manifest, reason in sorted(pins.problems.items())}
+    # A manifest's entries may name files in any case, so one whose entries are unknown holds everything.
+    everywhere = [f"unusable pin manifest {manifest}: {reason}" for manifest, reason in problems.items()]
     running = live()
     originals = OriginalIndex([root / name for name in ORIGINAL_ROOTS])
     cases: list[Case] = []
@@ -535,8 +534,8 @@ def scan(
         case.indexed = protected.inside(entry)
         case.live = running is None or any(is_within(path, entry) for path in running)
         case.guard = guard(case, now, settle_hours)
-        if held_by := [*unpinned.get(entry.name, []), *everywhere]:
-            case.guard = "; ".join(held_by)
+        if everywhere:
+            case.guard = "; ".join(everywhere)
         if not case.indexed:
             case.references = references(root, entry.name)
         for candidate in find_candidates(entry, originals):
@@ -707,7 +706,7 @@ def render(report: Report) -> list[str]:
     if not report.live_known:
         lines.append("  /proc is unavailable: every case is treated as live")
     for manifest, reason in sorted(report.pin_problems.items()):
-        lines.append(f"  unusable pin manifest {manifest}: {reason}; its case (every case if outside one) is deferred")
+        lines.append(f"  unusable pin manifest {manifest}: {reason}; every case is deferred")
     lines.append(
         f"work_gc: {len(report.cases)} case(s), {mib(report.total)}; reproducible scratch eligible {mib(eligible)}, "
         + f"held by evidence {mib(sum(case.held_bytes for case in held))}, deferred {mib(deferred)}"

@@ -282,26 +282,69 @@ class WorkGcTest(unittest.TestCase):
         self.assert_held(second, "b")
         self.assertTrue(self.case(self.scan(), "b").indexed)
 
-    def test_unusable_pin_manifest_defers_its_case_and_says_why(self) -> None:
-        for name, body in (("missing", None), ("malformed", b"not a manifest line\n"), ("binary", b"\xff\xfe\x00")):
+    def test_unusable_pin_manifest_defers_every_case_and_says_why(self) -> None:
+        bodies = (
+            ("missing", None),
+            ("malformed", b"not a manifest line\n"),
+            ("binary", b"\xff\xfe\x00"),
+            ("truncated", f"{'0' * 64}  official/Bin/server.exe\n{'0' * 30}".encode()),
+        )
+        for name, body in bodies:
             with self.subTest(name):
                 copy = self.official_copy(name)
                 if body is not None:
                     _ = self.write(f"work/{name}/official-fixity.sha256", body)
-                _ = self.write("work/free/copy/server.exe", COPY)
+                free = self.write("work/free/copy/server.exe", COPY)
+                _ = self.write("work/loose.log")
                 self.evidence(f"work/{name}/official-fixity.sha256")
                 self.age()
                 report = self.scan()
-                case = self.case(report, name)
-                self.assertEqual(case.candidates, [])
-                self.assertIn(copy, [item.path for item in case.deferred])
-                self.assertIsNotNone(case.guard)
-                self.assertIn("official-fixity.sha256", case.guard or "")
-                self.assertEqual(len(self.case(report, "free").candidates), 1)
+                for case_name, path in ((name, copy), ("free", free)):
+                    case = self.case(report, case_name)
+                    self.assertEqual(case.candidates, [], case_name)
+                    self.assertIn(path, [item.path for item in case.deferred], case_name)
+                    self.assertIn("official-fixity.sha256", case.guard or "", case_name)
+                self.assertTrue(all(item.guard for item in report.loose))
                 self.assertTrue(any("official-fixity.sha256" in line for line in work_gc.render(report)))
                 with self.assertRaises(SystemExit):
                     _ = work_gc.retire(report, [name], NOW)
+                with self.assertRaises(SystemExit):
+                    _ = work_gc.retire(report, ["loose.log"], NOW)
                 self.assertIn(f"work/{name}/official-fixity.sha256", report.pin_problems)
+                self.assertEqual(work_gc.prune(report, NOW), [])
+                self.assertTrue(copy.exists() and free.exists())
+
+    def test_unusable_manifest_in_one_case_defers_the_case_it_would_pin(self) -> None:
+        copy = self.official_copy("b")
+        # Would pin work/b/official/..., but a truncated last line makes its entries unknown.
+        _ = self.write("work/a/outputs.sha256", f"{'0' * 64}  work/b/official/Bin/server.exe\n{'0' * 30}".encode())
+        self.evidence("work/a/outputs.sha256")
+        self.age()
+        self.assert_held(copy, "b")
+
+    def test_size_lines_after_digest_lines_are_entries(self) -> None:
+        # The shape of a removal receipt: digest lines, then '<bytes> <path>' lines for the same files.
+        copy = self.official_copy()
+        sized = self.write("work/c/sized/server.exe", COPY)
+        _ = self.write(
+            "work/c/removed.sha256",
+            f"{'0' * 64}  official/Bin/server.exe\n{len(COPY)} official/Bin/server.exe\n{len(COPY)} sized/server.exe\n".encode(),
+        )
+        self.evidence("work/c/removed.sha256")
+        self.age()
+        report = self.scan()
+        self.assertEqual(report.pin_problems, {})
+        self.assertIsNone(self.case(report, "c").guard)
+        self.assert_held(copy)
+        self.assert_held(sized)
+        self.assertEqual(
+            work_gc.manifest_entries(self.root / "work/c/removed.sha256"),
+            ["official/Bin/server.exe", "official/Bin/server.exe", "sized/server.exe"],
+        )
+        for line in (f"{'1' * 21} too-long-size", "12  two-spaces", "12 trailing-space ", "-1 negative"):
+            _ = self.write("work/c/bad.sha256", f"{'0' * 64}  official/Bin/server.exe\n{line}\n".encode())
+            with self.assertRaises(work_gc.ManifestError, msg=line):
+                _ = work_gc.manifest_entries(self.root / "work/c/bad.sha256")
 
     def test_unusable_pin_manifest_outside_a_case_defers_every_case(self) -> None:
         copy = self.official_copy()
