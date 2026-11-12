@@ -20,6 +20,25 @@ use crate::spawn_placement::{
     MAX_SPAWN_POINTS, Placement, PlacementSource, SpawnConfig, SpawnPoint,
 };
 
+/// The words the server's run log must never carry
+/// (`bounded_native_binary_run_uses_the_same_authored_configuration_path`):
+/// authored world data uses them, so spawn reporting says "spawn".
+pub(super) const RUN_LOG_FORBIDDEN: [&str; 5] = [
+    "IndependentBox",
+    "authored",
+    "catalog_id",
+    "rotation",
+    "placement",
+];
+
+/// Fail if serialized `value` carries any [`RUN_LOG_FORBIDDEN`] word.
+fn assert_loggable(label: &str, value: &impl serde::Serialize) {
+    let text = serde_json::to_string(value).unwrap();
+    for word in RUN_LOG_FORBIDDEN {
+        assert!(!text.contains(word), "{label} carries {word:?}");
+    }
+}
+
 /// The authored points: whole and half centimetres, so `x * 10` is exact.
 fn points() -> SpawnConfig {
     SpawnConfig {
@@ -180,18 +199,24 @@ fn configured_points_place_both_opens_round_robin() {
         assert_eq!(placement.yaw, (expected == first).then_some(90.0));
         sockets.push(socket);
     }
-    assert_eq!(lab.stats.pawn_placements_configured, 3);
-    assert_eq!(lab.stats.pawn_placements_default, 0);
-    assert_eq!(lab.stats.pawn_placements_saved, 0);
+    assert_eq!(lab.stats.pawn_spawns_configured, 3);
+    assert_eq!(lab.stats.pawn_spawns_default, 0);
+    assert_eq!(lab.stats.pawn_spawns_saved, 0);
     let counts = lab.session_counts();
-    assert_eq!(counts.pawn_placements_configured, 3);
-    assert_eq!(counts.pawn_placement_saved_refused, 0);
+    assert_eq!(counts.pawn_spawns_configured, 3);
+    assert_eq!(counts.pawn_spawn_saved_refused, 0);
     let observations = lab.frozen_movement_observations();
     assert_eq!(observations.len(), 3);
+    // What `run` and the probe serialize carries none of the run log's
+    // forbidden words, with every spawn counter and field populated.
+    assert_loggable("session counts", &counts);
+    assert_loggable("readiness", &lab.readiness_counts());
+    assert_loggable("stats", lab.stats());
+    assert_loggable("observations", &observations);
     assert!(
         observations
             .iter()
-            .all(|observation| observation.placement == Some(PlacementSource::Configured))
+            .all(|observation| observation.spawn == Some(PlacementSource::Configured))
     );
 }
 
@@ -214,8 +239,8 @@ fn without_points_both_opens_keep_the_plans_location() {
             source: PlacementSource::Default,
         })
     );
-    assert_eq!(lab.stats.pawn_placements_default, 1);
-    assert_eq!(lab.stats.pawn_placements_configured, 0);
+    assert_eq!(lab.stats.pawn_spawns_default, 1);
+    assert_eq!(lab.stats.pawn_spawns_configured, 0);
     assert_eq!(lab.peers[&address].pawn_moves.placement, None);
 }
 

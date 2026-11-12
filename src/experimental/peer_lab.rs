@@ -941,12 +941,12 @@ pub struct PeerLabStats {
     /// Joining connections placed, by source (F-1139): a restored saved
     /// location, a configured spawn point ([`PeerLab::enable_spawn_points`])
     /// or the plan's location; one per connection, at its controller open.
-    pub pawn_placements_saved: u64,
-    pub pawn_placements_configured: u64,
-    pub pawn_placements_default: u64,
+    pub pawn_spawns_saved: u64,
+    pub pawn_spawns_configured: u64,
+    pub pawn_spawns_default: u64,
     /// Saved locations offered but refused (not finite or out of bound once
     /// raised); the next source was used.
-    pub pawn_placement_saved_refused: u64,
+    pub pawn_spawn_saved_refused: u64,
     /// Level visibility reports (controller field 82, F-1052) dispatched with
     /// [`PeerLab::enable_level_visibility_actors`], by disposition; counts
     /// only, never names. A newly visible level added to the connection's set.
@@ -1250,10 +1250,10 @@ pub struct SessionCounts {
     pub pawn_move_positions_rejected: u64,
     pub pawn_move_positions_skipped: u64,
     /// Placements by source, as in [`PeerLabStats`].
-    pub pawn_placements_saved: u64,
-    pub pawn_placements_configured: u64,
-    pub pawn_placements_default: u64,
-    pub pawn_placement_saved_refused: u64,
+    pub pawn_spawns_saved: u64,
+    pub pawn_spawns_configured: u64,
+    pub pawn_spawns_default: u64,
+    pub pawn_spawn_saved_refused: u64,
     /// Level visibility report and level actor counters, as in [`PeerLabStats`].
     pub level_visibility_reports_added: u64,
     pub level_visibility_reports_duplicate: u64,
@@ -1926,8 +1926,9 @@ pub struct FrozenMovementObservation {
     pub pawn_moves: PawnMoveCounts,
     pub last_move_ack_ms: Option<u64>,
     /// Where this session's pawn and controller opened from (F-1139); `None`
-    /// before its controller open.
-    pub placement: Option<PlacementSource>,
+    /// before its controller open. Serialized as `spawn`: run logs never carry
+    /// the word "placement" (authored world data uses it).
+    pub spawn: Option<PlacementSource>,
 }
 
 /// Level visibility actors ([`PeerLab::enable_level_visibility_actors`]):
@@ -2702,12 +2703,12 @@ fn connection_placement(
     }
     let resolution = resolver.resolve(None, default);
     if resolution.saved_refused {
-        bump(&mut stats.pawn_placement_saved_refused);
+        bump(&mut stats.pawn_spawn_saved_refused);
     }
     bump(match resolution.placement.source {
-        PlacementSource::Saved => &mut stats.pawn_placements_saved,
-        PlacementSource::Configured => &mut stats.pawn_placements_configured,
-        PlacementSource::Default => &mut stats.pawn_placements_default,
+        PlacementSource::Saved => &mut stats.pawn_spawns_saved,
+        PlacementSource::Configured => &mut stats.pawn_spawns_configured,
+        PlacementSource::Default => &mut stats.pawn_spawns_default,
     });
     *slot = Some(resolution.placement);
     resolution.placement
@@ -6064,7 +6065,7 @@ impl PeerLab {
                     pawn_inbound: entry.pawn_inbound,
                     pawn_moves: entry.pawn_moves.counts,
                     last_move_ack_ms: ms(entry.pawn_moves.last_ack_at),
-                    placement: entry.placement.map(|placement| placement.source),
+                    spawn: entry.placement.map(|placement| placement.source),
                 })
             })
             .collect();
@@ -6481,10 +6482,10 @@ impl PeerLab {
             pawn_move_positions_accepted: self.stats.pawn_move_positions_accepted,
             pawn_move_positions_rejected: self.stats.pawn_move_positions_rejected,
             pawn_move_positions_skipped: self.stats.pawn_move_positions_skipped,
-            pawn_placements_saved: self.stats.pawn_placements_saved,
-            pawn_placements_configured: self.stats.pawn_placements_configured,
-            pawn_placements_default: self.stats.pawn_placements_default,
-            pawn_placement_saved_refused: self.stats.pawn_placement_saved_refused,
+            pawn_spawns_saved: self.stats.pawn_spawns_saved,
+            pawn_spawns_configured: self.stats.pawn_spawns_configured,
+            pawn_spawns_default: self.stats.pawn_spawns_default,
+            pawn_spawn_saved_refused: self.stats.pawn_spawn_saved_refused,
             level_visibility_reports_added: self.stats.level_visibility_reports_added,
             level_visibility_reports_duplicate: self.stats.level_visibility_reports_duplicate,
             level_visibility_reports_hidden: self.stats.level_visibility_reports_hidden,

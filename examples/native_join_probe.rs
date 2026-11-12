@@ -267,7 +267,7 @@ impl Options {
             profile
                 .player_controller_open_plan(PROBE_MAP, [0.0; 3])?
                 .is_some(),
-            "spawn placement needs the release's controller profile; omit --spawn-location"
+            "spawn points need the release's controller profile; omit --spawn-location"
         );
         Ok(config)
     }
@@ -342,13 +342,13 @@ fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::
     );
     // Each live session's resolved placement source, by connection ordinal.
     counts.insert(
-        "placements_before_shutdown".into(),
+        "spawns_before_shutdown".into(),
         json!(
             lab.frozen_movement_observations()
                 .iter()
                 .map(|observation| json!({
                     "connection": observation.connection,
-                    "source": observation.placement,
+                    "source": observation.spawn,
                 }))
                 .collect::<Vec<_>>()
         ),
@@ -542,7 +542,7 @@ fn main() -> Result<()> {
     );
     ensure!(
         bound.lab.spawn_point_count() == spawn.points.len(),
-        "spawn placement configuration did not apply"
+        "spawn point configuration did not apply"
     );
     if level_visibility_actors {
         bound.lab.enable_level_visibility_actors(&profile)?;
@@ -1105,6 +1105,22 @@ mod tests {
         ] {
             assert!(parse(bad).unwrap().spawn(&profile).is_err(), "{bad:?}");
         }
+        // Neither the ready event's nor the summary's spawn report carries a
+        // word the server's run log forbids (authored world data uses them).
+        let reports = format!(
+            "{} {}",
+            spawn_report(&spawn),
+            spawn_report(&SpawnConfig::default())
+        );
+        for word in [
+            "IndependentBox",
+            "authored",
+            "catalog_id",
+            "rotation",
+            "placement",
+        ] {
+            assert!(!reports.contains(word), "{word}");
+        }
         let edge = parse(&[
             "--spawn-location",
             "1048576,-1048576,0",
@@ -1173,12 +1189,22 @@ mod tests {
             "controller_fields_before_shutdown",
             "unreliable_actor_bunches_before_shutdown",
             "stats_before_shutdown",
-            "placements_before_shutdown",
+            "spawns_before_shutdown",
             "peak_peers",
         ] {
             assert!(summary.get(key).is_some(), "{key}");
         }
         assert_eq!(summary["peak_peers"], 1);
+        let text = summary.to_string();
+        for word in [
+            "IndependentBox",
+            "authored",
+            "catalog_id",
+            "rotation",
+            "placement",
+        ] {
+            assert!(!text.contains(word), "summary carries {word:?}");
+        }
     }
 
     #[test]

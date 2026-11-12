@@ -173,7 +173,7 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `pawn_bunches_received_{reliable,unreliable}` (headers only). Probe
 `frozen_movement` per session: `record_acked_ms`, `release_{due,sent,acked}_ms`,
 `release_failed`, `pawn_inbound`, `pawn_moves`, `last_move_ack_ms`,
-`placement` ([spawn placement](#spawn-placement)).
+`spawn` ([spawn placement](#spawn-placement)).
 `pawn_move_acks` (F-1127, F-1128): `sessions_moving`, `awaiting_ack`,
 `deferred`, `positions_held`. Counters `pawn_moves_{received,malformed}`,
 `pawn_move_acks_sent`, `pawn_move_ack_{sends_deferred,errors}`,
@@ -208,7 +208,7 @@ terrain, collision or tables (F-828). Nothing checks the ground: a point below
 the client's terrain falls forever (the client never resets its own pawn),
 and one outside every landscape tile may keep the loading screen (U-079).
 
-`network_listening.spawn_points`; counters `pawn_placements_{saved,configured,default}`
-and `pawn_placement_saved_refused`; probe ready and summary `spawn`
-(`location`, `yaw`, `yaw_sent`, `source`) and `placements_before_shutdown`
+`network_listening.spawn_points`; counters `pawn_spawns_{saved,configured,default}`
+and `pawn_spawn_saved_refused`; probe ready and summary `spawn`
+(`location`, `yaw`, `yaw_sent`, `source`) and `spawns_before_shutdown`
 per session. A configured placement starts that session's move store (F-1128).
