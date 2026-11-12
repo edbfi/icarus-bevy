@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-11
+Last reconciled: 2026-11-12
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -88,7 +88,7 @@ Last reconciled: 2026-11-11
 | F-1116 | Possession on: native sends a player's record once the client ACKs its controller channel through the update (open included) and pawn channel through its open, so its controller resolves (F-1103); an abandoned update sends none and closes the session at once; others finalise | measured | authored-test; df6b6df | high; loopback, chosen NAKs; not in the original | U-079 | active |
 | F-1117 | Preparing geometry/Please wait... is static ST_UMG InbetweenLoadText in UMG_LoadInbetween's Description; DefaultGame.ini sets that class as InBetweenLoadingScreenWidget, which ShowInBetweenLoadingScreen loads (settings+0x60) and adds; no other text or phase | observed | static; M-1365, M-1366/ev_3e848b5a5b6f | high; client 25793767; client-only UI; en only | U-079 | active |
 | F-1118 | UMG_LoadInbetween Construct collapses MessageBox, waits 1 s, shows the text only if player 0 is an IcarusPlayerControllerSurvival with ReplicatedLeftProspectSession None (0); one check, no retry | observed | static; M-1365, M-1366/ev_cabf40117010 | high; client 25793767; Kismet read by case tool | U-079 | active |
-| F-1120 | ReplicatedLeftProspectSession is ELeaveProspectSessionType (max 5, 3 bits) in client 25793767 and server 26425113; native handle 26 uses EReplicatedLeftProspectState max 3 (2 bits); harmless until sent | observed | static/source; M-1365; e863f2a | high; descriptors read; width rule as enum_bits | U-066, U-079 | active |
+| F-1120 | ReplicatedLeftProspectSession is ELeaveProspectSessionType (max 5, 3 bits) in client 25793767 and server 26425113; native handle 26 now uses it (3 bits) in every profile, replacing an unsourced EReplicatedLeftProspectState max 3 | observed | static/source, authored-test; M-1365; d93e41b | high; descriptors read; width rule as enum_bits; 3.0.32/34 not read | U-066, U-079 | active |
 | F-1121 | Finalisation (server 26425113 same): CanFinalise, set +0x60, recache streaming cache (State copied), controller event only if State.Controller live, broadcast. Retry each tick covers unfinalised records only: a null-controller finalise never raises the event | observed | static; M-1367/ev_57872c9256f8, M-1367/ev_50b67a9e7303, M-1368 | high; client 25793767 | U-079 | active |
 | F-1122 | Field 113 is called only by a local controller on itself after OnConnectedPlayerInitialised; server 26425113 IsLocalController is xor al,al; ret, so a dedicated server never sends it (why S2 has none, F-1068) | observed | static; M-1367/ev_9fd1c2487d29, M-1336/ev_eb8d4b948fea, M-1367/ev_93e91fa84ad3 | high; both builds | U-079 | active |
 | F-1123 | Client UE_LOG compiled out (LogfImpl is ret, engine strings absent); blocker Add/Remove and record-timeout lines go only to in-memory UIcarusLogSubsystem; show, hide, finalise, frozen log nothing: Icarus.log cannot show blockers | observed | static; M-1367/ev_aff4df41d776, M-1367/ev_39fe2d19d4f1, M-1368 | high; client 25793767; entry consumers unread | U-079 | active |
