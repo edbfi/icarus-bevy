@@ -6,7 +6,7 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688,
 F-689, F-712 to F-714, F-858). Scope: dedicated-server build 25621760 (M-168)
 unless a current-client (build 25793767) comparison is named.
-Last reconciled: 2026-11-10.
+Last reconciled: 2026-11-12.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -123,7 +123,8 @@ Steam-handler exchange. Excludes compression and complete runtime initialization
 - `PreLogin` (F-712, F-713; U-037 resolved; `experimental::admission`):
   `IsCompatibleUniqueNetId` checks `GetDefaultOnlineSubsystemName()` /
   `CompatibleUniqueNetIdTypes`, and `ApproveLogin` (`0x14385ac60`) checks
-  `Server full.` and `Maximum splitscreen players`.
+  `Server full.` and `Maximum splitscreen players`. In 26425113 ICARUS first
+  rejects a wrong `password` option (`Invalid Password`, F-1163).
 
 ## Open questions
 

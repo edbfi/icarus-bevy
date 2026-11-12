@@ -43,7 +43,8 @@ corrections (F-1129, F-1130, F-1132); unanswered moves do not fault a client
 (F-1149, F-1152). After entry the stock client looks and jumps but cannot
 walk and shows stats 0 (F-1143, F-1147, F-1150): input reaches movement at
 speed 0 (F-1151); speed comes from stats (F-1153 to F-1155) that S2 sends in
-the pawn open (F-1156) and the probe never sent (F-1157; U-080). The original picks a rocket
+the pawn open (F-1156) and the probe never sent (F-1157; U-080); the client
+takes them verbatim as final cm/s (F-1164 to F-1166). The original picks a rocket
 spawn (F-1136), keeps kill-Z server-side (F-1137) and saves the client's last
 position (F-1135).
 
@@ -59,11 +60,11 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 - User-struct array checksums (U-067), runtime relevancy/priority (U-038),
   played-character values (U-069).
-- Fresh stats for walking after native entry (U-080); the listing key behind
-  the browser's password prompt (U-081; F-1158 to F-1160).
+- Fresh stats for walking after native entry (U-080); listing L_s only with
+  a join password, enforced as the original does (F-1161 to F-1163).
 - Quest exclusions (U-076) and saved-container gaps/unreferenced-container
   nulling: [world-manager open questions](../../specs/network/world-managers.md#open-questions).
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1380.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382.
