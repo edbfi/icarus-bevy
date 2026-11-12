@@ -433,6 +433,9 @@ pub struct LabPeer {
     /// When each recent packet was committed (at most [`SENT_AT_CAPACITY`],
     /// oldest first), for round-trip samples when its ack arrives.
     sent_at: VecDeque<(u32, std::time::Instant)>,
+    /// The datagram whose commit filled the sent-record ring, with its packet
+    /// ID; see [`Self::full_ring_probe`] (N-021). One datagram at most.
+    ring_probe: Option<(u32, Vec<u8>)>,
 }
 
 /// Committed packets whose send instant is kept (UE keeps 256 lag slots).
@@ -480,6 +483,7 @@ impl LabPeer {
             header_inspection_pending: true,
             failed: false,
             sent_at: VecDeque::new(),
+            ring_probe: None,
         })
     }
 
@@ -507,13 +511,43 @@ impl LabPeer {
             .map(|(_, at)| *at)
     }
 
-    /// Stamp a committed packet with the current instant.
-    fn note_sent(&mut self, packet_id: u32) {
+    /// Stamp a committed packet with the current instant; keep its datagram
+    /// while the ring is full (N-021). Call after the sequencer has advanced.
+    fn note_sent(&mut self, packet_id: u32, datagram: &[u8]) {
         if self.sent_at.len() == SENT_AT_CAPACITY {
             self.sent_at.pop_front();
         }
         self.sent_at
             .push_back((packet_id, std::time::Instant::now()));
+        let notify = self.sequencer.notify();
+        if notify.sent_records().len() >= notify.sent_capacity() {
+            self.ring_probe = Some((packet_id, datagram.to_vec()));
+        }
+    }
+
+    /// N-021: while the sent-record ring is full, the newest committed
+    /// datagram, byte for byte. Nothing new can be committed until an ACK or
+    /// NAK drains the ring, and none comes while the client has heard none
+    /// of the ring's packets. Sending this copy again adds no sequence, record
+    /// or content: a client that already has it rejects it at the sequence
+    /// gate as a duplicate (F-538); one that lost it accepts it, and its ACK
+    /// settles the whole ring: older packets by their history bits, lost
+    /// beyond the newest 256 (F-759), NAKs resending their reliable bunches.
+    /// `None` when the ring has room, the newest datagram was not kept, or
+    /// the peer failed.
+    pub fn full_ring_probe(&self) -> Option<&[u8]> {
+        let notify = self.sequencer.notify();
+        let newest = self.sequencer.out_packet_id().wrapping_sub(1);
+        match &self.ring_probe {
+            Some((packet_id, datagram))
+                if !self.failed
+                    && *packet_id == newest
+                    && notify.sent_records().len() >= notify.sent_capacity() =>
+            {
+                Some(datagram)
+            }
+            _ => None,
+        }
     }
 
     pub fn sequencer(&self) -> &PacketSequencer {
@@ -795,6 +829,10 @@ impl LabPeer {
                     }
                 }
             }
+        }
+        let notify = self.sequencer.notify();
+        if notify.sent_records().len() < notify.sent_capacity() {
+            self.ring_probe = None;
         }
         let delivered = self.deliver(staged, &mut summary);
         let messages = self.fail_on_error(delivered)?;
@@ -1177,7 +1215,7 @@ impl LabPeer {
         };
         let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&close))?;
         let committed = self.sequencer.commit()?;
-        self.note_sent(committed);
+        self.note_sent(committed, &datagram);
         let recorded = (|| {
             ensure!(committed == packet_id, "committed packet ID mismatch");
             self.record_resends(packet_id, &resends)?;
@@ -1249,7 +1287,7 @@ impl LabPeer {
         };
         let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&bunch))?;
         let committed = self.sequencer.commit()?;
-        self.note_sent(committed);
+        self.note_sent(committed, &datagram);
         let recorded = (|| {
             ensure!(committed == packet_id, "committed packet ID mismatch");
             self.record_resends(packet_id, &resends)?;
@@ -1354,7 +1392,7 @@ impl LabPeer {
         let recorded = (|| {
             self.record_resends(first_packet, &resends)?;
             for (datagram, packet_id, carried) in datagrams {
-                self.note_sent(packet_id);
+                self.note_sent(packet_id, &datagram);
                 if carried
                     .iter()
                     .any(|part| part.header.has_package_map_exports)
@@ -1422,7 +1460,7 @@ impl LabPeer {
         let update = self.update_bunch(index, payload)?;
         let (datagram, packet_id, resends) = self.assemble(std::slice::from_ref(&update))?;
         let committed = self.sequencer.commit()?;
-        self.note_sent(committed);
+        self.note_sent(committed, &datagram);
         let recorded = (|| {
             ensure!(committed == packet_id, "committed packet ID mismatch");
             self.record_resends(packet_id, &resends)
@@ -1474,7 +1512,7 @@ impl LabPeer {
         self.sequencer = sequencer;
         let mut sent = Vec::with_capacity(datagrams.len());
         for (datagram, packet_id, _) in datagrams {
-            self.note_sent(packet_id);
+            self.note_sent(packet_id, &datagram);
             sent.push((datagram, packet_id));
         }
         let recorded = self.record_resends(first, &resends);
@@ -1684,9 +1722,9 @@ impl LabPeer {
             {
                 sent.exports_packet_id = Some(packet_id);
             }
+            self.note_sent(packet_id, &datagram);
             sent.datagrams.push(datagram);
             sent.packet_ids.push(packet_id);
-            self.note_sent(packet_id);
             parts.extend(carried.into_iter().map(|part| (packet_id, part)));
         }
         let recorded = self.record_actor_open(first, &resends, channel, parts);
@@ -1819,7 +1857,7 @@ impl LabPeer {
         let new_bunches: Vec<Bunch> = new.iter().map(|(_, bunch, ..)| bunch.clone()).collect();
         let (datagram, packet_id, resends) = self.assemble(&new_bunches)?;
         let committed = self.sequencer.commit()?;
-        self.note_sent(committed);
+        self.note_sent(committed, &datagram);
         let recorded = self.record_sent(committed, packet_id, &resends, new);
         self.fail_on_error(recorded)?;
         Ok(datagram)

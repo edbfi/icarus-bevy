@@ -104,16 +104,20 @@ fn ack_history_shifts_across_word_boundaries() {
 }
 
 #[test]
-fn header_word_count_clamps_and_rejects_spans_above_256() {
+fn header_word_count_clamps_spans_above_256_to_eight_words() {
     let mut notify = PacketNotify::new(0, 7, 8).unwrap();
-    assert_eq!(notify.history_word_count().unwrap(), 1);
-    for (sequence, words) in [(1, 1), (32, 1), (33, 2), (224, 7), (225, 8), (256, 8)] {
+    assert_eq!(notify.history_word_count(), 1);
+    for (sequence, words) in [
+        (1, 1),
+        (32, 1),
+        (33, 2),
+        (224, 7),
+        (225, 8),
+        (255, 8),
+        (256, 8),
+    ] {
         notify.ack_seq(sequence, true).unwrap();
-        assert_eq!(
-            notify.history_word_count().unwrap(),
-            words,
-            "span {sequence}"
-        );
+        assert_eq!(notify.history_word_count(), words, "span {sequence}");
     }
     let header = notify.header().unwrap();
     assert_eq!(
@@ -121,9 +125,58 @@ fn header_word_count_clamps_and_rejects_spans_above_256() {
         (7, 256, 8)
     );
     assert_eq!(header.history[0] & 1, 1);
-    notify.ack_seq(257, true).unwrap();
-    assert!(notify.history_word_count().is_err());
-    assert!(notify.header().is_err());
+    // N-020: past 256 bits the count stays clamped at eight words (F-535,
+    // F-759); the peer reads older sequences as lost (F-538).
+    for sequence in [257, 300, 0x1fff, 0x2000, 0x3fff] {
+        notify.ack_seq(sequence, true).unwrap();
+        assert_eq!(notify.history_word_count(), 8, "span {sequence}");
+        let header = notify.header().unwrap();
+        assert_eq!((header.acked_sequence, header.history.len()), (sequence, 8));
+        assert_eq!(header.history[0] & 1, 1);
+    }
+}
+
+#[test]
+fn header_word_count_clamps_across_the_sequence_wrap() {
+    let mut notify = PacketNotify::new(0x3f80, 7, 8).unwrap();
+    for (span, words) in [(0x7f, 4), (0x80, 4), (255, 8), (256, 8), (257, 8)] {
+        let sequence = (0x3f80 + span) & 0x3fff;
+        notify.ack_seq(sequence, true).unwrap();
+        assert_eq!(notify.history_word_count(), words, "span {span}");
+    }
+    let header = notify.header().unwrap();
+    assert_eq!((header.acked_sequence, header.history.len()), (0x0081, 8));
+}
+
+/// N-020 boundary: `count` client packets reach the server, every server ACK
+/// is lost, then one server header gets through. Up to 256 it acknowledges
+/// all; past 256 the oldest are lost (F-538) and nothing raises an error.
+#[test]
+fn acks_after_255_256_and_257_unanswered_packets_clamp_and_nak_the_oldest() {
+    for (client_out, server_out) in [(0x0200, 0x1100), (0x3fa0, 0x3ff0)] {
+        for count in [255_u16, 256, 257, 300] {
+            let mut client = PacketSequencer::new(server_out, client_out, 400).unwrap();
+            let mut server = PacketSequencer::new(client_out, server_out, 16).unwrap();
+            let ids: Vec<u32> = (0..count)
+                .map(|_| {
+                    let (header, id) = send(&mut client);
+                    assert!(deliver(&mut server, &transmit(&header, Receiver::Server)).is_empty());
+                    id
+                })
+                .collect();
+            let (reply, _) = send(&mut server);
+            assert_eq!(reply.history.len(), 8, "count {count}");
+            let notifications = deliver(&mut client, &transmit(&reply, Receiver::Client));
+            let lost = usize::from(count.saturating_sub(256));
+            let expected: Vec<_> = ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| notification(*id, index >= lost))
+                .collect();
+            assert_eq!(notifications, expected, "count {count}");
+            assert!(client.notify().sent_records().is_empty());
+        }
+    }
 }
 
 #[test]
@@ -183,7 +236,7 @@ fn round_trip_naks_exactly_the_dropped_packet() {
     let notifications = deliver(&mut server, &transmit(&header, Receiver::Server));
     assert_eq!(notifications, [notification(0x0200, true)]);
     assert_eq!(server.notify().in_ack_seq_ack(), 0x1104);
-    assert_eq!(server.notify().history_word_count().unwrap(), 1);
+    assert_eq!(server.notify().history_word_count(), 1);
 }
 
 #[test]

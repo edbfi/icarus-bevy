@@ -2,6 +2,11 @@
 
 [Setup](native-server.md#network-sessions-experimental). F-1045: no client
 execution, spawn, geometry or world-readiness proof.
+Seeded lossy-join campaign (F-1169), about 10 minutes:
+`ICARUS_LOSSY_JOIN_SEEDS=500 python3 tools/cargo_guard.py test --locked --lib lossy_join::extended -- --ignored --nocapture`;
+a failing seed prints its `reproduce_one` command. A full sent ring answers
+each client packet with its newest datagram again (`ack_ring_probes_sent`,
+N-021); the ACK history clamps at eight words (N-020).
 
 ## Probe output
 

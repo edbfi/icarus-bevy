@@ -228,22 +228,22 @@ impl PacketNotify {
         self.history[0] = (self.history[0] << 1) | u32::from(bit);
     }
 
-    /// History words the next header carries (F-535): the unacked incoming span
-    /// rounded up to whole words, clamped to 1..=8. A span above 256 bits needs
-    /// more words than exist and fails, as the client's refresh does.
-    pub fn history_word_count(&self) -> Result<usize> {
+    /// History words the next header carries (F-535, F-759): the unacked
+    /// incoming span rounded up to whole words, clamped to 1..=8. A span above
+    /// 256 bits writes all eight words; the peer notifies every sequence older
+    /// than the newest 256 as lost (F-538), so their reliable bunches are
+    /// resent (N-020). The client's refresh rewrite, which fails when it needs
+    /// more words than its original header wrote, is not modelled.
+    pub fn history_word_count(&self) -> usize {
         let span = sequence_difference(self.in_ack_seq, self.in_ack_seq_ack);
-        ensure!(
-            span <= HISTORY_BITS,
-            "unacked history span {span} exceeds 256 bits"
-        );
-        Ok(usize::from(span.div_ceil(WORD_BITS)).clamp(1, MAX_HISTORY_WORDS))
+        usize::from(span.div_ceil(WORD_BITS)).clamp(1, MAX_HISTORY_WORDS)
     }
 
     /// The outgoing header (F-535): `out_seq`, `in_ack_seq` and the first
-    /// [`history_word_count`](Self::history_word_count) words. Does not commit.
+    /// [`history_word_count`](Self::history_word_count) words. Does not commit;
+    /// does not fail since the word count clamps (N-020).
     pub fn header(&self) -> Result<PacketHeader> {
-        let count = self.history_word_count()?;
+        let count = self.history_word_count();
         Ok(PacketHeader {
             sequence: self.out_seq,
             acked_sequence: self.in_ack_seq,
