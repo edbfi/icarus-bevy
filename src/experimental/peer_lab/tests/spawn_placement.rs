@@ -16,22 +16,13 @@ use super::move_acks::{
     release_toml_config,
 };
 use super::*;
+use crate::run_log::RUN_LOG_FORBIDDEN;
 use crate::spawn_placement::{
     MAX_SPAWN_POINTS, Placement, PlacementSource, SpawnConfig, SpawnPoint,
 };
 
-/// The words the server's run log must never carry
-/// (`bounded_native_binary_run_uses_the_same_authored_configuration_path`):
-/// authored world data uses them, so spawn reporting says "spawn".
-pub(super) const RUN_LOG_FORBIDDEN: [&str; 5] = [
-    "IndependentBox",
-    "authored",
-    "catalog_id",
-    "rotation",
-    "placement",
-];
-
-/// Fail if serialized `value` carries any [`RUN_LOG_FORBIDDEN`] word.
+/// Fail if serialized `value` carries any [`RUN_LOG_FORBIDDEN`] word (the
+/// run-log privacy list; spawn reporting says "spawn").
 fn assert_loggable(label: &str, value: &impl serde::Serialize) {
     let text = serde_json::to_string(value).unwrap();
     for word in RUN_LOG_FORBIDDEN {
@@ -403,4 +394,82 @@ fn spawn_points_are_validated_and_configured_before_admission() {
     join_and_receive(&mut lab, 1, "AuthoredEarly");
     assert!(lab.enable_spawn_points(&SpawnConfig::default()).is_err());
     assert_eq!(lab.spawn_point_count(), 2);
+}
+
+/// One placement per connection, at its built controller open (F-1140): a
+/// deferred open (a full one-record ring) and a failed one (a plan that
+/// cannot compose) consume no point and move no counter; the next joining
+/// connection gets the point the failed one would have had, and the deferred
+/// one, once its ring drains, gets the following point.
+#[test]
+fn an_unbuilt_controller_open_consumes_no_spawn_point() {
+    let mut lab = prospect_refresh_lab();
+    lab.enable_spawn_points(&points()).unwrap();
+    let first = [12_345.5_f32, -65_432.0, 98_765.0];
+    let second = [-1_000.0_f32, 2_000.0, 300_000.0];
+    let untouched = lab.spawn.peek(None, [0.0; 3]);
+    assert_eq!(untouched.placement.location, first);
+    let counters = |lab: &PeerLab| {
+        (
+            lab.stats.pawn_spawns_saved,
+            lab.stats.pawn_spawns_configured,
+            lab.stats.pawn_spawns_default,
+            lab.stats.pawn_spawn_saved_refused,
+        )
+    };
+    // Deferred: one live record fills a one-record ring.
+    let (_deferred_socket, deferred, _) = acked_game_state_peer(&mut lab);
+    let entry = lab.peers.get_mut(&deferred).unwrap();
+    let cookie = entry.cookie;
+    let mut tight = *entry.peer.config();
+    tight.sent_capacity = 1;
+    entry.peer = LabPeer::from_cookie(&cookie, tight).unwrap();
+    entry.peer.ack_packet().unwrap();
+    assert!(lab.send_reply(deferred, &Reply::OpenPlayerController));
+    assert_eq!(lab.stats.player_controller_open_errors, 1);
+    let outcomes = lab.readiness_counts().initial_open_outcomes;
+    assert_eq!(outcomes.deferred.controller, 1);
+    assert_eq!(lab.peers[&deferred].placement, None);
+    assert_eq!(lab.spawn.peek(None, [0.0; 3]), untouched);
+    assert_eq!(counters(&lab), (0, 0, 0, 0));
+    // Failed: a controller plan without its referenced components cannot
+    // compose, which no transport progress can repair.
+    let plan = lab.player_controller_open.clone().unwrap();
+    lab.player_controller_open
+        .as_mut()
+        .unwrap()
+        .profile
+        .components
+        .truncate(1);
+    let (_failed_socket, failed, _) = acked_game_state_peer(&mut lab);
+    lab.send_reply(failed, &Reply::OpenPlayerController);
+    assert_eq!(lab.stats.player_controller_open_errors, 2);
+    let outcomes = lab.readiness_counts().initial_open_outcomes;
+    assert_eq!(outcomes.failed.controller, 1);
+    assert!(
+        lab.peers
+            .get(&failed)
+            .is_none_or(|entry| entry.placement.is_none())
+    );
+    assert_eq!(lab.spawn.peek(None, [0.0; 3]), untouched);
+    assert_eq!(counters(&lab), (0, 0, 0, 0));
+    assert_eq!(lab.stats.player_controller_opens_sent, 0);
+    lab.player_controller_open = Some(plan);
+    // The next built open gets the first point.
+    let (_joined_socket, joined, _) = acked_game_state_peer(&mut lab);
+    assert!(lab.send_reply(joined, &Reply::OpenPlayerController));
+    assert_eq!(lab.stats.player_controller_opens_sent, 1);
+    assert_eq!(lab.peers[&joined].placement.unwrap().location, first);
+    assert_eq!(counters(&lab), (0, 1, 0, 0));
+    // The deferred connection, its ring drained, gets the second point.
+    let mut roomy = tight;
+    roomy.sent_capacity = 256;
+    let entry = lab.peers.get_mut(&deferred).unwrap();
+    entry.peer = LabPeer::from_cookie(&cookie, roomy).unwrap();
+    entry.initial_opens.as_mut().unwrap().retry_ready = true;
+    lab.retry_initial_opens();
+    assert_eq!(lab.stats.player_controller_opens_sent, 2);
+    assert_eq!(lab.peers[&deferred].placement.unwrap().location, second);
+    assert_eq!(counters(&lab), (0, 2, 0, 0));
+    assert_eq!(lab.spawn.peek(None, [0.0; 3]).placement.location, first);
 }

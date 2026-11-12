@@ -165,13 +165,13 @@ impl SpawnResolver {
         self.points.len()
     }
 
-    /// Resolve one joining connection. `saved` is the player's restored
-    /// saved location when the restore pipeline has one at open time; it is
-    /// used raised by [`SAVED_LOCATION_CLEARANCE_CM`] if the result is finite
-    /// and within [`SPAWN_COMPONENT_LIMIT_CM`], and otherwise refused (the
-    /// configured points or the default follow). A configured point is
-    /// consumed only when no saved location is used.
-    pub fn resolve(&mut self, saved: Option<[f32; 3]>, default: [f32; 3]) -> Resolution {
+    /// The resolution the next joining connection would get, without
+    /// consuming anything. `saved` is the player's restored saved location
+    /// when the restore pipeline has one at open time; it is used raised by
+    /// [`SAVED_LOCATION_CLEARANCE_CM`] if the result is finite and within
+    /// [`SPAWN_COMPONENT_LIMIT_CM`], and otherwise refused (the configured
+    /// points or the default follow). Nothing advances until [`Self::commit`].
+    pub fn peek(&self, saved: Option<[f32; 3]>, default: [f32; 3]) -> Resolution {
         let mut saved_refused = false;
         if let Some([x, y, z]) = saved {
             let raised = [x, y, z + SAVED_LOCATION_CLEARANCE_CM];
@@ -191,14 +191,11 @@ impl SpawnResolver {
             saved_refused = true;
         }
         let placement = match self.points.get(self.next) {
-            Some(point) => {
-                self.next = (self.next + 1) % self.points.len();
-                Placement {
-                    location: point.location(),
-                    yaw: point.yaw.map(|yaw| yaw as f32),
-                    source: PlacementSource::Configured,
-                }
-            }
+            Some(point) => Placement {
+                location: point.location(),
+                yaw: point.yaw.map(|yaw| yaw as f32),
+                source: PlacementSource::Configured,
+            },
             None => Placement {
                 location: default,
                 yaw: None,
@@ -209,6 +206,22 @@ impl SpawnResolver {
             placement,
             saved_refused,
         }
+    }
+
+    /// Commit a [`Self::peek`] result once its open is built: a configured
+    /// point advances the round-robin index; a saved or default one consumes
+    /// nothing.
+    pub fn commit(&mut self, resolution: &Resolution) {
+        if resolution.placement.source == PlacementSource::Configured && !self.points.is_empty() {
+            self.next = (self.next + 1) % self.points.len();
+        }
+    }
+
+    /// [`Self::peek`] and [`Self::commit`] together.
+    pub fn resolve(&mut self, saved: Option<[f32; 3]>, default: [f32; 3]) -> Resolution {
+        let resolution = self.peek(saved, default);
+        self.commit(&resolution);
+        resolution
     }
 }
 
@@ -352,6 +365,38 @@ mod tests {
         }
         let edge = none.resolve(Some([0.0, 0.0, top - SAVED_LOCATION_CLEARANCE_CM]), default);
         assert_eq!(edge.placement.source, PlacementSource::Saved);
+    }
+
+    #[test]
+    fn peek_consumes_nothing_until_commit() {
+        let config = SpawnConfig {
+            points: vec![point(1.0, 2.0, 3.0, None), point(4.0, 5.0, 6.0, Some(10.0))],
+        };
+        let mut resolver = SpawnResolver::new(&config).unwrap();
+        let first = resolver.peek(None, [0.0; 3]);
+        // Looking again, any number of times, gives the same point.
+        for _ in 0..3 {
+            assert_eq!(resolver.peek(None, [0.0; 3]), first);
+        }
+        assert_eq!(first.placement.location, [1.0, 2.0, 3.0]);
+        resolver.commit(&first);
+        assert_eq!(
+            resolver.peek(None, [0.0; 3]).placement.location,
+            [4.0, 5.0, 6.0]
+        );
+        // A saved resolution commits without consuming a point.
+        let saved = resolver.peek(Some([7.0, 8.0, 9.0]), [0.0; 3]);
+        assert_eq!(saved.placement.source, PlacementSource::Saved);
+        resolver.commit(&saved);
+        assert_eq!(
+            resolver.peek(None, [0.0; 3]).placement.location,
+            [4.0, 5.0, 6.0]
+        );
+        // With no points, commit is a no-op.
+        let mut none = SpawnResolver::new(&SpawnConfig::default()).unwrap();
+        let default = none.peek(None, [0.0; 3]);
+        none.commit(&default);
+        assert_eq!(none.peek(None, [0.0; 3]), default);
     }
 
     #[test]

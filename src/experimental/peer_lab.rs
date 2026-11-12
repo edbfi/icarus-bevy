@@ -200,7 +200,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    spawn_placement::{Placement, PlacementSource, SpawnConfig, SpawnResolver},
+    spawn_placement::{Placement, PlacementSource, Resolution, SpawnConfig, SpawnResolver},
     steam_auth::{AuthOutcome, VerifiedTicket, decode_ticket_hex},
     steam_presence::ICARUS_APP_ID,
     steam_service::AuthClient,
@@ -2684,22 +2684,8 @@ fn pawn_bunch_moves(
     Ok(moves)
 }
 
-/// One connection's placement (F-1139): resolved once, at its first open,
-/// and counted by source; later opens reuse it. The restored saved location
-/// is not available here: the save's character is matched at finalisation
-/// (`restore_returning_pawn_uid`, which needs the character profile's slot),
-/// after the controller and pawn open at Join, so `saved` is `None` until
-/// the restore pipeline can match a player before its opens (F-1140).
-fn connection_placement(
-    slot: &mut Option<Placement>,
-    resolver: &mut SpawnResolver,
-    stats: &mut PeerLabStats,
-    default: [f32; 3],
-) -> Placement {
-    if let Some(placement) = slot {
-        return *placement;
-    }
-    let resolution = resolver.resolve(None, default);
+/// Count one committed placement by source (F-1139).
+fn count_placement(stats: &mut PeerLabStats, resolution: &Resolution) {
     if resolution.saved_refused {
         bump(&mut stats.pawn_spawn_saved_refused);
     }
@@ -2708,8 +2694,6 @@ fn connection_placement(
         PlacementSource::Configured => &mut stats.pawn_spawns_configured,
         PlacementSource::Default => &mut stats.pawn_spawns_default,
     });
-    *slot = Some(resolution.placement);
-    resolution.placement
 }
 
 /// Apply one client unreliable pawn bunch's moves to its session
@@ -10070,12 +10054,23 @@ impl PeerLab {
         let Some(entry) = self.peers.get_mut(&address) else {
             return InitialOpenOutcome::Failed;
         };
-        let placement = connection_placement(
-            &mut entry.placement,
-            &mut self.spawn,
-            &mut self.stats,
-            plan.spawn_location,
-        );
+        // One placement per connection, fixed by its controller open (F-1140).
+        // Look without consuming: the resolver, counters and slot change only
+        // once this open's datagrams are built, below. A failed open consumes
+        // no point; a deferred one looks again on retry, which is safe because
+        // nothing of it was sent, and a retry before any other join gets the
+        // same point. The restored saved location is not available here: the
+        // save's character is matched at finalisation
+        // (`restore_returning_pawn_uid`, which needs the character profile's
+        // slot), after the controller and pawn open at Join, so `saved` is
+        // `None` until the restore pipeline can match a player first.
+        let (placement, pending) = match entry.placement {
+            Some(placement) => (placement, None),
+            None => {
+                let resolution = self.spawn.peek(None, plan.spawn_location);
+                (resolution.placement, Some(resolution))
+            }
+        };
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
         let sent = compose_player_controller_open_at(
@@ -10100,6 +10095,12 @@ impl PeerLab {
                 return self.initial_open_failure(address, &error, channel);
             }
         };
+        // Built: the placement is this connection's, committed with the GUIDs.
+        if let Some(resolution) = pending {
+            self.spawn.commit(&resolution);
+            count_placement(&mut self.stats, &resolution);
+            entry.placement = Some(resolution.placement);
+        }
         entry.player_controller_channel = Some(plan.channel_index);
         entry.controller_open_guids = Some((guids.actor, guids.player_state));
         entry.backend_proxy = guids.components.first().copied();
@@ -10164,14 +10165,17 @@ impl PeerLab {
                 }
             }
         }
-        // The controller open resolved this connection's placement; the pawn
-        // opens at the same location (F-1140).
-        let placement = connection_placement(
-            &mut entry.placement,
-            &mut self.spawn,
-            &mut self.stats,
-            controller_plan.spawn_location,
-        );
+        // The committed controller open fixed this connection's placement; the
+        // pawn opens at the same location (F-1140). The pawn follows that open,
+        // so a missing slot should not happen; if it does, the pawn keeps the
+        // plan's location as before spawn points existed (a default placement,
+        // neither counted nor stored, so the move store is not started) rather
+        // than adding a failure path.
+        let placement = entry.placement.unwrap_or(Placement {
+            location: controller_plan.spawn_location,
+            yaw: None,
+            source: PlacementSource::Default,
+        });
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
         let state = PawnOpenState {

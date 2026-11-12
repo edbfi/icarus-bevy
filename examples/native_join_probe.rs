@@ -39,6 +39,9 @@ use serde_json::json;
 
 #[path = "native_join_probe/capture.rs"]
 mod native_join_capture;
+#[cfg(test)]
+#[path = "../tests/common/run_log.rs"]
+mod run_log;
 
 // Protocol identities observed in S2; the native world remains independently
 // authored and empty. These names do not import terrain or gameplay tables.
@@ -1112,13 +1115,7 @@ mod tests {
             spawn_report(&spawn),
             spawn_report(&SpawnConfig::default())
         );
-        for word in [
-            "IndependentBox",
-            "authored",
-            "catalog_id",
-            "rotation",
-            "placement",
-        ] {
+        for word in run_log::RUN_LOG_FORBIDDEN {
             assert!(!reports.contains(word), "{word}");
         }
         let edge = parse(&[
@@ -1196,13 +1193,7 @@ mod tests {
         }
         assert_eq!(summary["peak_peers"], 1);
         let text = summary.to_string();
-        for word in [
-            "IndependentBox",
-            "authored",
-            "catalog_id",
-            "rotation",
-            "placement",
-        ] {
+        for word in run_log::RUN_LOG_FORBIDDEN {
             assert!(!text.contains(word), "summary carries {word:?}");
         }
     }
