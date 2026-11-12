@@ -47,7 +47,9 @@
 //! creation is ACKed, as the original does (F-1099; the client's freeze
 //! rule, F-1100). With `[network] pawn_move_acks` on (default off), each
 //! client's packed moves are decoded and the newest is acknowledged at most
-//! every 100 ms, never corrected (F-1127, F-1128). Level visibility actors (dispatching the client's field-82
+//! every 100 ms, never corrected (F-1127, F-1128). With `[network.spawn]`
+//! points, each joining player's controller and pawn open at the next point
+//! round-robin instead of [`SPAWN_LOCATION`] (F-1139, F-1140). Level visibility actors (dispatching the client's field-82
 //! level visibility reports and opening each newly visible level's
 //! world-settings actors) are gated: `[network] level_visibility_actors =
 //! true` is refused, and only the bounded join probe enables them through
@@ -145,8 +147,9 @@ pub const RETRY_TIMEOUT_FIELD: &str = "bUseOpenWorldRetryTimeout";
 
 /// Spectator slots granted beside `max_players` (the lab's default policy).
 pub const SPECTATOR_SLOTS: u32 = 2;
-/// Lab choice: the PlayerController spawn location (no world geometry or
-/// PlayerStart is consulted).
+/// Lab choice: the PlayerController and pawn spawn location when no
+/// `[network.spawn]` point applies (no world geometry or PlayerStart is
+/// consulted; F-1139).
 pub const SPAWN_LOCATION: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// The first channel of the world manager opens, after the PlayerState's.
@@ -1757,6 +1760,12 @@ fn bind_session(
             .context("compose the PlayerController open plan")?,
         _ => None,
     };
+    // Spawn points place the controller and pawn opens; refuse them before
+    // the socket binds rather than ignore them.
+    ensure!(
+        network.spawn.is_empty() || plan.is_some(),
+        "network.spawn requires a release profile with the PlayerController open"
+    );
     let authored_world = network
         .authored_world
         .as_ref()
@@ -1921,6 +1930,8 @@ fn bind_session(
         if network.pawn_move_acks && has_pawn {
             lab.enable_pawn_move_acks()?;
         }
+        // Operator spawn points (F-1139); none keeps SPAWN_LOCATION.
+        lab.enable_spawn_points(&network.spawn)?;
         // Level visibility actors are gated and never enabled here:
         // `network.validate()` refuses `level_visibility_actors = true`, and a
         // release's `[level_actors]` identities enable nothing by themselves.

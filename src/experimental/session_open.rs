@@ -858,11 +858,33 @@ pub struct ComposedOpen {
 
 /// Compose the PlayerController open for one connection (F-778, F-779): GUID
 /// assignment in `cache`, per-connection export state in `exports`, then the
-/// export prefix and the body in the connection's byte `order`.
+/// export prefix and the body in the connection's byte `order`. The spawn
+/// record and handle 19 carry the plan's location.
 pub fn compose_player_controller_open(
     cache: &mut NetGuidCache,
     exports: &mut ConnectionExports,
     plan: &PlayerControllerOpenPlan,
+    net_player_index: u8,
+    order: super::archive::ByteOrder,
+) -> Result<ComposedOpen> {
+    compose_player_controller_open_at(
+        cache,
+        exports,
+        plan,
+        plan.spawn_location,
+        net_player_index,
+        order,
+    )
+}
+
+/// [`compose_player_controller_open`] with this connection's placement
+/// (F-1140): `spawn_location` goes into the spawn record's packed location
+/// and handle 19 `SpawnLocation`, as the plan's does; nothing else changes.
+pub fn compose_player_controller_open_at(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PlayerControllerOpenPlan,
+    spawn_location: [f32; 3],
     net_player_index: u8,
     order: super::archive::ByteOrder,
 ) -> Result<ComposedOpen> {
@@ -880,7 +902,7 @@ pub fn compose_player_controller_open(
     let (guids, references) = cache.player_controller_exports(exports, &plan.profile)?;
     let export_payload = encode_exports(&references, &codec)?;
     let state = PlayerControllerOpenState {
-        spawn_location: plan.spawn_location,
+        spawn_location,
         net_player_index,
         remote_role: 2,
         role: 3,

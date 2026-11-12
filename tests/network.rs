@@ -535,6 +535,7 @@ fn production_run_admits_a_probe_session_and_saves_on_sigterm() {
     assert!(address.ip().is_loopback() && address.port() != 0);
     assert_eq!(listening["version_check"], false);
     assert_eq!(listening["release_build_id"], Value::Null);
+    assert_eq!(listening["spawn_points"], 0);
 
     let client = join(address);
     let status = server.wait_for("status with a joined session", |record| {
@@ -4255,6 +4256,96 @@ fn production_bind_enables_pawn_move_acks_only_when_configured_with_a_pawn() {
     .unwrap()
     .unwrap();
     assert!(!bound.lab.has_pawn_move_acks());
+}
+
+/// `[network.spawn]` (F-1139): absent by default and omitted when written;
+/// authored points parse, validate and reach the production bind; unknown
+/// keys, malformed points, too many points or out-of-bound values refuse the
+/// configuration; points without a release (no controller open) refuse the
+/// bind rather than being ignored. The wire is the lab's `spawn_placement`
+/// tests.
+#[test]
+fn production_spawn_points_parse_validate_and_reach_the_bind() {
+    use icarus_bevy::spawn_placement::{SpawnConfig, SpawnPoint};
+    assert!(NetworkConfig::default().spawn.is_empty());
+    let written = toml::to_string(&ServerConfig::default()).unwrap();
+    assert!(!written.contains("spawn"), "{written}");
+    let text = "[network]\nrelease_profile = \"config/release.toml\"\n[network.spawn]\npoints = [\n  { x = 1000, y = -2000.5, z = 30000, yaw = 90 },\n  { x = -5, y = 6, z = 7 },\n]\n";
+    let parsed: ServerConfig = toml::from_str(text).unwrap();
+    parsed.validate().unwrap();
+    assert_eq!(
+        parsed.network.spawn.points,
+        [
+            SpawnPoint {
+                x: 1000.0,
+                y: -2000.5,
+                z: 30_000.0,
+                yaw: Some(90.0)
+            },
+            SpawnPoint {
+                x: -5.0,
+                y: 6.0,
+                z: 7.0,
+                yaw: None
+            }
+        ]
+    );
+    // Round trip: written with the points, read back equal.
+    let rewritten: ServerConfig = toml::from_str(&toml::to_string(&parsed).unwrap()).unwrap();
+    assert_eq!(rewritten.network.spawn, parsed.network.spawn);
+    for bad in [
+        "[network.spawn]\npoint = []\n",
+        "[network.spawn]\npoints = [{ x = 1, y = 2, z = 3, roll = 0 }]\n",
+        "[network.spawn]\npoints = [{ x = 1, y = 2 }]\n",
+        "[network.spawn]\npoints = [{ x = \"1\", y = 2, z = 3 }]\n",
+        "[network]\nspawn = 3\n",
+        "[network]\nspawn_points = []\n",
+    ] {
+        assert!(toml::from_str::<ServerConfig>(bad).is_err(), "{bad}");
+    }
+    // Released, so only the points themselves can fail validation.
+    let released = "[network]\nrelease_profile = \"config/release.toml\"\n";
+    for bad in [
+        "[network.spawn]\npoints = [{ x = 1048577, y = 0, z = 0 }]\n",
+        "[network.spawn]\npoints = [{ x = 0, y = 0, z = nan }]\n",
+        "[network.spawn]\npoints = [{ x = 0, y = 0, z = 0, yaw = 400 }]\n",
+    ] {
+        let parsed: ServerConfig = toml::from_str(&format!("{released}{bad}")).unwrap();
+        assert!(parsed.validate().is_err(), "{bad}");
+    }
+    // Valid points without a release profile: refused by validation.
+    let parsed: ServerConfig =
+        toml::from_str("[network.spawn]\npoints = [{ x = 0, y = 0, z = 0 }]\n").unwrap();
+    assert!(parsed.validate().is_err());
+    let many = format!(
+        "{released}[network.spawn]\npoints = [{}]\n",
+        vec!["{ x = 0, y = 0, z = 0 }"; 65].join(", ")
+    );
+    let parsed: ServerConfig = toml::from_str(&many).unwrap();
+    assert!(parsed.validate().is_err());
+    let spawn = SpawnConfig {
+        points: vec![SpawnPoint {
+            x: 100.0,
+            y: 200.0,
+            z: 300.0,
+            yaw: None,
+        }],
+    };
+    let bound = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        spawn: spawn.clone(),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(bound.lab.spawn_point_count(), 1);
+    assert!(
+        network::bind(&NetworkConfig {
+            spawn,
+            ..enabled(0)
+        })
+        .is_err()
+    );
 }
 
 #[test]

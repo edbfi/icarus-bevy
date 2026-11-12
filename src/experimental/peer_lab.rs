@@ -62,7 +62,8 @@
 //!   or sending Failure (ID 6) and closing the peer. With
 //!   [`PeerLab::enable_player_controller_open`], a successful `Join` (not
 //!   `SplitJoin`) is answered with the composed PlayerController open
-//!   ([`compose_player_controller_open`], F-778, F-779) through
+//!   ([`compose_player_controller_open_at`] at the connection's placement,
+//!   F-778, F-779, F-1140) through
 //!   [`LabPeer::reliable_actor_open_datagrams`]: GUIDs come from one
 //!   driver-wide cache, and each connection's exports are committed to the
 //!   packet carrying them and repeated until it is acked, its acks and naks
@@ -199,6 +200,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    spawn_placement::{Placement, PlacementSource, SpawnConfig, SpawnResolver},
     steam_auth::{AuthOutcome, VerifiedTicket, decode_ticket_hex},
     steam_presence::ICARUS_APP_ID,
     steam_service::AuthClient,
@@ -369,7 +371,7 @@ use super::session_open::{
     ActorKey, ActorOpenSpec, ConnectionExports, NetGuidCache, PathSegment,
     PlayerControllerOpenPlan, PlayerStateOpenPlan, PlayerStateOpenState, actor_codec,
     actor_properties_update_block, authored_movement, compose_actor_open,
-    compose_player_controller_open, compose_player_state_open, initial_actor_properties,
+    compose_player_controller_open_at, compose_player_state_open, initial_actor_properties,
     replicated_unique_net_id,
 };
 use super::stat_restore::{
@@ -936,6 +938,15 @@ pub struct PeerLabStats {
     pub pawn_move_positions_accepted: u64,
     pub pawn_move_positions_rejected: u64,
     pub pawn_move_positions_skipped: u64,
+    /// Joining connections placed, by source (F-1139): a restored saved
+    /// location, a configured spawn point ([`PeerLab::enable_spawn_points`])
+    /// or the plan's location; one per connection, at its controller open.
+    pub pawn_placements_saved: u64,
+    pub pawn_placements_configured: u64,
+    pub pawn_placements_default: u64,
+    /// Saved locations offered but refused (not finite or out of bound once
+    /// raised); the next source was used.
+    pub pawn_placement_saved_refused: u64,
     /// Level visibility reports (controller field 82, F-1052) dispatched with
     /// [`PeerLab::enable_level_visibility_actors`], by disposition; counts
     /// only, never names. A newly visible level added to the connection's set.
@@ -1238,6 +1249,11 @@ pub struct SessionCounts {
     pub pawn_move_positions_accepted: u64,
     pub pawn_move_positions_rejected: u64,
     pub pawn_move_positions_skipped: u64,
+    /// Placements by source, as in [`PeerLabStats`].
+    pub pawn_placements_saved: u64,
+    pub pawn_placements_configured: u64,
+    pub pawn_placements_default: u64,
+    pub pawn_placement_saved_refused: u64,
     /// Level visibility report and level actor counters, as in [`PeerLabStats`].
     pub level_visibility_reports_added: u64,
     pub level_visibility_reports_duplicate: u64,
@@ -1854,6 +1870,11 @@ struct PawnMoves {
     deferred: bool,
     /// The last stored location (centimetres) and its arrival instant.
     location: Option<([f64; 3], Instant)>,
+    /// The server's own placement (a saved or configured source, F-1140)
+    /// and when the pawn opened there: the starting point the first stored
+    /// location is checked against. Unset for the default placement, which
+    /// keeps the world check alone, as before.
+    placement: Option<([f64; 3], Instant)>,
     last_refusal_logged_at: Option<Instant>,
     counts: PawnMoveCounts,
 }
@@ -1904,6 +1925,9 @@ pub struct FrozenMovementObservation {
     /// Pawn moves ([`PeerLab::enable_pawn_move_acks`]); zero when off.
     pub pawn_moves: PawnMoveCounts,
     pub last_move_ack_ms: Option<u64>,
+    /// Where this session's pawn and controller opened from (F-1139); `None`
+    /// before its controller open.
+    pub placement: Option<PlacementSource>,
 }
 
 /// Level visibility actors ([`PeerLab::enable_level_visibility_actors`]):
@@ -2489,6 +2513,9 @@ struct PeerEntry {
     pawn_inbound: PawnInboundCounts,
     /// Pawn moves and their acknowledgement ([`PeerLab::enable_pawn_move_acks`]).
     pawn_moves: PawnMoves,
+    /// This connection's placement, resolved once at its first open and
+    /// shared by its controller and pawn opens (F-1140).
+    placement: Option<Placement>,
     /// Case-folded packages this connection reported visible and that are
     /// still visible (at most [`MAX_VISIBLE_LEVELS`]).
     visible_levels: BTreeSet<String>,
@@ -2658,6 +2685,34 @@ fn pawn_bunch_moves(
     Ok(moves)
 }
 
+/// One connection's placement (F-1139): resolved once, at its first open,
+/// and counted by source; later opens reuse it. The restored saved location
+/// is not available here: the save's character is matched at finalisation
+/// (`restore_returning_pawn_uid`, which needs the character profile's slot),
+/// after the controller and pawn open at Join, so `saved` is `None` until
+/// the restore pipeline can match a player before its opens (F-1140).
+fn connection_placement(
+    slot: &mut Option<Placement>,
+    resolver: &mut SpawnResolver,
+    stats: &mut PeerLabStats,
+    default: [f32; 3],
+) -> Placement {
+    if let Some(placement) = slot {
+        return *placement;
+    }
+    let resolution = resolver.resolve(None, default);
+    if resolution.saved_refused {
+        bump(&mut stats.pawn_placement_saved_refused);
+    }
+    bump(match resolution.placement.source {
+        PlacementSource::Saved => &mut stats.pawn_placements_saved,
+        PlacementSource::Configured => &mut stats.pawn_placements_configured,
+        PlacementSource::Default => &mut stats.pawn_placements_default,
+    });
+    *slot = Some(resolution.placement);
+    resolution.placement
+}
+
 /// Apply one client unreliable pawn bunch's moves to its session
 /// ([`PeerLab::enable_pawn_move_acks`]): each well-formed move with a
 /// finite, nonnegative timestamp becomes the newest (by arrival) and due for
@@ -2701,7 +2756,7 @@ fn receive_pawn_moves(
             continue;
         }
         let location = packed.new.fields.location_cm();
-        match check_move_location(state.location, location, now) {
+        match check_move_location(state.location.or(state.placement), location, now) {
             Ok(()) => {
                 state.location = Some((location, now));
                 state.counts.positions_accepted = state.counts.positions_accepted.saturating_add(1);
@@ -3268,6 +3323,9 @@ pub struct PeerLab {
     frozen_movement_release: Option<Duration>,
     /// Opt-in pawn move acknowledgements ([`PeerLab::enable_pawn_move_acks`]).
     pawn_move_acks: bool,
+    /// Per-connection placement ([`PeerLab::enable_spawn_points`]); without
+    /// points every connection keeps the controller plan's location.
+    spawn: SpawnResolver,
     /// Opt-in level visibility dispatch and actor opens
     /// ([`PeerLab::enable_level_visibility_actors`]); `None` leaves field 82
     /// ignored.
@@ -3479,6 +3537,7 @@ impl PeerLab {
             possession_abandoned: false,
             frozen_movement_release: None,
             pawn_move_acks: false,
+            spawn: SpawnResolver::default(),
             level_visibility: None,
             level_actor_holders: BTreeMap::new(),
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
@@ -6005,6 +6064,7 @@ impl PeerLab {
                     pawn_inbound: entry.pawn_inbound,
                     pawn_moves: entry.pawn_moves.counts,
                     last_move_ack_ms: ms(entry.pawn_moves.last_ack_at),
+                    placement: entry.placement.map(|placement| placement.source),
                 })
             })
             .collect();
@@ -6053,6 +6113,31 @@ impl PeerLab {
     /// Whether client moves are decoded and acknowledged.
     pub fn has_pawn_move_acks(&self) -> bool {
         self.pawn_move_acks
+    }
+
+    /// Place joining players at `config`'s validated spawn points,
+    /// round-robin by join (F-1139): each connection's controller open (its
+    /// spawn record and handle 19) and pawn open (its spawn record) carry
+    /// the point's location; a yaw is kept but not sent (F-1140). A
+    /// configured placement also starts that session's move store. Empty
+    /// points restore the plan's location. Needs the controller open; must
+    /// be called before any peer exists.
+    pub fn enable_spawn_points(&mut self, config: &SpawnConfig) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "spawn points are configured before admission"
+        );
+        ensure!(
+            config.is_empty() || self.player_controller_open.is_some(),
+            "spawn points need the PlayerController open"
+        );
+        self.spawn = SpawnResolver::new(config)?;
+        Ok(())
+    }
+
+    /// How many spawn points are configured.
+    pub fn spawn_point_count(&self) -> usize {
+        self.spawn.point_count()
     }
 
     /// Dispatch level visibility reports and open each newly visible level's
@@ -6396,6 +6481,10 @@ impl PeerLab {
             pawn_move_positions_accepted: self.stats.pawn_move_positions_accepted,
             pawn_move_positions_rejected: self.stats.pawn_move_positions_rejected,
             pawn_move_positions_skipped: self.stats.pawn_move_positions_skipped,
+            pawn_placements_saved: self.stats.pawn_placements_saved,
+            pawn_placements_configured: self.stats.pawn_placements_configured,
+            pawn_placements_default: self.stats.pawn_placements_default,
+            pawn_placement_saved_refused: self.stats.pawn_placement_saved_refused,
             level_visibility_reports_added: self.stats.level_visibility_reports_added,
             level_visibility_reports_duplicate: self.stats.level_visibility_reports_duplicate,
             level_visibility_reports_hidden: self.stats.level_visibility_reports_hidden,
@@ -6914,6 +7003,7 @@ impl PeerLab {
                         frozen_release: FrozenMovementRelease::default(),
                         pawn_inbound: PawnInboundCounts::default(),
                         pawn_moves: PawnMoves::default(),
+                        placement: None,
                         visible_levels: BTreeSet::new(),
                         level_actors: BTreeMap::new(),
                         level_actor_queue: VecDeque::new(),
@@ -9979,12 +10069,19 @@ impl PeerLab {
         let Some(entry) = self.peers.get_mut(&address) else {
             return InitialOpenOutcome::Failed;
         };
+        let placement = connection_placement(
+            &mut entry.placement,
+            &mut self.spawn,
+            &mut self.stats,
+            plan.spawn_location,
+        );
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
-        let sent = compose_player_controller_open(
+        let sent = compose_player_controller_open_at(
             &mut cache,
             &mut exports,
             plan,
+            placement.location,
             0,
             entry.peer.connection_byte_order(),
         )
@@ -10066,13 +10163,21 @@ impl PeerLab {
                 }
             }
         }
+        // The controller open resolved this connection's placement; the pawn
+        // opens at the same location (F-1140).
+        let placement = connection_placement(
+            &mut entry.placement,
+            &mut self.spawn,
+            &mut self.stats,
+            controller_plan.spawn_location,
+        );
         let mut cache = self.guid_cache.clone();
         let mut exports = entry.exports.clone();
         let state = PawnOpenState {
             key: pawn_key(connection),
             controller,
             player_state,
-            location: controller_plan.spawn_location,
+            location: placement.location,
             content,
         };
         let sent = PawnTemperatureState::from_values(&state.content.character_state).and_then(
@@ -10108,6 +10213,12 @@ impl PeerLab {
         };
         entry.pending_pawn_uid = None;
         entry.pawn_uid = claimed;
+        // A server placement is the move store's starting point (F-1140): the
+        // first client move is checked against it, not against nothing.
+        if placement.source != PlacementSource::Default {
+            entry.pawn_moves.location = None;
+            entry.pawn_moves.placement = Some((placement.location.map(f64::from), Instant::now()));
+        }
         entry.controller_startup_pawn_guid = cache.actor_guid(state.key).ok();
         entry.pawn_temperature = Some(temperature);
         entry.queued_pawn_temperature = Some(temperature);
@@ -19745,6 +19856,7 @@ mod tests {
     mod move_acks;
     mod pawn_capture;
     mod record_ack_gating;
+    mod spawn_placement;
 }
 
 #[cfg(test)]

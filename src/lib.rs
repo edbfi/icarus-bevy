@@ -45,6 +45,7 @@ pub mod simulation;
 #[cfg(test)]
 #[path = "../tests/common/c001_inventory_source.rs"]
 pub(crate) mod source;
+pub mod spawn_placement;
 pub mod steam_auth;
 pub mod steam_fetch;
 pub mod steam_presence;

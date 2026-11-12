@@ -50,7 +50,7 @@ pub const MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS: u64 = 600_000;
 /// EXPERIMENTAL opt-in UDP session layer (`[network]`), built from the
 /// loopback peer lab. It demonstrates no ICARUS compatibility and runs no
 /// gameplay; disabled by default.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
     /// Explicit independently authored seed and FLOD bootstrap, requiring a release profile.
@@ -137,6 +137,15 @@ pub struct NetworkConfig {
     /// (`--level-visibility-actors true`), through the lab API, to qualify
     /// the gate's remaining clauses in a connected run.
     pub level_visibility_actors: bool,
+    /// `[network.spawn]`: operator spawn points (centimetres, optional yaw
+    /// in degrees), at most 64, each component within ±1,048,576 cm, handed
+    /// out round-robin by join to the pawn and controller opens (F-1139).
+    /// Empty (the default) keeps the plan's location, the origin. Positions
+    /// come from the operator's own knowledge of the map; the server ships
+    /// no map data. Needs the release's controller open. Last, so TOML
+    /// writes it after the `[network]` values.
+    #[serde(skip_serializing_if = "crate::spawn_placement::SpawnConfig::is_empty")]
+    pub spawn: crate::spawn_placement::SpawnConfig,
 }
 
 impl Default for NetworkConfig {
@@ -159,6 +168,7 @@ impl Default for NetworkConfig {
             server_frozen_movement_release_delay_ms: 0,
             pawn_move_acks: false,
             level_visibility_actors: false,
+            spawn: crate::spawn_placement::SpawnConfig::default(),
         }
     }
 }
@@ -219,6 +229,11 @@ impl NetworkConfig {
                 .as_ref()
                 .is_none_or(|path| !path.as_os_str().is_empty()),
             "network.authored_replication is empty"
+        );
+        self.spawn.validate()?;
+        ensure!(
+            self.spawn.is_empty() || self.release_profile.is_some(),
+            "network.spawn requires a release profile"
         );
         Ok(())
     }
