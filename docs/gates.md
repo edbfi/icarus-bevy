@@ -92,9 +92,8 @@ Last reconciled: 2026-11-11
   input parity allows (F-828: the public dedicated-server distribution or
   independently authored input), never client-only or packaged game data.
   Outside this gate means building and testing it offline; sending it in a
-  connected run still needs that run's own case, as every run does (last
-  section), not a separate approval. Opening a level's actors after a
-  field-82 report is a visibility effect and stays
+  connected run needs only that run's own case (last section). Opening a
+  level's actors after a field-82 report is a visibility effect and stays
   blocked.
 
 ## Before deriving replication schema for the server
@@ -124,7 +123,7 @@ Last reconciled: 2026-11-11
   per-scenario approval, replacing the connected-test deferral (F-421; U-038,
   U-047, U-052). Prefer offline routes that answer equally well.
 - The 2026-11-11 instruction (M-1359) renews online and connected-run
-  authorization. The prepared unfreeze-only run is authorized as a scenario
+  authorization. The prepared unfreeze-only run is authorized
   and waits only for the owner to be at a stock client; it lists a server
   publicly without a password, so it starts only on the owner's word that they
   are ready. The owner's delegation of the same day (M-1353) still covers the
