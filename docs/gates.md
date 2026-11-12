@@ -125,10 +125,10 @@ Last reconciled: 2026-11-11
   deferral (F-421; U-038, U-047, U-052). Prefer offline routes that answer
   equally well.
 - The 2026-11-11 instruction (M-1359) renews online and connected-run
-  authorization. The prepared unfreeze-only run is authorized and awaits the
-  owner at a stock client; it and the second run list a server publicly
-  without a password, so each starts only on the owner's word. M-1353 still
-  covers the offline decisions it lists.
+  authorization. The prepared unfreeze-only run and the second run are
+  authorized and await the owner at a stock client; both list a server
+  publicly without a password, so each starts only on the owner's word.
+  M-1353 still covers the offline decisions it lists.
 - Every run still needs its own `work/` case and current launcher session with
   scope, exact inputs and hashes, limits and literal commands; original
   execution only through the [launchers](runbooks/original-server-launcher.md);
