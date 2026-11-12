@@ -84,9 +84,21 @@ pub struct PawnStatInputs<'a> {
     pub weight: i32,
 }
 
-/// The restored stats and whether `Overburdened` applies.
+/// Authority maxima evaluated from every restored source, independently of
+/// which stats the operator elects to replicate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PawnStatMaxima {
+    pub health: i32,
+    pub stamina: i32,
+    pub oxygen: i32,
+    pub water: i32,
+    pub food: i32,
+}
+
+/// The restored authority bounds, wire stats and whether `Overburdened` applies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoredStats {
+    pub maxima: PawnStatMaxima,
     /// Every nonzero replicated stat in row order.
     pub items: Vec<StatPairRepState>,
     pub overburdened: bool,
@@ -227,6 +239,13 @@ pub fn restore_stats(
         }
     }
     Ok(RestoredStats {
+        maxima: PawnStatMaxima {
+            health: values.value("MaximumHealth_+"),
+            stamina: values.value("MaximumStamina_+"),
+            oxygen: values.value("MaximumOxygen_+"),
+            water: values.value("MaximumWater_+"),
+            food: values.value("MaximumFood_+"),
+        },
         items,
         overburdened,
     })
@@ -309,22 +328,15 @@ pub fn stat_delta(
 
 /// The character-state bounds the restored stats set, as (handle, value):
 /// the maxima, and stamina refilled to its maximum as a restored pawn's is.
-pub fn stat_bounds(stats: &RestoredStats, names: &[String]) -> Vec<(u32, i32)> {
+pub fn stat_bounds(stats: &RestoredStats) -> Vec<(u32, i32)> {
     use super::pawn_open::character_state_handle as h;
-    let value = |name: &str| {
-        names
-            .iter()
-            .position(|row| row == name)
-            .and_then(|row| stats.items.iter().find(|pair| pair.stat as usize == row))
-            .map_or(0, |pair| pair.value)
-    };
-    let stamina = value("MaximumStamina_+");
+    let maxima = stats.maxima;
     vec![
-        (h::MAX_HEALTH, value("MaximumHealth_+")),
-        (h::STAMINA, stamina),
-        (h::MAX_STAMINA, stamina),
-        (h::MAX_OXYGEN, value("MaximumOxygen_+")),
-        (h::MAX_WATER, value("MaximumWater_+")),
-        (h::MAX_FOOD, value("MaximumFood_+")),
+        (h::MAX_HEALTH, maxima.health),
+        (h::STAMINA, maxima.stamina),
+        (h::MAX_STAMINA, maxima.stamina),
+        (h::MAX_OXYGEN, maxima.oxygen),
+        (h::MAX_WATER, maxima.water),
+        (h::MAX_FOOD, maxima.food),
     ]
 }

@@ -127,15 +127,17 @@ Schematic, unplayable/unqualified. Match catalog row counts/names/order; author
 values, never copy gameplay tables. Missing tables: no pak fallback; omitted
 fields: parser defaults; neither input: lab defaults.
 
-Pawn UID (F-948): handle 46, ≤262,144 claims/reservations/remaps each.
-Unreadable saved ID: startup failure; failed claim: skip open, count
-`pawn_open_errors`; removal: free UID. Three character-slot profile exchange or
-`PlayerState` replication failures close the session (original: kick).
-ACK/NAK retries opens/profiles/one pending control reply per peer; queueing
-commits admission. Begin waits for PlayerState; pawn retries retain one UID (F-1011).
-Initialization/restore F-973/F-975; limits F-964/F-1056/F-1055. Incomplete inputs withhold derived stats/saved vitals; independent fields restore. Unmatched players enter History (F-967); unanswered clients never complete
-(F-959). Rejected staging discards characters/controllers/History; joiners
-enter empty History as new players.
+UID (F-948): handle 46; ≤262,144 claims/reservations/remaps each.
+Unreadable saved ID fails startup; failed claim skips open, counts
+`pawn_open_errors`; removal frees UID. Three profile-slot/PlayerState failures
+close the session (original: kick). ACK/NAK retries opens/profiles/one pending
+control reply per peer. Queueing admits; Begin awaits PlayerState; pawn retries
+retain UID (F-1011).
+Restore: F-973/F-975; limits: F-964/F-1056. Vital bounds use authoritative
+maxima regardless of replication (F-1055). Gaps withhold derived stats/saved
+vitals; other fields restore. Unmatched players enter History
+(F-967); unanswered clients cannot complete (F-959). Rejected staging drops
+characters/controllers/History; joiners enter empty History as new players.
 
 `PeerLab` member APIs require caller `enable_member_refresh`:
 `complete_prospect_member_spawn`: add status-2, unsettled/not-playing members
