@@ -272,8 +272,23 @@ fn join_password_config_is_validated_and_never_serialised() {
             "{refused}: {error}"
         );
     }
-    for refused in ["5", "[\"a\"]", "true"] {
-        assert!(parse(refused).is_err(), "{refused}");
+    // A non-string is refused by the rule alone: serde's own type error
+    // would quote the value, and a numeric password is a plausible mistake.
+    for refused in [
+        "5",
+        "123456",
+        "-987654",
+        "3.25",
+        "true",
+        "[\"arrayed\"]",
+        "{ nested = \"tabled\" }",
+        "1979-05-27",
+    ] {
+        assert_eq!(
+            parse(refused).unwrap_err().message(),
+            "network.join_password must be a string",
+            "{refused}"
+        );
     }
     let printed = toml::to_string_pretty(&set).unwrap();
     assert!(!printed.contains(PASSWORD_SENTINEL) && !printed.contains("join_password"));
@@ -377,6 +392,8 @@ fn ninth_concurrent_session_is_refused_at_admission_with_default_limit() {
 
 /// Synthetic join password; asserted never to appear in any record.
 const PASSWORD_SENTINEL: &str = "Sentinel-Pass-71d3";
+/// A password someone wrote without quotes, so TOML reads a number.
+const NUMERIC_PASSWORD_SENTINEL: &str = "7139046285";
 
 /// With `network.join_password` set, a Login whose URL lacks the password or
 /// carries a wrong one is refused with the original's `Invalid Password`
@@ -461,6 +478,11 @@ fn production_run_enforces_and_never_prints_the_join_password() {
             "[network]\njoin_password = \"{PASSWORD_SENTINEL}\"\njoin_password = \"{PASSWORD_SENTINEL}\"\n"
         ),
         format!("[network]\njoin_password = \"{PASSWORD_SENTINEL}\\q\"\n"),
+        // Not a string: the error must not quote the value either.
+        format!("[network]\njoin_password = {NUMERIC_PASSWORD_SENTINEL}\n"),
+        format!("[network]\njoin_password = -{NUMERIC_PASSWORD_SENTINEL}.5\n"),
+        format!("[network]\njoin_password = [\"{PASSWORD_SENTINEL}\"]\n"),
+        format!("[network]\njoin_password = {{ a = \"{PASSWORD_SENTINEL}\" }}\n"),
     ] {
         let bad = directory.path().join("bad.toml");
         fs::write(&bad, &refused).unwrap();
@@ -481,6 +503,7 @@ fn production_run_enforces_and_never_prints_the_join_password() {
             );
             assert!(text.contains("parse native configuration"), "{text}");
             assert!(!text.contains(PASSWORD_SENTINEL), "{text}");
+            assert!(!text.contains(NUMERIC_PASSWORD_SENTINEL), "{text}");
         }
     }
     assert!(!directory.path().join("refused-state").exists());
