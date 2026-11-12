@@ -213,3 +213,53 @@ and one outside every landscape tile may keep the loading screen (U-079).
 and `pawn_spawn_saved_refused`; probe ready and summary `spawn`
 (`location`, `yaw`, `yaw_sent`, `source`) and `spawns_before_shutdown`
 per session. A configured placement starts that session's move store (F-1128).
+
+## Fresh-player stats
+
+F-1157, F-1168. Without tables a pawn opens with no stats and a stock client
+cannot walk. `fresh_player_gameplay` writes an authored profile over the
+official server's `data.pak`: row names and order from its catalog, every
+value from flags (round lab numbers, not ICARUS balance values):
+
+```bash
+python3 tools/cargo_guard.py build --locked --example fresh_player_gameplay
+python3 tools/cargo_guard.py --hold-target -- target/debug/examples/fresh_player_gameplay \
+  --data-pak PATH/data.pak --output work/<case>/fresh-gameplay.json
+```
+
+Speeds in cm/s: `--walk-speed` 600, `--sprint-speed` 900, `--crouch-speed`
+300, `--swim-speed` 300, `--swim-sprint-speed` 450. Vitals: `--max-health`,
+`--max-stamina`, `--max-oxygen`, `--max-water`, `--max-food` (100 each);
+`--weight-capacity` 1,000,000. Each is 1–10,000,000, the weight capacity at
+most 2,147,483 (the restore's Overburdened check multiplies it by 1,000,
+F-986). Only the five speeds replicate; the maxima fill the character state
+but are never sent as stats 0 and 3 (F-1166). An existing `--output` is never
+replaced; a written profile the loader refuses is removed. Stdout:
+`table_rows`, `fresh_pawn_stats` and `movement_stat_ids`, which must read 58,
+61, 65, 69 and 73 (F-1153); never a packaged value. `--skeleton TABLE`
+(repeatable) writes names-only rows to author instead.
+
+Probe `--data-pak PATH --authored-gameplay PATH`, both or neither, as
+`[network] data_pak`/`authored_gameplay`. Before sockets, TLS or Steam the
+preflight loads both, needs the release's pawn profile and composes the pawn
+open with every restore table the bind reads, so a profile lacking one (such
+as `D_ModifierStates` while the pak holds it and `D_ItemsStatic`) fails
+naming the table, quoting nothing of the file. Ready and summary
+`data_tables`: `loaded`, `fresh_pawn_stats`; no path or value. Counter
+`pawn_open_stats_sent`.
+
+## Join password
+
+F-1161 to F-1163, F-1167. `[network] join_password` (unset or empty: none) or
+probe `--join-password-file work/<case>/join-password`: a regular file under
+checkout `work/` (no symlinks or traversal), mode 0600, at most 1 KiB of
+UTF-8, one trailing newline trimmed, not empty. Either way at most 64 UTF-16
+units, no control characters or `?`. Only a protected probe listing carries
+`L_s`, which makes a stock browser prompt; without a password nothing
+prompts. Login compares the URL `password` option ignoring ASCII case
+(missing is empty) before the capacity checks and refuses a mismatch with
+`Invalid Password`. The password is never logged, serialised or echoed:
+`check-config` omits it, records and probe lines show only `join_password`
+true or false, and configuration errors give the rule and position, not the
+text. `run` binds loopback only and lists nothing. Untried with a stock
+client (U-081).

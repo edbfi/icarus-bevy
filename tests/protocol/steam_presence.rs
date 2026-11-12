@@ -26,7 +26,16 @@ fn authored_advert() -> Advert {
         version_tag: version_tag("3.0.34.159385-rel-DangerousHorizons").unwrap(),
         prospect: Some("authored".to_owned()),
         prospect_info: None,
+        password_protected: false,
     }
+}
+
+fn rule_value(advert: &Advert, key: &str) -> Option<Vec<u8>> {
+    advert
+        .rules()
+        .into_iter()
+        .find(|rule| rule.key == key.as_bytes())
+        .map(|rule| rule.value)
 }
 
 #[test]
@@ -67,7 +76,6 @@ fn listing_and_queries_share_one_direct_session_description() {
             "CONMETHOD",
             "D_s",
             "G_s",
-            "L_s",
             "OWNINGID",
             "OWNINGNAME",
             "P2PADDR",
@@ -102,6 +110,44 @@ fn listing_and_queries_share_one_direct_session_description() {
         advert.server_type().flags,
         Some(SERVER_FLAG_ACTIVE | SERVER_FLAG_SECURE | SERVER_FLAG_DEDICATED | SERVER_FLAG_LINUX)
     );
+}
+
+/// The original adds `D` always and `L` only with a join password; a client
+/// treats any present `L` as locked, so an open listing omits it entirely.
+#[test]
+fn only_a_password_protected_listing_carries_the_locked_rule() {
+    let open = authored_advert();
+    let locked = Advert {
+        password_protected: true,
+        ..authored_advert()
+    };
+    assert_eq!(rule_value(&open, "D_s").as_deref(), Some(&b"1"[..]));
+    assert_eq!(rule_value(&open, "L_s"), None);
+    assert_eq!(rule_value(&locked, "D_s").as_deref(), Some(&b"1"[..]));
+    assert_eq!(rule_value(&locked, "L_s").as_deref(), Some(&b"1"[..]));
+    let keys: Vec<Vec<u8>> = locked.rules().into_iter().map(|rule| rule.key).collect();
+    let at = |key: &[u8]| keys.iter().position(|candidate| candidate == key).unwrap();
+    assert_eq!(
+        (at(b"G_s") + 1, at(b"L_s") + 1),
+        (at(b"L_s"), at(b"OWNINGID"))
+    );
+    assert_eq!(keys.len(), open.rules().len() + 1);
+    // Neither the keywords, the master game data, the Steam password field,
+    // the server flags nor the A2S visibility byte change with it.
+    for advert in [&open, &locked] {
+        assert!(!advert.keywords().contains("L_s") && !advert.game_data().contains("L_s"));
+        assert_eq!(advert.game_server_data(1).password, Some(false));
+        assert_eq!(
+            advert.server_type().flags,
+            Some(
+                SERVER_FLAG_ACTIVE | SERVER_FLAG_SECURE | SERVER_FLAG_DEDICATED | SERVER_FLAG_LINUX
+            )
+        );
+        assert_eq!(advert.info().visibility, 0);
+    }
+    assert_eq!(open.keywords(), locked.keywords());
+    assert_eq!(open.game_data(), locked.game_data());
+    assert_eq!(open.info(), locked.info());
 }
 
 #[test]

@@ -1,11 +1,12 @@
 use icarus_bevy::experimental::admission::{
     ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
     DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, GAMESESSION_NULL_ERROR,
-    INCOMPATIBLE_UNIQUE_NET_ID, InitNewPlayerOutcome, JoinSpawnContext, MAX_PLAYER_NAME_UNITS,
-    MIN_CLIENT_NETSPEED, Occupancy, PLAYER_STATE_NULL_ERROR, PcSwapTarget, SERVER_FULL,
-    SPAWN_PLAYER_CONTROLLER_ERROR, SPLITSCREEN_EXCEEDED, check_unique_net_id_compatible,
-    clamp_client_netspeed, evaluate_actor_channel_failure, evaluate_pc_swap_target,
-    has_login_option, int_option, login_option, resolve_player_name, unique_net_id_is_valid,
+    INCOMPATIBLE_UNIQUE_NET_ID, INVALID_PASSWORD, InitNewPlayerOutcome, JoinPassword,
+    JoinSpawnContext, MAX_JOIN_PASSWORD_UNITS, MAX_PLAYER_NAME_UNITS, MIN_CLIENT_NETSPEED,
+    Occupancy, PLAYER_STATE_NULL_ERROR, PcSwapTarget, SERVER_FULL, SPAWN_PLAYER_CONTROLLER_ERROR,
+    SPLITSCREEN_EXCEEDED, check_unique_net_id_compatible, clamp_client_netspeed,
+    evaluate_actor_channel_failure, evaluate_pc_swap_target, has_login_option, int_option,
+    login_option, resolve_player_name, unique_net_id_is_valid,
 };
 use icarus_bevy::experimental::control_messages::{
     ArchiveText, NetIdType, NetIdValue, UniqueNetId,
@@ -27,6 +28,7 @@ const POLICY: AdmissionPolicy = AdmissionPolicy {
     max_players: 8,
     max_spectators: 2,
     max_splitscreens_per_connection: 1,
+    join_password: JoinPassword::NONE,
 };
 
 #[test]
@@ -443,4 +445,179 @@ fn login_and_init_new_player_orders_errors_and_truncates_player_names() {
         resolve_player_name(&units("?Name="), "Player", 256),
         units("Player256")
     );
+}
+
+fn guarded(password: &str) -> AdmissionPolicy {
+    AdmissionPolicy {
+        join_password: JoinPassword::new(password).unwrap(),
+        ..POLICY
+    }
+}
+
+/// `AIcarusGameSession::ApproveLogin` (26425113): with no `JoinPassword` set
+/// the check is skipped, whatever the login URL carries.
+#[test]
+fn no_join_password_admits_any_login_url() {
+    assert!(!JoinPassword::NONE.is_set());
+    assert_eq!(JoinPassword::new("").unwrap(), JoinPassword::NONE);
+    assert_eq!(JoinPassword::default(), JoinPassword::NONE);
+    assert_eq!(guarded(""), POLICY);
+    let room = Occupancy::default();
+    for options in [
+        "",
+        "?Name=A",
+        "?password=x",
+        "?Name=A?PASSWORD=",
+        "?password",
+    ] {
+        assert_eq!(
+            POLICY.approve_login(&units(options), room),
+            Ok(()),
+            "{options}"
+        );
+    }
+}
+
+/// A missing, empty or different `password` option is refused with the
+/// original's exact text; the key and ASCII letters ignore case.
+#[test]
+fn join_password_is_required_and_compared_ignoring_ascii_case() {
+    let policy = guarded("secret");
+    let room = Occupancy::default();
+    assert_eq!(INVALID_PASSWORD, "Invalid Password");
+    for refused in [
+        "",
+        "?Name=A",
+        "?password",
+        "?password=",
+        "?password=secret2",
+        "?password=secre",
+        "?password= secret",
+        "?pass=secret",
+        "?Name=A&password=secret",
+        "password=secret",
+        // The first occurrence wins, as for every option.
+        "?password=wrong?password=secret",
+    ] {
+        assert_eq!(
+            policy.approve_login(&units(refused), room),
+            Err(INVALID_PASSWORD),
+            "{refused}"
+        );
+    }
+    for admitted in [
+        "?password=secret",
+        "?PASSWORD=Secret",
+        "?Password=SECRET",
+        "?Name=A?password=sEcReT?SplitscreenCount=1",
+        "?password=secret?password=wrong",
+    ] {
+        assert_eq!(
+            policy.approve_login(&units(admitted), room),
+            Ok(()),
+            "{admitted}"
+        );
+    }
+    // Only ASCII letters fold; other units compare exactly, as `Stricmp`.
+    let accented = guarded("café");
+    assert_eq!(
+        accented.approve_login(&units("?password=CAFé"), room),
+        Ok(())
+    );
+    assert_eq!(
+        accented.approve_login(&units("?password=CAFÉ"), room),
+        Err(INVALID_PASSWORD)
+    );
+    // The value is everything after the first '=', unmodified.
+    let with_equals = guarded("a=b");
+    assert_eq!(
+        with_equals.approve_login(&units("?password=a=b"), room),
+        Ok(())
+    );
+}
+
+/// The password check runs before the engine's capacity and splitscreen
+/// checks, and after the unique-net-id check in PreLogin; Join's Login
+/// re-runs it on the stored login URL.
+#[test]
+fn join_password_check_precedes_capacity_and_follows_net_id() {
+    let policy = guarded("secret");
+    let full = Occupancy {
+        players: 8,
+        spectators: 2,
+    };
+    assert_eq!(
+        policy.approve_login(&units("?password=wrong?SplitscreenCount=9"), full),
+        Err(INVALID_PASSWORD)
+    );
+    assert_eq!(
+        policy.approve_login(&units("?password=secret"), full),
+        Err(SERVER_FULL)
+    );
+    assert_eq!(
+        policy.approve_login(
+            &units("?password=secret?SplitscreenCount=2"),
+            Occupancy::default()
+        ),
+        Err(SPLITSCREEN_EXCEEDED)
+    );
+    let steam = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
+        value: NetIdValue::from_hex("0123456789ABCDEF").unwrap(),
+    };
+    let foreign = UniqueNetId {
+        kind: NetIdType::Named(ArchiveText::text("PSN").unwrap()),
+        value: NetIdValue::from_hex("0123456789ABCDEF").unwrap(),
+    };
+    let pre_login = |options: &str, id: &UniqueNetId| {
+        policy.pre_login(&units(options), id, full, Some("STEAM"), &[], &[])
+    };
+    assert_eq!(pre_login("", &foreign), Err(INCOMPATIBLE_UNIQUE_NET_ID));
+    assert_eq!(pre_login("", &steam), Err(INVALID_PASSWORD));
+    assert_eq!(pre_login("?password=SECRET", &steam), Err(SERVER_FULL));
+    let ctx = JoinSpawnContext {
+        has_game_session: true,
+        can_spawn_controller: true,
+        has_player_state: true,
+        has_player_start: true,
+        must_spectate: false,
+        default_player_name: "Player",
+        player_id: 1,
+        net_player_index: 0,
+    };
+    assert_eq!(
+        policy.login_and_init_new_player(&units("?password=x"), Occupancy::default(), ctx),
+        Err(INVALID_PASSWORD)
+    );
+    assert!(
+        policy
+            .login_and_init_new_player(&units("?password=secret"), Occupancy::default(), ctx)
+            .is_ok()
+    );
+}
+
+/// The native bound and character rules, and a `Debug` that never shows the text.
+#[test]
+fn join_passwords_are_bounded_and_never_shown() {
+    let longest = "p".repeat(MAX_JOIN_PASSWORD_UNITS);
+    assert!(JoinPassword::new(&longest).unwrap().is_set());
+    // Counted in UTF-16 units: 32 surrogate pairs fill the bound.
+    assert!(JoinPassword::new(&"😀".repeat(MAX_JOIN_PASSWORD_UNITS / 2)).is_ok());
+    for refused in [
+        format!("{longest}p"),
+        "😀".repeat(MAX_JOIN_PASSWORD_UNITS / 2 + 1),
+        "tab\there".to_owned(),
+        "line\nbreak".to_owned(),
+        "nul\0".to_owned(),
+        "del\u{7f}".to_owned(),
+        "what?".to_owned(),
+    ] {
+        let error = JoinPassword::new(&refused).unwrap_err();
+        assert!(!error.contains(refused.as_str()), "{error}");
+    }
+    let sentinel = "SENTINEL-JOIN-9c41";
+    let policy = guarded(sentinel);
+    let shown = format!("{policy:?} {:?}", policy.join_password);
+    assert!(!shown.contains(sentinel), "{shown}");
+    assert!(shown.contains("set: true"), "{shown}");
 }

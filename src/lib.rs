@@ -4,6 +4,7 @@ pub mod authored_world_bootstrap;
 pub mod config;
 pub mod data_pak;
 pub mod experimental;
+pub mod gameplay_profile;
 pub mod import_candidate;
 pub mod import_plan;
 mod json;

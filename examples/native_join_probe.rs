@@ -5,7 +5,7 @@ use std::{
     collections::BTreeMap,
     io::{self, Write},
     net::{Ipv4Addr, SocketAddrV4, UdpSocket},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -20,6 +20,7 @@ use clap::Parser;
 use icarus_bevy::{
     config::{MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS, NetworkConfig},
     experimental::{
+        admission::JoinPassword,
         manager_open::{ManagerOpenPlan, ManagerSlot},
         peer_lab::{ControllerStartupAction, PeerLab},
         prospect_info::ProspectInfo,
@@ -39,9 +40,16 @@ use serde_json::json;
 
 #[path = "native_join_probe/capture.rs"]
 mod native_join_capture;
+#[path = "native_join_probe/password.rs"]
+mod native_join_password;
 #[cfg(test)]
 #[path = "../tests/common/run_log.rs"]
 mod run_log;
+// Shared test pak writer; the probe's tests use only its fresh-join pak.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/pak_writer/mod.rs"]
+mod pak_writer;
 
 // Protocol identities observed in S2; the native world remains independently
 // authored and empty. These names do not import terrain or gameplay tables.
@@ -161,9 +169,91 @@ struct Options {
     /// validated and reported, not sent (no qualified open field carries it).
     #[arg(long, allow_hyphen_values = true, requires = "spawn_location")]
     spawn_yaw: Option<f64>,
+    /// The official dedicated server's `Icarus/Content/Data/data.pak`, for
+    /// row identities only, as `[network] data_pak`; needs
+    /// `--authored-gameplay`. With both, a fresh player's pawn opens with
+    /// the replicated stats, vitals and inventories they give (F-836, F-839).
+    #[arg(long, requires = "authored_gameplay")]
+    data_pak: Option<PathBuf>,
+    /// Independently authored gameplay JSON, as `[network]
+    /// authored_gameplay` (F-993); needs `--data-pak`.
+    #[arg(long, requires = "data_pak")]
+    authored_gameplay: Option<PathBuf>,
+    /// Require a join password, as `[network] join_password`, read from this
+    /// file so it never appears in a process listing or the run's command
+    /// line: inside checkout work/, no symlinks, a regular file only its
+    /// owner may access (chmod 600), one trailing newline trimmed. The
+    /// listing then asks for a password; output shows only whether one is set.
+    #[arg(long)]
+    join_password_file: Option<PathBuf>,
+}
+
+/// What the preflight resolved, before any socket, TLS or Steam work.
+struct RunSettings {
+    startup: Vec<ControllerStartupAction>,
+    connected_player_records: bool,
+    controller_possession_properties: bool,
+    frozen_movement_release: bool,
+    level_visibility_actors: bool,
+    pawn_move_acks: bool,
+    spawn: SpawnConfig,
+    fresh_pawn_stats: Option<usize>,
+    join_password: JoinPassword,
 }
 
 impl Options {
+    /// Every check that must pass before sockets, TLS or Steam startup.
+    fn preflight(&self, profile: &ReleaseProfile, work_root: &Path) -> Result<RunSettings> {
+        let startup = self.startup_plan(profile)?;
+        let connected_player_records = self.connected_player_records(profile)?;
+        Ok(RunSettings {
+            startup,
+            connected_player_records,
+            controller_possession_properties: self.controller_possession_properties(profile)?,
+            frozen_movement_release: self
+                .server_frozen_movement_release(connected_player_records)?,
+            level_visibility_actors: self.level_visibility_actors(profile)?,
+            pawn_move_acks: self.pawn_move_acks(profile)?,
+            spawn: self.spawn(profile)?,
+            fresh_pawn_stats: self.fresh_pawn_stats(profile)?,
+            join_password: self.join_password(work_root)?,
+        })
+    }
+
+    /// Preflight of `--join-password-file`: none admits without a password.
+    fn join_password(&self, work_root: &Path) -> Result<JoinPassword> {
+        self.join_password_file
+            .as_deref()
+            .map_or(Ok(JoinPassword::NONE), |path| {
+                native_join_password::read_join_password(path, work_root)
+            })
+    }
+
+    /// The ready event: resolved settings as values, counts and booleans;
+    /// never a path, a player value or the join password.
+    fn ready_event(&self, build_id: u64, settings: &RunSettings) -> serde_json::Value {
+        json!({
+            "event": "native_join_ready",
+            "game_port": self.game_bind.port(),
+            "query_port": self.query_bind.port(),
+            "build": build_id,
+            "seconds": self.seconds,
+            "progress_interval_seconds": self.progress_interval_seconds,
+            "authored_world": self.authored_world.report(),
+            "controller_startup": self.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
+            "connected_player_records": settings.connected_player_records,
+            "controller_possession_properties": settings.controller_possession_properties,
+            "server_frozen_movement_release": settings.frozen_movement_release,
+            "server_frozen_movement_release_delay_ms": self.server_frozen_movement_release_delay_ms,
+            "pawn_move_acks": settings.pawn_move_acks,
+            "level_visibility_actors": settings.level_visibility_actors,
+            "spawn": spawn_report(&settings.spawn),
+            "data_tables": data_tables_report(settings.fresh_pawn_stats),
+            "join_password": settings.join_password.is_set(),
+            "compatibility_proven": false,
+        })
+    }
+
     /// Pure preflight before sockets, TLS or Steam startup. Live configuration
     /// still validates against the actual controller and pawn plans.
     fn startup_plan(&self, profile: &ReleaseProfile) -> Result<Vec<ControllerStartupAction>> {
@@ -275,6 +365,38 @@ impl Options {
         Ok(config)
     }
 
+    /// `--data-pak` and `--authored-gameplay` as the server's `[network]`
+    /// keys.
+    fn data_table_config(&self) -> NetworkConfig {
+        NetworkConfig {
+            data_pak: self.data_pak.clone(),
+            authored_gameplay: self.authored_gameplay.clone(),
+            ..NetworkConfig::default()
+        }
+    }
+
+    /// Preflight of `--data-pak` and `--authored-gameplay`: both or
+    /// neither, validated and loaded as `run` loads them before its socket
+    /// binds, and only with the release's pawn open, whose content and
+    /// restore tables are composed as the bind composes them (so a profile
+    /// lacking a table they read fails here, not after Steam logon).
+    /// Returns how many stat pairs a fresh pawn's open will carry, or
+    /// `None` without tables.
+    fn fresh_pawn_stats(&self, profile: &ReleaseProfile) -> Result<Option<usize>> {
+        let config = self.data_table_config();
+        config.validate()?;
+        let Some(mut tables) = network::data_tables(&config)? else {
+            return Ok(None);
+        };
+        ensure!(
+            profile.pawn_open_plan(PROBE_MAP)?.is_some(),
+            "data tables fill the pawn open, which needs the release's pawn profile; omit --data-pak"
+        );
+        let count = network::fresh_pawn_stat_count(Some(&mut tables))
+            .context("--authored-gameplay cannot fill the pawn open")?;
+        Ok(Some(count))
+    }
+
     /// Pure preflight of `--level-visibility-actors`: enabled dispatch needs
     /// the release's level actor identities, its controller open and the
     /// qualified visibility decoder profile.
@@ -314,6 +436,16 @@ fn spawn_report(spawn: &SpawnConfig) -> serde_json::Value {
         "yaw": point.and_then(|point| point.yaw),
         "yaw_sent": false,
         "source": if point.is_some() { "configured" } else { "default" },
+    })
+}
+
+/// The run's data tables, for the ready event and the summary: whether
+/// they are loaded and how many stat pairs a fresh pawn's open carries
+/// (0 without tables). Never a path or a value.
+fn data_tables_report(fresh_pawn_stats: Option<usize>) -> serde_json::Value {
+    json!({
+        "loaded": fresh_pawn_stats.is_some(),
+        "fresh_pawn_stats": fresh_pawn_stats.unwrap_or(0),
     })
 }
 
@@ -415,14 +547,18 @@ fn main() -> Result<()> {
         "game and query ports must differ"
     );
     let profile = ReleaseProfile::load(&options.release)?;
-    let startup = options.startup_plan(&profile)?;
-    let connected_player_records = options.connected_player_records(&profile)?;
-    let controller_possession_properties = options.controller_possession_properties(&profile)?;
-    let frozen_movement_release =
-        options.server_frozen_movement_release(connected_player_records)?;
-    let level_visibility_actors = options.level_visibility_actors(&profile)?;
-    let pawn_move_acks = options.pawn_move_acks(&profile)?;
-    let spawn = options.spawn(&profile)?;
+    let work_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("work");
+    let settings = options.preflight(&profile, &work_root)?;
+    let RunSettings {
+        connected_player_records,
+        controller_possession_properties,
+        frozen_movement_release,
+        level_visibility_actors,
+        pawn_move_acks,
+        fresh_pawn_stats,
+        join_password,
+        ..
+    } = settings;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -435,7 +571,7 @@ fn main() -> Result<()> {
     };
     let mut advert = Advert {
         server_steam_id: 0,
-        name: options.name,
+        name: options.name.clone(),
         map: String::new(),
         game_port: options.game_bind.port(),
         query_port: options.query_bind.port(),
@@ -444,11 +580,11 @@ fn main() -> Result<()> {
         version_tag: version_tag(&profile.pin.project_version)?,
         prospect: Some(PROBE_PROSPECT_ID.to_owned()),
         prospect_info: Some(encode_prospect_info(&prospect)?),
+        password_protected: join_password.is_set(),
     };
     advert.validate()?;
     // Must fail before sockets, TLS, Steam initialization, or authentication.
     let header_capture = options.private_controller_headers_output.is_some();
-    let work_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("work");
     let private_capture = if header_capture {
         native_join_capture::prepare_headers(
             options.private_controller_headers_output.as_deref(),
@@ -488,7 +624,11 @@ fn main() -> Result<()> {
         enabled: true,
         max_players: 1,
         session_timeout_seconds: 30,
-        release_profile: Some(options.release),
+        release_profile: Some(options.release.clone()),
+        // Loaded again by the bind, as `run` loads them.
+        data_pak: options.data_pak.clone(),
+        authored_gameplay: options.authored_gameplay.clone(),
+        join_password,
         connected_player_records,
         controller_possession_properties,
         server_frozen_movement_release: frozen_movement_release,
@@ -497,7 +637,7 @@ fn main() -> Result<()> {
         // Gated: the server configuration refuses it, so the probe enables
         // the lab switch itself below, before any connection exists.
         level_visibility_actors: false,
-        spawn: spawn.clone(),
+        spawn: settings.spawn.clone(),
         ..NetworkConfig::default()
     };
     let mut peer_config = network::peer_lab_config(&config);
@@ -544,8 +684,12 @@ fn main() -> Result<()> {
         "pawn move acknowledgement configuration did not apply"
     );
     ensure!(
-        bound.lab.spawn_point_count() == spawn.points.len(),
+        bound.lab.spawn_point_count() == settings.spawn.points.len(),
         "spawn point configuration did not apply"
+    );
+    ensure!(
+        bound.lab.pawn_open_stat_count().unwrap_or(0) == fresh_pawn_stats.unwrap_or(0),
+        "data table configuration did not apply"
     );
     if level_visibility_actors {
         bound.lab.enable_level_visibility_actors(&profile)?;
@@ -556,8 +700,10 @@ fn main() -> Result<()> {
     );
     // Diagnostic for this probe only; the server leaves it off.
     bound.lab.enable_unreliable_actor_bunch_counts();
-    if !startup.is_empty() {
-        bound.lab.enable_controller_startup(&profile, startup)?;
+    if !settings.startup.is_empty() {
+        bound
+            .lab
+            .enable_controller_startup(&profile, settings.startup.clone())?;
     }
     network::apply_server_settings(&mut bound.lab, 60)?;
     let mut app = App::new();
@@ -569,25 +715,8 @@ fn main() -> Result<()> {
     let progress_interval = Duration::from_secs(options.progress_interval_seconds);
     let mut next_progress = Instant::now() + progress_interval;
     let mut last_frozen_marks = [0_u64; 4];
-    let mut output_error = emit_progress(&json!({
-        "event": "native_join_ready",
-        "game_port": options.game_bind.port(),
-        "query_port": options.query_bind.port(),
-        "build": profile.pin.build_id,
-        "seconds": options.seconds,
-        "progress_interval_seconds": options.progress_interval_seconds,
-        "authored_world": options.authored_world.report(),
-        "controller_startup": options.controller_startup.iter().map(|action| action.name()).collect::<Vec<_>>(),
-        "connected_player_records": connected_player_records,
-        "controller_possession_properties": controller_possession_properties,
-        "server_frozen_movement_release": frozen_movement_release,
-        "server_frozen_movement_release_delay_ms": options.server_frozen_movement_release_delay_ms,
-        "pawn_move_acks": pawn_move_acks,
-        "level_visibility_actors": level_visibility_actors,
-        "spawn": spawn_report(&spawn),
-        "compatibility_proven": false,
-    }))
-    .err();
+    let mut output_error =
+        emit_progress(&options.ready_event(profile.pin.build_id, &settings)).err();
     while Instant::now() < deadline
         && !presence.stop.load(Ordering::Relaxed)
         && app.world().resource::<PeerLab>().is_admitting()
@@ -657,7 +786,7 @@ fn main() -> Result<()> {
     } else {
         reason
     };
-    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"spawn":spawn_report(&spawn),"compatibility_proven":false});
+    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"spawn":spawn_report(&settings.spawn),"data_tables":data_tables_report(fresh_pawn_stats),"join_password":join_password.is_set(),"compatibility_proven":false});
     if let Some(object) = summary.as_object_mut() {
         object.extend(before);
         object.extend(after);
@@ -1132,6 +1261,157 @@ mod tests {
     }
 
     #[test]
+    fn data_tables_are_both_or_neither_and_refused_before_networking() {
+        use icarus_bevy::{
+            data_pak::DataPak,
+            gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+        };
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let parse = |extra: &[&str]| {
+            Options::try_parse_from(["probe", "--name", "Authored"].iter().chain(extra))
+        };
+        let default = parse(&[]).unwrap();
+        assert!(default.data_pak.is_none() && default.authored_gameplay.is_none());
+        assert_eq!(default.fresh_pawn_stats(&profile).unwrap(), None);
+        assert_eq!(
+            data_tables_report(None),
+            json!({"loaded": false, "fresh_pawn_stats": 0})
+        );
+        // One without the other: refused by the parser.
+        assert!(parse(&["--data-pak", "data.pak"]).is_err());
+        assert!(parse(&["--authored-gameplay", "gameplay.json"]).is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        std::fs::write(&pak, pak_writer::fresh_join_pak()).unwrap();
+        let gameplay = directory.path().join("gameplay.json");
+        let authored = fresh_player_profile(
+            &mut DataPak::open(&pak).unwrap(),
+            &FreshPlayerValues::default(),
+        )
+        .unwrap();
+        std::fs::write(&gameplay, serde_json::to_vec(&authored).unwrap()).unwrap();
+        let (pak, gameplay) = (pak.to_str().unwrap(), gameplay.to_str().unwrap());
+        let loaded = parse(&["--data-pak", pak, "--authored-gameplay", gameplay]).unwrap();
+        let count = loaded.fresh_pawn_stats(&profile).unwrap();
+        assert_eq!(count, Some(5));
+        let report = data_tables_report(count);
+        assert_eq!(report, json!({"loaded": true, "fresh_pawn_stats": 5}));
+        // The report names no path and no word the run log forbids.
+        let text = report.to_string();
+        assert!(!text.contains(pak) && !text.contains(gameplay));
+        for word in run_log::RUN_LOG_FORBIDDEN {
+            assert!(!text.contains(word), "{word}");
+        }
+        // Unusable: refused by the parser (an empty path) or the preflight,
+        // which runs before any socket, TLS or Steam work.
+        let directory_path = directory.path().to_str().unwrap();
+        let missing = directory.path().join("absent.json");
+        let missing = missing.to_str().unwrap();
+        for bad in [
+            ["--data-pak", "", "--authored-gameplay", gameplay],
+            ["--data-pak", pak, "--authored-gameplay", ""],
+            [
+                "--data-pak",
+                directory_path,
+                "--authored-gameplay",
+                gameplay,
+            ],
+            ["--data-pak", pak, "--authored-gameplay", missing],
+            ["--data-pak", gameplay, "--authored-gameplay", gameplay],
+            // The pak's own tables are not an authored profile.
+            ["--data-pak", pak, "--authored-gameplay", pak],
+        ] {
+            let refused = match parse(&bad) {
+                Err(_) => true,
+                Ok(options) => options.fresh_pawn_stats(&profile).is_err(),
+            };
+            assert!(refused, "{bad:?}");
+        }
+        // Tables fill the pawn open, so they need the release's pawn.
+        let mut no_pawn = profile;
+        no_pawn.pawn = None;
+        assert!(loaded.fresh_pawn_stats(&no_pawn).is_err());
+        assert_eq!(default.fresh_pawn_stats(&no_pawn).unwrap(), None);
+    }
+
+    /// A hand-written profile lacking a table the pawn open's composition
+    /// reads (here `D_ModifierStates`, which the bind's modifier restore
+    /// reads whenever the pak holds it and `D_ItemsStatic`) is refused by
+    /// the preflight, before any socket, TLS or Steam work, naming the table
+    /// and quoting nothing of the file.
+    #[test]
+    fn preflight_refuses_a_profile_lacking_a_table_the_pawn_open_reads() {
+        use icarus_bevy::{
+            data_pak::DataPak,
+            gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+        };
+        const MARKER: &str = "authored-marker-never-echoed";
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        std::fs::write(
+            &pak,
+            pak_writer::fresh_join_pak_with(&[
+                (
+                    "Items/D_ItemsStatic.json",
+                    pak_writer::table_json(&["Item_A"]),
+                ),
+                (
+                    "Modifiers/D_ModifierStates.json",
+                    pak_writer::table_json(&["Overburdened"]),
+                ),
+            ]),
+        )
+        .unwrap();
+        let mut authored = fresh_player_profile(
+            &mut DataPak::open(&pak).unwrap(),
+            &FreshPlayerValues::default(),
+        )
+        .unwrap();
+        authored["tables"]["D_FactionMissions"][0]["Note"] = MARKER.into();
+        let write = |name: &str, value: &serde_json::Value| {
+            let path = directory.path().join(name);
+            std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        let complete = write("complete.json", &authored);
+        authored["tables"]
+            .as_object_mut()
+            .unwrap()
+            .remove("D_ModifierStates")
+            .unwrap();
+        let lacking = write("lacking.json", &authored);
+        let options = |gameplay: &str| {
+            Options::try_parse_from([
+                "probe",
+                "--name",
+                "Authored",
+                "--data-pak",
+                pak.to_str().unwrap(),
+                "--authored-gameplay",
+                gameplay,
+            ])
+            .unwrap()
+        };
+        let settings = options(&complete)
+            .preflight(&profile, directory.path())
+            .unwrap();
+        assert_eq!(settings.fresh_pawn_stats, Some(5));
+        let error = options(&lacking)
+            .preflight(&profile, directory.path())
+            .err()
+            .expect("the preflight refuses the profile");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("missing authored gameplay table D_ModifierStates"),
+            "{text}"
+        );
+        for quoted in [MARKER, "schema_version", "Base_Stats", "Filler_"] {
+            assert!(!text.contains(quoted), "{quoted}: {text}");
+        }
+    }
+
+    #[test]
     fn stopped_summary_reports_counts_that_only_shutdown_moves() {
         use icarus_bevy::experimental::{handshake::initial_request, peer_lab::PeerLabConfig};
         let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
@@ -1227,5 +1507,151 @@ mod tests {
                 .is_ok()
             );
         }
+    }
+
+    /// `--join-password-file`: read-only under the capture path rules, one
+    /// trailing newline trimmed; the ready event and the listing show only
+    /// whether a password is set, and no error or record carries its text.
+    #[test]
+    fn join_password_file_obeys_the_path_rules_and_is_never_reported() {
+        use std::{fs, os::unix::fs::PermissionsExt, os::unix::fs::symlink};
+
+        use icarus_bevy::experimental::admission::JoinPassword;
+        const SECRET: &str = "Probe-Secret-4e2a";
+        let units = |text: &str| text.encode_utf16().collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        let case = work.join("case");
+        fs::create_dir_all(&case).unwrap();
+        let write = |path: &std::path::Path, bytes: &[u8], mode: u32| {
+            fs::write(path, bytes).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let read = |path: &std::path::Path| native_join_password::read_join_password(path, &work);
+        let file = case.join("join-password");
+        let mut errors = Vec::new();
+
+        // One trailing newline (LF or CRLF) is trimmed, no more.
+        for (bytes, admitted) in [
+            (format!("{SECRET}\n"), true),
+            (format!("{SECRET}\r\n"), true),
+            (SECRET.to_owned(), true),
+            (format!("{SECRET}\n\n"), false),
+        ] {
+            write(&file, bytes.as_bytes(), 0o600);
+            match read(&file) {
+                Ok(password) => {
+                    assert!(admitted && password.is_set());
+                    assert!(password.admits(&units(&SECRET.to_ascii_lowercase())));
+                }
+                Err(error) => {
+                    assert!(!admitted, "{bytes:?}: {error}");
+                    errors.push(format!("{error:#}"));
+                }
+            }
+        }
+        // Content the server would refuse, or a file it should not trust.
+        for (bytes, mode) in [
+            (b"".to_vec(), 0o600),
+            (b"\n".to_vec(), 0o600),
+            (format!("{SECRET}?").into_bytes(), 0o600),
+            (format!("{SECRET}\tx").into_bytes(), 0o600),
+            (SECRET.repeat(4).into_bytes(), 0o600),
+            (vec![b'a'; 1_025], 0o600),
+            ([SECRET.as_bytes(), &[0xff]].concat(), 0o600),
+            (SECRET.as_bytes().to_vec(), 0o640),
+            (SECRET.as_bytes().to_vec(), 0o604),
+        ] {
+            write(&file, &bytes, mode);
+            errors.push(format!("{:#}", read(&file).unwrap_err()));
+        }
+        write(&file, SECRET.as_bytes(), 0o600);
+        // Outside work/, traversal, a symlinked file or parent, a missing
+        // file, a directory and the work root itself are refused.
+        let outside = root.path().join("outside");
+        write(&outside, SECRET.as_bytes(), 0o600);
+        let linked_file = case.join("linked-password");
+        symlink(&file, &linked_file).unwrap();
+        let elsewhere = root.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        write(&elsewhere.join("join-password"), SECRET.as_bytes(), 0o600);
+        symlink(&elsewhere, work.join("linked")).unwrap();
+        for refused in [
+            outside.clone(),
+            case.join("..").join("case").join("join-password"),
+            linked_file,
+            work.join("linked").join("join-password"),
+            case.join("absent"),
+            case.clone(),
+            work.clone(),
+        ] {
+            errors.push(format!("{:#}", read(&refused).unwrap_err()));
+        }
+        let fifo = case.join("fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .unwrap();
+        errors.push(format!("{:#}", read(&fifo).unwrap_err()));
+        for error in &errors {
+            assert!(!error.contains(SECRET), "{error}");
+        }
+
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let parse = |extra: &[&str]| {
+            Options::try_parse_from(["probe", "--name", "Authored"].iter().chain(extra))
+        };
+        let default = parse(&[]).unwrap();
+        assert_eq!(default.join_password(&work).unwrap(), JoinPassword::NONE);
+        let open = default.preflight(&profile, &work).unwrap();
+        assert_eq!(default.ready_event(1, &open)["join_password"], false);
+        let path = file.to_str().unwrap();
+        let locked = parse(&["--join-password-file", path]).unwrap();
+        let settings = locked.preflight(&profile, &work).unwrap();
+        assert!(settings.join_password.is_set());
+        let ready = locked.ready_event(1, &settings);
+        assert_eq!(ready["join_password"], true);
+        let advert = Advert {
+            server_steam_id: 1,
+            name: locked.name.clone(),
+            map: String::new(),
+            game_port: 17_777,
+            query_port: 27_015,
+            max_players: 1,
+            players: Vec::new(),
+            version_tag: "1.0-x-x".to_owned(),
+            prospect: None,
+            prospect_info: None,
+            password_protected: settings.join_password.is_set(),
+        };
+        let rules: String = advert
+            .rules()
+            .iter()
+            .map(|rule| {
+                format!(
+                    "{}={} ",
+                    String::from_utf8_lossy(&rule.key),
+                    String::from_utf8_lossy(&rule.value)
+                )
+            })
+            .collect();
+        let listing = format!("{rules}{} {}", advert.game_data(), advert.keywords());
+        assert!(listing.contains("L_s"));
+        let mut summary = json!({"join_password": settings.join_password.is_set()});
+        summary["settings"] = json!(format!("{:?}", settings.join_password));
+        for text in [ready.to_string(), listing, summary.to_string()] {
+            assert!(!text.contains(SECRET) && !text.contains(path), "{text}");
+        }
+        for word in run_log::RUN_LOG_FORBIDDEN {
+            assert!(!"join_password".contains(word), "{word}");
+        }
+        // A refused file stops the preflight, before any socket.
+        let refused = parse(&["--join-password-file", outside.to_str().unwrap()]).unwrap();
+        assert!(refused.preflight(&profile, &work).is_err());
+        assert!(parse(&["--join-password-file"]).is_err());
     }
 }
