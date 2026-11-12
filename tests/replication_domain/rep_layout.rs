@@ -13,13 +13,13 @@ use icarus_bevy::experimental::rep_layout::{
     DYNAMIC_QUEST_DIFFICULTY_MAX_VALUE, FLAMMABLE_STATE_MAX_VALUE,
     GAMEPLAY_TAG_CONTAINER_COUNT_BITS, GameplayTag, ICARUS_ITEM_CONTEXT_MAX_VALUE,
     ICARUS_ROW_HANDLE_NONE, ICARUS_ROW_HANDLE_TABLE_COUNT, INTERACT_TYPE_MAX_VALUE,
-    MAP_TILE_RADAR_FLAG_MAX_VALUE, MISSION_DIFFICULTY_MAX_VALUE, MOUNT_ACTION_MAX_VALUE,
-    MOUNT_COMBAT_BEHAVIOUR_STATE_MAX_VALUE, MOUNT_CONSUMPTION_BEHAVIOUR_STATE_MAX_VALUE,
-    MOUNT_GRAZING_BEHAVIOUR_STATE_MAX_VALUE, MOUNT_MOVEMENT_BEHAVIOUR_STATE_MAX_VALUE,
-    MOVEMENT_STATE_MAX_VALUE, MovementLevel, NET_ROLE_MAX_VALUE, NetworkName,
-    PROSPECT_LOCATION_MAX_VALUE, PROSPECT_STATE_MAX_VALUE, PropertyStream, QuantizedNormal,
-    QuantizedVector, REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, ROCKET_STATE_MAX_VALUE, RepArray,
-    RepCommand, RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, RowHandle,
+    LEAVE_PROSPECT_SESSION_TYPE_MAX_VALUE, MAP_TILE_RADAR_FLAG_MAX_VALUE,
+    MISSION_DIFFICULTY_MAX_VALUE, MOUNT_ACTION_MAX_VALUE, MOUNT_COMBAT_BEHAVIOUR_STATE_MAX_VALUE,
+    MOUNT_CONSUMPTION_BEHAVIOUR_STATE_MAX_VALUE, MOUNT_GRAZING_BEHAVIOUR_STATE_MAX_VALUE,
+    MOUNT_MOVEMENT_BEHAVIOUR_STATE_MAX_VALUE, MOVEMENT_STATE_MAX_VALUE, MovementLevel,
+    NET_ROLE_MAX_VALUE, NetworkName, PROSPECT_LOCATION_MAX_VALUE, PROSPECT_STATE_MAX_VALUE,
+    PropertyStream, QuantizedNormal, QuantizedVector, ROCKET_STATE_MAX_VALUE, RepArray, RepCommand,
+    RepEntry, RepLayoutCodec, RepLayoutLimits, RepValue, RotationLevel, RowHandle,
     SHELTERED_ENUM_MAX_VALUE, StatPairRepState, TagEncoding, UnsupportedItem,
     actionable_component_rep_layout, actor_component_rep_layout, actor_rep_layout,
     actor_state_rep_layout, audio_context_component_rep_layout,
@@ -1377,7 +1377,7 @@ fn receive_properties_preamble_governs_checksum_bit() {
 #[test]
 fn native_engine_and_icarus_class_layouts_round_trip() {
     assert_eq!(enum_byte_bits(NET_ROLE_MAX_VALUE), 3);
-    assert_eq!(enum_bits(REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, 1), 2);
+    assert_eq!(enum_bits(LEAVE_PROSPECT_SESSION_TYPE_MAX_VALUE, 1), 3);
     assert_eq!(rep_attachment_commands().len(), 6);
 
     let comp_layout = actor_component_rep_layout();
@@ -1478,6 +1478,94 @@ fn native_engine_and_icarus_class_layouts_round_trip() {
         parse_property_stream(&ps_payload, &ps_layout, &plain()).unwrap(),
         ps_stream
     );
+}
+
+fn survival_controller_layout() -> Vec<RepCommand> {
+    icarus_player_controller_survival_rep_layout(
+        MovementLevel::Whole,
+        MovementLevel::Whole,
+        RotationLevel::Bytes,
+        TagEncoding::NetIndex {
+            first_segment: 0,
+            total_bits: 12,
+        },
+    )
+}
+
+#[test]
+fn survival_controller_left_prospect_session_is_a_three_bit_enum() {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    // Handle 26 `ReplicatedLeftProspectSession`: `ELeaveProspectSessionType`,
+    // maximum 5, so 3 bits in every release profile (F-1120).
+    assert_eq!(LEAVE_PROSPECT_SESSION_TYPE_MAX_VALUE, 5);
+    assert_eq!(enum_bits(LEAVE_PROSPECT_SESSION_TYPE_MAX_VALUE, 1), 3);
+    let layout = survival_controller_layout();
+    assert_eq!(layout.len(), 30);
+    assert_eq!(layout[25], RepCommand::Enum { bits: 3 });
+    assert_eq!(layout[26], RepCommand::Object);
+    for profile in [
+        ReleaseProfile::release_3_0_31(),
+        ReleaseProfile::release_3_0_32(),
+        ReleaseProfile::release_3_0_34(),
+        ReleaseProfile::release_3_0_35(),
+    ] {
+        let plan = profile
+            .player_controller_open_plan("/Game/Maps/Conifer_Terrain_004", [0.0; 3])
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.actor_layout[25], RepCommand::Enum { bits: 3 });
+    }
+}
+
+#[test]
+fn survival_controller_left_prospect_session_keeps_the_next_handle_aligned() {
+    let layout = survival_controller_layout();
+    // Handle 26 = 5 (`Disconnected`), then handle 27 `AssignedDropshipSpawn`
+    // and handle 28 `AssignedDropship` (authored values).
+    let tail = vec![
+        entry(27, RepValue::Object(NetGuidRef::plain(12))),
+        entry(28, RepValue::Object(NetGuidRef::plain(14))),
+    ];
+    let mut entries = vec![entry(26, RepValue::Enum(5))];
+    entries.extend(tail.clone());
+    let block = stream(entries);
+    let payload = encode_property_stream(&block, &layout, &plain()).unwrap();
+    assert_eq!(
+        parse_property_stream(&payload, &layout, &plain()).unwrap(),
+        block
+    );
+
+    // The block is the tail block plus an 8-bit packed handle 26 and 3 value
+    // bits (5 = 0b101), immediately after that handle.
+    let tail_payload = encode_property_stream(&stream(tail), &layout, &plain()).unwrap();
+    assert_eq!(payload.bit_len(), tail_payload.bit_len() + 8 + 3);
+    let mut reader = payload.reader();
+    assert_eq!(reader.read_bits(8), 26 << 1);
+    assert_eq!(reader.read_bits(3), 5);
+    assert_eq!(reader.read_bits(8), 27 << 1);
+
+    // Values 4 and 5 do not fit the previous 2-bit width at all, and a 2-bit
+    // reader of a 3-bit block misreads every later handle.
+    let mut two_bit = layout.clone();
+    two_bit[25] = RepCommand::Enum { bits: 2 };
+    assert!(encode_property_stream(&block, &two_bit, &plain()).is_err());
+    assert_ne!(
+        parse_property_stream(&payload, &two_bit, &plain()).ok(),
+        Some(block.clone())
+    );
+    for value in 0..=5 {
+        let one = stream(vec![
+            entry(26, RepValue::Enum(value)),
+            entry(27, RepValue::Object(NetGuidRef::plain(12))),
+        ]);
+        let encoded = encode_property_stream(&one, &layout, &plain()).unwrap();
+        assert_eq!(
+            parse_property_stream(&encoded, &layout, &plain()).unwrap(),
+            one
+        );
+    }
+    let wide = stream(vec![entry(26, RepValue::Enum(8))]);
+    assert!(encode_property_stream(&wide, &layout, &plain()).is_err());
 }
 
 #[test]
