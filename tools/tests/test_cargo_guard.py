@@ -760,12 +760,11 @@ with g.build_lock(i) as b:
         self.assertLess(order.index("clean"), order.index("admission"))
 
     def test_cold_warm_reserve_math_and_absolute_floor(self) -> None:
+        self.assertEqual(guard.TARGET_BUDGET, 16 * guard.GIB)
+        self.assertEqual((guard.RESERVE, guard.MIN_HEADROOM, guard.DISK_FLOOR), (8 * guard.GIB, 2 * guard.GIB, 30 * guard.GIB))
         self.assertEqual(guard.admission_reserve(0), 8 * guard.GIB)
-        self.assertEqual(guard.admission_reserve(4 * guard.GIB), 6 * guard.GIB)
-        self.assertEqual(guard.admission_reserve(8 * guard.GIB), 2 * guard.GIB)
-        for size in (8 * guard.GIB + 1, 10 * guard.GIB, 11 * guard.GIB):
-            with self.assertRaisesRegex(guard.GuardError, "transient headroom"):
-                _ = guard.admission_reserve(size)
+        self.assertEqual(guard.admission_reserve(4 * guard.GIB), 8 * guard.GIB)
+        self.assertEqual(guard.admission_reserve(8 * guard.GIB), 8 * guard.GIB)
         with patch.object(guard, "available_ram", return_value=4 * guard.GIB):
             for policy in (guard.LOCAL, guard.CI):
                 with patch.object(shutil, "disk_usage", return_value=disk_usage(policy.disk_floor + 8 * guard.GIB)):
@@ -774,6 +773,58 @@ with g.build_lock(i) as b:
                     guard.check_space(self.root, policy=policy)
         with patch.object(guard, "available_ram", return_value=guard.RAM_FLOOR - 1), self.assertRaisesRegex(guard.GuardError, "available RAM"):
             guard.check_space(self.root)
+
+    def test_own_target_between_8_and_14_gib_is_admitted_with_reduced_reserve(self) -> None:
+        # An own target of 8.6 GB after one full suite was refused under the former 10 GiB cap.
+        measured = 8_600_000_000
+        cases = ((8 * guard.GIB, 8 * guard.GIB), (measured, guard.TARGET_BUDGET - measured),
+                 (10 * guard.GIB, 6 * guard.GIB), (12 * guard.GIB, 4 * guard.GIB), (14 * guard.GIB, 2 * guard.GIB))
+        with patch.object(guard, "available_ram", return_value=4 * guard.GIB):
+            for own, reserve in cases:
+                with self.subTest(own=own):
+                    self.assertEqual(guard.admission_reserve(own), reserve)
+                    with patch.object(shutil, "disk_usage", return_value=disk_usage(guard.DISK_FLOOR + reserve)):
+                        guard.check_space(self.root, guard.admission_reserve(own))
+                    with patch.object(shutil, "disk_usage", return_value=disk_usage(guard.DISK_FLOOR + reserve - 1)), self.assertRaisesRegex(guard.GuardError, "disk floor"):
+                        guard.check_space(self.root, guard.admission_reserve(own))
+
+    def test_headroom_refusal_within_2_gib_of_16_gib_cap(self) -> None:
+        for own in (14 * guard.GIB + 1, 15 * guard.GIB, guard.TARGET_BUDGET - 1):
+            with self.subTest(own=own), self.assertRaisesRegex(guard.GuardError, "at least 2 GiB transient headroom below provisional 16 GiB cap"):
+                _ = guard.admission_reserve(own)
+
+    def test_over_cap_refusals_name_16_gib(self) -> None:
+        for own in (guard.TARGET_BUDGET, guard.TARGET_BUDGET + 1, 17 * guard.GIB):
+            with self.subTest(own=own), self.assertRaisesRegex(guard.GuardError, "transient headroom below provisional 16 GiB cap"):
+                _ = guard.admission_reserve(own)
+        def grown(path: Path, *, strict: bool = False) -> tuple[int, int]:
+            _ = strict
+            return (guard.TARGET_BUDGET + 1, 1) if (path / "artifact").exists() else (0, 0)
+        with patch.object(guard, "target_inventory", side_effect=grown), patch.object(guard, "check_space"), patch.object(guard, "run_owned", side_effect=self.fake_cargo):
+            with self.assertRaisesRegex(guard.GuardError, "own target exceeds provisional 16 GiB cap"):
+                self.execute()
+        self.assertIs(self.state()["validated"], False)
+        def residual(_path: Path, *, strict: bool = False) -> tuple[int, int]:
+            _ = strict
+            return (guard.TARGET_BUDGET + 1, 1)
+        with patch.object(guard, "target_inventory", side_effect=residual), patch.object(guard, "cleanup_veto"), patch.object(guard, "run_owned", side_effect=self.fake_cargo):
+            with self.assertRaisesRegex(guard.GuardError, "residual target exceeds provisional 16 GiB after full Cargo cleanup"):
+                self.execute(retire=True)
+
+    def test_own_target_at_cap_after_build_is_validated(self) -> None:
+        def grown(path: Path, *, strict: bool = False) -> tuple[int, int]:
+            _ = strict
+            return (guard.TARGET_BUDGET, 1) if (path / "artifact").exists() else (0, 0)
+        with patch.object(guard, "target_inventory", side_effect=grown), patch.object(guard, "check_space"), patch.object(guard, "run_owned", side_effect=self.fake_cargo):
+            self.execute()
+        self.assertIs(self.state()["validated"], True)
+
+    def test_contract_and_operating_docs_state_the_coded_cap(self) -> None:
+        cap = f"{guard.TARGET_BUDGET // guard.GIB} GiB"
+        repository = Path(__file__).resolve().parents[2]
+        self.assertIn(f"Provisional own cap {cap};", guard.__doc__ or "")
+        self.assertIn(f"Own cap: {cap} (provisional", (repository / "docs/runbooks/cargo-builds.md").read_text())
+        self.assertIn(f"own-target cap is {cap} ", " ".join((repository / ".agents/rules/project.md").read_text().split()))
 
     def test_ci_env_is_explicit_and_no_generated_config(self) -> None:
         self.assertEqual(guard.selected_policy({"CI": "true"}, None), guard.LOCAL)

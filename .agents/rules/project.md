@@ -120,7 +120,7 @@ be demonstrated rather than assumed.
   CPU-heavy workers; serialize large builds, Ghidra and original-server runs when
   memory is tight. Keep owned jobs under 10 GiB; defer heavy work below 3 GiB
   available RAM or 30 GiB free disk. Cap new case artifacts at 12 GiB and total
-  batch disk growth at 20 GiB, then reassess. Targeted Ghidra runs use a 4 GiB
+  batch disk growth at 30 GiB, then reassess. Targeted Ghidra runs use a 4 GiB
   heap, two CPUs, at most 24 selected functions, 30 seconds per decompilation and
   15 minutes overall. Bound every experiment and clean it up on timeout.
 - Route local Cargo builds, Clippy and tests through `tools/cargo_guard.py`;
@@ -135,8 +135,9 @@ be demonstrated rather than assumed.
   cleanup protection. Privileged/noncooperating writers also remain outside
   the advisory protocol. CI
   explicitly sets `ICARUS_CARGO_GUARD_POLICY=ci`; `CI=true` grants no exception.
-  The provisional own-target cap is 10 GiB; retain the local 30 GiB disk floor
-  and two jobs. Preserve profile/debug/incremental settings.
+  The provisional own-target cap is 16 GiB (owner storage allowance,
+  [storage](storage.md)); retain the local 30 GiB disk floor and two jobs.
+  Preserve profile/debug/incremental settings.
 - Shared Cargo targets can reuse another checkout's executable despite a fresh
   event naming the current manifest (M-1069). Force the library and selected
   test to compile on checkout transitions, verify embedded manifest identity
