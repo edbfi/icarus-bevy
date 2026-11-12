@@ -26,12 +26,12 @@ frozen (F-1126); runs 1 to 3 never unfroze it as S2 does (F-1099, F-1100).
 That is the leading cause, read statically, not yet observed: after the
 unfreeze the screen should hide about 2 s after the later of the server's
 false and the client's valid anchor (F-1124, F-1126; anchor F-1110 to
-F-1114). Client logs cannot
-show blockers (F-1123); 113 is client-local (F-1122). No read path from the
-answer to entry (F-1104); the client's frozen report and how to read it:
-F-1105 to F-1109. After 126 the original sends the record
-(F-1072 to F-1075), then level actors (F-1081), not RPC113 (F-1068). Clients stream
-tiles (F-1078, F-1079) once their record finalises (F-1080). The native record
+F-1114). Client logs cannot show blockers (F-1123); 113 is client-local
+(F-1122). No read path from the answer to entry (F-1104); the client's
+frozen report and how to read it: F-1105 to F-1109. After 126 the original
+sends the record (F-1072 to F-1075), then level actors (F-1081), not RPC113
+(F-1068). Clients stream tiles (F-1078, F-1079) once their record finalises
+(F-1080). The native record
 matches (F-1077, F-1086), but its check needs controller IcarusPlayerCharacter,
 unsent until F-1088 (F-1087); 62, startup RPCs and level actors are missing
 (F-1082). Curtain inputs F-1069/F-1076.
