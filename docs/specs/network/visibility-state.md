@@ -83,22 +83,26 @@ MarkActive, graph bits, delegates/compaction and channel effects deferred; no
 dispatch or inferred wire identities.
 
 F-1094: the answer's lag is the original's own tile loading (inferred).
-Loading screen: viewport blockers and their dismissal F-1101 to F-1103; no
-read path from the answer to them or to the frozen flag (F-1104). S2
-unfreezes the pawn near its last answer; the native does not (F-1099).
-The client's own report (F-1105, F-1107) decides how the unfreeze run is
-read (F-1109).
+Loading screen: fixed text, up while the blocker count is above 0 (F-1101,
+F-1117, F-1118, F-1124); blocker ends F-1102, F-1103, F-1121; the local
+pawn's frozen blocker holds while it is frozen (F-1126). No read path from
+the answer to them or to the frozen flag (F-1104). S2 unfreezes the pawn
+near its last answer; the native does not (F-1099). The client anchor
+(F-1110 to F-1114) sets its own report (F-1105, F-1107), which decides how
+the unfreeze run is read (F-1109). S2's tile reports followed a 2.5 km
+server move of the pawn (F-1134), so they say nothing about tiles at the
+native spawn XY (F-1138); only run 3's burst hints at that (F-1089, F-1114).
 
 ## Open questions
 
 U-079/[gates](../../gates.md#before-enabling-visibility-dispatch-or-effects):
 no world-entry cause proof; hide side unobserved; native Close/reentrancy
-test-qualified only. Unread: the screen text binding, Blueprint graphs,
-terrain-anchor state rules, the curtain, a Blueprint override of F-1080;
-3.0.35 client behaviour.
+test-qualified only. Unread: Blueprints beyond the player ones, the map's
+tiles at the native spawn (F-1114), the curtain, a Blueprint override of
+F-1080; 3.0.35 client behaviour.
 
 ## Evidence
 
 M-1208, M-1209, M-1211, M-1215, M-1217, M-1219, M-1221, M-1223 to M-1244, M-1246/M-1252.
 M-1240/M-1241/M-1243 are direct; M-1234/M-1242/M-1244 are empty REA bundles.
-M-1161, M-1342, M-1343 (F-1078 to F-1081); M-1345, M-1347 (F-1085); M-1349 to M-1352; M-1354, M-1355 (F-1099 to F-1104); M-1356 to M-1358 (F-1105 to F-1109).
+M-1161, M-1342, M-1343 (F-1078 to F-1081); M-1345, M-1347 (F-1085); M-1349 to M-1352; M-1354, M-1355 (F-1099 to F-1104); M-1356 to M-1358 (F-1105 to F-1109); M-1363 to M-1370 (F-1110 to F-1126); M-1374 (F-1134, F-1138).

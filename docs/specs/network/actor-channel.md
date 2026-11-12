@@ -168,6 +168,11 @@ scheduling or stock-client qualification.
 - Unfreeze: S2 replicates `bServerFrozenMovement` false once, near its last
   field-82 answer and before per-frame camera updates (F-1099; one 3.0.34
   session), about 20 s after the client reported itself unfrozen (F-1107).
+- After entry (S2): client moves are pawn field 39 (F-1129), answered only by
+  field-30 acks and rare corrections (F-1130, F-1132); silence does not fault
+  the client (F-1131). A new joiner's pawn is moved by the server before the
+  unfreeze and arrives by drop pod (F-1134, F-1136); kill-Z is server-only
+  (F-1137); native placement F-1138.
 
 ## Open questions
 
@@ -180,4 +185,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358; earlier observations: cited findings.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings.
