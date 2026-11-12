@@ -1341,6 +1341,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             "data_pak": config.network.data_pak.as_ref().map(|path| path.display().to_string()),
             "data_pak_source": data_pak_source,
             "controller_startup": config.network.controller_startup,
+            "spawn_points": config.network.spawn.points.len(),
             "icarus_compatible": false, "gameplay_ready": false});
         if let Some(world) = &config.network.authored_world {
             record["authored_world"] = json!(world);

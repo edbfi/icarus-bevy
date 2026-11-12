@@ -285,7 +285,7 @@ pub(super) fn move_session_digests(
 
 /// [`record_lab`] with the frozen-movement release (no delay), as
 /// production defaults, and move acknowledgements when `acks`.
-fn moving_lab(acks: bool) -> PeerLab {
+pub(super) fn moving_lab(acks: bool) -> PeerLab {
     let mut lab = record_lab(true);
     lab.enable_frozen_movement_release(Duration::ZERO).unwrap();
     if acks {
@@ -296,7 +296,7 @@ fn moving_lab(acks: bool) -> PeerLab {
 
 /// One joined player through its record's ACK and the frozen-movement
 /// release, every server packet ACKed: the pawn channel is open and settled.
-fn moving_peer(lab: &mut PeerLab) -> (UdpSocket, SocketAddrV4, PacketSequencer) {
+pub(super) fn moving_peer(lab: &mut PeerLab) -> (UdpSocket, SocketAddrV4, PacketSequencer) {
     let (socket, address, mut client) = record_peer(lab, 1, "AuthoredMover");
     complete_record_player(lab, address);
     lab.controller_call(address, ControllerCall::FriendsList);
@@ -348,7 +348,7 @@ fn acks_in(lab: &PeerLab, bunches: &[Bunch]) -> Vec<f32> {
 
 /// Send one move bunch carrying `field` at `now`, run the ack pass at `now`
 /// and return the acknowledged timestamps the client received.
-fn move_at(
+pub(super) fn move_at(
     lab: &mut PeerLab,
     socket: &UdpSocket,
     client: &mut PacketSequencer,
@@ -621,7 +621,7 @@ fn no_acknowledgement_before_the_pawn_channel_settles() {
     assert_eq!(lab.readiness_counts().pawn_move_acks.awaiting_ack, 0);
 }
 
-fn packed(location: [f32; 3], base: Option<u32>, mode: Option<u8>) -> Payload {
+pub(super) fn packed(location: [f32; 3], base: Option<u32>, mode: Option<u8>) -> Payload {
     use super::super::super::actor_channel::CompressedRotator;
     let quantized = |value, packing| quantize_vector(value, packing).unwrap();
     let codec = RepLayoutCodec {
@@ -773,7 +773,7 @@ fn move_acknowledgements_need_the_pawn_and_are_configured_before_admission() {
     assert!(lab.has_pawn_move_acks());
 }
 
-fn release_toml_config(pawn_move_acks: bool) -> crate::config::NetworkConfig {
+pub(super) fn release_toml_config(pawn_move_acks: bool) -> crate::config::NetworkConfig {
     crate::config::NetworkConfig {
         enabled: true,
         port: 0,
@@ -785,6 +785,17 @@ fn release_toml_config(pawn_move_acks: bool) -> crate::config::NetworkConfig {
     }
 }
 
+/// The parent commit's [`move_session_digests`] for the lab (`LAB`) and the
+/// production bind (`PRODUCTION`); how they were produced is below.
+pub(super) const LAB: [&str; 2] = [
+    "51b48993f8d7a34c0c655a16b169c0f5cd1097d89c5d208a3b821f1f2078ae9b",
+    "ac4c2ab72c060778a5d7938ba0c0affab2d4593fe730d6b719b23d3fb0c2cf28",
+];
+pub(super) const PRODUCTION: [&str; 2] = [
+    "5b189e9ba5356ef236e0299e6884fc8cb288223b43979ce215b400deced107a1",
+    "d45e777826d5334fda7cf6ea57992bac2c8220cca3cc41d9d5f91c1ac631a042",
+];
+
 /// The switch-off path pinned to the parent of the move acknowledgement
 /// change. These digests were produced by [`move_session_digests`] with a
 /// no-op `ack_pass` on 66462ba's `src/` with only this module's helpers
@@ -795,14 +806,6 @@ fn release_toml_config(pawn_move_acks: bool) -> crate::config::NetworkConfig {
 /// switch on every session differs.
 #[test]
 fn switch_off_moves_send_the_parent_commits_bunches() {
-    const LAB: [&str; 2] = [
-        "51b48993f8d7a34c0c655a16b169c0f5cd1097d89c5d208a3b821f1f2078ae9b",
-        "ac4c2ab72c060778a5d7938ba0c0affab2d4593fe730d6b719b23d3fb0c2cf28",
-    ];
-    const PRODUCTION: [&str; 2] = [
-        "5b189e9ba5356ef236e0299e6884fc8cb288223b43979ce215b400deced107a1",
-        "d45e777826d5334fda7cf6ea57992bac2c8220cca3cc41d9d5f91c1ac631a042",
-    ];
     let pass = |lab: &mut PeerLab, now: Instant| lab.retry_pawn_move_acks(now);
     let mut untouched = moving_lab(false);
     assert_eq!(move_session_digests(&mut untouched, pass), LAB);

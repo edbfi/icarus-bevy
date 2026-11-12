@@ -7,6 +7,8 @@ mod inventory_fixture;
 mod loopback;
 #[path = "common/c001_owners.rs"]
 mod owner_fixture;
+#[path = "common/run_log.rs"]
+mod run_log;
 #[path = "common/c001_scalar_owners.rs"]
 mod scalar;
 #[path = "common/c001_inventory_source.rs"]
@@ -4164,13 +4166,7 @@ fn bounded_native_binary_run_uses_the_same_authored_configuration_path() {
         rows.iter().find(|row| row["event"] == "stopped").unwrap()["native_replication"]["active"],
         false
     );
-    for secret in [
-        "IndependentBox",
-        "authored",
-        "catalog_id",
-        "rotation",
-        "placement",
-    ] {
+    for secret in run_log::RUN_LOG_FORBIDDEN {
         assert!(
             !log.contains(secret),
             "native declaration/state data must not enter run logs"

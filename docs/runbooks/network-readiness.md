@@ -172,7 +172,8 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `frozen_movement_release_{resends,sends_deferred,errors}`,
 `pawn_bunches_received_{reliable,unreliable}` (headers only). Probe
 `frozen_movement` per session: `record_acked_ms`, `release_{due,sent,acked}_ms`,
-`release_failed`, `pawn_inbound`, `pawn_moves`, `last_move_ack_ms`.
+`release_failed`, `pawn_inbound`, `pawn_moves`, `last_move_ack_ms`,
+`spawn` ([spawn placement](#spawn-placement)).
 `pawn_move_acks` (F-1127, F-1128): `sessions_moving`, `awaiting_ack`,
 `deferred`, `positions_held`. Counters `pawn_moves_{received,malformed}`,
 `pawn_move_acks_sent`, `pawn_move_ack_{sends_deferred,errors}`,
@@ -190,3 +191,24 @@ cause. ACK is packet delivery, not client application.
 `connected_player_records`: `registered`, `finalised`, `pending_send`
 (connections with an unadmitted change); `creations_queued` =
 `creations_settled` + `records_awaiting_ack`.
+
+## Spawn placement
+
+F-1139, F-1140. `[network.spawn] points = [{ x = 0.0, y = 0.0, z = 0.0, yaw =
+0.0 }]` (centimetres, Unreal axes, Z up; yaw in degrees, optional), or probe
+`--spawn-location x,y,z` with optional `--spawn-yaw` (one point: the probe
+admits one player). Joins take the points round-robin; without points the
+pawn and controller open at the origin, as before. Needs a release profile;
+at most 64 points, each component within ±1,048,576 cm, yaw within ±360°,
+refused before the socket binds. The yaw is reported, not sent.
+
+Positions come only from the operator's own knowledge of the map or a
+player's own save: the server ships no map data and reads no packaged
+terrain, collision or tables (F-828). Nothing checks the ground: a point below
+the client's terrain falls forever (the client never resets its own pawn),
+and one outside every landscape tile may keep the loading screen (U-079).
+
+`network_listening.spawn_points`; counters `pawn_spawns_{saved,configured,default}`
+and `pawn_spawn_saved_refused`; probe ready and summary `spawn`
+(`location`, `yaw`, `yaw_sent`, `source`) and `spawns_before_shutdown`
+per session. A configured placement starts that session's move store (F-1128).

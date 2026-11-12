@@ -27,6 +27,7 @@ use icarus_bevy::{
         rep_layout::RepValue,
     },
     network,
+    spawn_placement::{SpawnConfig, SpawnPoint, parse_location},
     steam_fetch::net::{self, HttpTimeouts, Tls},
     steam_presence::{
         Advert, PresenceHandles, RegistrationTiming, encode_prospect_info, logon_game_server,
@@ -38,6 +39,9 @@ use serde_json::json;
 
 #[path = "native_join_probe/capture.rs"]
 mod native_join_capture;
+#[cfg(test)]
+#[path = "../tests/common/run_log.rs"]
+mod run_log;
 
 // Protocol identities observed in S2; the native world remains independently
 // authored and empty. These names do not import terrain or gameplay tables.
@@ -148,6 +152,15 @@ struct Options {
     /// newly visible level's world-settings actors (unqualified); off unless asked.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     level_visibility_actors: bool,
+    /// Open the player's pawn and controller at x,y,z centimetres instead of
+    /// the origin; bounds as `[network.spawn]`. One point: the probe admits
+    /// one player, so every join of a run opens at the same place.
+    #[arg(long, allow_hyphen_values = true, value_parser = parse_location)]
+    spawn_location: Option<[f64; 3]>,
+    /// Yaw in degrees for `--spawn-location`, within one turn either way;
+    /// validated and reported, not sent (no qualified open field carries it).
+    #[arg(long, allow_hyphen_values = true, requires = "spawn_location")]
+    spawn_yaw: Option<f64>,
 }
 
 impl Options {
@@ -237,6 +250,31 @@ impl Options {
         Ok(true)
     }
 
+    /// Pure preflight of `--spawn-location` and `--spawn-yaw`: the point is
+    /// validated like `[network.spawn]` and needs the release's controller
+    /// open; none keeps the origin.
+    fn spawn(&self, profile: &ReleaseProfile) -> Result<SpawnConfig> {
+        let Some([x, y, z]) = self.spawn_location else {
+            return Ok(SpawnConfig::default());
+        };
+        let config = SpawnConfig {
+            points: vec![SpawnPoint {
+                x,
+                y,
+                z,
+                yaw: self.spawn_yaw,
+            }],
+        };
+        config.validate().context("--spawn-location/--spawn-yaw")?;
+        ensure!(
+            profile
+                .player_controller_open_plan(PROBE_MAP, [0.0; 3])?
+                .is_some(),
+            "spawn points need the release's controller profile; omit --spawn-location"
+        );
+        Ok(config)
+    }
+
     /// Pure preflight of `--level-visibility-actors`: enabled dispatch needs
     /// the release's level actor identities, its controller open and the
     /// qualified visibility decoder profile.
@@ -266,6 +304,19 @@ impl Options {
     }
 }
 
+/// The run's spawn input, for the ready event and the summary: the point
+/// (centimetres) and yaw given, the source every join resolves to (the
+/// probe has no restored saved location), and that the yaw is not sent.
+fn spawn_report(spawn: &SpawnConfig) -> serde_json::Value {
+    let point = spawn.points.first();
+    json!({
+        "location": point.map(|point| [point.x, point.y, point.z]),
+        "yaw": point.and_then(|point| point.yaw),
+        "yaw_sent": false,
+        "source": if point.is_some() { "configured" } else { "default" },
+    })
+}
+
 /// Aggregate counts read before [`PeerLab::shutdown`], as the summary has
 /// always reported them.
 fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::Value> {
@@ -291,6 +342,19 @@ fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::
     counts.insert(
         "frozen_movement_before_shutdown".into(),
         json!(lab.frozen_movement_observations()),
+    );
+    // Each live session's resolved placement source, by connection ordinal.
+    counts.insert(
+        "spawns_before_shutdown".into(),
+        json!(
+            lab.frozen_movement_observations()
+                .iter()
+                .map(|observation| json!({
+                    "connection": observation.connection,
+                    "source": observation.spawn,
+                }))
+                .collect::<Vec<_>>()
+        ),
     );
     counts.insert("stats_before_shutdown".into(), json!(lab.stats()));
     counts.insert("peak_peers".into(), json!(lab.peak_peer_count()));
@@ -358,6 +422,7 @@ fn main() -> Result<()> {
         options.server_frozen_movement_release(connected_player_records)?;
     let level_visibility_actors = options.level_visibility_actors(&profile)?;
     let pawn_move_acks = options.pawn_move_acks(&profile)?;
+    let spawn = options.spawn(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -432,6 +497,7 @@ fn main() -> Result<()> {
         // Gated: the server configuration refuses it, so the probe enables
         // the lab switch itself below, before any connection exists.
         level_visibility_actors: false,
+        spawn: spawn.clone(),
         ..NetworkConfig::default()
     };
     let mut peer_config = network::peer_lab_config(&config);
@@ -477,6 +543,10 @@ fn main() -> Result<()> {
         bound.lab.has_pawn_move_acks() == pawn_move_acks,
         "pawn move acknowledgement configuration did not apply"
     );
+    ensure!(
+        bound.lab.spawn_point_count() == spawn.points.len(),
+        "spawn point configuration did not apply"
+    );
     if level_visibility_actors {
         bound.lab.enable_level_visibility_actors(&profile)?;
     }
@@ -514,6 +584,7 @@ fn main() -> Result<()> {
         "server_frozen_movement_release_delay_ms": options.server_frozen_movement_release_delay_ms,
         "pawn_move_acks": pawn_move_acks,
         "level_visibility_actors": level_visibility_actors,
+        "spawn": spawn_report(&spawn),
         "compatibility_proven": false,
     }))
     .err();
@@ -586,7 +657,7 @@ fn main() -> Result<()> {
     } else {
         reason
     };
-    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"compatibility_proven":false});
+    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"spawn":spawn_report(&spawn),"compatibility_proven":false});
     if let Some(object) = summary.as_object_mut() {
         object.extend(before);
         object.extend(after);
@@ -980,6 +1051,87 @@ mod tests {
     }
 
     #[test]
+    fn spawn_flags_are_optional_validated_and_refused_before_networking() {
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let parse = |extra: &[&str]| {
+            Options::try_parse_from(["probe", "--name", "Authored"].iter().chain(extra))
+        };
+        let default = parse(&[]).unwrap();
+        assert_eq!(default.spawn(&profile).unwrap(), SpawnConfig::default());
+        assert_eq!(
+            spawn_report(&SpawnConfig::default()),
+            json!({"location": null, "yaw": null, "yaw_sent": false, "source": "default"})
+        );
+        let placed = parse(&[
+            "--spawn-location",
+            "-1000.5,2000,300000",
+            "--spawn-yaw",
+            "-90",
+        ])
+        .unwrap();
+        let spawn = placed.spawn(&profile).unwrap();
+        assert_eq!(
+            spawn.points,
+            [SpawnPoint {
+                x: -1000.5,
+                y: 2000.0,
+                z: 300_000.0,
+                yaw: Some(-90.0)
+            }]
+        );
+        assert_eq!(
+            spawn_report(&spawn),
+            json!({"location": [-1000.5, 2000.0, 300_000.0], "yaw": -90.0,
+                "yaw_sent": false, "source": "configured"})
+        );
+        // Malformed: refused by the parser.
+        for bad in [
+            &["--spawn-location", "1,2"][..],
+            &["--spawn-location", "1,2,3,4"],
+            &["--spawn-location", "a,b,c"],
+            &["--spawn-location", ""],
+            &["--spawn-yaw", "90"],
+            &["--spawn-location", "1,2,3", "--spawn-yaw", "east"],
+            &["--spawn-location", "1,2,3", "--spawn-location", "4,5,6"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+        // Parsed but out of bound or not finite: refused by the preflight,
+        // which runs before any socket, TLS or Steam work.
+        for bad in [
+            &["--spawn-location", "1048577,0,0"][..],
+            &["--spawn-location", "0,-2e6,0"],
+            &["--spawn-location", "nan,0,0"],
+            &["--spawn-location", "0,0,inf"],
+            &["--spawn-location", "1,2,3", "--spawn-yaw", "361"],
+            &["--spawn-location", "1,2,3", "--spawn-yaw", "NaN"],
+        ] {
+            assert!(parse(bad).unwrap().spawn(&profile).is_err(), "{bad:?}");
+        }
+        // Neither the ready event's nor the summary's spawn report carries a
+        // word the server's run log forbids (authored world data uses them).
+        let reports = format!(
+            "{} {}",
+            spawn_report(&spawn),
+            spawn_report(&SpawnConfig::default())
+        );
+        for word in run_log::RUN_LOG_FORBIDDEN {
+            assert!(!reports.contains(word), "{word}");
+        }
+        let edge = parse(&[
+            "--spawn-location",
+            "1048576,-1048576,0",
+            "--spawn-yaw",
+            "360",
+        ]);
+        assert!(edge.unwrap().spawn(&profile).is_ok());
+        let mut no_controller = profile;
+        no_controller.player_controller = None;
+        assert!(placed.spawn(&no_controller).is_err());
+        assert!(default.spawn(&no_controller).is_ok());
+    }
+
+    #[test]
     fn stopped_summary_reports_counts_that_only_shutdown_moves() {
         use icarus_bevy::experimental::{handshake::initial_request, peer_lab::PeerLabConfig};
         let mut lab = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
@@ -1034,11 +1186,16 @@ mod tests {
             "controller_fields_before_shutdown",
             "unreliable_actor_bunches_before_shutdown",
             "stats_before_shutdown",
+            "spawns_before_shutdown",
             "peak_peers",
         ] {
             assert!(summary.get(key).is_some(), "{key}");
         }
         assert_eq!(summary["peak_peers"], 1);
+        let text = summary.to_string();
+        for word in run_log::RUN_LOG_FORBIDDEN {
+            assert!(!text.contains(word), "summary carries {word:?}");
+        }
     }
 
     #[test]

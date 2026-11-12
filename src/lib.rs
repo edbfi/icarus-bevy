@@ -40,11 +40,15 @@ pub(crate) use scalar_owner_fixture as scalar;
 #[cfg(test)]
 #[path = "../tests/common/c001_inventory_owners.rs"]
 pub(crate) mod inventory_owner_fixture;
+#[cfg(test)]
+#[path = "../tests/common/run_log.rs"]
+pub(crate) mod run_log;
 pub mod session_replication;
 pub mod simulation;
 #[cfg(test)]
 #[path = "../tests/common/c001_inventory_source.rs"]
 pub(crate) mod source;
+pub mod spawn_placement;
 pub mod steam_auth;
 pub mod steam_fetch;
 pub mod steam_presence;

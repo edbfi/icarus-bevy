@@ -17,3 +17,14 @@ port = 17777
 max_players = 8
 # Native inbound-idle / outstanding-delivery-progress timeout; removal is local.
 session_timeout_seconds = 30
+
+# EXPERIMENTAL: where joining players' pawns and controllers open, in
+# centimetres (Unreal axes, Z up), round-robin by join; at most 64 points, each
+# component within +-1,048,576 cm; yaw (degrees, within one turn) is checked
+# but not sent. Omit the table to keep the origin. Take positions from your own
+# knowledge of the map or a player's own save: the server ships no map data, and
+# a point below the client's terrain falls forever. Needs release_profile.
+# [network.spawn]
+# points = [
+#   { x = 0.0, y = 0.0, z = 0.0, yaw = 0.0 },
+# ]
