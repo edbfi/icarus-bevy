@@ -5,7 +5,7 @@ action. This is their only home; status, plan and digests link here.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-11
+Last reconciled: 2026-11-12
 
 ## Before any C001 original-code case
 
@@ -66,10 +66,9 @@ Last reconciled: 2026-11-11
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 and entry reads
   F-1110 to F-1138 done; do not repeat them or rerun F-1084/F-1089 unchanged.
-  The next connected run sends only the pawn unfreeze (F-1099, F-1100); a
-  second, only after it, adds move acknowledgements and an optional spawn
-  point (F-1127, F-1139). The 82 answer (F-1097, F-1098, F-1104) stays the
-  gated fallback below. None clears those preconditions.
+  Both prepared connected runs ran on 2026-11-12 (F-1141 to F-1147); the
+  screen cleared after the pawn release (F-1148), and the probe-switch run
+  (F-1104) is no longer scheduled. None clears those preconditions.
 
 ## Before enabling visibility dispatch or effects
 
@@ -81,13 +80,11 @@ Last reconciled: 2026-11-11
   (replay F-1034 grants none; F-1020 to F-1022); reuse-0/hide payloads and
   hide effects, never observed (native hides close nothing); Close and
   reentrancy, authored (no close on a name, exclusive poll), test-qualified
-  only (F-1097, F-1098); client progress, seen to the tile reports (F-1089),
-  beyond only by bounded connected runs: first the unfreeze alone with the
-  probe switch off (F-1099; authorized, see "Before any original-server or
-  client run"), then, if the screen stays with the pawn unfrozen, a run with
-  the probe switch (F-1104), once the owner approves it. The server binary
-  refuses the switch; only the bounded join probe enables it (F-1097).
-  F-1023/F-1024: no live binding (U-079).
+  only (F-1097, F-1098). World entry needed no 82 answer: with the probe
+  switch off the screen cleared after the pawn release (F-1148), so the
+  probe-switch run (F-1104) is no longer scheduled; this gate is unchanged.
+  The server binary refuses the switch; only the bounded join probe enables
+  it (F-1097). F-1023/F-1024: no live binding.
 - Sending level-status call 62 is server-originated and outside this gate
   (F-1078; lead decision under M-1353) but first needs the map's level list and
   order, per-level flags and LOD, and name remapping bound, each from a source
@@ -118,17 +115,19 @@ Last reconciled: 2026-11-11
 
 ## Before any original-server or client run
 
-- The standing instruction (given 2026-10-28, renewed 2026-11-11; F-968,
-  M-1359) authorizes offline and online research, Steam/network access,
-  matched official-server runs and connected stock-client scenarios against
-  either server without per-scenario approval, replacing the connected-test
-  deferral (F-421; U-038, U-047, U-052). Prefer offline routes that answer
-  equally well.
-- The 2026-11-11 instruction (M-1359) renews online and connected-run
-  authorization. The prepared unfreeze-only run and the second run are
-  authorized and await the owner at a stock client; both list a server
-  publicly without a password, so each starts only on the owner's word.
-  M-1353 still covers the offline decisions it lists.
+- The standing instruction (given 2026-10-28, renewed 2026-11-11 and
+  2026-11-12; F-968, M-1359, M-1375) authorizes offline and online research,
+  Steam/network access, matched official-server runs and connected
+  stock-client scenarios against either server without per-scenario approval,
+  replacing the connected-test deferral (F-421; U-038, U-047, U-052). Prefer
+  offline routes that answer equally well.
+- The 2026-11-12 instruction (M-1375) renews online and connected-run
+  authorization as on 2026-11-11 (M-1359). Both prepared runs listed a server
+  publicly without a password and started on the owner's word, given before
+  each launch (M-1375); they ran on 2026-11-12 (F-1141, F-1145). Any further
+  connected run needs its own case and, if it lists a server publicly without
+  a password, the owner's word again. M-1353 still covers the offline
+  decisions it lists.
 - Every run still needs its own `work/` case and current launcher session with
   scope, exact inputs and hashes, limits and literal commands; original
   execution only through the [launchers](runbooks/original-server-launcher.md);

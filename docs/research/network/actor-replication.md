@@ -13,7 +13,8 @@ Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034.
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay; payloads/bit1 F-1090, receiver/Gather
 F-1091, routing F-1092; the original answers each report with two level actors
-(F-1093 to F-1095); native answer probe-only, gated (F-1097, F-1098). Cause: U-079.
+(F-1093 to F-1095); native answer probe-only, gated (F-1097, F-1098), not
+needed for entry (F-1148; U-079 resolved).
 
 State/restart F-1036; query118/callback126 F-1051; fields66/86 F-1052;
 handle-26 width F-1120.
@@ -23,24 +24,27 @@ in-between screen's fixed text, up while the viewport-blocker count is above
 0 (F-1101, F-1117, F-1118, F-1124). The join-path blockers end (F-1102,
 F-1103, F-1121) except the local pawn's frozen blocker, on while the pawn is
 frozen (F-1126); runs 1 to 3 never unfroze it as S2 does (F-1099, F-1100).
-That is the leading cause, read statically, not yet observed: after the
-unfreeze the screen should hide about 2 s after the later of the server's
-false and the client's valid anchor (F-1124, F-1126; anchor F-1110 to
-F-1114). Client logs cannot show blockers (F-1123); 113 is client-local
-(F-1122). No read path from the answer to entry (F-1104); the client's
-frozen report and how to read it: F-1105 to F-1109. After 126 the original
-sends the record (F-1072 to F-1075), then level actors (F-1081), not RPC113
-(F-1068). Clients stream tiles (F-1078, F-1079) once their record finalises
-(F-1080). The native record
-matches (F-1077, F-1086), but its check needs controller IcarusPlayerCharacter,
-unsent until F-1088 (F-1087); 62, startup RPCs and level actors are missing
-(F-1082). Curtain inputs F-1069/F-1076.
+Runs A and B added only the release, 10 s after the record ACK: the screen
+cleared within 2 s of the server's false, about 9 s after the client's own
+(F-1141 to F-1148; anchor F-1110 to F-1113), with no 82 answer. Client logs
+cannot show blockers (F-1123); 113 is client-local (F-1122). No read path
+from the answer to entry (F-1104); the client's frozen report and how to
+read it: F-1105 to F-1109. After 126 the original sends the record (F-1072
+to F-1075), then level actors (F-1081), not RPC113 (F-1068). Clients stream
+tiles (F-1078, F-1079) once their record finalises (F-1080). The native
+record matches (F-1077, F-1086), but its check needs controller
+IcarusPlayerCharacter, unsent until F-1088 (F-1087); 62, startup RPCs and
+level actors are missing (F-1082). Curtain inputs F-1069/F-1076.
 
 After entry S2 answers field-39 moves only with field-30 acks and rare
 corrections (F-1129, F-1130, F-1132); unanswered moves do not fault a client
-(F-1131). S2 moved its new joiner's pawn about 2.5 km before the unfreeze and
-the tile reports followed that move, so only run 3 (F-1089) hints that tiles
-cover the native origin (F-1114, F-1134, F-1138). The original picks a rocket
+(F-1131). S2 moved its new joiner's pawn about 2.5 km before the unfreeze
+(F-1134); the native origin spawn (F-1138) lands on terrain on this map
+(F-1149, F-1152). After entry the stock client looks and jumps but cannot
+walk and shows stats 0 (F-1143, F-1147, F-1150): input reaches movement at
+speed 0 (F-1151); speed comes from stats (F-1153 to F-1155) that S2 sends in
+the pawn open (F-1156) and the probe never sent (F-1157; U-080); the client
+takes them verbatim as final cm/s (F-1164 to F-1166). The original picks a rocket
 spawn (F-1136), keeps kill-Z server-side (F-1137) and saves the client's last
 position (F-1135).
 
@@ -56,9 +60,11 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 - User-struct array checksums (U-067), runtime relevancy/priority (U-038),
   played-character values (U-069).
+- Fresh stats for walking after native entry (U-080); listing L_s only with
+  a join password, enforced as the original does (F-1161 to F-1163).
 - Quest exclusions (U-076) and saved-container gaps/unreferenced-container
   nulling: [world-manager open questions](../../specs/network/world-managers.md#open-questions).
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382.

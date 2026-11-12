@@ -26,7 +26,7 @@ be demonstrated rather than assumed.
   use `.agents/rea/rea.sh` for supported CLI operations; use direct analysis tools
   only for capabilities REA lacks or a diagnosed provider/connection limitation,
   and record the reason. Do not fall back to the removed skill package.
-  REA is project-local: `.agents/rea/` pins `rea-agents@6.8.0`, and
+  REA is project-local: `.agents/rea/` pins `rea-agents@6.9.0`, and
   `.agents/rea/rea.sh` launches the installed runtime. Codex uses
   `.codex/config.toml`; Claude uses `.mcp.json` and the skill link under
   `.claude/skills/`. Do not run upstream global setup or alter user-wide settings.
@@ -37,8 +37,10 @@ be demonstrated rather than assumed.
   `.agents/rea/rea.sh doctor --provider ghidra --json`. Use the installed
   `Brewfile` tools and check `tshark --version` separately when needed.
 - Ghidra drift. Ghidra and REA both update often; never pin a Ghidra release in
-  the repository. Each REA release accepts one Ghidra line, named in doctor's
-  `ghidra-version` detail. When doctor or a provider reports
+  the repository. Each REA release verifies one Ghidra build and, from 6.9.0,
+  also accepts newer minors on its major with an unverified-build limitation;
+  doctor's `ghidra-version` detail names both. Prefer the verified build for
+  cited evidence. When doctor or a provider reports
   `unsupported_version` (usually Homebrew upgraded Ghidra), resolve it in order
   and record what you did:
   1. Check REA's releases and issues (`gh release list -R morluto/rea`). If a
