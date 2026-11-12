@@ -185,11 +185,17 @@ impl Default for NetworkConfig {
     }
 }
 
-/// `network.join_password`, refused without quoting it.
+/// `network.join_password`, refused without quoting it. Read as any TOML
+/// value first: serde's own type error for a non-string (a numeric password,
+/// say) would quote the value.
 fn join_password<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<JoinPassword, D::Error> {
-    let text = String::deserialize(deserializer)?;
+    let toml::Value::String(text) = toml::Value::deserialize(deserializer)? else {
+        return Err(serde::de::Error::custom(
+            "network.join_password must be a string",
+        ));
+    };
     JoinPassword::new(&text)
         .map_err(|rules| serde::de::Error::custom(format_args!("network.join_password {rules}")))
 }
