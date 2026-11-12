@@ -138,6 +138,28 @@ fn answer_just_inside_the_deadline_keeps_the_peer_and_finalises() {
 }
 
 #[test]
+fn an_answer_restarts_the_deadline_for_a_requery_still_to_be_sent() {
+    let (mut lab, _socket, address, _client, since) = queried_peer();
+    let timeout = lab.config.idle_timeout;
+    // A second request that transport has not admitted yet.
+    let entry = lab.peers.get_mut(&address).unwrap();
+    entry.friends_query_pending = true;
+    entry.friends_query_since = Some(since - timeout + Duration::from_secs(1));
+    let before = Instant::now();
+    lab.controller_call(address, ControllerCall::FriendsList);
+    let restarted = lab.peers[&address].friends_query_since.unwrap();
+    assert!(restarted >= before, "the answer restarts the clock");
+    // The first query's start would have expired here; the restart has not.
+    lab.expire_friends_queries(since + Duration::from_secs(2));
+    assert!(lab.has_peer(address));
+    assert_eq!(lab.stats.peers_friends_query_expired, 0);
+    // The re-query still has to be answered within its own deadline.
+    lab.expire_friends_queries(restarted + timeout + Duration::from_millis(1));
+    assert!(!lab.has_peer(address));
+    assert_eq!(lab.stats.peers_friends_query_expired, 1);
+}
+
+#[test]
 fn acknowledgements_and_requeries_do_not_extend_the_deadline() {
     let (mut lab, socket, address, mut client, since) = queried_peer();
     let timeout = lab.config.idle_timeout;
