@@ -10,7 +10,8 @@ use icarus_bevy::{
     config::ServerConfig,
     experimental::{
         admission::{
-            AdmissionPolicy, FIND_PLAYER_START_ERROR, INCOMPATIBLE_UNIQUE_NET_ID, SERVER_FULL,
+            AdmissionPolicy, FIND_PLAYER_START_ERROR, INCOMPATIBLE_UNIQUE_NET_ID, JoinPassword,
+            SERVER_FULL,
         },
         control_messages::{
             ArchiveText, ControlCodec, ControlMessage, Decoded, HELLO, JOIN, LOGIN, NETSPEED,
@@ -1017,6 +1018,7 @@ fn admission_enforces_login_state_and_completes_welcome_and_join() {
             max_players: 1,
             max_spectators: 1,
             max_splitscreens_per_connection: 1,
+            join_password: JoinPassword::NONE,
         },
         ..PeerLabAdmission::default()
     };

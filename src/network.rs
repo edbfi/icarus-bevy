@@ -1633,6 +1633,7 @@ pub fn peer_lab_config(network: &NetworkConfig) -> PeerLabConfig {
         policy: AdmissionPolicy {
             max_players,
             max_spectators: SPECTATOR_SLOTS as i32,
+            join_password: network.join_password,
             ..defaults.policy
         },
         ..defaults

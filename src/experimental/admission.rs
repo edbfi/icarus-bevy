@@ -1,9 +1,16 @@
 //! EXPERIMENTAL login, connection-state admission, and `SpawnPlayActor` checks
 //! mirroring the client and server builds' engine logic.
 //!
-//! The ICARUS game mode and session add no `PreLogin`, `ApproveLogin`, `Login`,
-//! or `InitNewPlayer` checks of their own; the engine's run instead (`F-712`,
-//! `F-713`). Exhaustive `.text` and `.rdata`/`.data` cross-reference scans
+//! The ICARUS game mode adds no `PreLogin`, `Login` or `InitNewPlayer` checks
+//! of its own; the engine's run (`F-712`, `F-713`). The dedicated server's
+//! game session does override `ApproveLogin`, which `PreLogin` (and `Login`)
+//! call: in server build 26425113, `AIcarusGameSession::ApproveLogin`
+//! (`0x141495a20`) compares a non-empty `JoinPassword` setting with the
+//! login URL's `password` option (`ParseOption`, missing counts as empty) by
+//! `Stricmp` and on a mismatch answers [`INVALID_PASSWORD`] without the
+//! engine's capacity and splitscreen checks; with an empty setting, or on a
+//! match, the engine's `ApproveLogin` runs (F-1163). This supersedes the
+//! earlier reading that ICARUS adds no login checks. Exhaustive `.text` and `.rdata`/`.data` cross-reference scans
 //! across both `Icarus-Win64-Shipping.exe` (`25793767`) and
 //! `IcarusServer-Win64-Shipping.exe` (`25621760`) confirm that neither the
 //! engine nor ICARUS game code binds any subscriber or callback to
@@ -40,6 +47,9 @@
 //!   an optional sign, then decimal digits up to the first other unit,
 //!   saturating at the `i32` bounds; anything else reads 0. The saturation is
 //!   the documented runtime behavior, not an observation of this build.
+//! - With a [`JoinPassword`] set, the `password` option is read with the same
+//!   key rule (first match, no URL decoding) and its value compared ASCII
+//!   case-insensitively, other units exactly; this check comes first.
 //! - `SpectatorOnly=1` asks for a spectator slot; a full server answers
 //!   [`SERVER_FULL`]. Otherwise a `SplitscreenCount` above the
 //!   per-connection limit answers [`SPLITSCREEN_EXCEEDED`].
@@ -73,6 +83,9 @@ use super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
 
 /// PreLogin's unique-net-id subsystem compatibility rejection (`0x1454b7728`).
 pub const INCOMPATIBLE_UNIQUE_NET_ID: &str = "incompatible_unique_net_id";
+/// `AIcarusGameSession::ApproveLogin`'s rejection of a missing or wrong
+/// join password (module docs).
+pub const INVALID_PASSWORD: &str = "Invalid Password";
 /// ApproveLogin's capacity rejection.
 pub const SERVER_FULL: &str = "Server full.";
 /// ApproveLogin's splitscreen rejection.
@@ -299,14 +312,85 @@ pub fn resolve_player_name(options: &[u16], default_player_name: &str, player_id
 
 fn key_matches(name: &[u16], key: &str) -> bool {
     let key: Vec<u16> = key.encode_utf16().collect();
-    name.len() == key.len()
-        && name.iter().zip(&key).all(|(left, right)| {
+    units_eq_ignore_ascii_case(name, &key)
+}
+
+/// ASCII letters compare case-insensitively, every other unit exactly.
+fn units_eq_ignore_ascii_case(left: &[u16], right: &[u16]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
             if (left | right) & 0xff80 != 0 {
                 left == right
             } else {
                 (*left as u8).eq_ignore_ascii_case(&(*right as u8))
             }
         })
+}
+
+/// Longest accepted join password, in UTF-16 units. A native bound (the
+/// original sets none that was observed): it keeps [`JoinPassword`] a
+/// fixed-size, copyable part of [`AdmissionPolicy`], and a password typed
+/// into a join dialog is short.
+pub const MAX_JOIN_PASSWORD_UNITS: usize = 64;
+/// Why a join password was refused; never carries the text.
+pub const JOIN_PASSWORD_RULES: &str =
+    "must be at most 64 UTF-16 units with no control characters and no '?'";
+
+/// The dedicated server's `JoinPassword` setting: [`Self::NONE`] (empty)
+/// admits without a password. `Debug` shows only whether one is set.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct JoinPassword {
+    units: [u16; MAX_JOIN_PASSWORD_UNITS],
+    len: u8,
+}
+
+impl JoinPassword {
+    /// No password: the check is skipped, as for an empty `JoinPassword`.
+    pub const NONE: Self = Self {
+        units: [0; MAX_JOIN_PASSWORD_UNITS],
+        len: 0,
+    };
+
+    /// An operator's password; empty gives [`Self::NONE`]. Control
+    /// characters are refused, and so is `?`, which delimits login options,
+    /// so a password holding one could never be matched.
+    pub fn new(text: &str) -> Result<Self, &'static str> {
+        if text.chars().any(|c| c.is_control() || c == '?') {
+            return Err(JOIN_PASSWORD_RULES);
+        }
+        let mut password = Self::NONE;
+        for (index, unit) in text.encode_utf16().enumerate() {
+            *password.units.get_mut(index).ok_or(JOIN_PASSWORD_RULES)? = unit;
+            password.len = u8::try_from(index + 1).map_err(|_| JOIN_PASSWORD_RULES)?;
+        }
+        Ok(password)
+    }
+
+    pub const fn is_set(&self) -> bool {
+        self.len > 0
+    }
+
+    /// Whether `typed` (the `password` option's value) matches, as
+    /// `Stricmp`: ASCII case-insensitive, other units exact. Not constant
+    /// time, like the original; nothing about the comparison is logged.
+    pub fn admits(&self, typed: &[u16]) -> bool {
+        units_eq_ignore_ascii_case(&self.units[..usize::from(self.len)], typed)
+    }
+}
+
+impl Default for JoinPassword {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl std::fmt::Debug for JoinPassword {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JoinPassword")
+            .field("set", &self.is_set())
+            .finish()
+    }
 }
 
 /// An integer option, 0 when absent or unparsable.
@@ -413,6 +497,8 @@ pub struct AdmissionPolicy {
     pub max_players: i32,
     pub max_spectators: i32,
     pub max_splitscreens_per_connection: u8,
+    /// The game session's `JoinPassword`, checked before the limits.
+    pub join_password: JoinPassword,
 }
 
 /// Connected counts at the time of a Login.
@@ -447,8 +533,16 @@ pub struct InitNewPlayerOutcome {
 }
 
 impl AdmissionPolicy {
-    /// The engine's ApproveLogin decision: `Err` carries its message.
+    /// The game session's ApproveLogin decision: `Err` carries its message.
+    /// `AIcarusGameSession`'s password check (module docs), then the engine's.
     pub fn approve_login(&self, options: &[u16], occupancy: Occupancy) -> Result<(), &'static str> {
+        if self.join_password.is_set()
+            && !self
+                .join_password
+                .admits(login_option(options, "password").unwrap_or_default())
+        {
+            return Err(INVALID_PASSWORD);
+        }
         let spectator = int_option(options, "SpectatorOnly") == 1;
         if self.at_capacity(spectator, occupancy) {
             return Err(SERVER_FULL);
@@ -461,7 +555,8 @@ impl AdmissionPolicy {
     }
 
     /// Full `AGameModeBase::PreLogin` (`0x14386a160`) check sequence:
-    /// `IsCompatibleUniqueNetId` (when valid), then `AGameSession::ApproveLogin`.
+    /// `IsCompatibleUniqueNetId` (when valid), then the session's
+    /// [`Self::approve_login`] (password, capacity, splitscreen).
     pub fn pre_login(
         &self,
         options: &[u16],

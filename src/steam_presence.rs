@@ -7,8 +7,17 @@
 //! keys follow the original 3.0.34 server's observed advertisement (F-1002)
 //! with `CONMETHOD=Direct`, the only method with which a stock client
 //! connects to the advertised address instead of Steam P2P (F-1003). Values
-//! whose meaning is unqualified (`SESSIONFLAGS`, `D_s`, `L_s`, the `-x-x`
-//! version suffix) are carried as observed, not interpreted.
+//! whose meaning is unqualified (`SESSIONFLAGS`, the `-x-x` version suffix)
+//! are carried as observed, not interpreted.
+//!
+//! `D_s` ("dedicated") and `L_s` ("locked") are presence flags: the client
+//! sets its session's `DedicatedServer` and `Locked` flags when the key is
+//! present, whatever its value, and a locked listing asks for a password.
+//! The 26425113 server's `MakeSessionExtraSettingsFromProspect` adds `D` =
+//! `"1"` always and `L` = `"1"` only when its `JoinPassword` is non-empty,
+//! so `L_s` is sent only for a password-protected advert and never as
+//! `"0"` (F-1161, F-1162). The Steam `password` field, the server flags and
+//! the A2S visibility byte do not drive that flag and stay unchanged.
 //!
 //! The query responder answers every request with a challenge first, as the
 //! original does, so an unverified source only ever receives a 9-byte reply.
@@ -77,6 +86,9 @@ pub struct Advert {
     pub prospect: Option<String>,
     /// Base64 `ProspectInfo_s` rule, when one has been composed.
     pub prospect_info: Option<String>,
+    /// Whether joining needs a password: adds the `L_s` rule, which makes a
+    /// stock client ask for one. The password itself is never advertised.
+    pub password_protected: bool,
 }
 
 /// The `G_s` tag for a project version: its numeric prefix plus `-x-x`, as
@@ -186,18 +198,23 @@ impl Advert {
             .join(",")
     }
 
-    /// The A2S rules in the original's observed order (F-1002).
+    /// The A2S rules in the original's observed order (F-1002); `L_s` only
+    /// when [`Self::password_protected`] (module docs).
     pub fn rules(&self) -> Vec<Rule> {
         let mut rules = vec![
             ("CONMETHOD", "Direct".to_owned()),
             ("D_s", "1".to_owned()),
             ("G_s", self.version_tag.clone()),
-            ("L_s", "1".to_owned()),
+        ];
+        if self.password_protected {
+            rules.push(("L_s", "1".to_owned()));
+        }
+        rules.extend([
             ("OWNINGID", self.server_steam_id.to_string()),
             ("OWNINGNAME", self.name.clone()),
             ("P2PADDR", "0.0.0.0".to_owned()),
             ("P2PPORT", self.game_port.to_string()),
-        ];
+        ]);
         if let Some(info) = &self.prospect_info {
             rules.push(("ProspectInfo_s", info.clone()));
         }

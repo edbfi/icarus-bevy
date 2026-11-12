@@ -50,7 +50,8 @@
 //!   against the current welcomed/joined occupancy: on `Ok(())`, Welcome (ID 1)
 //!   carrying the configured map/game/redirect URLs is sent and the peer
 //!   advances to `Welcomed` (`welcomes_sent`); on `Err(reason)`, Failure (ID 6)
-//!   carrying `reason` is sent and the peer is removed.
+//!   carrying `reason` is sent and the peer is removed (a wrong join
+//!   password also counts in `peers_closed_by_join_password`).
 //! - Netspeed (ID 4), when [`PeerLabConfig::admission`] is `Some`: clamps the
 //!   requested rate with [`clamp_client_netspeed`] against
 //!   [`PeerLabAdmission::max_client_rate`], stores `CurrentNetSpeed`, and
@@ -213,8 +214,9 @@ use super::actor_channel::{
 use super::actor_open::{Block, Reference, StaticActorOpen, compose_static_actor_open};
 use super::admission::{
     ActorChannelFailureAction, AdmissionPolicy, ClientLoginState, ConnectionLoginAdmission,
-    DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, JoinSpawnContext, Occupancy,
-    clamp_client_netspeed, evaluate_actor_channel_failure, evaluate_pc_swap_target, int_option,
+    DEFAULT_MAX_CLIENT_RATE, FIND_PLAYER_START_ERROR, INVALID_PASSWORD, JoinPassword,
+    JoinSpawnContext, Occupancy, clamp_client_netspeed, evaluate_actor_channel_failure,
+    evaluate_pc_swap_target, int_option,
 };
 use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
@@ -573,6 +575,7 @@ impl Default for PeerLabAdmission {
                 max_players: 8,
                 max_spectators: 2,
                 max_splitscreens_per_connection: 4,
+                join_password: JoinPassword::NONE,
             },
             max_client_rate: DEFAULT_MAX_CLIENT_RATE,
             default_subsystem: Some("NULL"),
@@ -768,6 +771,9 @@ pub struct PeerLabStats {
     pub debug_texts_received: u64,
     /// Peers removed after an Upgrade or Failure reply.
     pub peers_closed: u64,
+    /// Of those, Failure replies carrying [`INVALID_PASSWORD`]: a Login whose
+    /// `password` option missed the configured join password.
+    pub peers_closed_by_join_password: u64,
     /// Peers removed after an accepted packet carrying a control close bunch.
     pub peers_closed_by_client: u64,
     /// Peers removed by [`PeerLab::shutdown`].
@@ -1175,6 +1181,9 @@ pub struct SessionCounts {
     pub closed_by_client: u64,
     /// Sessions closed after an Upgrade or Failure reply.
     pub closed_by_reply: u64,
+    /// Sessions refused for a missing or wrong join password (each also
+    /// counts in `closed_by_reply`).
+    pub closed_by_join_password: u64,
     /// Upgrade replies to a Hello whose network version differed from the
     /// configured one (each also counts in `closed_by_reply`).
     pub upgrades_sent: u64,
@@ -6402,6 +6411,7 @@ impl PeerLab {
             closed_by_possession_abandoned: self.stats.peers_closed_by_possession_abandoned,
             closed_by_client: self.stats.peers_closed_by_client,
             closed_by_reply: self.stats.peers_closed,
+            closed_by_join_password: self.stats.peers_closed_by_join_password,
             upgrades_sent: self.stats.upgrades_sent,
             closed_failed: self.stats.peers_failed,
             closed_by_authentication: self.stats.peers_auth_closed,
@@ -9760,6 +9770,9 @@ impl PeerLab {
             Reply::Upgrade(_) | Reply::Failure(_) => {
                 self.remove_peer(address);
                 bump(&mut self.stats.peers_closed);
+                if matches!(reply, Reply::Failure(reason) if reason == INVALID_PASSWORD) {
+                    bump(&mut self.stats.peers_closed_by_join_password);
+                }
             }
             Reply::OpenPlayerController => {}
         }

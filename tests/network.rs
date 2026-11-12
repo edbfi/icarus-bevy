@@ -20,7 +20,7 @@ use bevy::{
 use icarus_bevy::{
     config::{NetworkConfig, ServerConfig},
     experimental::{
-        admission::SERVER_FULL,
+        admission::{INVALID_PASSWORD, JoinPassword, SERVER_FULL},
         control_messages::{
             ArchiveText, ControlCodec, ControlMessage, NetIdType, NetIdValue, UniqueNetId,
         },
@@ -66,9 +66,14 @@ fn probe_config() -> ProbeConfig {
 }
 
 fn login() -> ControlMessage {
+    login_with_url(&format!("?Name={NAME_SENTINEL}"))
+}
+
+/// A Login carrying `url` as its options (`?Key=Value...`).
+fn login_with_url(url: &str) -> ControlMessage {
     ControlMessage::Login {
         response: ArchiveText::text("0").unwrap(),
-        url: ArchiveText::text(&format!("?Name={NAME_SENTINEL}")).unwrap(),
+        url: ArchiveText::text(url).unwrap(),
         unique_net_id: UniqueNetId {
             kind: NetIdType::Named(ArchiveText::text("STEAM").unwrap()),
             value: NetIdValue::from_hex(NET_ID_HEX).unwrap(),
@@ -85,13 +90,18 @@ fn connect(server: SocketAddr) -> ProbeClient {
 
 /// Hello (expecting Challenge) then Login; returns the Login reply.
 fn hello_and_login(client: &mut ProbeClient) -> ControlMessage {
+    hello_and_send_login(client, login())
+}
+
+/// Hello (expecting Challenge) then `login`; returns its reply.
+fn hello_and_send_login(client: &mut ProbeClient, login: ControlMessage) -> ControlMessage {
     let report = client.hello(0, "").unwrap();
     assert!(report.hello_acked);
     assert!(matches!(
         report.messages().collect::<Vec<_>>().as_slice(),
         [ControlMessage::Challenge { .. }]
     ));
-    client.send_control(&[login()], false).unwrap();
+    client.send_control(&[login], false).unwrap();
     let collected = client.collect(Duration::from_secs(3), 1).unwrap();
     let messages: Vec<_> = collected.messages().cloned().collect();
     assert_eq!(messages.len(), 1, "one reply to Login");
@@ -101,8 +111,13 @@ fn hello_and_login(client: &mut ProbeClient) -> ControlMessage {
 /// Handshake, Hello, Login (expecting Welcome), then Netspeed and Join in
 /// one packet whose acknowledgement is awaited.
 fn join(server: SocketAddr) -> ProbeClient {
+    join_with(server, login())
+}
+
+/// As [`join`], logging in with `login`.
+fn join_with(server: SocketAddr, login: ControlMessage) -> ProbeClient {
     let mut client = connect(server);
-    let reply = hello_and_login(&mut client);
+    let reply = hello_and_send_login(&mut client, login);
     assert!(
         matches!(reply, ControlMessage::Welcome { .. }),
         "{}",
@@ -224,6 +239,49 @@ fn network_config_defaults_bounds_and_unknown_fields() {
     }
 }
 
+/// `network.join_password`: absent or empty is none; the native bound and
+/// character rules refuse at parse time; it is never serialised or shown.
+#[test]
+fn join_password_config_is_validated_and_never_serialised() {
+    let parse = |value: &str| {
+        toml::from_str::<ServerConfig>(&format!("[network]\njoin_password = {value}\n"))
+    };
+    assert!(!NetworkConfig::default().join_password.is_set());
+    assert!(!parse("\"\"").unwrap().network.join_password.is_set());
+    let set = parse(&format!("\"{PASSWORD_SENTINEL}\"")).unwrap();
+    assert!(set.network.join_password.is_set() && set.validate().is_ok());
+    assert!(
+        set.network.join_password.admits(
+            &PASSWORD_SENTINEL
+                .to_lowercase()
+                .encode_utf16()
+                .collect::<Vec<_>>()
+        )
+    );
+    assert!(parse(&format!("\"{}\"", "a".repeat(64))).is_ok());
+    for refused in [
+        format!("\"{}\"", "a".repeat(65)),
+        "\"tab\\there\"".to_owned(),
+        "\"line\\nbreak\"".to_owned(),
+        "\"nul\\u0000\"".to_owned(),
+        "\"why?\"".to_owned(),
+    ] {
+        let error = parse(&refused).unwrap_err();
+        assert!(
+            error.message().starts_with("network.join_password must be"),
+            "{refused}: {error}"
+        );
+    }
+    for refused in ["5", "[\"a\"]", "true"] {
+        assert!(parse(refused).is_err(), "{refused}");
+    }
+    let printed = toml::to_string_pretty(&set).unwrap();
+    assert!(!printed.contains(PASSWORD_SENTINEL) && !printed.contains("join_password"));
+    let shown = format!("{set:?}");
+    assert!(!shown.contains(PASSWORD_SENTINEL), "{shown}");
+    assert!(shown.contains("JoinPassword { set: true }"), "{shown}");
+}
+
 #[test]
 fn check_config_prints_network_section_and_port_override() {
     let directory = tempfile::tempdir().unwrap();
@@ -315,6 +373,153 @@ fn ninth_concurrent_session_is_refused_at_admission_with_default_limit() {
     assert_eq!((counts.admissions_rejected, counts.closed_by_reply), (1, 1));
     assert_eq!((counts.active_peers, counts.peers_rejected), (8, 0));
     assert_eq!(counts.invalid_state_messages, 0);
+}
+
+/// Synthetic join password; asserted never to appear in any record.
+const PASSWORD_SENTINEL: &str = "Sentinel-Pass-71d3";
+
+/// With `network.join_password` set, a Login whose URL lacks the password or
+/// carries a wrong one is refused with the original's `Invalid Password`
+/// and counted; the right one, in any ASCII case, joins.
+#[test]
+fn join_password_refuses_wrong_logins_and_admits_the_right_one() {
+    let network = NetworkConfig {
+        join_password: JoinPassword::new(PASSWORD_SENTINEL).unwrap(),
+        ..enabled(0)
+    };
+    let (mut app, address) = server_app(&network);
+    let (refusals, _) = with_server(&mut app, move || {
+        let refusals: Vec<String> = [
+            format!("?Name={NAME_SENTINEL}"),
+            format!("?Name={NAME_SENTINEL}?password=wrong"),
+        ]
+        .iter()
+        .map(|url| {
+            let mut client = connect(address);
+            failure_text(&hello_and_send_login(&mut client, login_with_url(url)))
+        })
+        .collect();
+        let url = format!(
+            "?Name={NAME_SENTINEL}?PASSWORD={}",
+            PASSWORD_SENTINEL.to_ascii_uppercase()
+        );
+        let joined = join_with(address, login_with_url(&url));
+        drop(joined);
+        refusals
+    });
+    assert_eq!(refusals, [INVALID_PASSWORD, INVALID_PASSWORD]);
+    let locked = counts(&app);
+    assert_eq!(locked.closed_by_join_password, 2);
+    assert_eq!((locked.admissions_rejected, locked.closed_by_reply), (2, 2));
+    assert_eq!(
+        (locked.welcomes_sent, locked.joins_succeeded, locked.joined),
+        (1, 1, 1)
+    );
+    let record = serde_json::to_string(&locked).unwrap();
+    assert!(!record.contains(PASSWORD_SENTINEL), "{record}");
+    // Without a password a stray option is admitted and nothing is counted.
+    let (mut open, address) = server_app(&enabled(0));
+    with_server(&mut open, move || {
+        join_with(address, login_with_url("?Name=A?password=x"));
+    });
+    let open = counts(&open);
+    assert_eq!((open.joins_succeeded, open.closed_by_join_password), (1, 0));
+}
+
+/// `run` with a configured join password: the listening record says only
+/// that one is set, a wrong Login is refused and counted, the right one
+/// joins, and no record carries the password; `check-config` omits it, and
+/// configuration errors never quote it.
+#[test]
+fn production_run_enforces_and_never_prints_the_join_password() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("server.toml");
+    fs::write(
+        &config,
+        format!(
+            "status_interval_seconds = 1\n[network]\nenabled = true\nport = 0\njoin_password = \"{PASSWORD_SENTINEL}\"\n"
+        ),
+    )
+    .unwrap();
+    let checked = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .arg("check-config")
+        .arg("--config")
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(checked.status.success());
+    let printed = String::from_utf8(checked.stdout).unwrap();
+    assert!(!printed.contains(PASSWORD_SENTINEL) && !printed.contains("join_password"));
+    for refused in [
+        format!("[network]\njoin_password = \"{PASSWORD_SENTINEL}?\"\n"),
+        format!(
+            "[network]\njoin_password = \"{}\"\n",
+            PASSWORD_SENTINEL.repeat(5)
+        ),
+        format!("[network]\njoin_pasword = \"{PASSWORD_SENTINEL}\"\n"),
+        format!(
+            "[network]\njoin_password = \"{PASSWORD_SENTINEL}\"\njoin_password = \"{PASSWORD_SENTINEL}\"\n"
+        ),
+        format!("[network]\njoin_password = \"{PASSWORD_SENTINEL}\\q\"\n"),
+    ] {
+        let bad = directory.path().join("bad.toml");
+        fs::write(&bad, &refused).unwrap();
+        for mode in ["check-config", "run"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+                .arg(mode)
+                .arg("--config")
+                .arg(&bad)
+                .arg("--data-dir")
+                .arg(directory.path().join("refused-state"))
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{refused}");
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(text.contains("parse native configuration"), "{text}");
+            assert!(!text.contains(PASSWORD_SENTINEL), "{text}");
+        }
+    }
+    assert!(!directory.path().join("refused-state").exists());
+    let state = directory.path().join("state");
+    let mut server = RunningServer::spawn(
+        Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .arg("run")
+            .arg("--config")
+            .arg(&config)
+            .args(["--tick-hz", "120", "--max-ticks", "100000", "--data-dir"])
+            .arg(&state),
+    );
+    let listening = server.event("network_listening");
+    assert_eq!(listening["join_password"], true);
+    let address: SocketAddr = listening["address"].as_str().unwrap().parse().unwrap();
+    let mut refused = connect(address);
+    let reply = hello_and_send_login(&mut refused, login_with_url("?password=wrong"));
+    assert_eq!(failure_text(&reply), INVALID_PASSWORD);
+    let url = format!("?Name={NAME_SENTINEL}?password={PASSWORD_SENTINEL}");
+    let client = join_with(address, login_with_url(&url));
+    let status = server.wait_for("status with a joined session", |record| {
+        record["event"] == "status" && record["sessions"]["joined"] == 1
+    });
+    assert_eq!(status["sessions"]["closed_by_join_password"], 1);
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &server.child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(server.wait_exit().success());
+    let stopped = server.event("stopped");
+    assert_eq!(stopped["sessions"]["closed_by_join_password"], 1);
+    server.drain();
+    for line in &server.seen {
+        assert!(!line.contains(PASSWORD_SENTINEL), "{line}");
+    }
+    drop(client);
 }
 
 #[test]
