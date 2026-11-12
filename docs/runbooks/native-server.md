@@ -6,7 +6,8 @@
 
 Toolchain F-879; anonymous identities: app 2089300 (F-828, F-831).
 `network.data_pak`: configured or installed default; both need
-`network.authored_gameplay` (F-993). `network_listening`: `data_pak`,
+`network.authored_gameplay` (F-993); without both, stats are 0 and a stock
+client cannot walk (F-1157). `network_listening`: `data_pak`,
 `data_pak_source` (`configured`/`installed`). Install:
 
 ```bash
@@ -43,7 +44,7 @@ Public `native_join_probe`, one Steam CM session:
 `cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
 Defaults: UDP 17777/27015, one player, empty world;
 [case required](../gates.md#before-any-original-server-or-client-run).
-Listing/Auth/Join F-1010/F-1009; entry stalls (U-079).
+Listing/Auth/Join F-1010/F-1009; entry F-1148.
 Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 `--flod-tile-count` (0). Startup: 1–32 actions, default none.
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
@@ -67,7 +68,7 @@ unfreezes it, resent on NAK. Probe line
 `native_join_frozen_movement` (`unix_ms`, per-session times) on schedule, send,
 ACK or abandonment.
 Move acks F-1127/F-1128: `[network] pawn_move_acks` / probe `--pawn-move-acks`,
-default false (gates: next run sends only the unfreeze), need the pawn open
+default false (no visible effect with a stock client, F-1150), need the pawn open
 (else `run` omits them, the probe refuses).
 Spawn points F-1139: `[network.spawn]` / probe `--spawn-location`,
 `--spawn-yaw`; default none (origin); [guidance](network-readiness.md#spawn-placement).
