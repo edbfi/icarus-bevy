@@ -725,6 +725,9 @@ pub struct PeerLabStats {
     /// non-short handshake forms), or that failed the peer.
     pub data_malformed: u64,
     pub acks_sent: u64,
+    /// Newest datagrams sent again while a full sent-record ring held an
+    /// ACK back (N-021); not delivery progress.
+    pub ack_ring_probes_sent: u64,
     /// Ack packets that could not be built; the peer is removed.
     pub ack_errors: u64,
     /// Control messages delivered in order, of any kind.
@@ -10502,31 +10505,47 @@ impl PeerLab {
         InitialOpenOutcome::Committed(channel)
     }
 
+    /// One ACK per peer with a newly accepted packet. While the sent-record
+    /// ring is full no ACK can be committed; each such packet instead gets
+    /// the newest committed datagram again ([`LabPeer::full_ring_probe`],
+    /// N-021), so a client that lost the whole ring can ACK and drain it.
+    /// The copy is no delivery progress: a peer that never ACKs is still
+    /// removed by the delivery stall.
     fn send_acks(&mut self) {
         let mut failed = Vec::new();
         let mut acks = Vec::new();
+        let mut probes = Vec::new();
         for (address, entry) in &mut self.peers {
-            if !entry.ack_pending || entry.ack_capacity_blocked {
+            if !entry.ack_pending {
                 continue;
             }
-            match entry.peer.ack_packet() {
-                Ok(datagram) => {
-                    entry.ack_pending = false;
-                    acks.push((*address, datagram));
-                }
-                Err(error) => {
-                    if matches!(
-                        error.downcast_ref::<super::sequencing::SendCapacityError>(),
-                        Some(super::sequencing::SendCapacityError::SentRecordRing { .. })
-                    ) && transport_capacity_can_drain(entry, &error, 0)
-                    {
-                        // Keep the ACK intent, but wait for packet notification
-                        // progress before attempting another allocation.
-                        entry.ack_capacity_blocked = true;
-                    } else {
-                        failed.push(*address);
+            if !entry.ack_capacity_blocked {
+                match entry.peer.ack_packet() {
+                    Ok(datagram) => {
+                        entry.ack_pending = false;
+                        acks.push((*address, datagram));
+                        continue;
+                    }
+                    Err(error) => {
+                        if matches!(
+                            error.downcast_ref::<super::sequencing::SendCapacityError>(),
+                            Some(super::sequencing::SendCapacityError::SentRecordRing { .. })
+                        ) && transport_capacity_can_drain(entry, &error, 0)
+                        {
+                            // Keep the ACK intent, but wait for packet
+                            // notification progress before another allocation.
+                            entry.ack_capacity_blocked = true;
+                        } else {
+                            failed.push(*address);
+                            continue;
+                        }
                     }
                 }
+            }
+            // Blocked: answer this packet with the ring's newest datagram.
+            if let Some(probe) = entry.peer.full_ring_probe() {
+                entry.ack_pending = false;
+                probes.push((*address, probe.to_vec()));
             }
         }
         for address in failed {
@@ -10537,6 +10556,11 @@ impl PeerLab {
         for (address, datagram) in acks {
             if self.send(&datagram, address) {
                 bump(&mut self.stats.acks_sent);
+            }
+        }
+        for (address, datagram) in probes {
+            if self.send(&datagram, address) {
+                bump(&mut self.stats.ack_ring_probes_sent);
             }
         }
     }
@@ -19858,6 +19882,7 @@ mod tests {
     }
     mod friends_query_deadline;
     mod level_visibility;
+    mod lossy_join;
     mod move_acks;
     mod pawn_capture;
     mod record_ack_gating;

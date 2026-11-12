@@ -93,7 +93,11 @@ struct Client {
 
 impl Client {
     fn new() -> Self {
-        let (incoming, outgoing) = client_cookie_seeds(&COOKIE);
+        Self::with_cookie(&COOKIE)
+    }
+
+    fn with_cookie(cookie: &[u8; 20]) -> Self {
+        let (incoming, outgoing) = client_cookie_seeds(cookie);
         let sequencer = PacketSequencer::new(incoming, outgoing, 64).unwrap();
         let control = sequencer.new_channel();
         Self { sequencer, control }
@@ -627,6 +631,66 @@ fn reliable_control_packets_advance_sequences_and_carry_acks() {
         serde_json::to_string(&summary).unwrap(),
     ] {
         assert!(!text.contains(SENTINEL), "{text}");
+    }
+}
+
+/// N-021 boundaries: the ring probe exists exactly while the 256-record ring
+/// is full (none at 255), is the newest committed datagram byte for byte, and
+/// a client that lost the whole ring drains it by acknowledging the probe
+/// alone: the older packets are NAKed and their reliable bunch resent. Also
+/// across the 14-bit sequence wrap (outgoing seeded at 0x3f80).
+#[test]
+fn a_full_sent_ring_offers_its_newest_datagram_until_an_ack_drains_it() {
+    for outgoing in [0x1234_u16, 0x3f80] {
+        let mut cookie = COOKIE;
+        cookie[..2].copy_from_slice(&outgoing.to_le_bytes());
+        let config = PacketLabConfig::new(LIMITS);
+        assert_eq!(config.sent_capacity, 256);
+        let mut peer = LabPeer::from_cookie(&cookie, config).unwrap();
+        let mut client = Client::with_cookie(&cookie);
+        let (opening, _) = client.send(Vec::new());
+        peer.receive(&opening).unwrap();
+        let (_, initial_out) = peer.sequencer().initial_reliable();
+        let first_id = peer.sequencer().out_packet_id();
+        assert_eq!(first_id & 0x3fff, u32::from(outgoing));
+        let _lost = peer.reliable_control_packet(challenge("lost")).unwrap();
+        for _ in 1..255 {
+            peer.ack_packet().unwrap();
+        }
+        assert_eq!(peer.sequencer().notify().sent_records().len(), 255);
+        assert_eq!(peer.full_ring_probe(), None, "255 records leave room");
+        let newest = peer.ack_packet().unwrap();
+        assert_eq!(peer.full_ring_probe(), Some(newest.as_slice()));
+        let error = peer.ack_packet().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<SendCapacityError>(),
+            Some(&SendCapacityError::SentRecordRing { capacity: 256 })
+        );
+        assert_eq!(peer.full_ring_probe(), Some(newest.as_slice()));
+        let header = read_packet(&newest, &to_client()).unwrap().header;
+        assert_eq!(u32::from(header.sequence), (first_id + 255) & 0x3fff);
+
+        // The client hears only the probe; a second copy is a duplicate.
+        let (_, messages) = client_receive(&mut client, &newest);
+        assert!(messages.is_empty());
+        assert_eq!(client.sequencer.receive(&header).unwrap(), None);
+        let (next, _) = client.send(Vec::new());
+        let summary = peer.receive(&next).unwrap().summary().clone();
+        let naked: Vec<u32> = (first_id..first_id + 255).collect();
+        assert_eq!(summary.naked, naked);
+        assert_eq!(summary.acked, [first_id + 255]);
+        assert_eq!(summary.resend_queued, 1);
+        assert!(peer.sequencer().notify().sent_records().is_empty());
+        assert_eq!(peer.full_ring_probe(), None);
+
+        // The NAKed reliable bunch goes out again and is delivered once.
+        let resent = peer.ack_packet().unwrap();
+        assert_eq!(raw_sequences(&resent), [initial_out + 1]);
+        let (_, messages) = client_receive(&mut client, &resent);
+        assert_eq!(messages, [Decoded::Message(challenge("lost"))]);
+        let (next, _) = client.send(Vec::new());
+        assert_eq!(peer.receive(&next).unwrap().summary().released_reliable, 1);
+        assert_eq!(peer.pending_reliable(), 0);
     }
 }
 

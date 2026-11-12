@@ -838,6 +838,9 @@ fn control_challenge_retries_after_pressure_without_replaying_hello() {
     client.exchange(&mut app, ControlMessage::Join, true);
     let occupied = recv(&client.socket);
     client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
+    // N-021: while the only sent record is unacknowledged, each client
+    // packet gets that datagram again, byte for byte; nothing new is sent.
+    assert_eq!(try_recv(&client.socket), Some(occupied.clone()));
     assert!(try_recv(&client.socket).is_none());
     assert_eq!(stats(&app).reply_errors, 1);
     assert_eq!(stats(&app).control_challenges_sent, 0);
@@ -849,6 +852,7 @@ fn control_challenge_retries_after_pressure_without_replaying_hello() {
     // Another Hello cannot replace the first chosen Challenge or run policy.
     client.exchange(&mut app, short_hello("", LOCAL_VERSION), false);
     assert_eq!(stats(&app).reply_errors, 1);
+    assert_eq!(try_recv(&client.socket), Some(occupied.clone()));
     assert!(try_recv(&client.socket).is_none());
 
     client.receive_ack(&occupied);
@@ -892,6 +896,9 @@ fn control_welcome_retries_once_without_repeating_login() {
     // Receiving bytes without advancing client sequencing withholds the ACK.
     let challenge = recv(&client.socket);
     client.exchange(&mut app, login(), false);
+    // N-021: while the only sent record is unacknowledged, each client
+    // packet gets that datagram again, byte for byte; nothing new is sent.
+    assert_eq!(try_recv(&client.socket), Some(challenge.clone()));
     assert!(try_recv(&client.socket).is_none());
     assert_eq!(stats(&app).logins_received, 1);
     assert_eq!(stats(&app).welcomes_sent, 0);
@@ -907,6 +914,7 @@ fn control_welcome_retries_once_without_repeating_login() {
     }
     assert_eq!(stats(&app).logins_received, 1);
     assert_eq!(stats(&app).reply_errors, 1);
+    assert_eq!(try_recv(&client.socket), Some(challenge.clone()));
     assert!(try_recv(&client.socket).is_none());
 
     client.receive_reply(&challenge);
@@ -947,6 +955,11 @@ fn closing_control_reply_waits_for_capacity_then_removes_peer_once() {
     assert_eq!(stats(&app).reply_errors, 1);
     client.exchange(&mut app, login(), false);
     assert_eq!(stats(&app).logins_received, 1);
+    // N-021: while the only sent record is unacknowledged, each client
+    // packet gets that datagram again, byte for byte; nothing new is sent.
+    for _ in 0..2 {
+        assert_eq!(try_recv(&client.socket), Some(challenge.clone()));
+    }
     assert!(try_recv(&client.socket).is_none());
     client.receive_reply(&challenge);
     let (ack, _) = client.packet(Vec::new());
