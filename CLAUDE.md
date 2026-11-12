@@ -70,7 +70,8 @@ IDs are permanent. Run the milestone checklist in `docs.md` at milestones.
 
 Storage: follow [storage rules](.agents/rules/storage.md) and the
 [reporting runbook](docs/runbooks/storage.md). Keep full client/server inputs
-local; report cleanup candidates for approval before removing research data.
+local; the owner's development allowance (M-1360) permits bounded growth, never
+skipped cleanup; report cleanup candidates for approval before removing research data.
 
 ```bash
 prek run --all-files --hook-stage manual   # full suite
