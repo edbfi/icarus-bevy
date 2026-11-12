@@ -48,7 +48,8 @@ Listing/Auth/Join F-1010/F-1009; entry F-1148.
 Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 `--flod-tile-count` (0). Startup: 1–32 actions, default none.
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
-Password unvalidated: no real passwords.
+Probe [fresh-player stats](network-readiness.md#fresh-player-stats) (to walk),
+[join password](network-readiness.md#join-password).
 Diagnostics: [network readiness](network-readiness.md) (F-1045).
 Level visibility actors (field-82 answers, M-1350) are gated
 ([gates](../gates.md)): `[network] level_visibility_actors = true` is refused;
@@ -72,9 +73,6 @@ default false (no visible effect with a stock client, F-1150), need the pawn ope
 (else `run` omits them, the probe refuses).
 Spawn points F-1139: `[network.spawn]` / probe `--spawn-location`,
 `--spawn-yaw`; default none (origin); [guidance](network-readiness.md#spawn-placement).
-Private pawn-channel bunches: probe-only
-`--private-pawn-bunches-output work/<case>/pawn-bunches.jsonl`
-([format, caps](network-readiness.md#private-pawn-channel-bunches)).
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
@@ -108,6 +106,7 @@ Configure `[network]`:
 | `release_profile` | `"config/release.toml"`; optional Hello pin |
 | `data_pak` | `"/path/to/data.pak"`; protocol row identities |
 | `authored_gameplay` | `"/path/to/gameplay.json"`; required with either pak |
+| `join_password` | unset; never printed ([rules](network-readiness.md#join-password)) |
 
 
 Before `--data-dir`: profile/socket checks; mismatched Hello → Upgrade.

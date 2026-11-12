@@ -62,30 +62,29 @@ fn prepare_impl(
     }))
 }
 
-/// Exclusive mode-0600 creation confined beneath `work_root`.
-fn open_private(
-    output: Option<&Path>,
+/// The bound `work_root` directory and `path` relative to it, refusing
+/// traversal, paths outside it and symlinks in the root's ancestors.
+pub fn confine(
+    path: &Path,
     work_root: &Path,
-    before_create: impl FnOnce(),
-) -> Result<Option<std::fs::File>> {
-    let Some(output) = output else {
-        return Ok(None);
-    };
+    what: &str,
+) -> Result<(rustix::fd::OwnedFd, std::path::PathBuf)> {
     ensure!(
-        !output
+        !path
             .components()
             .any(|part| matches!(part, Component::ParentDir)),
-        "capture parent traversal refused"
+        "{what} parent traversal refused"
     );
-    output.file_name().context("capture requires a filename")?;
-    let output = std::path::absolute(output).context("capture output path")?;
-    let root = std::path::absolute(work_root).context("capture work root")?;
-    let relative = output
+    path.file_name()
+        .with_context(|| format!("{what} requires a filename"))?;
+    let path = std::path::absolute(path).with_context(|| format!("{what} path"))?;
+    let root = std::path::absolute(work_root).with_context(|| format!("{what} work root"))?;
+    let relative = path
         .strip_prefix(&root)
-        .context("capture must remain inside checkout work directory")?;
+        .with_context(|| format!("{what} must remain inside checkout work directory"))?;
     ensure!(
         !relative.as_os_str().is_empty(),
-        "capture requires a filename"
+        "{what} requires a filename"
     );
     use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
     // Bind the trusted root once, refusing symlinks in every ancestor. No
@@ -97,14 +96,28 @@ fn open_private(
         Mode::empty(),
         ResolveFlags::NO_SYMLINKS,
     )
-    .context("capture work root must exist without symlinks")?;
+    .with_context(|| format!("{what} work root must exist without symlinks"))?;
+    Ok((directory, relative.to_path_buf()))
+}
+
+/// Exclusive mode-0600 creation confined beneath `work_root`.
+fn open_private(
+    output: Option<&Path>,
+    work_root: &Path,
+    before_create: impl FnOnce(),
+) -> Result<Option<std::fs::File>> {
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
+    let (directory, relative) = confine(output, work_root, "capture")?;
     before_create();
     // Resolution and exclusive creation happen in one kernel operation under
     // the bound root. Ancestor replacement cannot redirect creation outside it.
     // Unsupported openat2 kernels fail closed; there is no pathname fallback.
     let file = openat2(
         &directory,
-        relative,
+        &relative,
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
         Mode::RUSR | Mode::WUSR,
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,

@@ -28,6 +28,11 @@ const LINKED_INVENTORY: u32 = 13;
 /// The stat that compares against the carried weight (F-986).
 const WEIGHT_CAPACITY: &str = "WeightCapacity_+";
 
+/// Carried weight per unit of [`WEIGHT_CAPACITY`]: `Overburdened` applies
+/// while capacity times this (wrapping 32-bit arithmetic) is below the
+/// carried weight (F-986).
+pub const OVERBURDENED_WEIGHT_PER_CAPACITY: i32 = 1_000;
+
 /// What stat restore reads of one `D_ItemsStatic` row besides its tags and
 /// equipped grants (in [`InventoryRestoreTables`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -197,7 +202,7 @@ pub fn restore_stats(
         }
     }
     let capacity = evaluate(tables, &grants)?.value(WEIGHT_CAPACITY);
-    let overburdened = capacity.wrapping_mul(1000) < inputs.weight;
+    let overburdened = capacity.wrapping_mul(OVERBURDENED_WEIGHT_PER_CAPACITY) < inputs.weight;
     if overburdened {
         for (stat, value) in tables
             .modifier_grants

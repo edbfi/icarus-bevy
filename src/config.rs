@@ -11,6 +11,8 @@ use anyhow::{Context, Result, ensure};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
+use crate::experimental::admission::JoinPassword;
+
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -66,6 +68,15 @@ pub struct NetworkConfig {
     pub port: u16,
     /// Admission occupancy limit; the official documented player limit is 8.
     pub max_players: u32,
+    /// The operator's join password, as the official server's `JoinPassword`:
+    /// absent or empty admits without one; otherwise a Login whose URL
+    /// `password` option differs (ASCII case ignored) is refused with
+    /// `Invalid Password` before the capacity checks. At most 64 UTF-16
+    /// units, no control characters, no `?` (it delimits login options).
+    /// Never printed: `check-config` omits it and records show only whether
+    /// one is set.
+    #[serde(skip_serializing, deserialize_with = "join_password")]
+    pub join_password: JoinPassword,
     /// Native timeout for no accepted incoming packet, outstanding sent packets
     /// with no ACK/NAK progress, or an unanswered friends query (N-019).
     /// Removal is local; reconnect may be needed.
@@ -157,6 +168,7 @@ impl Default for NetworkConfig {
             bind: Ipv4Addr::LOCALHOST,
             port: 17_777,
             max_players: 8,
+            join_password: JoinPassword::NONE,
             session_timeout_seconds: 30,
             release_profile: None,
             data_pak: None,
@@ -171,6 +183,36 @@ impl Default for NetworkConfig {
             spawn: crate::spawn_placement::SpawnConfig::default(),
         }
     }
+}
+
+/// `network.join_password`, refused without quoting it. Read as any TOML
+/// value first: serde's own type error for a non-string (a numeric password,
+/// say) would quote the value.
+fn join_password<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<JoinPassword, D::Error> {
+    let toml::Value::String(text) = toml::Value::deserialize(deserializer)? else {
+        return Err(serde::de::Error::custom(
+            "network.join_password must be a string",
+        ));
+    };
+    JoinPassword::new(&text)
+        .map_err(|rules| serde::de::Error::custom(format_args!("network.join_password {rules}")))
+}
+
+/// A TOML error as its message and position. The default rendering quotes
+/// the offending source line, which may be the join password's.
+fn parse_error(text: &str, error: &toml::de::Error) -> anyhow::Error {
+    let position = error
+        .span()
+        .and_then(|span| text.get(..span.start))
+        .map(|before| {
+            let line = before.matches('\n').count() + 1;
+            let column = before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1;
+            format!(" at line {line}, column {column}")
+        })
+        .unwrap_or_default();
+    anyhow::anyhow!("{}{position}", error.message().trim_end())
 }
 
 /// Why `[network] level_visibility_actors = true` is refused.
@@ -275,11 +317,13 @@ pub struct ConfigOptions {
 impl ConfigOptions {
     pub fn resolve(&self) -> Result<ServerConfig> {
         let mut config = match &self.config {
-            Some(path) => toml::from_str::<ServerConfig>(
-                &read_configuration(path)
-                    .with_context(|| format!("read configuration {}", path.display()))?,
-            )
-            .context("parse native configuration")?,
+            Some(path) => {
+                let text = read_configuration(path)
+                    .with_context(|| format!("read configuration {}", path.display()))?;
+                toml::from_str::<ServerConfig>(&text)
+                    .map_err(|error| parse_error(&text, &error))
+                    .context("parse native configuration")?
+            }
             None => ServerConfig::default(),
         };
         if let Some(path) = &self.data_dir {

@@ -82,6 +82,8 @@ fn main() -> Result<()> {
         version_tag,
         prospect: cli.prospect,
         prospect_info: None,
+        // This probe admits no player, so it never asks for a password.
+        password_protected: false,
     };
     advert.validate()?;
     let tls = Tls::from_native_roots()?;
