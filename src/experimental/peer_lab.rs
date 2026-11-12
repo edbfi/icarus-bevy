@@ -149,6 +149,19 @@
 //!   not an inference about the original server's timeout or retransmit timing.
 //!   Removal is local: a full ring cannot carry a close, so the client may
 //!   need to reconnect after its own connection timeout.
+//! - Native per-query deadline (N-019): a peer whose friends query (F-1051)
+//!   stays unanswered for longer than [`PeerLabConfig::idle_timeout`] is
+//!   removed the same way (`peers_friends_query_expired`). The clock starts
+//!   when the query is first requested and only an accepted answer stops it (or
+//!   restarts it, when a re-query is still to be sent);
+//!   ACKs and re-queries never extend it, so no peer holds finalisation
+//!   (F-973) for others beyond that timeout. No such deadline was observed
+//!   in the original; F-858 records only a silent client's close.
+//! - Native policy (F-1116): with connected-player records and controller
+//!   possession properties on, a session whose possession update is
+//!   abandoned never gets its record (its client could not finalise it) and
+//!   is closed and removed in the same poll
+//!   (`peers_closed_by_possession_abandoned`). Not observed in the original.
 //! - After [`PeerLab::stop_admission`] no exact handshake form is answered
 //!   (`refused_draining`), so no peer is created or replaced; live peers keep
 //!   their packet state until [`PeerLab::shutdown`] notifies and removes them
@@ -583,8 +596,9 @@ pub struct PeerLabConfig {
     pub packet: PacketLabConfig,
     /// Peer-table capacity, `1..=MAX_PEERS_LIMIT`.
     pub max_peers: usize,
-    /// Nonzero interval for inbound-idle and stalled-delivery local removal.
-    /// Delivery progress uses ACK/NAK notifications, not incoming traffic alone.
+    /// Nonzero interval for inbound-idle, stalled-delivery and unanswered
+    /// friends-query (N-019) local removal. Delivery progress uses ACK/NAK
+    /// notifications, not incoming traffic alone.
     pub idle_timeout: Duration,
     /// Caller-supplied local network version compared with each Hello version
     /// (plain equality); a mismatch is answered with Upgrade. `None` skips the
@@ -688,6 +702,12 @@ pub struct PeerLabStats {
     pub peers_expired: u64,
     /// Outstanding delivery made no ACK/NAK progress within the native timeout.
     pub peers_delivery_stalled: u64,
+    /// Friends query (F-1051) unanswered within the native timeout (N-019).
+    pub peers_friends_query_expired: u64,
+    /// With records and possession properties on, sessions closed because
+    /// their possession update was abandoned: their client could never
+    /// finalise the record, so it is never sent (F-1116).
+    pub peers_closed_by_possession_abandoned: u64,
     /// Peers removed after a failed receive or ack.
     pub peers_failed: u64,
     /// Peers removed by ticket verification or a negative Steam auth outcome.
@@ -869,7 +889,8 @@ pub struct PeerLabStats {
     pub controller_possession_sends_deferred: u64,
     /// Composition or framing refusals that cannot drain, or a controller or
     /// pawn channel no longer open when due; that session's update is
-    /// abandoned and its record no longer waits for it.
+    /// abandoned. With records on, its record is never sent and the session
+    /// is closed (`peers_closed_by_possession_abandoned`).
     pub controller_possession_errors: u64,
     /// Frozen-movement releases scheduled: one per session, when a positive
     /// ACK settles the creation of its own connected-player record, with
@@ -1109,6 +1130,10 @@ pub struct SessionCounts {
     pub closed_by_timeout: u64,
     /// Native delivery timeout, independent of incoming-packet activity.
     pub closed_by_delivery_stall: u64,
+    /// Native per-query deadline: friends query unanswered despite traffic.
+    pub closed_by_friends_query_timeout: u64,
+    /// Native policy: possession update abandoned, so no record (F-1116).
+    pub closed_by_possession_abandoned: u64,
     /// Sessions closed by a client control close bunch.
     pub closed_by_client: u64,
     /// Sessions closed after an Upgrade or Failure reply.
@@ -1595,6 +1620,39 @@ impl InitialisationReceipt {
                 .expect("committed actor channel"),
             ..Default::default()
         }
+    }
+
+    /// Every reliable bunch queued so far on open actor channel `channel`,
+    /// its open included; `None` without that channel.
+    fn through(peer: &LabPeer, channel: u32) -> Option<Self> {
+        Some(Self {
+            channel: Some(channel),
+            first: 0,
+            last: peer.actor_reliable_sequence(channel)?,
+            ..Default::default()
+        })
+    }
+}
+
+/// What the client must have acknowledged before its own connected-player
+/// record is sent with possession properties on (F-1116), committed when
+/// the possession update is admitted. The client applies a channel's
+/// reliable bunches in order, so with every one through the update ACKed it
+/// holds the controller and the pawn the update names; the record's
+/// controller reference then resolves to its local controller, which is
+/// what finalisation needs to raise `OnConnectedPlayerInitialised`
+/// (F-1103). A null controller would finalise without it, for good.
+#[derive(Default)]
+struct RecordPrerequisites {
+    /// The controller channel through the possession update.
+    controller: InitialisationReceipt,
+    /// The pawn channel through its latest bunch at that admission.
+    pawn: InitialisationReceipt,
+}
+
+impl RecordPrerequisites {
+    fn settled(&self) -> bool {
+        self.controller.settled && self.pawn.settled
     }
 }
 
@@ -2281,8 +2339,11 @@ struct PeerEntry {
     /// The admitted update's own reliable bunch; its channel is set once
     /// admitted, so a session sends at most one.
     controller_possession_receipt: InitialisationReceipt,
-    /// The update could not be admitted for good; nothing waits for it.
+    /// The update could not be admitted for good. With records on, the
+    /// record is never sent and the session is closed (F-1116).
     controller_possession_failed: bool,
+    /// ACKs the own record waits for with possession properties on.
+    record_prerequisites: RecordPrerequisites,
     /// Frozen-movement release ([`PeerLab::enable_frozen_movement_release`]).
     frozen_release: FrozenMovementRelease,
     /// Client-to-server bunches on this connection's pawn channel.
@@ -2308,6 +2369,10 @@ struct PeerEntry {
     friends_query_retry_ready: bool,
     /// The last admitted friends query's reliable bunch (F-1051).
     friends_query_receipt: InitialisationReceipt,
+    /// Native policy (N-019): when this peer's oldest unanswered friends query
+    /// was requested. Only an accepted `ServerFriendsListUpdated` clears it;
+    /// ACKs, NAKs, re-queries and other inbound traffic never move it.
+    friends_query_since: Option<Instant>,
     initialisation_request_receipt: InitialisationReceipt,
     initialisation_completion_receipt: InitialisationReceipt,
     controller_field_diagnostics: ControllerFieldDiagnostics,
@@ -2946,6 +3011,9 @@ pub struct PeerLab {
     /// Opt-in controller possession properties after each pawn open
     /// ([`PeerLab::enable_controller_possession_properties`]).
     controller_possession: bool,
+    /// A possession update was abandoned since the last close pass
+    /// ([`PeerLab::close_abandoned_possessions`]); the cheap trigger.
+    possession_abandoned: bool,
     /// Opt-in frozen-movement release with its delay after the record ACK
     /// ([`PeerLab::enable_frozen_movement_release`]).
     frozen_movement_release: Option<Duration>,
@@ -3157,6 +3225,7 @@ impl PeerLab {
             connected_players: None,
             next_connected_player_record: 0,
             controller_possession: false,
+            possession_abandoned: false,
             frozen_movement_release: None,
             level_visibility: None,
             level_actor_holders: BTreeMap::new(),
@@ -5579,7 +5648,9 @@ impl PeerLab {
     /// `IcarusPlayerCharacter`, both referencing that pawn. The connected-
     /// player record's finalisation check compares handle 20 with the
     /// record's pawn, and only replication sets it on a client (F-1074).
-    /// A session's record waits until its update is admitted (not ACKed).
+    /// With records on, a session's record waits until the client has ACKed
+    /// the controller open, this update and the pawn open; a session whose
+    /// update is abandoned is closed instead (F-1116).
     /// Unqualified with a stock client. Requires the PlayerController and
     /// pawn opens; must be configured before any peer exists.
     pub fn enable_controller_possession_properties(&mut self) -> Result<()> {
@@ -5949,6 +6020,8 @@ impl PeerLab {
             refused_draining: self.stats.refused_draining,
             closed_by_timeout: self.stats.peers_expired,
             closed_by_delivery_stall: self.stats.peers_delivery_stalled,
+            closed_by_friends_query_timeout: self.stats.peers_friends_query_expired,
+            closed_by_possession_abandoned: self.stats.peers_closed_by_possession_abandoned,
             closed_by_client: self.stats.peers_closed_by_client,
             closed_by_reply: self.stats.peers_closed,
             upgrades_sent: self.stats.upgrades_sent,
@@ -6400,6 +6473,64 @@ impl PeerLab {
         }
     }
 
+    /// Native policy (N-019): a peer whose friends query stays unanswered past
+    /// [`PeerLabConfig::idle_timeout`] is removed, however much it ACKs, so its
+    /// missing response cannot hold every player's finalisation (F-973).
+    fn expire_friends_queries(&mut self, now: Instant) {
+        let timeout = self.config.idle_timeout;
+        let expired: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(address, entry)| {
+                entry
+                    .friends_query_since
+                    .is_some_and(|since| now.saturating_duration_since(since) > timeout)
+                    .then_some(*address)
+            })
+            .collect();
+        for address in expired {
+            if self.remove_peer(address).is_some() {
+                bump(&mut self.stats.peers_friends_query_expired);
+            }
+        }
+    }
+
+    /// Native policy (F-1116): with records and possession properties on, a
+    /// session whose possession update was abandoned can never finalise its
+    /// record on the client (F-1087), and the record is never sent to it.
+    /// Abandonment is final (the update is never retried), so waiting cannot
+    /// help: the session is closed (a best-effort control close, as for an
+    /// actor channel failure) and removed in the same poll rather than hold
+    /// its slot and loading screen while it keeps ACKing. Removal also stops
+    /// friends queries to it, so it cannot hold others' finalisation (F-973).
+    /// A failed transport is removed where it fails (`peers_failed`).
+    fn close_abandoned_possessions(&mut self) {
+        if !std::mem::take(&mut self.possession_abandoned) || self.connected_players.is_none() {
+            return;
+        }
+        let abandoned: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(address, entry)| entry.controller_possession_failed.then_some(*address))
+            .collect();
+        for address in abandoned {
+            let Some(entry) = self.peers.get_mut(&address) else {
+                continue;
+            };
+            if entry.peer.has_received_client_packet() {
+                match entry.peer.reliable_control_close(CLOSE_REASON_DESTROYED) {
+                    Ok(datagram) => {
+                        self.send(&datagram, address);
+                    }
+                    Err(_) => bump(&mut self.stats.reply_errors),
+                }
+            }
+            if self.remove_peer(address).is_some() {
+                bump(&mut self.stats.peers_closed_by_possession_abandoned);
+            }
+        }
+    }
+
     /// Answer a handshake form; returns `false` when `bytes` is not one the
     /// authority answers.
     fn handshake(&mut self, address: SocketAddrV4, length: usize, now: Instant) -> bool {
@@ -6468,6 +6599,7 @@ impl PeerLab {
                         controller_possession_retry_ready: false,
                         controller_possession_receipt: InitialisationReceipt::default(),
                         controller_possession_failed: false,
+                        record_prerequisites: RecordPrerequisites::default(),
                         frozen_release: FrozenMovementRelease::default(),
                         pawn_inbound: PawnInboundCounts::default(),
                         visible_levels: BTreeSet::new(),
@@ -6479,6 +6611,7 @@ impl PeerLab {
                         friends_query_pending: false,
                         friends_query_retry_ready: false,
                         friends_query_receipt: InitialisationReceipt::default(),
+                        friends_query_since: None,
                         controller_field_diagnostics: ControllerFieldDiagnostics::default(),
                         auth_request: None,
                         auth_identity: None,
@@ -6642,6 +6775,29 @@ impl PeerLab {
                             );
                             if receipt.settled && !settled {
                                 bump(&mut self.stats.controller_possession_updates_acked);
+                            }
+                            // The own record's prerequisites (F-1116) just
+                            // settled: a finalised record may go out now.
+                            let prerequisites = &mut entry.record_prerequisites;
+                            let held = !prerequisites.settled();
+                            prerequisites.controller.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                            prerequisites.pawn.observe_positive_ack(
+                                &entry.peer,
+                                &summary.released_actor_channels,
+                            );
+                            if held
+                                && prerequisites.settled()
+                                && self.connected_players.is_some()
+                                && entry
+                                    .connected_player
+                                    .as_ref()
+                                    .is_some_and(|record| record.complete_time.is_some())
+                            {
+                                entry.connected_players_pending = true;
+                                entry.connected_players_retry_ready = true;
                             }
                             // Each record creation settles once, on a positive
                             // ACK of its own bunch; NAKs leave repair to the
@@ -7113,12 +7269,15 @@ impl PeerLab {
     /// Matched AddConnectedPlayer adds a player, then queries every registered
     /// player's controller (F-1051). Registration follows Begin, so the native
     /// registered set is the peers with a recorded character slot. Coalesce
-    /// unsent queries; reliable transport repairs admitted requests.
+    /// unsent queries; reliable transport repairs admitted requests. A
+    /// re-query keeps an unanswered query's deadline (N-019).
     fn query_connected_friends(&mut self) {
+        let now = Instant::now();
         for entry in self.peers.values_mut() {
             if entry.character_slot.is_some() {
                 entry.friends_query_pending = true;
                 entry.friends_query_retry_ready = true;
+                entry.friends_query_since.get_or_insert(now);
             }
         }
         self.retry_friends_queries();
@@ -7305,6 +7464,11 @@ impl PeerLab {
                     return;
                 }
                 entry.profiles.friend_ids_ready = true;
+                // An unsent pending query will clear readiness again, so
+                // only an answer with no query left to send ends the deadline.
+                // With one still to send, this answer restarts the clock: the
+                // next query must not inherit time its predecessor used up.
+                entry.friends_query_since = entry.friends_query_pending.then(Instant::now);
                 bump(&mut self.stats.friends_lists_received);
             }
             ControllerCall::Profile(response) => {
@@ -7722,10 +7886,13 @@ impl PeerLab {
             })
         };
         let pawn_channel = self.pawn_open.as_ref().map(|(_, channel, _)| *channel);
-        // The record follows its session's controller possession properties
-        // (F-1074): admission order is wire order on this connection, so the
-        // update's bunch leaves first; an abandoned update holds nothing.
-        if self.controller_possession && owner.controller_possession_pending {
+        // With possession properties on, the record waits until the client
+        // has ACKed its controller channel through the update (the open
+        // included) and its pawn channel through the pawn open (F-1116):
+        // admitted or merely open is not enough under loss. An abandoned
+        // update never settles, so its record is never sent; its session is
+        // closed instead (`close_abandoned_possessions`).
+        if self.controller_possession && !owner.record_prerequisites.settled() {
             return Ok(None);
         }
         if !same
@@ -7967,13 +8134,14 @@ impl PeerLab {
                     .controller_startup_pawn_guid
                     .filter(|_| open(*pawn_channel)),
             );
-        let Some((channel, pawn)) = target else {
-            // Nowhere to send it or nothing to name: abandoned, and a record
-            // held back for it may go ahead.
+        let pawn_span = InitialisationReceipt::through(&entry.peer, *pawn_channel);
+        let Some(((channel, pawn), pawn_span)) = target.zip(pawn_span) else {
+            // Nowhere to send it or nothing to name: abandoned. Its record is
+            // never sent; the session is closed by the next close pass.
             entry.controller_possession_pending = false;
             entry.controller_possession_failed = true;
             bump(&mut self.stats.controller_possession_errors);
-            self.connected_player_actor_opened(address);
+            self.possession_abandoned = true;
             return;
         };
         let codec = RepLayoutCodec {
@@ -7995,15 +8163,28 @@ impl PeerLab {
         );
         match sent {
             Ok((sent, previous)) => {
-                entry.controller_possession_receipt =
-                    InitialisationReceipt::committed(&entry.peer, channel, previous);
+                let receipt = InitialisationReceipt::committed(&entry.peer, channel, previous);
+                // The record waits for these, not for this admission; the
+                // ACK that settles them marks it due (F-1116). A session
+                // admits one update (`controller_possession_due`), so they
+                // are committed once.
+                if entry.record_prerequisites.controller.channel.is_none() {
+                    entry.record_prerequisites = RecordPrerequisites {
+                        controller: InitialisationReceipt {
+                            channel: receipt.channel,
+                            first: 0,
+                            last: receipt.last,
+                            ..Default::default()
+                        },
+                        pawn: pawn_span,
+                    };
+                }
+                entry.controller_possession_receipt = receipt;
                 entry.controller_possession_pending = false;
                 entry.ack_pending = false;
                 bump(&mut self.stats.controller_possession_updates_sent);
                 // Queued for reliable repair: a failed socket send only counts.
                 self.send_all(&sent, address);
-                // A record held back for this update may follow it now.
-                self.connected_player_actor_opened(address);
             }
             Err(error) => {
                 if transport_capacity_can_drain(entry, &error, channel) {
@@ -8017,7 +8198,9 @@ impl PeerLab {
                         self.remove_peer(address);
                         bump(&mut self.stats.peers_failed);
                     } else {
-                        self.connected_player_actor_opened(address);
+                        // Its record is never sent; the next close pass
+                        // closes the session.
+                        self.possession_abandoned = true;
                     }
                 }
             }
@@ -9959,6 +10142,7 @@ impl PeerLab {
         let now = Instant::now();
         self.expire_idle(now);
         self.expire_stalled_delivery(now);
+        self.expire_friends_queries(now);
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
             let (length, source) = match self.socket.recv_from(&mut self.buffer) {
@@ -10003,6 +10187,7 @@ impl PeerLab {
         self.retry_control_replies();
         self.retry_initial_opens();
         self.retry_controller_possession();
+        self.close_abandoned_possessions();
         self.retry_controller_startup();
         self.retry_friends_queries();
         self.retry_pending_profile_exchanges();
@@ -13595,8 +13780,8 @@ mod tests {
     /// update defers at the pawn open under genuine window pressure, the
     /// player completes and finalises meanwhile and its record is held;
     /// passes without packet progress admit nothing; ACK progress then
-    /// admits the update and the record follows in the same pass, in that
-    /// order on the wire, each exactly once.
+    /// admits the update, and the record follows once the client has ACKed
+    /// the update (F-1116), in that order on the wire, each exactly once.
     #[test]
     fn the_record_follows_a_possession_update_held_by_transport_pressure() {
         let mut lab = possession_lab(true);
@@ -13616,9 +13801,31 @@ mod tests {
         );
         lab.poll();
         assert_eq!(lab.stats.controller_possession_updates_sent, 1);
+        assert_eq!(
+            lab.stats.connected_player_record_creations_sent, 0,
+            "admitted, not yet ACKed"
+        );
+        // The client applies the controller channel in order, so the NAKed
+        // filler bunches ahead of the update must be repaired and ACKed too.
+        let mut bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        for _ in 0..super::super::packet_lab::MAX_PENDING_RELIABLE {
+            lab.poll();
+            if lab.stats.connected_player_record_creations_sent > 0 {
+                break;
+            }
+            let repair = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&repair, address));
+            bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        }
         assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
         assert_eq!(lab.stats.connected_player_array_updates_sent, 1);
-        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        bunches.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
         let pawn = lab.peers[&address].controller_startup_pawn_guid.unwrap();
         let [(update, entries)] = possession_updates(&lab, &bunches).try_into().unwrap();
         assert_eq!(entries, possession_entries(pawn));
@@ -13670,10 +13877,9 @@ mod tests {
     /// (`LabPeer::reliable_actor_close`), because the session never closes
     /// its own controller or pawn channel through any public call, so this
     /// branch is not reachable through the public sequence. The error counts
-    /// once and the update is never retried. The record stops waiting for
-    /// it but still cannot go out: it references that same closing actor
-    /// (`connected_player_for` requires the controller, pawn and PlayerState
-    /// open), so none is sent and no record error is counted.
+    /// once and the update is never retried. Its record is never sent: the
+    /// session is closed and removed in the same poll (F-1116), with its
+    /// record, and no record error is counted.
     #[test]
     fn an_update_whose_channel_closed_is_abandoned_once() {
         for close_pawn in [true, false] {
@@ -13693,11 +13899,12 @@ mod tests {
                 lab.stats.controller_possession_errors, 1,
                 "pawn={close_pawn}"
             );
-            assert!(lab.peers[&address].controller_possession_failed);
-            assert!(!lab.peers[&address].controller_possession_pending);
+            assert!(!lab.has_peer(address), "pawn={close_pawn}");
+            assert_eq!(lab.stats.peers_closed_by_possession_abandoned, 1);
+            assert_eq!(lab.session_counts().closed_by_possession_abandoned, 1);
+            assert_eq!(lab.stats.connected_player_records_removed, 1);
             for _ in 0..3 {
                 lab.poll();
-                deliver_bunches(&mut lab, &socket, &mut client, |_| true);
                 lab.controller_possession_due(address);
             }
             assert_eq!(
@@ -13705,16 +13912,14 @@ mod tests {
                     lab.stats.controller_possession_updates_sent,
                     lab.stats.controller_possession_sends_deferred,
                     lab.stats.controller_possession_errors,
+                    lab.stats.peers_closed_by_possession_abandoned,
                 ),
-                (0, 1, 1),
+                (0, 1, 1, 1),
                 "pawn={close_pawn}"
             );
             assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
             assert_eq!(lab.stats.connected_player_record_errors, 0);
-            assert_eq!(
-                lab.readiness_counts().controller_possession,
-                ControllerPossessionReadiness::default()
-            );
+            assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
         }
     }
 
@@ -13723,10 +13928,13 @@ mod tests {
     /// before admission and composes for every pawn GUID, so this cannot
     /// happen through the public sequence: the plan's layout is truncated by
     /// hand after the real deferral. The error counts once, the update is
-    /// never retried, and the held record is released and sent in the same
-    /// pass.
+    /// never retried, the held record is never sent, and the session is
+    /// removed in the same pass (F-1116). As for an actor channel failure,
+    /// a control close goes out only to a client that has sent a control
+    /// bunch; this authored client has not, so none does.
     #[test]
-    fn an_update_that_cannot_be_composed_is_abandoned_and_releases_the_record() {
+    fn an_update_that_cannot_be_composed_is_abandoned_and_closes_the_session() {
+        use super::super::packet::{PacketConfig, Receiver, read_packet};
         let mut lab = possession_lab(true);
         let (socket, address, mut client) = held_possession_peer(&mut lab, "AuthoredRefused");
         lab.player_controller_open
@@ -13738,28 +13946,41 @@ mod tests {
         lab.poll();
         assert_eq!(lab.stats.controller_possession_errors, 1);
         assert_eq!(lab.stats.controller_possession_updates_sent, 0);
-        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
-        assert!(lab.has_peer(address));
-        let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        assert!(!lab.has_peer(address));
+        assert_eq!(lab.stats.peers_closed_by_possession_abandoned, 1);
+        assert_eq!(lab.stats.connected_player_records_removed, 1);
+        // Every datagram was sent before `poll` returned, so a nonblocking
+        // read drains them all: neither an update nor a record nor a close.
+        let config = PacketConfig {
+            receiver: Receiver::Client,
+            ..lab.config.packet.packet
+        };
+        socket.set_nonblocking(true).unwrap();
+        let mut bunches = Vec::new();
+        let mut bytes = [0; 2048];
+        while let Ok(length) = socket.recv(&mut bytes) {
+            bunches.extend(read_packet(&bytes[..length], &config).unwrap().bunches);
+        }
+        assert!(!bunches.iter().any(|bunch| bunch.header.close));
         assert!(possession_updates(&lab, &bunches).is_empty());
-        assert_eq!(record_bodies(&lab, &bunches).len(), 1);
+        assert!(record_bodies(&lab, &bunches).is_empty());
         for _ in 0..3 {
             lab.poll();
             lab.controller_possession_due(address);
         }
-        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
         assert_eq!(
             (
                 lab.stats.controller_possession_updates_sent,
                 lab.stats.controller_possession_sends_deferred,
                 lab.stats.controller_possession_errors,
                 lab.stats.peers_failed,
+                lab.stats.peers_closed_by_possession_abandoned,
             ),
-            (0, 1, 1, 0)
+            (0, 1, 1, 0, 1)
         );
-        assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
-        assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
-        assert_eq!(lab.readiness_counts().controller_possession.pending_send, 0);
+        assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+        assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
     }
 
     /// Abandonment on a failed transport, which also removes the peer. Not
@@ -19103,8 +19324,10 @@ mod tests {
             assert!(!text.contains("AuthoredUnreliable"));
         }
     }
+    mod friends_query_deadline;
     mod level_visibility;
     mod pawn_capture;
+    mod record_ack_gating;
 }
 
 #[cfg(test)]

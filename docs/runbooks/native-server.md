@@ -99,7 +99,7 @@ Configure `[network]`:
 | `bind` | `"127.0.0.1"`; IPv4 loopback only |
 | `port` | `17777`; `0`: ephemeral; CLI `--network-port` |
 | `max_players` | `8`; admission occupancy, 1..=64 |
-| `session_timeout_seconds` | `30`; idle/delivery, 1..=600 s |
+| `session_timeout_seconds` | `30`; idle/delivery/friends query, 1..=600 s |
 | `release_profile` | `"config/release.toml"`; optional Hello pin |
 | `data_pak` | `"/path/to/data.pak"`; protocol row identities |
 | `authored_gameplay` | `"/path/to/gameplay.json"`; required with either pak |
@@ -110,7 +110,11 @@ Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes/drains/saves.
 `network_listening`: address/`version_check`; `status`/`stopped`: session counts.
 Prospect/mode F-804; data F-993. Monotonic delivery timeout: sent records lack
 ACK/NAK progress despite traffic; `closed_by_delivery_stall`/`peers_delivery_stalled`
-separate from idle expiry (F-1013).
+separate from idle expiry (F-1013). A friends query unanswered for that timeout
+closes its peer despite ACKs, so others finalise: `closed_by_friends_query_timeout`
+(F-1115, N-019). A player's record waits for the client's ACK of its controller,
+possession update and pawn; an abandoned update closes the session instead:
+`closed_by_possession_abandoned` (F-1116).
 Removal releases a session's GUID identities; GUIDs are never reused (F-1083).
 
 `authored_gameplay`: regular JSON ≤8 MiB, e.g.
