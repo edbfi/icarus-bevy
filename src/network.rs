@@ -47,11 +47,11 @@
 //! creation is ACKed, as the original does (F-1099; the client's freeze
 //! rule, F-1100). With `[network] pawn_move_acks` on (default off), each
 //! client's packed moves are decoded and the newest is acknowledged at most
-//! every 100 ms, never corrected (F-1127, F-1128). Level visibility actors (dispatching the client's field-82
-//! level visibility reports and opening each newly visible level's
-//! world-settings actors) are gated: `[network] level_visibility_actors =
-//! true` is refused, and only the bounded join probe enables them through
-//! the lab. Nothing else replicates.
+//! every 100 ms, never corrected (F-1127, F-1128). Level visibility actors
+//! (dispatching the client's field-82 level visibility reports and opening
+//! each newly visible level's world-settings actors) are gated: `[network]
+//! level_visibility_actors = true` is refused, and only the bounded join
+//! probe enables them through the lab. Nothing else replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network
