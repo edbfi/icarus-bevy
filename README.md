@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icarus-bevy.svg" alt="icarus-bevy logo" width="256" height="256">
+  <img src="assets/icarus-bevy.svg" alt="icarus-bevy logo" width="160" height="160">
 </p>
 
 <h1 align="center">icarus-bevy</h1>
@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/edbfi/icarus-bevy/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue?style=flat" alt="License: AGPL-3.0-only">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue?style=flat" alt="License: AGPL-3.0-or-later">
   </a>
   <a href="https://github.com/bevyengine/bevy" title="Bevy engine source">
     <img src="https://img.shields.io/badge/Bevy-232326?style=flat&amp;logo=bevy&amp;logoColor=white" alt="Bevy">
@@ -79,5 +79,8 @@ Original files stay under ignored `icarus-orig/`, supplied saves under ignored
 assets are extracted or reused. Historical research approvals are indexed in
 [docs/history](docs/history/authorizations-index.md); none extends a runtime window.
 
-Project source uses the repository's [AGPL-3.0 license](LICENSE); third-party
-dependencies and vendored tools retain their own licenses.
+Original code authored for this project by edbfi is licensed under the
+[GNU Affero General Public License](LICENSE), version 3 or (at your option) any
+later version (`AGPL-3.0-or-later`). Third-party dependencies, vendored tools and
+copied skills retain their own licenses and notices, including the
+[MIT-licensed reverse-engineer-anything skill](.agents/skills/reverse-engineer-anything/LICENSE).
