@@ -243,7 +243,8 @@ use super::packet_lab::{
 };
 use super::pawn_open::{
     InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState, PawnTemperatureState,
-    compose_pawn_frozen_movement_update, compose_pawn_icarus_uid_update, compose_pawn_open,
+    compose_pawn_frozen_movement_update, compose_pawn_icarus_uid_update, compose_pawn_move_ack,
+    compose_pawn_open,
 };
 use super::pawn_restore::{
     CurrentPawnState, compose_live_pawn_update, compose_restored_pawn_update, restore_saved_pawn,
@@ -913,6 +914,28 @@ pub struct PeerLabStats {
     /// unreliable, counted by header only on every connection.
     pub pawn_bunches_received_reliable: u64,
     pub pawn_bunches_received_unreliable: u64,
+    /// Client packed moves (pawn field 39) decoded with
+    /// [`PeerLab::enable_pawn_move_acks`] (F-1127).
+    pub pawn_moves_received: u64,
+    /// Unreliable pawn bunches the lab could not read for moves (partial,
+    /// with exports or must-be-mapped GUIDs, an unreadable body or field
+    /// header) and field-39 payloads or timestamps refused: counted and
+    /// skipped, the bunch otherwise treated as before, never a close.
+    pub pawn_moves_malformed: u64,
+    /// Good-move acknowledgements (pawn field 30) sent unreliable, at most
+    /// one per connection per [`MOVE_ACK_INTERVAL`]; never resent.
+    pub pawn_move_acks_sent: u64,
+    /// Acknowledgements held back by drainable transport pressure.
+    pub pawn_move_ack_sends_deferred: u64,
+    /// Composition or framing refusals that cannot drain; that newest move
+    /// goes unacknowledged.
+    pub pawn_move_ack_errors: u64,
+    /// Client-reported locations stored, refused by the authored checks
+    /// (F-1128; the stored one kept), or skipped because the move has a
+    /// movement base or no movement mode.
+    pub pawn_move_positions_accepted: u64,
+    pub pawn_move_positions_rejected: u64,
+    pub pawn_move_positions_skipped: u64,
     /// Level visibility reports (controller field 82, F-1052) dispatched with
     /// [`PeerLab::enable_level_visibility_actors`], by disposition; counts
     /// only, never names. A newly visible level added to the connection's set.
@@ -1206,6 +1229,15 @@ pub struct SessionCounts {
     pub frozen_movement_release_errors: u64,
     pub pawn_bunches_received_reliable: u64,
     pub pawn_bunches_received_unreliable: u64,
+    /// Pawn move and acknowledgement counters, as in [`PeerLabStats`].
+    pub pawn_moves_received: u64,
+    pub pawn_moves_malformed: u64,
+    pub pawn_move_acks_sent: u64,
+    pub pawn_move_ack_sends_deferred: u64,
+    pub pawn_move_ack_errors: u64,
+    pub pawn_move_positions_accepted: u64,
+    pub pawn_move_positions_rejected: u64,
+    pub pawn_move_positions_skipped: u64,
     /// Level visibility report and level actor counters, as in [`PeerLabStats`].
     pub level_visibility_reports_added: u64,
     pub level_visibility_reports_duplicate: u64,
@@ -1272,6 +1304,7 @@ pub struct ReadinessCounts {
     pub connected_player_records: ConnectedPlayerRecordReadiness,
     pub controller_possession: ControllerPossessionReadiness,
     pub frozen_movement_release: FrozenMovementReleaseReadiness,
+    pub pawn_move_acks: PawnMoveAckReadiness,
     pub level_visibility: LevelVisibilityReadiness,
     /// Queued means accepted by reliable transport, not ACKed or spawned.
     pub controller_startup_actions_queued: usize,
@@ -1382,6 +1415,21 @@ pub struct FrozenMovementReleaseReadiness {
     /// A copy sent, neither ACKed nor NAKed yet.
     pub awaiting_ack: usize,
     pub settled: usize,
+}
+
+/// Live pawn move gauges ([`PeerLab::enable_pawn_move_acks`]), one per
+/// session at most each; counts only, never timestamps or locations.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PawnMoveAckReadiness {
+    /// Sessions that sent at least one decoded move.
+    pub sessions_moving: usize,
+    /// A move arrived since the session's last acknowledgement: due once
+    /// [`MOVE_ACK_INTERVAL`] has passed and the pawn channel is settled.
+    pub awaiting_ack: usize,
+    /// Held back by transport pressure until ACK/NAK progress.
+    pub deferred: usize,
+    /// Sessions with a stored client-reported location.
+    pub positions_held: usize,
 }
 
 /// Live level visibility gauges ([`PeerLab::enable_level_visibility_actors`]),
@@ -1735,6 +1783,94 @@ impl FrozenMovementRelease {
     }
 }
 
+/// Shortest interval between two move acknowledgements on one connection
+/// (F-1127): at most ten a second, as the original's cadence allows.
+pub const MOVE_ACK_INTERVAL: Duration = Duration::from_millis(100);
+/// Authored world bound for a client-reported location: each component
+/// within this many centimetres of the origin (the engine's default half
+/// world extent), F-1128.
+pub const MOVE_WORLD_BOUND_CM: f64 = 1_048_576.0;
+/// Authored speed bound between two stored locations, centimetres per
+/// second of server arrival time, with [`MOVE_DISTANCE_SLACK_CM`] added for
+/// arrival jitter (F-1128).
+pub const MOVE_MAX_SPEED_CM_PER_S: f64 = 5_000.0;
+pub const MOVE_DISTANCE_SLACK_CM: f64 = 500.0;
+/// Shortest interval between two logged location refusals per connection.
+pub const MOVE_VIOLATION_LOG_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Why a client-reported location was refused (F-1128).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveLocationRefusal {
+    NotFinite,
+    OutsideWorld,
+    TooFar,
+}
+
+/// The authored location checks (F-1128): every component finite and within
+/// [`MOVE_WORLD_BOUND_CM`], and, after a stored location `previous` stored
+/// at its arrival instant, no farther from it than
+/// [`MOVE_MAX_SPEED_CM_PER_S`] times the elapsed arrival time plus
+/// [`MOVE_DISTANCE_SLACK_CM`].
+pub fn check_move_location(
+    previous: Option<([f64; 3], Instant)>,
+    location: [f64; 3],
+    now: Instant,
+) -> std::result::Result<(), MoveLocationRefusal> {
+    if !location.iter().all(|component| component.is_finite()) {
+        return Err(MoveLocationRefusal::NotFinite);
+    }
+    if location
+        .iter()
+        .any(|component| component.abs() > MOVE_WORLD_BOUND_CM)
+    {
+        return Err(MoveLocationRefusal::OutsideWorld);
+    }
+    if let Some((stored, at)) = previous {
+        let elapsed = now.saturating_duration_since(at).as_secs_f64();
+        let distance = stored
+            .iter()
+            .zip(location)
+            .map(|(from, to)| (to - from) * (to - from))
+            .sum::<f64>()
+            .sqrt();
+        if distance > MOVE_MAX_SPEED_CM_PER_S * elapsed + MOVE_DISTANCE_SLACK_CM {
+            return Err(MoveLocationRefusal::TooFar);
+        }
+    }
+    Ok(())
+}
+
+/// One session's pawn moves ([`PeerLab::enable_pawn_move_acks`]): the
+/// newest move by arrival (the client resets its timestamps, so never by
+/// value) and whether it is acknowledged, and the last stored location.
+/// Fixed size; dropped with the session.
+#[derive(Default)]
+struct PawnMoves {
+    latest_timestamp: Option<f32>,
+    /// A move arrived since the last acknowledgement.
+    unacked: bool,
+    last_ack_at: Option<Instant>,
+    /// Held back by drainable transport pressure until ACK/NAK progress.
+    deferred: bool,
+    /// The last stored location (centimetres) and its arrival instant.
+    location: Option<([f64; 3], Instant)>,
+    last_refusal_logged_at: Option<Instant>,
+    counts: PawnMoveCounts,
+}
+
+/// One session's pawn move counters; counts and the movement mode only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PawnMoveCounts {
+    pub moves: u64,
+    pub malformed: u64,
+    pub acks_sent: u64,
+    pub positions_accepted: u64,
+    pub positions_rejected: u64,
+    pub positions_skipped: u64,
+    /// The raw movement-mode byte of the newest decoded move (absent = 1).
+    pub mode: Option<u8>,
+}
+
 /// Client-to-server bunches on one connection's pawn channel, counted by
 /// header only (their content is not decoded: the pawn's RPC field indices,
 /// such as `ServerUpdateClientFrozenMovement`'s, are not bound).
@@ -1765,6 +1901,9 @@ pub struct FrozenMovementObservation {
     pub release_acked_ms: Option<u64>,
     pub release_failed: bool,
     pub pawn_inbound: PawnInboundCounts,
+    /// Pawn moves ([`PeerLab::enable_pawn_move_acks`]); zero when off.
+    pub pawn_moves: PawnMoveCounts,
+    pub last_move_ack_ms: Option<u64>,
 }
 
 /// Level visibility actors ([`PeerLab::enable_level_visibility_actors`]):
@@ -2348,6 +2487,8 @@ struct PeerEntry {
     frozen_release: FrozenMovementRelease,
     /// Client-to-server bunches on this connection's pawn channel.
     pawn_inbound: PawnInboundCounts,
+    /// Pawn moves and their acknowledgement ([`PeerLab::enable_pawn_move_acks`]).
+    pawn_moves: PawnMoves,
     /// Case-folded packages this connection reported visible and that are
     /// still visible (at most [`MAX_VISIBLE_LEVELS`]).
     visible_levels: BTreeSet<String>,
@@ -2472,6 +2613,114 @@ struct PeerEntry {
     game_state: Option<GameStateReplica>,
     /// Ping from the round trips of acked packets (F-815).
     ping: PingEstimator,
+}
+
+/// The packed moves one client unreliable pawn bunch carries: each actor
+/// block's field-39 payloads, in order. Sub-object blocks and other fields
+/// are skipped; a bunch the lab cannot read is an error.
+fn pawn_bunch_moves(
+    bunch: &super::packet::Bunch,
+    codec: &RepLayoutCodec,
+) -> Result<Vec<Result<super::character_move::PackedMove>>> {
+    use super::actor_channel::{BlockTarget, read_client_actor_bunch_body};
+    use super::character_move::read_server_move_packed;
+    use super::rep_rpc::{
+        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND, SERVER_MOVE_PACKED_FIELD_INDEX,
+        read_field_header,
+    };
+    let header = &bunch.header;
+    ensure!(
+        !header.partial && !header.has_package_map_exports && !header.has_must_be_mapped_guids,
+        "pawn bunch form not read for moves"
+    );
+    let body = read_client_actor_bunch_body(&mut bunch.payload.reader(), &codec.actor)?;
+    let mut moves = Vec::new();
+    for block in &body.blocks {
+        if block.target != BlockTarget::Actor {
+            continue;
+        }
+        ensure!(!block.has_rep_layout, "client pawn properties not read");
+        let mut reader = block.payload.reader();
+        while !reader.at_end() {
+            // Bounded by the block; the move decoder caps its own container.
+            let field = read_field_header(
+                &mut reader,
+                BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND,
+                usize::MAX,
+            )?;
+            if field.index == SERVER_MOVE_PACKED_FIELD_INDEX {
+                moves.push(read_server_move_packed(&field.payload, codec));
+            }
+        }
+    }
+    Ok(moves)
+}
+
+/// Apply one client unreliable pawn bunch's moves to its session
+/// ([`PeerLab::enable_pawn_move_acks`]): each well-formed move with a
+/// finite, nonnegative timestamp becomes the newest (by arrival) and due for
+/// acknowledgement, and its location is stored after the authored checks;
+/// anything else is counted malformed and skipped.
+fn receive_pawn_moves(
+    state: &mut PawnMoves,
+    stats: &mut PeerLabStats,
+    bunch: &super::packet::Bunch,
+    codec: &RepLayoutCodec,
+    now: Instant,
+    connection: Option<u32>,
+) {
+    use super::character_move::MOVEMENT_MODE_NONE;
+    let malformed = |state: &mut PawnMoves, stats: &mut PeerLabStats| {
+        state.counts.malformed = state.counts.malformed.saturating_add(1);
+        bump(&mut stats.pawn_moves_malformed);
+    };
+    let Ok(moves) = pawn_bunch_moves(bunch, codec) else {
+        malformed(state, stats);
+        return;
+    };
+    for packed in moves {
+        let Some(packed) = packed.ok().filter(|packed| {
+            let timestamp = packed.new.fields.timestamp;
+            timestamp.is_finite() && timestamp >= 0.0
+        }) else {
+            malformed(state, stats);
+            continue;
+        };
+        let mode = packed.new.movement_mode();
+        state.latest_timestamp = Some(packed.new.fields.timestamp);
+        state.unacked = true;
+        state.counts.moves = state.counts.moves.saturating_add(1);
+        state.counts.mode = packed.new.mode;
+        bump(&mut stats.pawn_moves_received);
+        // Only a world location counts: no base, and a movement mode.
+        if packed.new.base.is_some() || mode == MOVEMENT_MODE_NONE {
+            state.counts.positions_skipped = state.counts.positions_skipped.saturating_add(1);
+            bump(&mut stats.pawn_move_positions_skipped);
+            continue;
+        }
+        let location = packed.new.fields.location_cm();
+        match check_move_location(state.location, location, now) {
+            Ok(()) => {
+                state.location = Some((location, now));
+                state.counts.positions_accepted = state.counts.positions_accepted.saturating_add(1);
+                bump(&mut stats.pawn_move_positions_accepted);
+            }
+            Err(refusal) => {
+                state.counts.positions_rejected = state.counts.positions_rejected.saturating_add(1);
+                bump(&mut stats.pawn_move_positions_rejected);
+                if state.last_refusal_logged_at.is_none_or(|at| {
+                    now.saturating_duration_since(at) >= MOVE_VIOLATION_LOG_INTERVAL
+                }) {
+                    state.last_refusal_logged_at = Some(now);
+                    bevy::log::warn!(
+                        "connection {connection:?}: client pawn location refused ({refusal:?}); \
+                         the stored location is kept ({} refused so far)",
+                        state.counts.positions_rejected
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Capacity planning may fill a cloned queue even when the live queue is
@@ -3017,6 +3266,8 @@ pub struct PeerLab {
     /// Opt-in frozen-movement release with its delay after the record ACK
     /// ([`PeerLab::enable_frozen_movement_release`]).
     frozen_movement_release: Option<Duration>,
+    /// Opt-in pawn move acknowledgements ([`PeerLab::enable_pawn_move_acks`]).
+    pawn_move_acks: bool,
     /// Opt-in level visibility dispatch and actor opens
     /// ([`PeerLab::enable_level_visibility_actors`]); `None` leaves field 82
     /// ignored.
@@ -3227,6 +3478,7 @@ impl PeerLab {
             controller_possession: false,
             possession_abandoned: false,
             frozen_movement_release: None,
+            pawn_move_acks: false,
             level_visibility: None,
             level_actor_holders: BTreeMap::new(),
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
@@ -5751,11 +6003,56 @@ impl PeerLab {
                     release_acked_ms: ms(release.acked_at),
                     release_failed: release.failed,
                     pawn_inbound: entry.pawn_inbound,
+                    pawn_moves: entry.pawn_moves.counts,
+                    last_move_ack_ms: ms(entry.pawn_moves.last_ack_at),
                 })
             })
             .collect();
         observations.sort_unstable_by_key(|observation| observation.connection);
         observations
+    }
+
+    /// Decode each session's packed moves (pawn field 39, F-1127) and
+    /// acknowledge the newest by arrival with one unreliable good-move
+    /// response (field 30), at most every [`MOVE_ACK_INTERVAL`] and only when
+    /// a move arrived since the last; nothing is resent on loss. Like the
+    /// frozen-movement release, an acknowledgement waits until every reliable
+    /// bunch on the pawn channel, its open included, is ACKed (the client
+    /// drops unreliable bunches on a channel it has not opened); it does not
+    /// wait for the release itself, which the original's own acknowledgements
+    /// precede. A move without base and with a movement mode stores its
+    /// location as session state after [`check_move_location`] (F-1128);
+    /// nothing is ever corrected. Malformed moves are counted and skipped and
+    /// never close a session. Unqualified with a stock client. Needs the pawn
+    /// open; must be called before any peer exists.
+    pub fn enable_pawn_move_acks(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "pawn move acknowledgements are configured before admission"
+        );
+        ensure!(
+            self.pawn_open.is_some(),
+            "pawn move acknowledgements need the pawn open"
+        );
+        self.pawn_move_acks = true;
+        Ok(())
+    }
+
+    /// Turn pawn move acknowledgements off for a comparison run; the lab
+    /// then sends exactly what it sends without them. Must be called before
+    /// any peer exists.
+    pub fn disable_pawn_move_acks(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "pawn move acknowledgements are configured before admission"
+        );
+        self.pawn_move_acks = false;
+        Ok(())
+    }
+
+    /// Whether client moves are decoded and acknowledged.
+    pub fn has_pawn_move_acks(&self) -> bool {
+        self.pawn_move_acks
     }
 
     /// Dispatch level visibility reports and open each newly visible level's
@@ -6091,6 +6388,14 @@ impl PeerLab {
             frozen_movement_release_errors: self.stats.frozen_movement_release_errors,
             pawn_bunches_received_reliable: self.stats.pawn_bunches_received_reliable,
             pawn_bunches_received_unreliable: self.stats.pawn_bunches_received_unreliable,
+            pawn_moves_received: self.stats.pawn_moves_received,
+            pawn_moves_malformed: self.stats.pawn_moves_malformed,
+            pawn_move_acks_sent: self.stats.pawn_move_acks_sent,
+            pawn_move_ack_sends_deferred: self.stats.pawn_move_ack_sends_deferred,
+            pawn_move_ack_errors: self.stats.pawn_move_ack_errors,
+            pawn_move_positions_accepted: self.stats.pawn_move_positions_accepted,
+            pawn_move_positions_rejected: self.stats.pawn_move_positions_rejected,
+            pawn_move_positions_skipped: self.stats.pawn_move_positions_skipped,
             level_visibility_reports_added: self.stats.level_visibility_reports_added,
             level_visibility_reports_duplicate: self.stats.level_visibility_reports_duplicate,
             level_visibility_reports_hidden: self.stats.level_visibility_reports_hidden,
@@ -6275,6 +6580,12 @@ impl PeerLab {
             release.pending_send += usize::from(frozen.pending);
             release.awaiting_ack += usize::from(!frozen.in_flight.is_empty());
             release.settled += usize::from(frozen.acked_at.is_some());
+            let moves = &mut counts.pawn_move_acks;
+            let state = &entry.pawn_moves;
+            moves.sessions_moving += usize::from(state.counts.moves > 0);
+            moves.awaiting_ack += usize::from(state.unacked);
+            moves.deferred += usize::from(state.deferred);
+            moves.positions_held += usize::from(state.location.is_some());
             let levels = &mut counts.level_visibility;
             levels.levels_visible += entry.visible_levels.len();
             levels.levels_with_actors += entry.level_actors.len();
@@ -6602,6 +6913,7 @@ impl PeerLab {
                         record_prerequisites: RecordPrerequisites::default(),
                         frozen_release: FrozenMovementRelease::default(),
                         pawn_inbound: PawnInboundCounts::default(),
+                        pawn_moves: PawnMoves::default(),
                         visible_levels: BTreeSet::new(),
                         level_actors: BTreeMap::new(),
                         level_actor_queue: VecDeque::new(),
@@ -6901,6 +7213,7 @@ impl PeerLab {
                                 entry.controller_possession_retry_ready = true;
                             }
                             entry.frozen_release.deferred = false;
+                            entry.pawn_moves.deferred = false;
                             if !entry.level_actor_queue.is_empty() {
                                 entry.level_actors_retry_ready = true;
                             }
@@ -7041,7 +7354,7 @@ impl PeerLab {
                             .saturating_add(summary.actor_duplicate_reliable as u64);
                         // Pawn-channel traffic per connection, by header
                         // only; the bunches' handling is unchanged.
-                        if let Some((_, pawn_channel, _)) = &self.pawn_open
+                        if let Some((plan, pawn_channel, _)) = &self.pawn_open
                             && entry.controller_startup_pawn_guid.is_some()
                         {
                             let on_pawn = |bunch: &&super::packet::Bunch| {
@@ -7074,6 +7387,31 @@ impl PeerLab {
                                     .stats
                                     .pawn_bunches_received_unreliable
                                     .saturating_add(unreliable);
+                            }
+                            // The client's packed moves (F-1127): decoded on
+                            // arrival, acknowledged from the poll; the bunches
+                            // stay dropped otherwise.
+                            if self.pawn_move_acks && unreliable > 0 {
+                                let codec = RepLayoutCodec {
+                                    actor: actor_codec(
+                                        plan.engine_net_version,
+                                        entry.peer.connection_byte_order(),
+                                    ),
+                                    checksums: false,
+                                    limits: Default::default(),
+                                };
+                                for bunch in
+                                    received.unreliable_actor_bunches().iter().filter(on_pawn)
+                                {
+                                    receive_pawn_moves(
+                                        &mut entry.pawn_moves,
+                                        &mut self.stats,
+                                        bunch,
+                                        &codec,
+                                        now,
+                                        entry.connection_id,
+                                    );
+                                }
                             }
                         }
                         // Header-only counts; these bunches stay dropped.
@@ -8297,6 +8635,83 @@ impl PeerLab {
                     entry.frozen_release.pending = false;
                     entry.frozen_release.failed = true;
                     bump(&mut self.stats.frozen_movement_release_errors);
+                    if entry.peer.is_failed() {
+                        self.remove_peer(address);
+                        bump(&mut self.stats.peers_failed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Acknowledge each session's newest move, as of `now` (the poll's
+    /// clock): when a move arrived since the last acknowledgement, at least
+    /// [`MOVE_ACK_INTERVAL`] after it, and with the pawn channel open and its
+    /// reliable bunches all ACKed. Transport pressure holds it back until
+    /// ACK/NAK progress.
+    fn retry_pawn_move_acks(&mut self, now: Instant) {
+        if !self.pawn_move_acks {
+            return;
+        }
+        let Some((_, channel, _)) = &self.pawn_open else {
+            return;
+        };
+        let channel = *channel;
+        let ready: Vec<SocketAddrV4> = self
+            .peers
+            .iter()
+            .filter_map(|(address, entry)| {
+                let moves = &entry.pawn_moves;
+                (moves.unacked
+                    && !moves.deferred
+                    && moves
+                        .last_ack_at
+                        .is_none_or(|at| now.saturating_duration_since(at) >= MOVE_ACK_INTERVAL)
+                    && entry.controller_startup_pawn_guid.is_some()
+                    && entry.peer.has_actor_channel(channel)
+                    && !entry.peer.actor_channel_closing(channel)
+                    && entry.peer.actor_channel_settled(channel))
+                .then_some(*address)
+            })
+            .collect();
+        for address in ready {
+            self.send_pawn_move_ack(address, now);
+        }
+    }
+
+    fn send_pawn_move_ack(&mut self, address: SocketAddrV4, now: Instant) {
+        let Some((plan, channel, _)) = &self.pawn_open else {
+            return;
+        };
+        let channel = *channel;
+        let Some(entry) = self.peers.get_mut(&address) else {
+            return;
+        };
+        let Some(timestamp) = entry.pawn_moves.latest_timestamp else {
+            return;
+        };
+        // Unreliable and alone in its datagram, as the original sends it.
+        let sent = compose_pawn_move_ack(plan, timestamp, entry.peer.connection_byte_order())
+            .and_then(|payload| entry.peer.actor_update_datagrams(channel, payload));
+        match sent {
+            Ok(datagrams) => {
+                let moves = &mut entry.pawn_moves;
+                moves.unacked = false;
+                moves.last_ack_at = Some(now);
+                moves.counts.acks_sent = moves.counts.acks_sent.saturating_add(1);
+                bump(&mut self.stats.pawn_move_acks_sent);
+                entry.ack_pending = false;
+                for (datagram, _) in &datagrams {
+                    self.send(datagram, address);
+                }
+            }
+            Err(error) => {
+                if transport_capacity_can_drain(entry, &error, channel) {
+                    entry.pawn_moves.deferred = true;
+                    bump(&mut self.stats.pawn_move_ack_sends_deferred);
+                } else {
+                    entry.pawn_moves.unacked = false;
+                    bump(&mut self.stats.pawn_move_ack_errors);
                     if entry.peer.is_failed() {
                         self.remove_peer(address);
                         bump(&mut self.stats.peers_failed);
@@ -10195,6 +10610,7 @@ impl PeerLab {
         self.finalise_connected_players();
         self.retry_connected_player_records();
         self.retry_frozen_movement_release();
+        self.retry_pawn_move_acks(Instant::now());
         self.retry_pending_player_history();
         self.update_pawn_properties();
         self.send_acks();
@@ -19326,6 +19742,7 @@ mod tests {
     }
     mod friends_query_deadline;
     mod level_visibility;
+    mod move_acks;
     mod pawn_capture;
     mod record_ack_gating;
 }

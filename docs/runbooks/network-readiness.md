@@ -172,7 +172,11 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `frozen_movement_release_{resends,sends_deferred,errors}`,
 `pawn_bunches_received_{reliable,unreliable}` (headers only). Probe
 `frozen_movement` per session: `record_acked_ms`, `release_{due,sent,acked}_ms`,
-`release_failed`, `pawn_inbound`. `unreliable_actor_bunches` (probe
+`release_failed`, `pawn_inbound`, `pawn_moves`, `last_move_ack_ms`.
+`pawn_move_acks` (F-1127, F-1128): `sessions_moving`, `awaiting_ack`,
+`deferred`, `positions_held`. Counters `pawn_moves_{received,malformed}`,
+`pawn_move_acks_sent`, `pawn_move_ack_{sends_deferred,errors}`,
+`pawn_move_positions_{accepted,rejected,skipped}`. `unreliable_actor_bunches` (probe
 opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
 `level_visibility` (probe-enabled, gated): `levels_visible`,

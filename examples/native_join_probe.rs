@@ -140,6 +140,10 @@ struct Options {
     /// Milliseconds between that ACK and the release, so a client change can be attributed.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS))]
     server_frozen_movement_release_delay_ms: u64,
+    /// Decode the client's pawn moves and acknowledge the newest at most every 100 ms
+    /// (unqualified); off unless asked, so a run sends only what it is scoped to.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pawn_move_acks: bool,
     /// Dispatch the client's level visibility reports (controller field 82) and open each
     /// newly visible level's world-settings actors (unqualified); off unless asked.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
@@ -216,6 +220,19 @@ impl Options {
         ensure!(
             connected_player_records,
             "the frozen-movement release follows the connected-player record; pass --server-frozen-movement-release false"
+        );
+        Ok(true)
+    }
+
+    /// Pure preflight of `--pawn-move-acks`: acknowledgements answer moves
+    /// on the pawn, so they need the release's pawn profile.
+    fn pawn_move_acks(&self, profile: &ReleaseProfile) -> Result<bool> {
+        if !self.pawn_move_acks {
+            return Ok(false);
+        }
+        ensure!(
+            profile.pawn_open_plan(PROBE_MAP)?.is_some(),
+            "pawn move acknowledgements need the release's pawn profile; pass --pawn-move-acks false"
         );
         Ok(true)
     }
@@ -340,6 +357,7 @@ fn main() -> Result<()> {
     let frozen_movement_release =
         options.server_frozen_movement_release(connected_player_records)?;
     let level_visibility_actors = options.level_visibility_actors(&profile)?;
+    let pawn_move_acks = options.pawn_move_acks(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -410,6 +428,7 @@ fn main() -> Result<()> {
         controller_possession_properties,
         server_frozen_movement_release: frozen_movement_release,
         server_frozen_movement_release_delay_ms: options.server_frozen_movement_release_delay_ms,
+        pawn_move_acks,
         // Gated: the server configuration refuses it, so the probe enables
         // the lab switch itself below, before any connection exists.
         level_visibility_actors: false,
@@ -454,6 +473,10 @@ fn main() -> Result<()> {
             )),
         "frozen-movement release configuration did not apply"
     );
+    ensure!(
+        bound.lab.has_pawn_move_acks() == pawn_move_acks,
+        "pawn move acknowledgement configuration did not apply"
+    );
     if level_visibility_actors {
         bound.lab.enable_level_visibility_actors(&profile)?;
     }
@@ -489,6 +512,7 @@ fn main() -> Result<()> {
         "controller_possession_properties": controller_possession_properties,
         "server_frozen_movement_release": frozen_movement_release,
         "server_frozen_movement_release_delay_ms": options.server_frozen_movement_release_delay_ms,
+        "pawn_move_acks": pawn_move_acks,
         "level_visibility_actors": level_visibility_actors,
         "compatibility_proven": false,
     }))
@@ -888,6 +912,28 @@ mod tests {
                     value,
                 ])
                 .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn pawn_move_acks_default_off_and_need_the_pawn() {
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
+        assert!(!default.pawn_move_acks);
+        assert!(!default.pawn_move_acks(&profile).unwrap());
+        let on =
+            Options::try_parse_from(["probe", "--name", "Authored", "--pawn-move-acks", "true"])
+                .unwrap();
+        assert!(on.pawn_move_acks(&profile).unwrap());
+        let mut no_pawn = profile;
+        no_pawn.pawn = None;
+        assert!(on.pawn_move_acks(&no_pawn).is_err());
+        assert!(!default.pawn_move_acks(&no_pawn).unwrap());
+        for value in ["maybe", ""] {
+            assert!(
+                Options::try_parse_from(["probe", "--name", "Authored", "--pawn-move-acks", value])
+                    .is_err()
             );
         }
     }
