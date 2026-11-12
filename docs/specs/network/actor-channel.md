@@ -56,6 +56,8 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   `ServerUpdateClientFrozenMovement(bool)`: reliable, a 1-bit payload,
   field-index bound 129 from the public server (F-1105, F-1106); the
   original only stores it (F-1108).
+- Moves: pawn field 39 in, field 30 good-move acknowledgements out
+  (F-1127, F-1128; `experimental::character_move`).
 - GameState managers: [world managers spec](world-managers.md) (F-859, F-861,
   F-862).
 - GameState open values: active prospect 51..67 and C015 handles 34, 35, 39,

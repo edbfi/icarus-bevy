@@ -67,6 +67,9 @@ omits it, the probe refuses). After the player's own record ACK plus
 `bServerFrozenMovement` false, resent on NAK. Probe line
 `native_join_frozen_movement` (`unix_ms`, per-session times) on schedule, send,
 ACK or abandonment.
+Move acks F-1127/F-1128: `[network] pawn_move_acks` / probe `--pawn-move-acks`,
+default false (gates: next run sends only the unfreeze), need the pawn open
+(else `run` omits them, the probe refuses).
 Private pawn-channel bunches: probe-only
 `--private-pawn-bunches-output work/<case>/pawn-bunches.jsonl`
 ([format, caps](network-readiness.md#private-pawn-channel-bunches)).
