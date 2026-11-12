@@ -3,7 +3,7 @@ name = "icarus-bevy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-license = "AGPL-3.0-only"
+license = "AGPL-3.0-or-later"
 description = "Independent native Linux dedicated-server research and Bevy foundation"
 publish = false
 

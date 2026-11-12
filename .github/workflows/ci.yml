@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Native Linux validation with the shared edbfi CI gate.
 name: CI
 on:

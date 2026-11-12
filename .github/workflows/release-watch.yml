@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Opens one issue per build when Steam's public dedicated-server build moves past
 # config/release.toml (docs/architecture.md, "Release tracking"), and closes open
 # release-watch issues whose build has been pinned or superseded. Reads anonymous
