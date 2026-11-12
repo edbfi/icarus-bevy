@@ -188,6 +188,25 @@ fn slot(app: &App, client: &Client) -> Option<i32> {
         .character_slot(address(client))
 }
 
+/// The client's sequence gate toward full-ring copies (N-021): while the
+/// one-record ring is full, each client packet draws the ring's newest
+/// datagram again, byte for byte. A real client drops such a copy as a
+/// duplicate, so it is neither a new request nor a new ACK. Splits `replies`
+/// into datagrams not received before (recorded in `seen`) and copies of
+/// ones already received.
+fn split_copies(seen: &mut Vec<Vec<u8>>, replies: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let (mut fresh, mut copies) = (Vec::new(), Vec::new());
+    for datagram in replies {
+        if seen.contains(&datagram) {
+            copies.push(datagram);
+        } else {
+            seen.push(datagram.clone());
+            fresh.push(datagram);
+        }
+    }
+    (fresh, copies)
+}
+
 fn send(app: &mut App, client: &mut Client, bunch: Bunch) -> Vec<Vec<u8>> {
     client.send(vec![bunch]);
     app.update();
@@ -246,6 +265,7 @@ fn begin_survives_deferred_player_state_and_preserves_the_first_slot() {
     for ack_with_begin in [false, true] {
         let (mut app, mut client) = setup_with_capacity(true, true, ByteOrder::Little, Some(1));
         let opened = client.join(&mut app);
+        let mut seen = opened.clone();
         let stats = app.world().resource::<PeerLab>().stats();
         assert_eq!(stats.player_controller_opens_sent, 1);
         assert_eq!(stats.player_state_opens_sent, 0);
@@ -263,7 +283,12 @@ fn begin_survives_deferred_player_state_and_preserves_the_first_slot() {
             ),
         )]);
         app.update();
-        let replies = drain(&client.socket);
+        let (replies, copies) = split_copies(&mut seen, drain(&client.socket));
+        if !ack_with_begin {
+            // The withheld open fills the ring: Begin draws its copy only.
+            assert_eq!(copies, [opened.last().unwrap().clone()]);
+            assert!(replies.is_empty());
+        }
         let mut observed_requests = requests(&client, &replies);
         client.accept(&replies);
         if !ack_with_begin {
@@ -278,7 +303,7 @@ fn begin_survives_deferred_player_state_and_preserves_the_first_slot() {
             client.accept(&opened);
         }
         for _ in 0..8 {
-            let replies = client.step(&mut app);
+            let (replies, _) = split_copies(&mut seen, client.step(&mut app));
             observed_requests.extend(requests(&client, &replies));
             client.accept(&replies);
         }
@@ -307,9 +332,10 @@ fn begin_survives_deferred_player_state_and_preserves_the_first_slot() {
                 body(&[field(9, ByteOrder::Little)], ByteOrder::Little),
             ),
         );
+        let (replies, _) = split_copies(&mut seen, replies);
         assert!(requests(&client, &replies).is_empty());
         for _ in 0..4 {
-            let replies = client.step(&mut app);
+            let (replies, _) = split_copies(&mut seen, client.step(&mut app));
             assert!(requests(&client, &replies).is_empty());
             client.accept(&replies);
         }
@@ -326,6 +352,7 @@ fn disconnect_discards_begin_waiting_for_player_state() {
     let (mut app, mut client) = setup_with_capacity(true, true, ByteOrder::Little, Some(1));
     let opened = client.join(&mut app);
     assert!(!opened.is_empty());
+    let mut seen = opened.clone();
     assert_eq!(
         app.world()
             .resource::<PeerLab>()
@@ -342,7 +369,10 @@ fn disconnect_discards_begin_waiting_for_player_state() {
         body(&[field(3, ByteOrder::Little)], ByteOrder::Little),
     )]);
     app.update();
-    let replies = drain(&client.socket);
+    let (replies, copies) = split_copies(&mut seen, drain(&client.socket));
+    // The withheld open fills the ring: Begin draws its copy only.
+    assert_eq!(copies, [opened.last().unwrap().clone()]);
+    assert!(replies.is_empty());
     assert!(requests(&client, &replies).is_empty());
     assert_eq!(
         app.world()
