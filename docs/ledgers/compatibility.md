@@ -10,7 +10,7 @@ comparisons apply to build 25793767 (M-167) and do not establish a matched
 dedicated-server baseline. Full text before condensation:
 16d1a9d:docs/ledgers/compatibility.md.
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-11-12
 
 ## Surfaces
 
@@ -58,6 +58,7 @@ client connected and no prospect loaded (F-268).
 | C009 top, children and D01 arrays | Headers, string structure, widths and restore hooks qualified | F-182, F-183, F-174, F-158, F-162, F-728 | Packaged row meanings and native import (U-020, U-045) |
 | C001 construction seeds | Complete functions, registration and bridge qualified | F-270, F-034, F-901, F-905, F-722 | Value meanings and native import (U-020, U-045) |
 | Stateless handshake | Observed; prefix, restart and tolerance rules verified | F-253, F-280, F-729; [spec](../specs/network/stateless-handshake.md) | Stock-client admission (U-052) |
+| Native join to world entry | Observed in two bounded runs, one account: screen clears after the pawn release, character stands on terrain; no walking, stats 0 | F-1009, F-1141 to F-1150 | Walking and stats (U-080), complete session (U-038) |
 | Default network checksum | Experimental primitive; wire-verified | F-281, F-689, F-713, F-841; [spec](../specs/network/network-checksum.md) | Stock-client session (U-038) |
 | Archive strings | Experimental strict subset; original normalization and timings verified | F-142, F-893, F-285, F-731; [spec](../specs/save-format/archive-string.md) | Stock-client session and import (U-025, U-038) |
 | Prospect envelope | Observed on supplied saves; read-only inspector | F-881, F-283, F-880; [spec](../specs/save-format/prospect-envelope.md) | Build pairing, binary schema, import (U-025, U-040) |

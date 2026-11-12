@@ -2,7 +2,7 @@
 
 Rows superseded by consolidated active findings; IDs and full claims remain.
 
-Last reconciled: 2026-11-11
+Last reconciled: 2026-11-12
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -22,3 +22,5 @@ Last reconciled: 2026-11-11
 | F-1071 | Native finalisation sends no controller RPCs 120/111/167/109 or level-actor opens and leaves field 82 undispatched; besides returning-pawn UID/History updates it adds only the record (F-1077) | observed | source/run; M-1337, M-1335; 5db2fc5, 5c3b3ea | high; 5c3b3ea's source change is the record; restart-pawn flags, no save; run appended no history | U-079 | superseded-by F-1082 |
 | F-1067 | Profiles/initialisation settle; query118 ACKed; client126 5,473 bits valid; finalised 1; UI still Preparing geometry; no client controller call ~95 s after it (82 once) | measured | capture; M-1293, M-1302 to M-1304, M-1309, M-1310, M-1315, M-1316, M-1320, M-1321, M-1326, M-1327, M-1335 | bounded; one account/attempt; 5db2fc5; no world entry | U-038, U-079 | superseded-by F-1084 |
 | F-1096 | Client Survival BeginPlay starts a viewport blocker that OnConnectedPlayerInitialised stops for a local controller, reading no level state. F-1089 refutes clearing on finalisation alone, or another blocker remains | observed | static; M-1349/ev_3c6a3fb40b91, M-1349/ev_43e81bab841b | medium; client 25793767; raiser, screen binding, other blockers unread | U-079 | superseded-by F-1102 |
+| F-1109 | Reading, screen up after native false: last field 85 (F-1105) false, frozen blocker off (F-1126), another holds it, probe-switch run next (F-1104); last true, its anchor never got valid (F-1100); none with complete capture, its anchor handler never ran (F-1112) | derived | static/capture; M-1357 | medium; S2 only (F-1106, F-1107); other Blueprints unread | U-079 | superseded-by F-1148 |
+| F-1114 | Native pawn at (0,0,0) (F-1138): anchor is Valid only if a landscape tile covers that XY. S2 moved its pawn ~2.5 km before tiles streamed (F-1134); only run 3's burst (F-1089) hints so: last field 85 false expected; if true, fix: authored spawn in a tile, not a packet | derived | static/source; M-1364, M-1374; e863f2a | low; tile layout, CDO flags unread | U-079 | superseded-by F-1149 |

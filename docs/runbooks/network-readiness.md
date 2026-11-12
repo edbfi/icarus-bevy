@@ -198,7 +198,8 @@ F-1139, F-1140. `[network.spawn] points = [{ x = 0.0, y = 0.0, z = 0.0, yaw =
 0.0 }]` (centimetres, Unreal axes, Z up; yaw in degrees, optional), or probe
 `--spawn-location x,y,z` with optional `--spawn-yaw` (one point: the probe
 admits one player). Joins take the points round-robin; without points the
-pawn and controller open at the origin, as before. Needs a release profile;
+pawn and controller open at the origin, as before (on terrain in the two
+connected runs, F-1149). Needs a release profile;
 at most 64 points, each component within ±1,048,576 cm, yaw within ±360°,
 refused before the socket binds. The yaw is reported, not sent.
 
