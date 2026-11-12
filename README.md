@@ -1,6 +1,26 @@
-# ICARUS Bevy server research
+<p align="center">
+  <img src="assets/icarus-bevy.svg" alt="icarus-bevy logo" width="256" height="256">
+</p>
 
-An independent native Linux dedicated-server project in Rust and Bevy.
+<h1 align="center">icarus-bevy</h1>
+
+<p align="center"><strong>Independent native Linux dedicated-server research in Rust and Bevy.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/edbfi/icarus-bevy/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue?style=flat" alt="License: AGPL-3.0-only">
+  </a>
+  <a href="https://github.com/bevyengine/bevy" title="Bevy engine source">
+    <img src="https://img.shields.io/badge/Bevy-232326?style=flat&amp;logo=bevy&amp;logoColor=white" alt="Bevy">
+  </a>
+  <a href="https://github.com/rust-lang/rust" title="Rust language source">
+    <img src="https://img.shields.io/badge/Rust-CE422B?style=flat&amp;logo=rust&amp;logoColor=white" alt="Rust">
+  </a>
+  <a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/" title="Linux kernel source">
+    <img src="https://img.shields.io/badge/Linux-FCC624?style=flat&amp;logo=linux&amp;logoColor=black" alt="Linux">
+  </a>
+</p>
+
 **This currently runs a headless foundation, not an ICARUS-compatible server.**
 Networking, authentication, gameplay, original-world compatibility and
 official-save import remain unimplemented and unvalidated. Offline research has resumed; current results and remaining gates are in the

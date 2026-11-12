@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">icarus-bevy</title>
+  <desc id="desc">An abstract rising wing beside a headless server.</desc>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#142738" stroke="#8fb8c7" stroke-width="2"/>
+  <g fill="#f4b66c">
+    <path d="M44 172 128 48 106 124Z"/>
+    <path d="m44 172 91-79-24 61Z"/>
+    <path d="m44 172 84-41-20 43Z"/>
+  </g>
+  <g fill="none" stroke="#b6e6e5" stroke-width="6">
+    <rect x="144" y="92" width="64" height="40" rx="8"/>
+    <rect x="144" y="144" width="64" height="40" rx="8"/>
+    <path d="M160 112h20m-20 52h20" stroke-linecap="round"/>
+  </g>
+  <g fill="#f4b66c">
+    <circle cx="194" cy="112" r="3"/>
+    <circle cx="194" cy="164" r="3"/>
+  </g>
+</svg>
