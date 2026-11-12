@@ -66,8 +66,10 @@ Last reconciled: 2026-11-11
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 and entry reads
   F-1110 to F-1138 done; do not repeat them or rerun F-1084/F-1089 unchanged.
-  The next connected run sends only the pawn unfreeze (F-1099, F-1100); the 82
-  answer (F-1097, F-1098, F-1104) stays the gated fallback below. None clears those preconditions.
+  The next connected run sends only the pawn unfreeze (F-1099, F-1100); a
+  second, only after it, adds move acknowledgements and an optional spawn
+  point (F-1127, F-1139). The 82 answer (F-1097, F-1098, F-1104) stays the
+  gated fallback below. None clears those preconditions.
 
 ## Before enabling visibility dispatch or effects
 
@@ -116,18 +118,17 @@ Last reconciled: 2026-11-11
 
 ## Before any original-server or client run
 
-- The standing instruction (given 2026-10-28, last renewed on 2026-11-11;
-  F-968, M-1273, M-1307, M-1331, M-1334, M-1359) authorizes offline and online
-  research, Steam/network access, matched official-server runs and connected
-  stock-client scenarios against the original or native server without
-  per-scenario approval, replacing the connected-test deferral (F-421; U-038,
-  U-047, U-052). Prefer offline routes that answer equally well.
+- The standing instruction (given 2026-10-28, renewed 2026-11-11; F-968,
+  M-1359) authorizes offline and online research, Steam/network access,
+  matched official-server runs and connected stock-client scenarios against
+  either server without per-scenario approval, replacing the connected-test
+  deferral (F-421; U-038, U-047, U-052). Prefer offline routes that answer
+  equally well.
 - The 2026-11-11 instruction (M-1359) renews online and connected-run
-  authorization. The prepared unfreeze-only run is authorized
-  and waits only for the owner to be at a stock client; it lists a server
-  publicly without a password, so it starts only on the owner's word that they
-  are ready. The owner's delegation of the same day (M-1353) still covers the
-  offline decisions it lists.
+  authorization. The prepared unfreeze-only run and the second run are
+  authorized and await the owner at a stock client; both list a server
+  publicly without a password, so each starts only on the owner's word.
+  M-1353 still covers the offline decisions it lists.
 - Every run still needs its own `work/` case and current launcher session with
   scope, exact inputs and hashes, limits and literal commands; original
   execution only through the [launchers](runbooks/original-server-launcher.md);
