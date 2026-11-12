@@ -45,7 +45,9 @@
 //! `bServerFrozenMovement` false, sent again if NAKed,
 //! `server_frozen_movement_release_delay_ms` after the player's own record
 //! creation is ACKed, as the original does (F-1099; the client's freeze
-//! rule, F-1100). Level visibility actors (dispatching the client's field-82
+//! rule, F-1100). With `[network] pawn_move_acks` on (default off), each
+//! client's packed moves are decoded and the newest is acknowledged at most
+//! every 100 ms, never corrected (F-1127, F-1128). Level visibility actors (dispatching the client's field-82
 //! level visibility reports and opening each newly visible level's
 //! world-settings actors) are gated: `[network] level_visibility_actors =
 //! true` is refused, and only the bounded join probe enables them through
@@ -1914,6 +1916,10 @@ fn bind_session(
         // so it needs records (and so the pawn open).
         if network.server_frozen_movement_release && lab.has_connected_player_records() {
             lab.enable_frozen_movement_release(network.server_frozen_movement_release_delay())?;
+        }
+        // Move acknowledgements (F-1127) answer the client on its pawn.
+        if network.pawn_move_acks && has_pawn {
+            lab.enable_pawn_move_acks()?;
         }
         // Level visibility actors are gated and never enabled here:
         // `network.validate()` refuses `level_visibility_actors = true`, and a

@@ -1746,7 +1746,10 @@ fn byte_width(enum_bits: Option<u8>) -> u32 {
     u32::from(enum_bits.unwrap_or(ENUM_BYTE_BITS_MAX))
 }
 
-fn read_vector(reader: &mut BitReader<'_>, packing: VectorPacking) -> Result<QuantizedVector> {
+pub(super) fn read_vector(
+    reader: &mut BitReader<'_>,
+    packing: VectorPacking,
+) -> Result<QuantizedVector> {
     let bits = read_capped(reader, packing.bits_max(), "quantized vector bit count")?;
     let max = 1u32 << (bits + 2);
     let mut components = [0u32; 3];
@@ -1756,7 +1759,7 @@ fn read_vector(reader: &mut BitReader<'_>, packing: VectorPacking) -> Result<Qua
     Ok(QuantizedVector { bits, components })
 }
 
-fn write_vector(
+pub(super) fn write_vector(
     writer: &mut BitWriter,
     vector: &QuantizedVector,
     packing: VectorPacking,

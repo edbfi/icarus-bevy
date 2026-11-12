@@ -4228,6 +4228,35 @@ fn production_bind_releases_frozen_movement_once_after_the_record_ack() {
     }
 }
 
+/// `[network].pawn_move_acks` defaults to off and the server binary can turn
+/// it on (it is no gated effect): the production bind then enables move
+/// acknowledgements whenever the release opens the pawn, and leaves them off
+/// without one. The wire behaviour is the lab's `move_acks` tests.
+#[test]
+fn production_bind_enables_pawn_move_acks_only_when_configured_with_a_pawn() {
+    assert!(!NetworkConfig::default().pawn_move_acks);
+    let parsed: ServerConfig = toml::from_str("[network]\npawn_move_acks = true\n").unwrap();
+    assert!(parsed.network.pawn_move_acks);
+    assert!(parsed.validate().is_ok());
+    for acks in [false, true] {
+        let config = NetworkConfig {
+            release_profile: Some(release_toml()),
+            pawn_move_acks: acks,
+            ..enabled(0)
+        };
+        let bound = network::bind(&config).unwrap().unwrap();
+        assert_eq!(bound.lab.has_pawn_move_acks(), acks);
+    }
+    // No release profile, so no pawn open: left off.
+    let bound = network::bind(&NetworkConfig {
+        pawn_move_acks: true,
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap();
+    assert!(!bound.lab.has_pawn_move_acks());
+}
+
 #[test]
 fn player_history_pressure_coalesces_appends_and_converges_after_ack_and_reconnect() {
     use icarus_bevy::{

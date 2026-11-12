@@ -902,3 +902,100 @@ pub fn compose_pawn_icarus_uid_update(
         &codec,
     )
 }
+
+/// Frame a good-move acknowledgement of `timestamp` on the pawn's open
+/// channel (F-1127): an actor bunch body without spawn holding one actor
+/// block without a rep layout, whose only field is
+/// `ClientMoveResponsePacked` (field 30 under the pawn's bound 129) with its
+/// 42-bit payload; 57 field bits and a 67-bit block. The original sends it
+/// unreliable, alone in its block and datagram.
+pub fn compose_pawn_move_ack(
+    plan: &PawnOpenPlan,
+    timestamp: f32,
+    order: ByteOrder,
+) -> Result<Payload> {
+    use super::actor_channel::{
+        ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body,
+    };
+    use super::character_move::write_good_move_ack;
+    use super::rep_rpc::{
+        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND,
+        CLIENT_MOVE_RESPONSE_PACKED_FIELD_INDEX, FieldHeader, write_field_header,
+    };
+    let codec = actor_codec(plan.engine_net_version, order);
+    let mut field = BitWriter::new();
+    write_field_header(
+        &mut field,
+        &FieldHeader {
+            index: CLIENT_MOVE_RESPONSE_PACKED_FIELD_INDEX,
+            payload: write_good_move_ack(timestamp, order),
+        },
+        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND,
+    )?;
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![ContentBlock {
+                has_rep_layout: false,
+                target: BlockTarget::Actor,
+                payload: Payload::from_writer(field),
+            }],
+        },
+        &codec,
+    )
+}
+
+#[cfg(test)]
+mod move_ack_tests {
+    use super::super::actor_channel::{BlockTarget, read_actor_bunch_body};
+    use super::super::character_move::{GOOD_MOVE_ACK_PAYLOAD_BITS, read_good_move_ack};
+    use super::super::peer_lab::PeerLabAdmission;
+    use super::super::release::ReleaseProfile;
+    use super::super::rep_rpc::{
+        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND, read_field_header,
+    };
+    use super::*;
+
+    /// Golden sizes for authored timestamps, decoded back with the
+    /// repository's readers: one 67-bit actor block (no rep layout) holding
+    /// field 30 alone, 57 bits with its 42-bit payload, carrying the
+    /// timestamp's exact bits.
+    #[test]
+    fn move_ack_is_one_67_bit_block_with_field_30_alone() {
+        let map = PeerLabAdmission::default().map_url;
+        for profile in [
+            ReleaseProfile::release_3_0_32(),
+            ReleaseProfile::release_3_0_35(),
+        ] {
+            let plan = profile.pawn_open_plan(map).unwrap().unwrap();
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                let codec = actor_codec(plan.engine_net_version, order);
+                for timestamp in [0.0_f32, 1.5, 47.023, 812.25] {
+                    let payload = compose_pawn_move_ack(&plan, timestamp, order).unwrap();
+                    assert_eq!(payload.bit_len(), 67);
+                    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec).unwrap();
+                    let [block] = body.blocks.as_slice() else {
+                        panic!("one block");
+                    };
+                    assert!(!block.has_rep_layout);
+                    assert_eq!(block.target, BlockTarget::Actor);
+                    assert_eq!(block.payload.bit_len(), 57);
+                    let mut reader = block.payload.reader();
+                    let field = read_field_header(
+                        &mut reader,
+                        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND,
+                        usize::MAX,
+                    )
+                    .unwrap();
+                    assert!(reader.at_end());
+                    assert_eq!(field.index, 30);
+                    assert_eq!(field.payload.bit_len(), GOOD_MOVE_ACK_PAYLOAD_BITS);
+                    assert_eq!(
+                        read_good_move_ack(&field.payload, order).unwrap().to_bits(),
+                        timestamp.to_bits()
+                    );
+                }
+            }
+        }
+    }
+}

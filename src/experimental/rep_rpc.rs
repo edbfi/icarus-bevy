@@ -370,6 +370,22 @@ pub const BP_TAME_BASE_FIELD_INDEX_BOUND: u32 = 86;
 /// for `BP_IcarusPlayerControllerSurvival_C`
 /// (`10 + 4 + 74 + 13 + 29 + 25 + 27 + 1 = 183`).
 pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
+/// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
+/// for `BP_IcarusPlayerCharacterSurvival_C` (`10 + 3 + 27 + 14 + 24 + 9 + 41
+/// + 1 = 129`, from the public server's reflection, F-1105).
+pub const BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 129;
+
+/// Unreliable NetServer RPC `ACharacter::ServerMovePacked` on the pinned
+/// survival pawn: `ACharacter`'s fields follow `AActor`'s 10 and `APawn`'s
+/// 3 (F-1105), so its local field 26 is 39. The client sends it alone in
+/// unreliable bunches (F-1106); decoded by
+/// [`super::character_move::read_server_move_packed`].
+pub const SERVER_MOVE_PACKED_FIELD_INDEX: u32 = 39;
+
+/// Unreliable NetClient RPC `ACharacter::ClientMoveResponsePacked` (local
+/// field 17, so 30 as above): the server's move acknowledgement
+/// ([`super::character_move::write_good_move_ack`], F-1127).
+pub const CLIENT_MOVE_RESPONSE_PACKED_FIELD_INDEX: u32 = 30;
 
 /// F-951 / controller net fields: reliable NetServer RPC on the pinned
 /// Survival PlayerController, with one non-bool int32 parameter `ChrSlot`.

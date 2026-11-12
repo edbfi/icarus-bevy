@@ -118,6 +118,14 @@ pub struct NetworkConfig {
     /// Milliseconds between the record's ACK and the release, so a client
     /// change can be attributed to it; `0..=`[`MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS`].
     pub server_frozen_movement_release_delay_ms: u64,
+    /// EXPERIMENTAL: decode each player's packed moves (pawn field 39) and,
+    /// at most every 100 ms and only after a new move, acknowledge the newest
+    /// by arrival with one unreliable good-move response (field 30), as the
+    /// original does; keep its location as session state within authored
+    /// bounds; never correct (F-1127, F-1128). Default off: the next connected
+    /// run sends only the pawn unfreeze (`docs/gates.md`); unqualified with a
+    /// stock client. Needs the pawn open and is otherwise left off.
+    pub pawn_move_acks: bool,
     /// RESERVED, must stay `false`: level visibility actors (dispatching a
     /// client's field-82 level visibility reports, F-1052, and opening each
     /// newly visible level's actors) are a visibility effect that
@@ -149,6 +157,7 @@ impl Default for NetworkConfig {
             controller_possession_properties: true,
             server_frozen_movement_release: true,
             server_frozen_movement_release_delay_ms: 0,
+            pawn_move_acks: false,
             level_visibility_actors: false,
         }
     }
