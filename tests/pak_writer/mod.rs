@@ -282,11 +282,20 @@ pub fn stats_json() -> Vec<u8> {
 
 /// A pak for `gameplay_profile::fresh_player_profile`: [`player_tables`]
 /// with a 74-row `D_Stats` catalog naming the five speeds at their stat IDs
-/// (58, 61, 65, 69, 73; F-838), their bases and the maxima elsewhere, and
-/// fillers, plus a `D_SessionFlags` catalog. Its packaged values (the starting grants of 250 and more, a
-/// filler's `bIsReplicated`) are decoys a generated profile must not copy.
+/// (58, 61, 65, 69, 73; F-838), the maximum health and stamina at the stat
+/// IDs the client rescales vitals by (0, 3; F-1166), the bases and other
+/// maxima elsewhere, and fillers, plus a `D_SessionFlags` catalog. Its
+/// packaged values (the starting grants of 250 and more, a filler's
+/// `bIsReplicated`) are decoys a generated profile must not copy.
 #[allow(dead_code)]
 pub fn fresh_join_pak() -> Vec<u8> {
+    fresh_join_pak_with(&[])
+}
+
+/// [`fresh_join_pak`] with `extra` members (a member of the same path in
+/// `extra` wins).
+#[allow(dead_code)]
+pub fn fresh_join_pak_with(extra: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut names: Vec<String> = (0..74).map(|row| format!("Filler_{row}")).collect();
     for (row, name) in [
         (58, "MovementSpeed_+"),
@@ -294,9 +303,11 @@ pub fn fresh_join_pak() -> Vec<u8> {
         (65, "CrouchSpeed_+"),
         (69, "SwimSpeed_+"),
         (73, "SwimSprintSpeed_+"),
+        (0, "MaximumHealth_+"),
+        (3, "MaximumStamina_+"),
         (1, "BaseMovementSpeed_+"),
         (2, "BaseSprintSpeed_+"),
-        (3, "BaseCrouchSpeed_+"),
+        (12, "BaseCrouchSpeed_+"),
         (4, "BaseSwimSpeed_+"),
         (5, "BaseSwimSprintSpeed_+"),
         (6, "BaseMaximumHealth_+"),
@@ -305,8 +316,6 @@ pub fn fresh_join_pak() -> Vec<u8> {
         (9, "BaseMaximumWater_+"),
         (10, "BaseMaximumFood_+"),
         (11, "BaseWeightCapacity_+"),
-        (12, "MaximumHealth_+"),
-        (13, "MaximumStamina_+"),
         (14, "MaximumOxygen_+"),
         (15, "MaximumWater_+"),
         (16, "MaximumFood_+"),
@@ -326,13 +335,16 @@ pub fn fresh_join_pak() -> Vec<u8> {
             }
         })
         .collect();
-    official_pak(&[
+    let mut members = vec![
         (
             "Stats/D_Stats.json",
             serde_json::to_vec(&serde_json::json!({"Rows": rows})).unwrap(),
         ),
         ("Flags/D_SessionFlags.json", table_json(&["Flag_A"])),
-    ])
+    ];
+    members.retain(|(path, _)| extra.iter().all(|(other, _)| other != path));
+    members.extend(extra.iter().cloned());
+    official_pak(&members)
 }
 
 /// A pak with `extra` members beside [`player_tables`] (a member of the

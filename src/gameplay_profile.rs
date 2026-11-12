@@ -9,6 +9,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Map, Value, json};
 
 use crate::data_pak::DataPak;
+use crate::experimental::stat_restore::OVERBURDENED_WEIGHT_PER_CAPACITY;
 use crate::network::{
     FACTION_MISSIONS_TABLE, INVENTORY_TABLE, MODIFIER_STATES_TABLE, PLAYER_INVENTORY_ROW,
     QUESTS_TABLE, STARTING_STATS_ROW, STARTING_STATS_TABLE,
@@ -39,6 +40,9 @@ const REQUIRED_TABLES: [&str; 4] = [
     STARTING_STATS_TABLE,
     INVENTORY_TABLE,
 ];
+
+/// The weight capacity's base stat.
+const WEIGHT_CAPACITY_BASE: &str = "BaseWeightCapacity_+";
 
 /// A fresh player's starting values, chosen by the operator (lab defaults
 /// are round numbers, not ICARUS balance values). Speeds are cm/s.
@@ -79,6 +83,23 @@ impl Default for FreshPlayerValues {
 /// arithmetic.
 pub const MAX_VALUE: i32 = 10_000_000;
 
+/// The most the weight capacity may be: a returning pawn's restore compares
+/// `WeightCapacity_+` times [`OVERBURDENED_WEIGHT_PER_CAPACITY`] with its
+/// carried weight in 32-bit arithmetic (F-986), which no larger value fits.
+pub const MAX_WEIGHT_CAPACITY: i32 = i32::MAX / OVERBURDENED_WEIGHT_PER_CAPACITY;
+
+/// How many leading [`FreshPlayerValues::grants`] are the five movement
+/// speeds. Their derived stats (IDs 58, 61, 65, 69 and 73 in the release's
+/// catalog, F-1153) are the only stats a fresh profile replicates: walking
+/// needs no other (F-1164, F-1165), and the client rescales health and
+/// stamina by a replicated maximum stat it receives (stats 0 and 3), dividing
+/// by zero while the character state's maximum is still 0 (F-1166).
+pub const SPEED_GRANTS: usize = 5;
+
+/// The stat IDs whose client handlers divide by the character state's
+/// maximum health or stamina (F-1166); a fresh profile never replicates them.
+pub const CLIENT_RESCALED_STATS: [usize; 2] = [0, 3];
+
 impl FreshPlayerValues {
     /// Each value as the starting grant of a base stat, with the stat the
     /// formulas derive from it (F-838): with no percentage or coefficient
@@ -100,21 +121,24 @@ impl FreshPlayerValues {
             ("BaseMaximumWater_+", "MaximumWater_+", self.max_water),
             ("BaseMaximumFood_+", "MaximumFood_+", self.max_food),
             (
-                "BaseWeightCapacity_+",
+                WEIGHT_CAPACITY_BASE,
                 "WeightCapacity_+",
                 self.weight_capacity,
             ),
         ]
     }
 
-    /// Every value positive and at most [`MAX_VALUE`]: a zero speed or
-    /// maximum is what leaves a character unable to move (or dead).
+    /// Every value positive and at most [`MAX_VALUE`] (the weight capacity
+    /// at most [`MAX_WEIGHT_CAPACITY`]): a zero speed or maximum is what
+    /// leaves a character unable to move (or dead).
     pub fn validate(&self) -> Result<()> {
         for (base, _, value) in self.grants() {
-            ensure!(
-                (1..=MAX_VALUE).contains(&value),
-                "{base} must be 1..={MAX_VALUE}"
-            );
+            let most = if base == WEIGHT_CAPACITY_BASE {
+                MAX_WEIGHT_CAPACITY
+            } else {
+                MAX_VALUE
+            };
+            ensure!((1..=most).contains(&value), "{base} must be 1..={most}");
         }
         Ok(())
     }
@@ -130,15 +154,22 @@ fn names_only(pak: &mut DataPak, table: &str) -> Result<Vec<Map<String, Value>>>
         .collect())
 }
 
+/// The position of the row named `name` in `rows`, which the catalog must
+/// list.
+fn row_index(rows: &[Map<String, Value>], table: &str, name: &str) -> Result<usize> {
+    rows.iter()
+        .position(|row| row.get("Name").and_then(Value::as_str) == Some(name))
+        .with_context(|| format!("the {table} catalog has no {name} row"))
+}
+
 /// The row named `name` of `rows`, which the catalog must list.
 fn row_mut<'a>(
     rows: &'a mut [Map<String, Value>],
     table: &str,
     name: &str,
 ) -> Result<&'a mut Map<String, Value>> {
-    rows.iter_mut()
-        .find(|row| row.get("Name").and_then(Value::as_str) == Some(name))
-        .with_context(|| format!("the {table} catalog has no {name} row"))
+    let index = row_index(rows, table, name)?;
+    Ok(&mut rows[index])
 }
 
 /// A names-only skeleton of `tables` over `pak`'s catalog, as
@@ -156,11 +187,13 @@ pub fn catalog_skeleton(pak: &mut DataPak, tables: &[&str]) -> Result<Value> {
 /// A complete profile for a fresh join over `pak`'s catalog:
 /// [`FRESH_JOIN_TABLES`] the pak holds as names-only rows, then
 /// `values` authored in. `D_CharacterStartingStats`'s `Base_Stats` grants
-/// each base stat of [`FreshPlayerValues::grants`]; `D_Stats` replicates
-/// those bases and the stats derived from them (so a fresh pawn carries 22
-/// stats, the five speeds among them), and no other; `D_Inventory`'s `Player`
-/// lists no inventories. Every other row and field is omitted, so the
-/// native parser's defaults apply.
+/// each base stat of [`FreshPlayerValues::grants`] (every base and derived
+/// stat must be in the catalog); `D_Stats` replicates only the five speeds
+/// derived from them ([`SPEED_GRANTS`]), so a fresh pawn carries 5 stats,
+/// never a [`CLIENT_RESCALED_STATS`] one; `D_Inventory`'s `Player` lists no
+/// inventories. Every other row and field is omitted, so the native parser's
+/// defaults apply. The maxima still reach the character state's vitals
+/// (`network::fresh_player_vitals`).
 pub fn fresh_player_profile(pak: &mut DataPak, values: &FreshPlayerValues) -> Result<Value> {
     values.validate()?;
     for table in REQUIRED_TABLES {
@@ -178,9 +211,15 @@ pub fn fresh_player_profile(pak: &mut DataPak, values: &FreshPlayerValues) -> Re
         tables.insert(*table, names_only(pak, table)?);
     }
     let stats = tables.get_mut(STATS_TABLE).context("stats table")?;
-    for (base, derived, _) in values.grants() {
-        for name in [base, derived] {
-            row_mut(stats, STATS_TABLE, name)?.insert(REPLICATED_FIELD.to_owned(), true.into());
+    for (grant, (base, derived, _)) in values.grants().into_iter().enumerate() {
+        row_index(stats, STATS_TABLE, base)?;
+        let id = row_index(stats, STATS_TABLE, derived)?;
+        if grant < SPEED_GRANTS {
+            ensure!(
+                !CLIENT_RESCALED_STATS.contains(&id),
+                "the {STATS_TABLE} catalog puts {derived} at stat {id}, which the client rescales health or stamina by"
+            );
+            stats[id].insert(REPLICATED_FIELD.to_owned(), true.into());
         }
     }
     let granted: Map<String, Value> = values

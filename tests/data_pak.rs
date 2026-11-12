@@ -584,8 +584,10 @@ fn table_presence_follows_the_member_paths() {
 }
 
 /// A fresh-player profile over a pak's catalog (F-993): the catalog's row
-/// names in order, only the values authored here, and a fresh pawn's 22
-/// stats with the five speeds at their stat IDs (F-838) and values.
+/// names in order, only the values authored here, and a fresh pawn's stats
+/// exactly the five speeds at their stat IDs (F-838, F-1164) and values:
+/// never the maxima at stats 0 and 3, which the client divides by the
+/// character state's (F-1166), though the vitals still carry them.
 #[test]
 fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
     use icarus_bevy::gameplay_profile::{FreshPlayerValues, fresh_player_profile};
@@ -617,6 +619,16 @@ fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
     // The packaged filler's bIsReplicated is not copied.
     assert!(tables["D_Stats"][20].get("bIsReplicated").is_none());
     assert_eq!(tables["D_Stats"][58]["bIsReplicated"], true);
+    // Only the five speeds replicate: not the maxima at 0 and 3, no base.
+    let replicated: Vec<usize> = tables["D_Stats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.get("bIsReplicated").is_some())
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(replicated, [58, 61, 65, 69, 73]);
     assert_eq!(
         tables["D_Inventory"][1]["Inventories"],
         serde_json::json!([])
@@ -649,20 +661,19 @@ fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
         "Base_Stats",
     )
     .unwrap();
-    assert_eq!(stats.items.len(), 22);
-    assert_eq!(stats.replication_key, 22);
-    assert!(stats.items.iter().all(|pair| pair.value != 0));
+    assert_eq!(stats.replication_key, 5);
     let pairs: Vec<(u32, i32)> = stats
         .items
         .iter()
         .map(|pair| (pair.stat, pair.value))
         .collect();
-    for speed in [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)] {
-        assert!(pairs.contains(&speed), "{speed:?}");
-    }
+    assert_eq!(
+        pairs,
+        [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)]
+    );
     assert_eq!(
         icarus_bevy::network::fresh_pawn_stat_count(Some(&mut loaded)).unwrap(),
-        22
+        5
     );
     assert_eq!(
         icarus_bevy::network::fresh_pawn_stat_count(None).unwrap(),
@@ -693,8 +704,12 @@ fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
 
 #[test]
 fn fresh_player_profiles_refuse_unusable_values_and_incomplete_catalogs() {
-    use icarus_bevy::gameplay_profile::{
-        FreshPlayerValues, MAX_VALUE, catalog_skeleton, fresh_player_profile,
+    use icarus_bevy::{
+        experimental::stat_restore::OVERBURDENED_WEIGHT_PER_CAPACITY,
+        gameplay_profile::{
+            FreshPlayerValues, MAX_VALUE, MAX_WEIGHT_CAPACITY, catalog_skeleton,
+            fresh_player_profile,
+        },
     };
     let root = TempDir::new().unwrap();
     let path = pak_file(&root, &pak_writer::fresh_join_pak());
@@ -709,13 +724,60 @@ fn fresh_player_profiles_refuse_unusable_values_and_incomplete_catalogs() {
             ..defaults
         },
         FreshPlayerValues {
-            weight_capacity: MAX_VALUE + 1,
+            sprint_speed: MAX_VALUE + 1,
+            ..defaults
+        },
+        FreshPlayerValues {
+            weight_capacity: MAX_WEIGHT_CAPACITY + 1,
+            ..defaults
+        },
+        FreshPlayerValues {
+            weight_capacity: MAX_VALUE,
             ..defaults
         },
     ] {
         assert!(bad.validate().is_err());
         assert!(fresh_player_profile(&mut DataPak::open(&path).unwrap(), &bad).is_err());
     }
+    // The largest accepted values: the weight capacity times the restore's
+    // Overburdened scale (F-986) still fits 32 bits; one more would not.
+    let largest = FreshPlayerValues {
+        walk_speed: MAX_VALUE,
+        weight_capacity: MAX_WEIGHT_CAPACITY,
+        ..defaults
+    };
+    largest.validate().unwrap();
+    fresh_player_profile(&mut DataPak::open(&path).unwrap(), &largest).unwrap();
+    assert!(
+        MAX_WEIGHT_CAPACITY
+            .checked_mul(OVERBURDENED_WEIGHT_PER_CAPACITY)
+            .is_some()
+    );
+    assert!(
+        (MAX_WEIGHT_CAPACITY + 1)
+            .checked_mul(OVERBURDENED_WEIGHT_PER_CAPACITY)
+            .is_none()
+    );
+    // A catalog that puts a speed at a stat the client rescales vitals by
+    // (0 or 3, F-1166) is refused rather than replicated there.
+    let mut names = DataPak::open(&path).unwrap().table_rows("D_Stats").unwrap();
+    names.swap(0, 58);
+    let swapped = root.path().join("swapped.pak");
+    fs::write(
+        &swapped,
+        pak_writer::fresh_join_pak_with(&[(
+            "Stats/D_Stats.json",
+            table_json(&names.iter().map(String::as_str).collect::<Vec<_>>()),
+        )]),
+    )
+    .unwrap();
+    let error = fresh_player_profile(&mut DataPak::open(&swapped).unwrap(), &defaults)
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("MovementSpeed_+ at stat 0"),
+        "{error:#}"
+    );
     // The plain player fixture's D_Stats names no sprint speed base.
     let plain = root.path().join("plain.pak");
     fs::write(&plain, pak_writer::official_pak(&[])).unwrap();

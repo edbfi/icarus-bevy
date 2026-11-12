@@ -377,8 +377,11 @@ impl Options {
 
     /// Preflight of `--data-pak` and `--authored-gameplay`: both or
     /// neither, validated and loaded as `run` loads them before its socket
-    /// binds, and only with the release's pawn open. Returns how many stat
-    /// pairs a fresh pawn's open will carry, or `None` without tables.
+    /// binds, and only with the release's pawn open, whose content and
+    /// restore tables are composed as the bind composes them (so a profile
+    /// lacking a table they read fails here, not after Steam logon).
+    /// Returns how many stat pairs a fresh pawn's open will carry, or
+    /// `None` without tables.
     fn fresh_pawn_stats(&self, profile: &ReleaseProfile) -> Result<Option<usize>> {
         let config = self.data_table_config();
         config.validate()?;
@@ -389,7 +392,9 @@ impl Options {
             profile.pawn_open_plan(PROBE_MAP)?.is_some(),
             "data tables fill the pawn open, which needs the release's pawn profile; omit --data-pak"
         );
-        Ok(Some(network::fresh_pawn_stat_count(Some(&mut tables))?))
+        let count = network::fresh_pawn_stat_count(Some(&mut tables))
+            .context("--authored-gameplay cannot fill the pawn open")?;
+        Ok(Some(count))
     }
 
     /// Pure preflight of `--level-visibility-actors`: enabled dispatch needs
@@ -1288,9 +1293,9 @@ mod tests {
         let (pak, gameplay) = (pak.to_str().unwrap(), gameplay.to_str().unwrap());
         let loaded = parse(&["--data-pak", pak, "--authored-gameplay", gameplay]).unwrap();
         let count = loaded.fresh_pawn_stats(&profile).unwrap();
-        assert_eq!(count, Some(22));
+        assert_eq!(count, Some(5));
         let report = data_tables_report(count);
-        assert_eq!(report, json!({"loaded": true, "fresh_pawn_stats": 22}));
+        assert_eq!(report, json!({"loaded": true, "fresh_pawn_stats": 5}));
         // The report names no path and no word the run log forbids.
         let text = report.to_string();
         assert!(!text.contains(pak) && !text.contains(gameplay));
@@ -1327,6 +1332,83 @@ mod tests {
         no_pawn.pawn = None;
         assert!(loaded.fresh_pawn_stats(&no_pawn).is_err());
         assert_eq!(default.fresh_pawn_stats(&no_pawn).unwrap(), None);
+    }
+
+    /// A hand-written profile lacking a table the pawn open's composition
+    /// reads (here `D_ModifierStates`, which the bind's modifier restore
+    /// reads whenever the pak holds it and `D_ItemsStatic`) is refused by
+    /// the preflight, before any socket, TLS or Steam work, naming the table
+    /// and quoting nothing of the file.
+    #[test]
+    fn preflight_refuses_a_profile_lacking_a_table_the_pawn_open_reads() {
+        use icarus_bevy::{
+            data_pak::DataPak,
+            gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+        };
+        const MARKER: &str = "authored-marker-never-echoed";
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        std::fs::write(
+            &pak,
+            pak_writer::fresh_join_pak_with(&[
+                (
+                    "Items/D_ItemsStatic.json",
+                    pak_writer::table_json(&["Item_A"]),
+                ),
+                (
+                    "Modifiers/D_ModifierStates.json",
+                    pak_writer::table_json(&["Overburdened"]),
+                ),
+            ]),
+        )
+        .unwrap();
+        let mut authored = fresh_player_profile(
+            &mut DataPak::open(&pak).unwrap(),
+            &FreshPlayerValues::default(),
+        )
+        .unwrap();
+        authored["tables"]["D_FactionMissions"][0]["Note"] = MARKER.into();
+        let write = |name: &str, value: &serde_json::Value| {
+            let path = directory.path().join(name);
+            std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        let complete = write("complete.json", &authored);
+        authored["tables"]
+            .as_object_mut()
+            .unwrap()
+            .remove("D_ModifierStates")
+            .unwrap();
+        let lacking = write("lacking.json", &authored);
+        let options = |gameplay: &str| {
+            Options::try_parse_from([
+                "probe",
+                "--name",
+                "Authored",
+                "--data-pak",
+                pak.to_str().unwrap(),
+                "--authored-gameplay",
+                gameplay,
+            ])
+            .unwrap()
+        };
+        let settings = options(&complete)
+            .preflight(&profile, directory.path())
+            .unwrap();
+        assert_eq!(settings.fresh_pawn_stats, Some(5));
+        let error = options(&lacking)
+            .preflight(&profile, directory.path())
+            .err()
+            .expect("the preflight refuses the profile");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("missing authored gameplay table D_ModifierStates"),
+            "{text}"
+        );
+        for quoted in [MARKER, "schema_version", "Base_Stats", "Filler_"] {
+            assert!(!text.contains(quoted), "{quoted}: {text}");
+        }
     }
 
     #[test]

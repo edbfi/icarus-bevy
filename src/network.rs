@@ -94,7 +94,7 @@ use crate::{
         modifier_restore::{ModifierRestoreTables, ModifierRow},
         pawn_open::{
             CharacterVitals, FastArrayContent, InventorySlot, PAWN_CHANNEL_INDEX, PawnContent,
-            PawnInventory, SlotItem,
+            PawnInventory, PawnOpenPlan, SlotItem,
         },
         peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
         prospect_info::{
@@ -1713,12 +1713,98 @@ pub fn data_tables(network: &NetworkConfig) -> Result<Option<DataTables>> {
         .transpose()
 }
 
+/// Everything the pawn open takes from the data tables: its content and the
+/// restore tables a returning pawn needs. [`bind`] composes it before its
+/// socket binds, so a profile lacking a table those read fails first.
+pub struct PawnTables {
+    content: PawnContent,
+    item_rows: Option<Vec<String>>,
+    inventory_restore: Option<InventoryRestoreTables>,
+    modifier_restore: Option<ModifierRestoreTables>,
+    stat_restore: Option<StatRestoreTables>,
+}
+
+/// [`PawnTables`] from `tables`: the [`pawn_content`], and with
+/// `D_ItemsStatic` the item rows plus each restore whose tables the pak
+/// holds (inventories and stats only for a pawn with inventories); an
+/// authored profile lacking a table one of them reads is refused here.
+pub fn pawn_tables(mut tables: Option<&mut DataTables>) -> Result<PawnTables> {
+    let mut out = PawnTables {
+        content: pawn_content(tables.as_deref_mut())?,
+        item_rows: None,
+        inventory_restore: None,
+        modifier_restore: None,
+        stat_restore: None,
+    };
+    let Some(tables) = tables.filter(|tables| tables.has_table(ITEMS_STATIC_TABLE)) else {
+        return Ok(out);
+    };
+    out.item_rows = Some(tables.rows(ITEMS_STATIC_TABLE)?.to_vec());
+    // A data.pak without the item trait and query tables leaves saved
+    // inventories unrestored; one with them must build.
+    let inventories = !out.content.inventories.is_empty();
+    if inventories
+        && INVENTORY_RESTORE_TABLES
+            .iter()
+            .all(|table| tables.has_table(table))
+    {
+        out.inventory_restore = Some(
+            inventory_restore_tables(tables, &out.content.inventories)
+                .context("build the inventory restore tables")?,
+        );
+    }
+    if tables.has_table(MODIFIER_STATES_TABLE) {
+        out.modifier_restore =
+            Some(modifier_restore_tables(tables).context("build the modifier restore tables")?);
+    }
+    // Stats follow the inventories, so they need the inventory restore's
+    // tables as well as their own.
+    if inventories
+        && INVENTORY_RESTORE_TABLES
+            .iter()
+            .chain(&STAT_RESTORE_TABLES)
+            .all(|table| tables.has_table(table))
+    {
+        out.stat_restore =
+            Some(stat_restore_tables(tables).context("build the stat restore tables")?);
+    }
+    Ok(out)
+}
+
+impl PawnTables {
+    /// How many stat pairs the pawn open carries: 0 without tables.
+    pub fn stat_count(&self) -> usize {
+        self.content
+            .stats
+            .as_ref()
+            .map_or(0, |stats| stats.items.len())
+    }
+
+    /// Enable `pawn`'s open with this content and these restores.
+    fn install(self, lab: &mut PeerLab, pawn: PawnOpenPlan) -> Result<()> {
+        lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, self.content)?;
+        if let Some(rows) = &self.item_rows {
+            lab.enable_pawn_restore_item_rows(rows)?;
+        }
+        if let Some(tables) = self.inventory_restore {
+            lab.enable_inventory_restore(tables)?;
+        }
+        if let Some(tables) = self.modifier_restore {
+            lab.enable_modifier_restore(tables)?;
+        }
+        if let Some(tables) = self.stat_restore {
+            lab.enable_stat_restore(tables)?;
+        }
+        Ok(())
+    }
+}
+
 /// How many stat pairs a fresh player's pawn open carries with `tables`
-/// ([`pawn_content`]): 0 without tables.
+/// ([`pawn_content`]): 0 without tables. Composes all of [`pawn_tables`], so
+/// a caller can preflight every table the pawn open reads before
+/// networking.
 pub fn fresh_pawn_stat_count(tables: Option<&mut DataTables>) -> Result<usize> {
-    Ok(pawn_content(tables)?
-        .stats
-        .map_or(0, |stats| stats.items.len()))
+    Ok(pawn_tables(tables)?.stat_count())
 }
 
 /// Validate `network`, load its release profile and only then bind its
@@ -1835,6 +1921,19 @@ fn bind_session(
     } else {
         None
     };
+    // The pawn open (with the controller's) and everything it takes from the
+    // data tables, composed before the socket binds so that a profile lacking
+    // a table they read fails first.
+    let pawn = match (&plan, startup_pawn, &profile, &config.admission) {
+        (None, ..) => None,
+        (Some(_), Some(pawn), ..) => pawn,
+        (Some(_), None, Some(profile), Some(admission)) => profile
+            .pawn_open_plan(admission.map_url)
+            .context("compose the pawn open plan")?,
+        _ => None,
+    }
+    .map(|pawn| anyhow::Ok((pawn, pawn_tables(tables.as_mut())?)))
+    .transpose()?;
     let address = SocketAddrV4::new(network.bind, network.port);
     let mut lab = match authentication {
         Some((address, authenticator)) => {
@@ -1852,56 +1951,9 @@ fn bind_session(
                 .context("compose the PlayerState open plan")?,
             _ => None,
         };
-        let pawn = if let Some(pawn) = startup_pawn {
-            pawn
-        } else {
-            match (&profile, &config.admission) {
-                (Some(profile), Some(admission)) => profile
-                    .pawn_open_plan(admission.map_url)
-                    .context("compose the pawn open plan")?,
-                _ => None,
-            }
-        };
         let has_pawn = pawn.is_some();
-        if let Some(pawn) = pawn {
-            let content = pawn_content(tables.as_mut())?;
-            let inventories = content.inventories.clone();
-            lab.enable_pawn_open(pawn, PAWN_CHANNEL_INDEX, content)?;
-            if let Some(tables) = tables.as_mut()
-                && tables.has_table(ITEMS_STATIC_TABLE)
-            {
-                lab.enable_pawn_restore_item_rows(tables.rows(ITEMS_STATIC_TABLE)?)?;
-                // A data.pak without the item trait and query tables leaves
-                // saved inventories unrestored; one with them must build.
-                if !inventories.is_empty()
-                    && INVENTORY_RESTORE_TABLES
-                        .iter()
-                        .all(|table| tables.has_table(table))
-                {
-                    lab.enable_inventory_restore(
-                        inventory_restore_tables(tables, &inventories)
-                            .context("build the inventory restore tables")?,
-                    )?;
-                }
-                if tables.has_table(MODIFIER_STATES_TABLE) {
-                    lab.enable_modifier_restore(
-                        modifier_restore_tables(tables)
-                            .context("build the modifier restore tables")?,
-                    )?;
-                }
-                // Stats follow the inventories, so they need the inventory
-                // restore's tables as well as their own.
-                if !inventories.is_empty()
-                    && INVENTORY_RESTORE_TABLES
-                        .iter()
-                        .chain(&STAT_RESTORE_TABLES)
-                        .all(|table| tables.has_table(table))
-                {
-                    lab.enable_stat_restore(
-                        stat_restore_tables(tables).context("build the stat restore tables")?,
-                    )?;
-                }
-            }
+        if let Some((pawn, pawn_tables)) = pawn {
+            pawn_tables.install(&mut lab, pawn)?;
             // Authored deterministic PRNG seed; actor allocation is unrelated
             // to the cryptographic randomness used for handshake cookies.
             lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))?;

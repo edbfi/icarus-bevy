@@ -13,7 +13,7 @@ use clap::Parser;
 use icarus_bevy::{
     config::NetworkConfig,
     data_pak::DataPak,
-    gameplay_profile::{FreshPlayerValues, catalog_skeleton, fresh_player_profile},
+    gameplay_profile::{FreshPlayerValues, SPEED_GRANTS, catalog_skeleton, fresh_player_profile},
     network,
     pawn_stats::STATS_TABLE,
 };
@@ -136,7 +136,7 @@ fn verify(
     let ids = values
         .grants()
         .iter()
-        .take(5)
+        .take(SPEED_GRANTS)
         .filter_map(|(_, derived, _)| {
             let id = names.iter().position(|name| name == derived)?;
             Some(((*derived).to_owned(), json!(id)))

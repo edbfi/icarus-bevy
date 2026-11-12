@@ -9122,9 +9122,9 @@ fn authored_world_planner_rejects_missing_session_prerequisites() {
 
 /// With a data pak and a fresh-player profile written over its catalog
 /// (`gameplay_profile`), `run`'s fresh join opens the pawn with the stat
-/// container the profile gives (F-839): every pair, the five speeds at their
-/// stat IDs (F-838) with the profile's values, counted in
-/// `pawn_open_stats_sent`.
+/// container the profile gives (F-839): exactly the five speeds at their
+/// stat IDs (F-838, F-1164) with the profile's values, never stat 0 or 3
+/// (F-1166), counted in `pawn_open_stats_sent`.
 #[test]
 fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
     use icarus_bevy::{
@@ -9166,7 +9166,7 @@ fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
     });
     assert_eq!(
         app.world().resource::<PeerLab>().pawn_open_stat_count(),
-        Some(22)
+        Some(5)
     );
     let (replies, _) = with_server(&mut app, move || join_pinned_replies(address, pinned, 8));
     let stats = app.world().resource::<PeerLab>().stats();
@@ -9176,7 +9176,7 @@ fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
             stats.pawn_open_errors,
             stats.pawn_open_stats_sent
         ),
-        (1, 0, 22)
+        (1, 0, 5)
     );
     let codec = ActorChannelCodec {
         engine_net_version: engine,
@@ -9239,7 +9239,7 @@ fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
     .unwrap();
     assert_eq!(
         (delta.array_replication_key, delta.base_replication_key),
-        (22, 0)
+        (5, 0)
     );
     assert!(delta.deleted_ids.is_empty());
     let pairs: Vec<(u32, i32)> = delta
@@ -9255,13 +9255,8 @@ fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
             (pair.stat, pair.value)
         })
         .collect();
-    assert_eq!(pairs.len(), 22);
-    assert!(pairs.iter().all(|(_, value)| *value != 0));
-    assert!(
-        pairs.windows(2).all(|pair| pair[0].0 < pair[1].0),
-        "row order"
+    assert_eq!(
+        pairs,
+        [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)]
     );
-    for speed in [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)] {
-        assert!(pairs.contains(&speed), "{speed:?}");
-    }
 }
