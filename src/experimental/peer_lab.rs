@@ -152,7 +152,8 @@
 //! - Native per-query deadline (N-019): a peer whose friends query (F-1051)
 //!   stays unanswered for longer than [`PeerLabConfig::idle_timeout`] is
 //!   removed the same way (`peers_friends_query_expired`). The clock starts
-//!   when the query is first requested and only an accepted answer stops it;
+//!   when the query is first requested and only an accepted answer stops it (or
+//!   restarts it, when a re-query is still to be sent);
 //!   ACKs and re-queries never extend it, so no peer holds finalisation
 //!   (F-973) for others beyond that timeout. No such deadline was observed
 //!   in the original; F-858 records only a silent client's close.
@@ -7803,9 +7804,9 @@ impl PeerLab {
                 entry.profiles.friend_ids_ready = true;
                 // An unsent pending query will clear readiness again, so
                 // only an answer with no query left to send ends the deadline.
-                if !entry.friends_query_pending {
-                    entry.friends_query_since = None;
-                }
+                // With one still to send, this answer restarts the clock: the
+                // next query must not inherit time its predecessor used up.
+                entry.friends_query_since = entry.friends_query_pending.then(Instant::now);
                 bump(&mut self.stats.friends_lists_received);
             }
             ControllerCall::Profile(response) => {
