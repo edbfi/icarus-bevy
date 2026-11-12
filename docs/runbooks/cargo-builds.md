@@ -19,8 +19,8 @@ Cargo. `--retire-target` requests retirement. Failed artifacts stay reusable; in
 forces a cold rebuild, including dependencies. Add ordinary tests as domain
 modules to retain warm reuse.
 
-Own cap: 16 GiB (provisional; owner storage allowance M-1360); growth reserve: min(8 GiB, remaining cap), minimum
-2 GiB headroom. Local disk floor: 30 GiB. CI explicitly sets
+Own cap: 16 GiB (provisional; owner storage allowance M-1360); growth reserve:
+min(8 GiB, remaining cap), minimum 2 GiB headroom. Local disk floor: 30 GiB. CI explicitly sets
 `ICARUS_CARGO_GUARD_POLICY=ci` for a 4 GiB floor; `CI=true` changes nothing.
 Contracts: [guard contracts](../../tools/cargo_guard.py).
 

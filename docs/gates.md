@@ -81,19 +81,20 @@ Last reconciled: 2026-11-11
   reentrancy, authored (no close on a name, exclusive poll), test-qualified
   only (F-1097, F-1098); client progress, seen to the tile reports (F-1089),
   beyond only by bounded connected runs: first the unfreeze alone with the
-  probe switch off (F-1099; authorized, see the runtime gate below), then, if
-  the screen stays with the pawn unfrozen, a run with the probe switch
-  (F-1104), once the owner approves it. The
-  server binary refuses the switch; only the bounded join probe enables it
-  (F-1097). F-1023/F-1024: no live binding (U-079).
+  probe switch off (F-1099; authorized, see "Before any original-server or
+  client run"), then, if the screen stays with the pawn unfrozen, a run with
+  the probe switch (F-1104), once the owner approves it. The server binary
+  refuses the switch; only the bounded join probe enables it (F-1097).
+  F-1023/F-1024: no live binding (U-079).
 - Sending level-status call 62 is server-originated and outside this gate
   (F-1078; lead decision under M-1353) but first needs the map's level list and
   order, per-level flags and LOD, and name remapping bound, each from a source
   input parity allows (F-828: the public dedicated-server distribution or
   independently authored input), never client-only or packaged game data.
   Outside this gate means building and testing it offline; sending it in a
-  connected run still needs that run's own case and approval. Opening a
-  level's actors after a field-82 report is a visibility effect and stays
+  connected run still needs that run's own case, as every run does (last
+  section), not a separate approval. Opening a level's actors after a
+  field-82 report is a visibility effect and stays
   blocked.
 
 ## Before deriving replication schema for the server

@@ -823,8 +823,8 @@ with g.build_lock(i) as b:
         cap = f"{guard.TARGET_BUDGET // guard.GIB} GiB"
         repository = Path(__file__).resolve().parents[2]
         self.assertIn(f"Provisional own cap {cap};", guard.__doc__ or "")
-        self.assertIn(f"Own cap: {cap} (provisional",(repository / "docs/runbooks/cargo-builds.md").read_text())
-        self.assertIn(f"own-target cap is {cap} "," ".join((repository / ".agents/rules/project.md").read_text().split()))
+        self.assertIn(f"Own cap: {cap} (provisional", (repository / "docs/runbooks/cargo-builds.md").read_text())
+        self.assertIn(f"own-target cap is {cap} ", " ".join((repository / ".agents/rules/project.md").read_text().split()))
 
     def test_ci_env_is_explicit_and_no_generated_config(self) -> None:
         self.assertEqual(guard.selected_policy({"CI": "true"}, None), guard.LOCAL)
