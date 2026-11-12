@@ -582,3 +582,165 @@ fn table_presence_follows_the_member_paths() {
     assert!(!tables.has_table("D_ProspectList"));
     assert!(!tables.has_table("SessionFlags"));
 }
+
+/// A fresh-player profile over a pak's catalog (F-993): the catalog's row
+/// names in order, only the values authored here, and a fresh pawn's 22
+/// stats with the five speeds at their stat IDs (F-838) and values.
+#[test]
+fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
+    use icarus_bevy::gameplay_profile::{FreshPlayerValues, fresh_player_profile};
+    let root = TempDir::new().unwrap();
+    let path = pak_file(&root, &pak_writer::fresh_join_pak());
+    let values = FreshPlayerValues::default();
+    let profile = fresh_player_profile(&mut DataPak::open(&path).unwrap(), &values).unwrap();
+    let tables = profile["tables"].as_object().unwrap();
+    // The fresh-join tables this pak holds (no quests or modifier states).
+    assert_eq!(
+        tables.keys().collect::<Vec<_>>(),
+        [
+            "D_CharacterStartingStats",
+            "D_FactionMissions",
+            "D_Inventory",
+            "D_Stats"
+        ]
+    );
+    let mut pak = DataPak::open(&path).unwrap();
+    for (table, rows) in tables {
+        let names: Vec<&str> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["Name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, pak.table_rows(table).unwrap(), "{table}");
+    }
+    // The packaged filler's bIsReplicated is not copied.
+    assert!(tables["D_Stats"][20].get("bIsReplicated").is_none());
+    assert_eq!(tables["D_Stats"][58]["bIsReplicated"], true);
+    assert_eq!(
+        tables["D_Inventory"][1]["Inventories"],
+        serde_json::json!([])
+    );
+    let authored = root.path().join("fresh.json");
+    fs::write(&authored, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let network = icarus_bevy::config::NetworkConfig {
+        data_pak: Some(path.clone()),
+        authored_gameplay: Some(authored),
+        ..Default::default()
+    };
+    let mut loaded = icarus_bevy::network::data_tables(&network)
+        .unwrap()
+        .unwrap();
+    // Vitals at the authored maxima, not the pak's 250 and more.
+    let vitals = icarus_bevy::network::fresh_player_vitals(&mut loaded).unwrap();
+    assert_eq!(
+        (
+            vitals.health,
+            vitals.max_stamina,
+            vitals.oxygen,
+            vitals.water,
+            vitals.food
+        ),
+        (100, 100, 100, 100, 100)
+    );
+    let stats = icarus_bevy::pawn_stats::fresh_player_stats(
+        &mut loaded,
+        "D_CharacterStartingStats",
+        "Base_Stats",
+    )
+    .unwrap();
+    assert_eq!(stats.items.len(), 22);
+    assert_eq!(stats.replication_key, 22);
+    assert!(stats.items.iter().all(|pair| pair.value != 0));
+    let pairs: Vec<(u32, i32)> = stats
+        .items
+        .iter()
+        .map(|pair| (pair.stat, pair.value))
+        .collect();
+    for speed in [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)] {
+        assert!(pairs.contains(&speed), "{speed:?}");
+    }
+    assert_eq!(
+        icarus_bevy::network::fresh_pawn_stat_count(Some(&mut loaded)).unwrap(),
+        22
+    );
+    assert_eq!(
+        icarus_bevy::network::fresh_pawn_stat_count(None).unwrap(),
+        0
+    );
+    // Other authored speeds reach the stats as given.
+    let slow = FreshPlayerValues {
+        walk_speed: 123,
+        ..values
+    };
+    let profile = fresh_player_profile(&mut DataPak::open(&path).unwrap(), &slow).unwrap();
+    let authored = root.path().join("slow.json");
+    fs::write(&authored, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let mut loaded = DataTables::runtime(&path, &authored).unwrap();
+    let stats = icarus_bevy::pawn_stats::fresh_player_stats(
+        &mut loaded,
+        "D_CharacterStartingStats",
+        "Base_Stats",
+    )
+    .unwrap();
+    assert!(
+        stats
+            .items
+            .iter()
+            .any(|pair| (pair.stat, pair.value) == (58, 123))
+    );
+}
+
+#[test]
+fn fresh_player_profiles_refuse_unusable_values_and_incomplete_catalogs() {
+    use icarus_bevy::gameplay_profile::{
+        FreshPlayerValues, MAX_VALUE, catalog_skeleton, fresh_player_profile,
+    };
+    let root = TempDir::new().unwrap();
+    let path = pak_file(&root, &pak_writer::fresh_join_pak());
+    let defaults = FreshPlayerValues::default();
+    for bad in [
+        FreshPlayerValues {
+            walk_speed: 0,
+            ..defaults
+        },
+        FreshPlayerValues {
+            max_health: -1,
+            ..defaults
+        },
+        FreshPlayerValues {
+            weight_capacity: MAX_VALUE + 1,
+            ..defaults
+        },
+    ] {
+        assert!(bad.validate().is_err());
+        assert!(fresh_player_profile(&mut DataPak::open(&path).unwrap(), &bad).is_err());
+    }
+    // The plain player fixture's D_Stats names no sprint speed base.
+    let plain = root.path().join("plain.pak");
+    fs::write(&plain, pak_writer::official_pak(&[])).unwrap();
+    let error = fresh_player_profile(&mut DataPak::open(&plain).unwrap(), &defaults)
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("no BaseSprintSpeed_+ row"),
+        "{error:#}"
+    );
+    // A pak without the stats table.
+    let bare = root.path().join("bare.pak");
+    fs::write(
+        &bare,
+        pak_writer::write_pak(&[("Flags/D_SessionFlags.json", &table_json(&["Flag_A"]), true)]),
+    )
+    .unwrap();
+    assert!(fresh_player_profile(&mut DataPak::open(&bare).unwrap(), &defaults).is_err());
+    // A skeleton lists names only, in catalog order; an absent table fails.
+    let skeleton = catalog_skeleton(&mut DataPak::open(&path).unwrap(), &["D_Inventory"]).unwrap();
+    assert_eq!(
+        skeleton,
+        serde_json::json!({"schema_version": 1, "tables": {"D_Inventory": [
+            {"Name": "Crate"}, {"Name": "Player"}
+        ]}})
+    );
+    assert!(catalog_skeleton(&mut DataPak::open(&path).unwrap(), &["D_Absent"]).is_err());
+}

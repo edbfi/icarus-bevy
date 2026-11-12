@@ -8914,3 +8914,149 @@ fn authored_world_planner_rejects_missing_session_prerequisites() {
     profile.managers = None;
     assert!(world.plan(&profile, map).is_err());
 }
+
+/// With a data pak and a fresh-player profile written over its catalog
+/// (`gameplay_profile`), `run`'s fresh join opens the pawn with the stat
+/// container the profile gives (F-839): every pair, the five speeds at their
+/// stat IDs (F-838) with the profile's values, counted in
+/// `pawn_open_stats_sent`.
+#[test]
+fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
+    use icarus_bevy::{
+        data_pak::DataPak,
+        experimental::{
+            actor_channel::{
+                ActorChannelCodec, BlockTarget, SubObjectClass, read_actor_bunch_body,
+            },
+            archive::ByteOrder,
+            packet::read_packet,
+            pawn_open::PAWN_CHANNEL_INDEX,
+            peer_lab::PeerLabAdmission,
+            rep_layout::{RepCommand, RepLayoutCodec, RepValue},
+            rep_rpc::{
+                FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+                read_fast_array_delta, read_field_header,
+            },
+        },
+        gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+    };
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    let directory = tempfile::tempdir().unwrap();
+    let pak = directory.path().join("data.pak");
+    fs::write(&pak, pak_writer::fresh_join_pak()).unwrap();
+    let gameplay = directory.path().join("gameplay.json");
+    let authored = fresh_player_profile(
+        &mut DataPak::open(&pak).unwrap(),
+        &FreshPlayerValues::default(),
+    )
+    .unwrap();
+    fs::write(&gameplay, serde_json::to_vec(&authored).unwrap()).unwrap();
+    let (mut app, address) = server_app(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        data_pak: Some(pak),
+        authored_gameplay: Some(gameplay),
+        ..enabled(0)
+    });
+    assert_eq!(
+        app.world().resource::<PeerLab>().pawn_open_stat_count(),
+        Some(22)
+    );
+    let (replies, _) = with_server(&mut app, move || join_pinned_replies(address, pinned, 8));
+    let stats = app.world().resource::<PeerLab>().stats();
+    assert_eq!(
+        (
+            stats.pawn_opens_sent,
+            stats.pawn_open_errors,
+            stats.pawn_open_stats_sent
+        ),
+        (1, 0, 22)
+    );
+    let codec = ActorChannelCodec {
+        engine_net_version: engine,
+        exports_enabled: false,
+        has_level: true,
+        order: ByteOrder::Little,
+        limits: Default::default(),
+    };
+    let to_client = PacketConfig {
+        receiver: PacketReceiver::Client,
+        ..probe_config().packet
+    };
+    // The pawn open travels as exports plus body: the body is the final
+    // part and holds the whole open body.
+    let open = replies
+        .iter()
+        .flat_map(|bytes| read_packet(bytes, &to_client).unwrap().bunches)
+        .find(|bunch| {
+            bunch.header.channel_index == PAWN_CHANNEL_INDEX
+                && !bunch.header.has_package_map_exports
+        })
+        .expect("the pawn open body");
+    assert!(open.header.reliable && open.header.partial_final);
+    let body = read_actor_bunch_body(&mut open.payload.reader(), true, &codec).unwrap();
+    let plan = profile
+        .pawn_open_plan(PeerLabAdmission::default().map_url)
+        .unwrap()
+        .unwrap();
+    // The components' blocks follow the actor's, in plan order.
+    let stat = body
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.target,
+                BlockTarget::SubObject {
+                    class: SubObjectClass::StablyNamed,
+                    ..
+                }
+            )
+        })
+        .nth(plan.stat_container)
+        .unwrap();
+    assert!(!stat.has_rep_layout);
+    let mut reader = stat.payload.reader();
+    let field = read_field_header(&mut reader, plan.content.stat_container_bound, 1 << 20).unwrap();
+    let mut field_reader = field.payload.reader();
+    read_custom_delta_header(&mut field_reader, engine, 1).unwrap();
+    let rep_codec = RepLayoutCodec {
+        actor: codec,
+        checksums: false,
+        limits: Default::default(),
+    };
+    let delta = read_fast_array_delta(
+        &mut field_reader,
+        &FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]),
+        &rep_codec,
+        FAST_ARRAY_COUNT_CAP,
+    )
+    .unwrap();
+    assert_eq!(
+        (delta.array_replication_key, delta.base_replication_key),
+        (22, 0)
+    );
+    assert!(delta.deleted_ids.is_empty());
+    let pairs: Vec<(u32, i32)> = delta
+        .changed
+        .iter()
+        .map(|(_, item)| {
+            let FastArrayItem::Delta(item) = item else {
+                panic!("delta item");
+            };
+            let RepValue::StatPairRepState(pair) = item.entries[0].value else {
+                panic!("stat pair");
+            };
+            (pair.stat, pair.value)
+        })
+        .collect();
+    assert_eq!(pairs.len(), 22);
+    assert!(pairs.iter().all(|(_, value)| *value != 0));
+    assert!(
+        pairs.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "row order"
+    );
+    for speed in [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)] {
+        assert!(pairs.contains(&speed), "{speed:?}");
+    }
+}

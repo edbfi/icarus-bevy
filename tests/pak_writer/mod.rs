@@ -280,6 +280,61 @@ pub fn stats_json() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"Rows": rows})).unwrap()
 }
 
+/// A pak for `gameplay_profile::fresh_player_profile`: [`player_tables`]
+/// with a 74-row `D_Stats` catalog naming the five speeds at their stat IDs
+/// (58, 61, 65, 69, 73; F-838), their bases and the maxima elsewhere, and
+/// fillers, plus a `D_SessionFlags` catalog. Its packaged values (the starting grants of 250 and more, a
+/// filler's `bIsReplicated`) are decoys a generated profile must not copy.
+#[allow(dead_code)]
+pub fn fresh_join_pak() -> Vec<u8> {
+    let mut names: Vec<String> = (0..74).map(|row| format!("Filler_{row}")).collect();
+    for (row, name) in [
+        (58, "MovementSpeed_+"),
+        (61, "SprintSpeed_+"),
+        (65, "CrouchSpeed_+"),
+        (69, "SwimSpeed_+"),
+        (73, "SwimSprintSpeed_+"),
+        (1, "BaseMovementSpeed_+"),
+        (2, "BaseSprintSpeed_+"),
+        (3, "BaseCrouchSpeed_+"),
+        (4, "BaseSwimSpeed_+"),
+        (5, "BaseSwimSprintSpeed_+"),
+        (6, "BaseMaximumHealth_+"),
+        (7, "BaseMaximumStamina_+"),
+        (8, "BaseMaximumOxygen_+"),
+        (9, "BaseMaximumWater_+"),
+        (10, "BaseMaximumFood_+"),
+        (11, "BaseWeightCapacity_+"),
+        (12, "MaximumHealth_+"),
+        (13, "MaximumStamina_+"),
+        (14, "MaximumOxygen_+"),
+        (15, "MaximumWater_+"),
+        (16, "MaximumFood_+"),
+        (17, "WeightCapacity_+"),
+        (18, "SprintMovementSpeedCoefficient_%"),
+    ] {
+        names[row] = name.to_owned();
+    }
+    let rows: Vec<serde_json::Value> = names
+        .iter()
+        .enumerate()
+        .map(|(row, name)| {
+            if row == 20 {
+                serde_json::json!({"Name": name, "bIsReplicated": true})
+            } else {
+                serde_json::json!({"Name": name})
+            }
+        })
+        .collect();
+    official_pak(&[
+        (
+            "Stats/D_Stats.json",
+            serde_json::to_vec(&serde_json::json!({"Rows": rows})).unwrap(),
+        ),
+        ("Flags/D_SessionFlags.json", table_json(&["Flag_A"])),
+    ])
+}
+
 /// A pak with `extra` members beside [`player_tables`] (a member of the
 /// same path in `extra` wins).
 pub fn official_pak(extra: &[(&str, Vec<u8>)]) -> Vec<u8> {

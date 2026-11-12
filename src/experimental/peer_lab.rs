@@ -1053,6 +1053,9 @@ pub struct PeerLabStats {
     pub player_history_errors: u64,
     /// Pawn opens sent after the PlayerController open (F-797).
     pub pawn_opens_sent: u64,
+    /// Stat pairs carried in the stat containers of those pawn opens: a
+    /// fresh player's replicated stats (F-839), 0 per open without tables.
+    pub pawn_open_stats_sent: u64,
     /// Pawn open attempts refused by composition, framing or temporary send pressure.
     pub pawn_open_errors: u64,
     /// GameState opens sent after the PlayerController open (F-794).
@@ -4151,6 +4154,14 @@ impl PeerLab {
         );
         self.pawn_open = Some((plan, channel_index, content));
         Ok(())
+    }
+
+    /// How many stat pairs each fresh pawn open carries in its stat
+    /// container, or `None` without the pawn open.
+    pub fn pawn_open_stat_count(&self) -> Option<usize> {
+        self.pawn_open
+            .as_ref()
+            .map(|(_, _, content)| content.stats.as_ref().map_or(0, |stats| stats.items.len()))
     }
 
     /// Assign each pawn a UID in a world-wide namespace. Configure and seed
@@ -10227,6 +10238,11 @@ impl PeerLab {
         entry.controller_startup_pawn_guid = cache.actor_guid(state.key).ok();
         entry.pawn_temperature = Some(temperature);
         entry.queued_pawn_temperature = Some(temperature);
+        let stat_pairs = state
+            .content
+            .stats
+            .as_ref()
+            .map_or(0, |stats| stats.items.len() as u64);
         entry.pawn_character_state = Some(state.content.character_state);
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
@@ -10238,6 +10254,8 @@ impl PeerLab {
         self.controller_possession_due(address);
         if delivered {
             bump(&mut self.stats.pawn_opens_sent);
+            self.stats.pawn_open_stats_sent =
+                self.stats.pawn_open_stats_sent.saturating_add(stat_pairs);
             self.complete_player_initialisation(address);
         }
         self.connected_player_actor_opened(address);

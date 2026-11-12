@@ -1687,6 +1687,39 @@ fn load_data_tables(path: &std::path::Path, gameplay: &std::path::Path) -> Resul
     Ok(tables)
 }
 
+/// `network.data_pak`'s row identities bound to `network.authored_gameplay`'s
+/// values, loaded and checked as [`bind`] does before its socket binds (so
+/// a caller can preflight them); `None` when neither is configured. The two
+/// are configured together or not at all.
+pub fn data_tables(network: &NetworkConfig) -> Result<Option<DataTables>> {
+    ensure!(
+        network.data_pak.is_some() == network.authored_gameplay.is_some(),
+        "network.data_pak and network.authored_gameplay must be configured together; packaged gameplay values are not runtime inputs"
+    );
+    network
+        .data_pak
+        .as_deref()
+        .map(|path| {
+            load_data_tables(
+                path,
+                network
+                    .authored_gameplay
+                    .as_deref()
+                    .expect("validated pair"),
+            )
+            .with_context(|| format!("load network.data_pak {}", path.display()))
+        })
+        .transpose()
+}
+
+/// How many stat pairs a fresh player's pawn open carries with `tables`
+/// ([`pawn_content`]): 0 without tables.
+pub fn fresh_pawn_stat_count(tables: Option<&mut DataTables>) -> Result<usize> {
+    Ok(pawn_content(tables)?
+        .stats
+        .map_or(0, |stats| stats.items.len()))
+}
+
 /// Validate `network`, load its release profile and only then bind its
 /// socket, or return `None` when disabled.
 pub fn bind(network: &NetworkConfig) -> Result<Option<BoundNetwork>> {
@@ -1732,26 +1765,9 @@ fn bind_session(
     }
     network.validate()?;
     let profile = release_profile(network)?;
-    ensure!(
-        network.data_pak.is_some() == network.authored_gameplay.is_some(),
-        "network.data_pak and network.authored_gameplay must be configured together; packaged gameplay values are not runtime inputs"
-    );
     // The tables run reads are loaded here, so a pak without them fails
     // before the socket binds rather than at the first apply.
-    let mut tables = network
-        .data_pak
-        .as_deref()
-        .map(|path| {
-            load_data_tables(
-                path,
-                network
-                    .authored_gameplay
-                    .as_deref()
-                    .expect("validated pair"),
-            )
-            .with_context(|| format!("load network.data_pak {}", path.display()))
-        })
-        .transpose()?;
+    let mut tables = data_tables(network)?;
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);
     }

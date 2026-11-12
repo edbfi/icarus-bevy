@@ -42,6 +42,11 @@ mod native_join_capture;
 #[cfg(test)]
 #[path = "../tests/common/run_log.rs"]
 mod run_log;
+// Shared test pak writer; the probe's tests use only its fresh-join pak.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/pak_writer/mod.rs"]
+mod pak_writer;
 
 // Protocol identities observed in S2; the native world remains independently
 // authored and empty. These names do not import terrain or gameplay tables.
@@ -161,6 +166,16 @@ struct Options {
     /// validated and reported, not sent (no qualified open field carries it).
     #[arg(long, allow_hyphen_values = true, requires = "spawn_location")]
     spawn_yaw: Option<f64>,
+    /// The official dedicated server's `Icarus/Content/Data/data.pak`, for
+    /// row identities only, as `[network] data_pak`; needs
+    /// `--authored-gameplay`. With both, a fresh player's pawn opens with
+    /// the replicated stats, vitals and inventories they give (F-836, F-839).
+    #[arg(long, requires = "authored_gameplay")]
+    data_pak: Option<PathBuf>,
+    /// Independently authored gameplay JSON, as `[network]
+    /// authored_gameplay` (F-993); needs `--data-pak`.
+    #[arg(long, requires = "data_pak")]
+    authored_gameplay: Option<PathBuf>,
 }
 
 impl Options {
@@ -275,6 +290,33 @@ impl Options {
         Ok(config)
     }
 
+    /// `--data-pak` and `--authored-gameplay` as the server's `[network]`
+    /// keys.
+    fn data_table_config(&self) -> NetworkConfig {
+        NetworkConfig {
+            data_pak: self.data_pak.clone(),
+            authored_gameplay: self.authored_gameplay.clone(),
+            ..NetworkConfig::default()
+        }
+    }
+
+    /// Preflight of `--data-pak` and `--authored-gameplay`: both or
+    /// neither, validated and loaded as `run` loads them before its socket
+    /// binds, and only with the release's pawn open. Returns how many stat
+    /// pairs a fresh pawn's open will carry, or `None` without tables.
+    fn fresh_pawn_stats(&self, profile: &ReleaseProfile) -> Result<Option<usize>> {
+        let config = self.data_table_config();
+        config.validate()?;
+        let Some(mut tables) = network::data_tables(&config)? else {
+            return Ok(None);
+        };
+        ensure!(
+            profile.pawn_open_plan(PROBE_MAP)?.is_some(),
+            "data tables fill the pawn open, which needs the release's pawn profile; omit --data-pak"
+        );
+        Ok(Some(network::fresh_pawn_stat_count(Some(&mut tables))?))
+    }
+
     /// Pure preflight of `--level-visibility-actors`: enabled dispatch needs
     /// the release's level actor identities, its controller open and the
     /// qualified visibility decoder profile.
@@ -314,6 +356,16 @@ fn spawn_report(spawn: &SpawnConfig) -> serde_json::Value {
         "yaw": point.and_then(|point| point.yaw),
         "yaw_sent": false,
         "source": if point.is_some() { "configured" } else { "default" },
+    })
+}
+
+/// The run's data tables, for the ready event and the summary: whether
+/// they are loaded and how many stat pairs a fresh pawn's open carries
+/// (0 without tables). Never a path or a value.
+fn data_tables_report(fresh_pawn_stats: Option<usize>) -> serde_json::Value {
+    json!({
+        "loaded": fresh_pawn_stats.is_some(),
+        "fresh_pawn_stats": fresh_pawn_stats.unwrap_or(0),
     })
 }
 
@@ -423,6 +475,7 @@ fn main() -> Result<()> {
     let level_visibility_actors = options.level_visibility_actors(&profile)?;
     let pawn_move_acks = options.pawn_move_acks(&profile)?;
     let spawn = options.spawn(&profile)?;
+    let fresh_pawn_stats = options.fresh_pawn_stats(&profile)?;
     let (game_state, flod) = options.authored_world.plan(&profile)?;
     let prospect = ProspectInfo {
         prospect_id: PROBE_PROSPECT_ID.encode_utf16().collect(),
@@ -489,6 +542,9 @@ fn main() -> Result<()> {
         max_players: 1,
         session_timeout_seconds: 30,
         release_profile: Some(options.release),
+        // Loaded again by the bind, as `run` loads them.
+        data_pak: options.data_pak,
+        authored_gameplay: options.authored_gameplay,
         connected_player_records,
         controller_possession_properties,
         server_frozen_movement_release: frozen_movement_release,
@@ -547,6 +603,10 @@ fn main() -> Result<()> {
         bound.lab.spawn_point_count() == spawn.points.len(),
         "spawn point configuration did not apply"
     );
+    ensure!(
+        bound.lab.pawn_open_stat_count().unwrap_or(0) == fresh_pawn_stats.unwrap_or(0),
+        "data table configuration did not apply"
+    );
     if level_visibility_actors {
         bound.lab.enable_level_visibility_actors(&profile)?;
     }
@@ -585,6 +645,7 @@ fn main() -> Result<()> {
         "pawn_move_acks": pawn_move_acks,
         "level_visibility_actors": level_visibility_actors,
         "spawn": spawn_report(&spawn),
+        "data_tables": data_tables_report(fresh_pawn_stats),
         "compatibility_proven": false,
     }))
     .err();
@@ -657,7 +718,7 @@ fn main() -> Result<()> {
     } else {
         reason
     };
-    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"spawn":spawn_report(&spawn),"compatibility_proven":false});
+    let mut summary = json!({"event":"native_join_stopped","reason":reason,"queries":query_result.as_ref().ok(),"service_ok":service_result.is_ok(),"query_ok":query_result.is_ok(),"spawn":spawn_report(&spawn),"data_tables":data_tables_report(fresh_pawn_stats),"compatibility_proven":false});
     if let Some(object) = summary.as_object_mut() {
         object.extend(before);
         object.extend(after);
@@ -1129,6 +1190,80 @@ mod tests {
         no_controller.player_controller = None;
         assert!(placed.spawn(&no_controller).is_err());
         assert!(default.spawn(&no_controller).is_ok());
+    }
+
+    #[test]
+    fn data_tables_are_both_or_neither_and_refused_before_networking() {
+        use icarus_bevy::{
+            data_pak::DataPak,
+            gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+        };
+        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let parse = |extra: &[&str]| {
+            Options::try_parse_from(["probe", "--name", "Authored"].iter().chain(extra))
+        };
+        let default = parse(&[]).unwrap();
+        assert!(default.data_pak.is_none() && default.authored_gameplay.is_none());
+        assert_eq!(default.fresh_pawn_stats(&profile).unwrap(), None);
+        assert_eq!(
+            data_tables_report(None),
+            json!({"loaded": false, "fresh_pawn_stats": 0})
+        );
+        // One without the other: refused by the parser.
+        assert!(parse(&["--data-pak", "data.pak"]).is_err());
+        assert!(parse(&["--authored-gameplay", "gameplay.json"]).is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("data.pak");
+        std::fs::write(&pak, pak_writer::fresh_join_pak()).unwrap();
+        let gameplay = directory.path().join("gameplay.json");
+        let authored = fresh_player_profile(
+            &mut DataPak::open(&pak).unwrap(),
+            &FreshPlayerValues::default(),
+        )
+        .unwrap();
+        std::fs::write(&gameplay, serde_json::to_vec(&authored).unwrap()).unwrap();
+        let (pak, gameplay) = (pak.to_str().unwrap(), gameplay.to_str().unwrap());
+        let loaded = parse(&["--data-pak", pak, "--authored-gameplay", gameplay]).unwrap();
+        let count = loaded.fresh_pawn_stats(&profile).unwrap();
+        assert_eq!(count, Some(22));
+        let report = data_tables_report(count);
+        assert_eq!(report, json!({"loaded": true, "fresh_pawn_stats": 22}));
+        // The report names no path and no word the run log forbids.
+        let text = report.to_string();
+        assert!(!text.contains(pak) && !text.contains(gameplay));
+        for word in run_log::RUN_LOG_FORBIDDEN {
+            assert!(!text.contains(word), "{word}");
+        }
+        // Unusable: refused by the parser (an empty path) or the preflight,
+        // which runs before any socket, TLS or Steam work.
+        let directory_path = directory.path().to_str().unwrap();
+        let missing = directory.path().join("absent.json");
+        let missing = missing.to_str().unwrap();
+        for bad in [
+            ["--data-pak", "", "--authored-gameplay", gameplay],
+            ["--data-pak", pak, "--authored-gameplay", ""],
+            [
+                "--data-pak",
+                directory_path,
+                "--authored-gameplay",
+                gameplay,
+            ],
+            ["--data-pak", pak, "--authored-gameplay", missing],
+            ["--data-pak", gameplay, "--authored-gameplay", gameplay],
+            // The pak's own tables are not an authored profile.
+            ["--data-pak", pak, "--authored-gameplay", pak],
+        ] {
+            let refused = match parse(&bad) {
+                Err(_) => true,
+                Ok(options) => options.fresh_pawn_stats(&profile).is_err(),
+            };
+            assert!(refused, "{bad:?}");
+        }
+        // Tables fill the pawn open, so they need the release's pawn.
+        let mut no_pawn = profile;
+        no_pawn.pawn = None;
+        assert!(loaded.fresh_pawn_stats(&no_pawn).is_err());
+        assert_eq!(default.fresh_pawn_stats(&no_pawn).unwrap(), None);
     }
 
     #[test]
