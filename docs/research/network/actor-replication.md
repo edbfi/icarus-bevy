@@ -36,6 +36,14 @@ matches (F-1077, F-1086), but its check needs controller IcarusPlayerCharacter,
 unsent until F-1088 (F-1087); 62, startup RPCs and level actors are missing
 (F-1082). Curtain inputs F-1069/F-1076.
 
+After entry S2 answers field-39 moves only with field-30 acks and rare
+corrections (F-1129, F-1130, F-1132); unanswered moves do not fault a client
+(F-1131). S2 moved its new joiner's pawn about 2.5 km before the unfreeze and
+the tile reports followed that move, so only run 3 (F-1089) hints that tiles
+cover the native origin (F-1114, F-1134, F-1138). The original picks a rocket
+spawn (F-1136), keeps kill-Z server-side (F-1137) and saves the client's last
+position (F-1135).
+
 Tags F-702/F-1031; sources F-828/F-832.
 Replay F-762.
 
@@ -53,4 +61,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1370.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374.

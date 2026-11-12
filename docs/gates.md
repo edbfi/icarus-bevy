@@ -64,8 +64,8 @@ Last reconciled: 2026-11-11
   F-1033); connected behavior and visibility bindings still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
-  F-1080 are qualified and gate reads F-1086/F-1087 and readiness reads
-  F-1110 to F-1126 done; do not repeat them or rerun F-1084/F-1089 unchanged.
+  F-1080 are qualified and gate reads F-1086/F-1087 and entry reads
+  F-1110 to F-1138 done; do not repeat them or rerun F-1084/F-1089 unchanged.
   The next connected run sends only the pawn unfreeze (F-1099, F-1100); the 82
   answer (F-1097, F-1098, F-1104) stays the gated fallback below. None clears those preconditions.
 

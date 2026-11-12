@@ -89,7 +89,9 @@ pawn's frozen blocker holds while it is frozen (F-1126). No read path from
 the answer to them or to the frozen flag (F-1104). S2 unfreezes the pawn
 near its last answer; the native does not (F-1099). The client anchor
 (F-1110 to F-1114) sets its own report (F-1105, F-1107), which decides how
-the unfreeze run is read (F-1109).
+the unfreeze run is read (F-1109). S2's tile reports followed a 2.5 km
+server move of the pawn (F-1134), so they say nothing about tiles at the
+native spawn XY (F-1138); only run 3's burst hints at that (F-1089, F-1114).
 
 ## Open questions
 
@@ -103,4 +105,4 @@ F-1080; 3.0.35 client behaviour.
 
 M-1208, M-1209, M-1211, M-1215, M-1217, M-1219, M-1221, M-1223 to M-1244, M-1246/M-1252.
 M-1240/M-1241/M-1243 are direct; M-1234/M-1242/M-1244 are empty REA bundles.
-M-1161, M-1342, M-1343 (F-1078 to F-1081); M-1345, M-1347 (F-1085); M-1349 to M-1352; M-1354, M-1355 (F-1099 to F-1104); M-1356 to M-1358 (F-1105 to F-1109); M-1363 to M-1370 (F-1110 to F-1126).
+M-1161, M-1342, M-1343 (F-1078 to F-1081); M-1345, M-1347 (F-1085); M-1349 to M-1352; M-1354, M-1355 (F-1099 to F-1104); M-1356 to M-1358 (F-1105 to F-1109); M-1363 to M-1370 (F-1110 to F-1126); M-1374 (F-1134, F-1138).
