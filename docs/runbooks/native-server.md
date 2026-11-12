@@ -49,27 +49,28 @@ Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
 World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
 Password unvalidated: no real passwords.
 Diagnostics: [network readiness](network-readiness.md) (F-1045).
-Level visibility actors (answering field 82 with a level's world-settings
-actors; M-1350) are gated ([gates](../gates.md)): `[network]
-level_visibility_actors = true` is refused; only the probe's
-`--level-visibility-actors true` enables them, in a bounded run.
+Level visibility actors (field-82 answers, M-1350) are gated
+([gates](../gates.md)): `[network] level_visibility_actors = true` is refused;
+only the probe's `--level-visibility-actors true` enables them.
 Possession F-1088: `[network] controller_possession_properties` / probe
 `--controller-possession-properties`, default true, needs the pawn open.
 Records F-1077: `[network] connected_player_records` / probe
-`--connected-player-records` (ready field), default true, need a release naming
-the record class (3.0.34/3.0.35 pins) plus pawn, PlayerState and GameState
-opens; else `run` omits them, the probe refuses. `false`: prior bunches.
+`--connected-player-records` (ready field), default true, need the record class
+(3.0.34/3.0.35 pins) and pawn, PlayerState, GameState opens; else `run` omits
+them, the probe refuses. `false`: prior bunches.
 Unfreeze F-1099/F-1100: `[network] server_frozen_movement_release` / probe
 `--server-frozen-movement-release`, default true, needs records (else `run`
 omits it, the probe refuses). After the player's own record ACK plus
 `server_frozen_movement_release_delay_ms` (default 0, max 600000; probe
-`--server-frozen-movement-release-delay-ms`), one unreliable pawn update sets
-`bServerFrozenMovement` false, resent on NAK. Probe line
+`--server-frozen-movement-release-delay-ms`), one unreliable pawn update
+unfreezes it, resent on NAK. Probe line
 `native_join_frozen_movement` (`unix_ms`, per-session times) on schedule, send,
 ACK or abandonment.
 Move acks F-1127/F-1128: `[network] pawn_move_acks` / probe `--pawn-move-acks`,
 default false (gates: next run sends only the unfreeze), need the pawn open
 (else `run` omits them, the probe refuses).
+Spawn points F-1139: `[network.spawn]` / probe `--spawn-location`,
+`--spawn-yaw`; default none (origin); [guidance](network-readiness.md#spawn-placement).
 Private pawn-channel bunches: probe-only
 `--private-pawn-bunches-output work/<case>/pawn-bunches.jsonl`
 ([format, caps](network-readiness.md#private-pawn-channel-bunches)).
