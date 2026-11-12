@@ -2565,8 +2565,10 @@ pub fn encode_rep_properties(
 
 /// Maximum registered enumerator value of `ENetRole` (`ROLE_MAX = 4`, F-703).
 pub const NET_ROLE_MAX_VALUE: i64 = 4;
-/// Maximum registered enumerator value of `EReplicatedLeftProspectState` (3, F-703).
-pub const REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE: i64 = 3;
+/// Maximum registered enumerator value of `ELeaveProspectSessionType`
+/// (`Disconnected = 5`, 3 bits), the enum of `ReplicatedLeftProspectSession`
+/// in client 25793767 and server 26425113 (F-1120).
+pub const LEAVE_PROSPECT_SESSION_TYPE_MAX_VALUE: i64 = 5;
 /// Maximum registered enumerator value of `EAudioShelterState` (2, F-705).
 pub const AUDIO_SHELTER_STATE_MAX_VALUE: i64 = 2;
 /// Maximum registered enumerator value of `EAliveState` (1, F-705).
@@ -2679,7 +2681,7 @@ pub fn icarus_player_controller_rep_layout(
 
 /// Statically observed 30-handle rep layout of `AIcarusPlayerControllerSurvival`
 /// (F-703, F-704): `AIcarusPlayerController` handles 1..25, then handle 26
-/// `ReplicatedLeftProspectSession` (`EReplicatedLeftProspectState`), handle 27
+/// `ReplicatedLeftProspectSession` (`ELeaveProspectSessionType`, F-1120), handle 27
 /// `AssignedDropshipSpawn`, handle 28 `AssignedDropship`, handle 29
 /// `AssignedGravestone` and handle 30 `RemoteUserSettings`.
 pub fn icarus_player_controller_survival_rep_layout(
@@ -2692,7 +2694,7 @@ pub fn icarus_player_controller_survival_rep_layout(
         icarus_player_controller_rep_layout(location, velocity, rotation, tag_encoding);
     commands.extend([
         RepCommand::Enum {
-            bits: enum_bits(REPLICATED_LEFT_PROSPECT_STATE_MAX_VALUE, 1),
+            bits: enum_bits(LEAVE_PROSPECT_SESSION_TYPE_MAX_VALUE, 1),
         },
         RepCommand::Object,
         RepCommand::Object,
