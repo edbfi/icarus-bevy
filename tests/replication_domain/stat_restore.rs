@@ -344,31 +344,21 @@ fn the_delta_keeps_open_ids_and_appends_new_stats_in_row_order() {
 fn the_restored_maxima_bound_the_character_state() {
     use icarus_bevy::experimental::{
         pawn_open::character_state_handle as h,
-        stat_restore::{RestoredStats, stat_bounds},
+        stat_restore::{PawnStatMaxima, RestoredStats, stat_bounds},
     };
-    let names: Vec<String> = [
-        "MaximumHealth_+",
-        "MaximumStamina_+",
-        "MaximumOxygen_+",
-        "MaximumWater_+",
-        "MaximumFood_+",
-    ]
-    .iter()
-    .map(|name| (*name).to_owned())
-    .collect();
-    let pair = |stat, value| StatPairRepState { stat, value };
     let stats = RestoredStats {
-        items: vec![
-            pair(0, 614),
-            pair(1, 218),
-            pair(2, 300),
-            pair(3, 310),
-            pair(4, 320),
-        ],
+        maxima: PawnStatMaxima {
+            health: 614,
+            stamina: 218,
+            oxygen: 300,
+            water: 310,
+            food: 320,
+        },
+        items: Vec::new(),
         overburdened: false,
     };
     assert_eq!(
-        stat_bounds(&stats, &names),
+        stat_bounds(&stats),
         [
             (h::MAX_HEALTH, 614),
             // Stamina refills to its maximum.
@@ -379,4 +369,94 @@ fn the_restored_maxima_bound_the_character_state() {
             (h::MAX_FOOD, 320),
         ]
     );
+}
+
+#[test]
+fn authority_maxima_include_unreplicated_equipment_and_modifier_grants() {
+    use icarus_bevy::experimental::stat_restore::PawnStatMaxima;
+
+    let names = [
+        "BaseWeightCapacity_+",
+        "WeightCapacity_+",
+        "BaseMaximumHealth_+",
+        "MaximumHealth_+",
+        "BaseMaximumStamina_+",
+        "MaximumStamina_+",
+        "BaseMaximumOxygen_+",
+        "MaximumOxygen_+",
+        "BaseMaximumWater_+",
+        "MaximumWater_+",
+        "BaseMaximumFood_+",
+        "MaximumFood_+",
+        "BaseMovementSpeed_+",
+        "MovementSpeed_+",
+    ];
+    let mut stats = StatRestoreTables {
+        names: names.iter().map(|name| (*name).to_owned()).collect(),
+        replicated: names
+            .iter()
+            .map(|name| *name == "MovementSpeed_+")
+            .collect(),
+        starting: grants(&[
+            ("BaseWeightCapacity_+", 100),
+            ("BaseMaximumHealth_+", 250),
+            ("BaseMaximumStamina_+", 150),
+            ("BaseMaximumOxygen_+", 220),
+            ("BaseMaximumWater_+", 230),
+            ("BaseMaximumFood_+", 240),
+            ("BaseMovementSpeed_+", 600),
+        ]),
+        items: vec![ItemStatInfo::default()],
+        modifier_grants: vec![grants(&[("BaseMaximumStamina_+", 25)])],
+        ..StatRestoreTables::default()
+    };
+    let inventory = InventoryRestoreTables {
+        items: vec![ItemInfo {
+            grants: grants(&[("BaseMaximumHealth_+", 50)]),
+            ..ItemInfo::default()
+        }],
+        ..InventoryRestoreTables::default()
+    };
+    let equipment = slots(&[(0, &[])]);
+    let linked = BTreeMap::new();
+    let inputs = PawnStatInputs {
+        inventories: vec![(InventoryRole::Equipment, &equipment)],
+        linked: &linked,
+        modifiers: vec![(0, 0)],
+        weight: 0,
+    };
+    let restored = restore_stats(&stats, &inventory, &inputs).unwrap();
+    assert_eq!(
+        restored.maxima,
+        PawnStatMaxima {
+            health: 300,
+            stamina: 175,
+            oxygen: 220,
+            water: 230,
+            food: 240,
+        }
+    );
+    assert_eq!(
+        restored.items,
+        [StatPairRepState {
+            stat: 13,
+            value: 600
+        }]
+    );
+    // A real evaluated zero remains zero; it does not fall back to the
+    // opening maximum or depend on a nonzero fast-array item.
+    stats.modifier_grants[0].insert("BaseMaximumWater_+".to_owned(), -230);
+    assert_eq!(
+        restore_stats(&stats, &inventory, &inputs)
+            .unwrap()
+            .maxima
+            .water,
+        0
+    );
+    // Changing only the projection cannot change authority bounds.
+    stats.replicated.fill(true);
+    let replicated = restore_stats(&stats, &inventory, &inputs).unwrap();
+    assert_eq!(replicated.maxima.health, restored.maxima.health);
+    assert_eq!(replicated.maxima.stamina, restored.maxima.stamina);
+    assert_eq!(replicated.maxima.water, 0);
 }

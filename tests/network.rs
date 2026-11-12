@@ -6306,6 +6306,15 @@ fn restored_stat_fixture_tables() -> Vec<(&'static str, Vec<u8>)> {
 
 #[test]
 fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
+    returning_pawn_stat_bounds(true);
+}
+
+#[test]
+fn returning_pawns_keep_authority_maxima_when_only_speed_stats_replicate() {
+    returning_pawn_stat_bounds(false);
+}
+
+fn returning_pawn_stat_bounds(replicate_maxima: bool) {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, BlockTarget, SubObjectClass, read_actor_bunch_body},
         archive::ByteOrder,
@@ -6323,7 +6332,40 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
     };
     use icarus_bevy::prospect;
     use scalar::units;
-    let tables = restored_stat_fixture_tables();
+    let mut tables = restored_stat_fixture_tables();
+    let mut stat_table: serde_json::Value =
+        serde_json::from_slice(&pak_writer::stats_json()).unwrap();
+    let rows = stat_table["Rows"].as_array_mut().unwrap();
+    rows.extend(
+        ["MaximumOxygen_+", "MaximumWater_+", "MaximumFood_+"]
+            .map(|name| serde_json::json!({"Name": name, "bIsReplicated": replicate_maxima})),
+    );
+    if !replicate_maxima {
+        for row in rows {
+            let name = row["Name"].as_str().unwrap();
+            row["bIsReplicated"] =
+                serde_json::json!(name == "MovementSpeed_+" || name == "SprintSpeed_+");
+        }
+    }
+    tables.push((
+        "Stats/D_Stats.json",
+        serde_json::to_vec(&stat_table).unwrap(),
+    ));
+    let armour = tables
+        .iter_mut()
+        .find(|(path, _)| *path == "Traits/D_Armour.json")
+        .unwrap();
+    let mut armour_table: serde_json::Value = serde_json::from_slice(&armour.1).unwrap();
+    for (name, value) in [
+        ("BaseMaximumStamina_+", 25),
+        ("BaseMaximumOxygen_+", 10),
+        ("BaseMaximumWater_+", 20),
+        ("BaseMaximumFood_+", 30),
+    ] {
+        armour_table["Rows"][0]["ArmourStats"][format!("(Value=\"{name}\")")] =
+            serde_json::json!(value);
+    }
+    armour.1 = serde_json::to_vec(&armour_table).unwrap();
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let pinned = profile.pin.network_checksum;
     let engine = profile.engine_network_version;
@@ -6346,6 +6388,10 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
     lab.set_linked_inventories(std::collections::BTreeMap::new())
         .unwrap();
     let mut characters = prospect::saved_player_characters_from_payload(&payload).unwrap();
+    characters[0].state.health = Some(999);
+    characters[0].state.oxygen_level = Some(999);
+    characters[0].state.water_level = Some(999);
+    characters[0].state.food_level = Some(999);
     characters[0].inventories = vec![SavedActorInventory {
         id: 2,
         items: vec![SavedItem {
@@ -6372,7 +6418,7 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
             stats.returning_stat_gaps,
             stats.returning_pawn_update_errors,
         ),
-        (1, 1, 0, 0)
+        (1, u64::from(replicate_maxima), 0, 0)
     );
     let codec = ActorChannelCodec {
         engine_net_version: engine,
@@ -6421,37 +6467,46 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
             )
         })
         .unwrap();
-    let stat = &blocks[first];
-    assert!(!stat.has_rep_layout);
-    let plan = profile
-        .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
-        .unwrap()
+    let state_index = if replicate_maxima {
+        let stat = &blocks[first];
+        assert!(!stat.has_rep_layout);
+        let plan = profile
+            .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
+            .unwrap()
+            .unwrap();
+        let mut reader = stat.payload.reader();
+        let field =
+            read_field_header(&mut reader, plan.content.stat_container_bound, 1 << 20).unwrap();
+        let mut field_reader = field.payload.reader();
+        read_custom_delta_header(&mut field_reader, engine, 1).unwrap();
+        let delta = read_fast_array_delta(
+            &mut field_reader,
+            &FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]),
+            &rep_codec,
+            FAST_ARRAY_COUNT_CAP,
+        )
         .unwrap();
-    let mut reader = stat.payload.reader();
-    let field = read_field_header(&mut reader, plan.content.stat_container_bound, 1 << 20).unwrap();
-    let mut field_reader = field.payload.reader();
-    read_custom_delta_header(&mut field_reader, engine, 1).unwrap();
-    let delta = read_fast_array_delta(
-        &mut field_reader,
-        &FastArrayItemLayout::Delta(vec![RepCommand::StatPairRepState]),
-        &rep_codec,
-        FAST_ARRAY_COUNT_CAP,
-    )
-    .unwrap();
-    // MaximumHealth_+ (row 0, the open's item 1): 250 + 50.
-    let FastArrayItem::Delta(item) = &delta.changed[0].1 else {
-        panic!("delta item");
+        // MaximumHealth_+ (row 0, the open's item 1): 250 + 50.
+        let FastArrayItem::Delta(item) = &delta.changed[0].1 else {
+            panic!("delta item");
+        };
+        assert_eq!(delta.changed[0].0, 1);
+        assert_eq!(
+            item.entries[0].value,
+            RepValue::StatPairRepState(StatPairRepState {
+                stat: 0,
+                value: 300
+            })
+        );
+        first + 1
+    } else {
+        // No maximum is projected onto the wire and no speed changed, so
+        // the first component is ActorState, with no stat-container delta.
+        assert!(blocks[first].has_rep_layout);
+        first
     };
-    assert_eq!(delta.changed[0].0, 1);
-    assert_eq!(
-        item.entries[0].value,
-        RepValue::StatPairRepState(StatPairRepState {
-            stat: 0,
-            value: 300
-        })
-    );
     let state = read_rep_properties(
-        &mut blocks[first + 1].payload.reader(),
+        &mut blocks[state_index].payload.reader(),
         &player_character_state_rep_layout(),
         &rep_codec,
     )
@@ -6462,6 +6517,25 @@ fn returning_pawns_restore_their_stats_and_the_bounds_they_set() {
             .iter()
             .any(|entry| entry.handle == h::MAX_HEALTH && entry.value == RepValue::Int(300))
     );
+    for (handle, expected) in [
+        (h::HEALTH, 300),
+        (h::MAX_STAMINA, 175),
+        (h::STAMINA, 175),
+        (h::MAX_OXYGEN, 230),
+        (h::OXYGEN, 230),
+        (h::MAX_WATER, 250),
+        (h::WATER, 250),
+        (h::MAX_FOOD, 270),
+        (h::FOOD, 270),
+    ] {
+        assert!(
+            state
+                .entries
+                .iter()
+                .any(|entry| entry.handle == handle && entry.value == RepValue::Int(expected)),
+            "missing bound {handle}: {expected}"
+        );
+    }
     // TotalExperience from the character profile's XP (41), its debt (-99)
     // not subtracted (F-990).
     assert!(

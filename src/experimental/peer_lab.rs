@@ -4937,8 +4937,8 @@ impl PeerLab {
                 }
             }
             let mut bounded = open_state.clone();
-            if let (Some((_, restored)), Some(tables)) = (&stats, &self.stat_restore) {
-                for (handle, value) in stat_bounds(restored, &tables.names) {
+            if let Some((_, restored)) = &stats {
+                for (handle, value) in stat_bounds(restored) {
                     bounded.insert(handle, RepValue::Int(value));
                 }
             }
