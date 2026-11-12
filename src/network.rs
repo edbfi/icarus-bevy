@@ -49,11 +49,12 @@
 //! client's packed moves are decoded and the newest is acknowledged at most
 //! every 100 ms, never corrected (F-1127, F-1128). With `[network.spawn]`
 //! points, each joining player's controller and pawn open at the next point
-//! round-robin instead of [`SPAWN_LOCATION`] (F-1139, F-1140). Level visibility actors (dispatching the client's field-82
-//! level visibility reports and opening each newly visible level's
-//! world-settings actors) are gated: `[network] level_visibility_actors =
-//! true` is refused, and only the bounded join probe enables them through
-//! the lab. Nothing else replicates.
+//! round-robin instead of [`SPAWN_LOCATION`] (F-1139, F-1140). Level
+//! visibility actors (dispatching the client's field-82 level visibility
+//! reports and opening each newly visible level's world-settings actors) are
+//! gated: `[network] level_visibility_actors = true` is refused, and only
+//! the bounded join probe enables them through the lab. Nothing else
+//! replicates.
 //!
 //! Ordering: the lab polls at most `PACKETS_PER_UPDATE` datagrams once per
 //! app update in `RunFixedMainLoopSystems::BeforeFixedMainLoop`, so network

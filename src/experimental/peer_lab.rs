@@ -2643,8 +2643,6 @@ struct PeerEntry {
     ping: PingEstimator,
 }
 
-/// Capacity planning may fill a cloned queue even when the live queue is
-/// empty. Only outstanding traffic that can drain makes a refusal retryable.
 /// The packed moves one client unreliable pawn bunch carries: each actor
 /// block's field-39 payloads, in order. Sub-object blocks and other fields
 /// are skipped; a bunch the lab cannot read is an error.
@@ -2781,6 +2779,8 @@ fn receive_pawn_moves(
     }
 }
 
+/// Capacity planning may fill a cloned queue even when the live queue is
+/// empty. Only outstanding traffic that can drain makes a refusal retryable.
 fn transport_capacity_can_drain(entry: &PeerEntry, error: &anyhow::Error, channel: u32) -> bool {
     use super::sequencing::SendCapacityError;
     let temporary = match error.downcast_ref::<SendCapacityError>() {
