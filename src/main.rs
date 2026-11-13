@@ -1570,6 +1570,20 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         stopped_output?;
         Ok(())
     })();
+    // Keep secondary failures observable without letting a failed diagnostic
+    // replace the original error. Run records already go to stderr.
+    if run_result.is_err()
+        && let Err(error) = &hosting_result
+    {
+        let _ = write_run_record(json!({"event": "shutdown_failed", "phase": "hosting",
+            "error": format!("{error:#}")}));
+    }
+    if (run_result.is_err() || hosting_result.is_err())
+        && let Err(error) = &finalization_result
+    {
+        let _ = write_run_record(json!({"event": "shutdown_failed", "phase": "finalization",
+            "error": format!("{error:#}")}));
+    }
     run_result?;
     hosting_result?;
     finalization_result
