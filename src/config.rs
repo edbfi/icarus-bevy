@@ -59,6 +59,9 @@ pub struct NetworkConfig {
     /// unqualified with stock clients; absence retains the ordinary path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_persistence: Option<PlayerPersistenceConfig>,
+    /// Independent integer vital units per simulated second; requires checkpoints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_consumption: Option<crate::native_player_runtime::ConsumptionConfig>,
     /// Explicit bounded Steam hosting; absent retains the loopback lab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosting: Option<crate::native_hosting::HostingConfig>,
@@ -170,6 +173,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             player_persistence: None,
+            player_consumption: None,
             hosting: None,
             authored_world: None,
             enabled: false,
@@ -240,6 +244,13 @@ pub const LEVEL_VISIBILITY_ACTORS_GATED: &str = "network.level_visibility_actors
 
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(consumption) = self.player_consumption {
+            consumption.validate()?;
+            ensure!(
+                self.player_persistence.is_some(),
+                "player consumption requires player persistence"
+            );
+        }
         if let Some(players) = &self.player_persistence {
             ensure!(
                 self.release_profile.is_some()

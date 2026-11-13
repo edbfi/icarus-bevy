@@ -394,3 +394,277 @@ fn authored_clock_prebind_requires_restored_owner_and_actual_fixed_timestep() {
         "preparation opens no listener"
     );
 }
+
+#[test]
+fn consumption_rates_and_simulation_rate_bind_only_enabled_recipes() {
+    use icarus_bevy::native_player_runtime::ConsumptionConfig;
+    let (_directory, mut config) = inputs();
+    let prepare = |config: &NetworkConfig, hz| {
+        network::prepare_run_with_tick_hz(config, network::peer_lab_config(config), hz)
+            .unwrap()
+            .1
+            .unwrap()
+    };
+    let disabled = prepare(&config, 30);
+    assert_eq!(disabled.context, prepare(&config, 7).context);
+    config.player_consumption = Some(ConsumptionConfig {
+        oxygen: 1,
+        water: 2,
+        food: 3,
+    });
+    let enabled = prepare(&config, 30);
+    assert_ne!(disabled.context, enabled.context);
+    let snapshot = network::fresh_player_snapshot(Some(&enabled));
+    assert!(network::validate_player_snapshot(&snapshot, Some(&prepare(&config, 7))).is_err());
+    config.player_consumption.as_mut().unwrap().food = 4;
+    assert!(network::validate_player_snapshot(&snapshot, Some(&prepare(&config, 30))).is_err());
+    config.player_consumption = None;
+    assert!(network::validate_player_snapshot(&snapshot, Some(&prepare(&config, 30))).is_err());
+}
+
+#[test]
+fn scheduled_consumption_preserves_fractional_phase_across_durable_restart() {
+    use bevy::prelude::FixedUpdate;
+    use icarus_bevy::native_player_runtime::ConsumptionConfig;
+    let (directory, mut network_config) = inputs();
+    network_config.player_consumption = Some(ConsumptionConfig {
+        oxygen: 2,
+        water: 3,
+        food: 4,
+    });
+    let (_, prepared) = network::prepare_run_with_tick_hz(
+        &network_config,
+        network::peer_lab_config(&network_config),
+        7,
+    )
+    .unwrap();
+    let prepared = prepared.unwrap();
+    let config = ServerConfig {
+        tick_hz: 7,
+        network: network_config.clone(),
+        ..Default::default()
+    };
+    let mut app = build_app(&config, &network::fresh_player_snapshot(Some(&prepared))).unwrap();
+    let key = PlayerKey::new(1, 0).unwrap();
+    let initial = PlayerCheckpoint {
+        location_cm: [100.0, 200.0, 300.0],
+        vitals: prepared.initial_vitals,
+    };
+    {
+        let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
+        registry.reserve(key, 1, initial).unwrap();
+        registry.activate(1).unwrap();
+    }
+    for _ in 0..3 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let partial = capture(app.world_mut()).unwrap();
+    assert_eq!(partial.tick, 3);
+    let mut store = SnapshotStore::open(&directory.path().join("consumption-state")).unwrap();
+    store.save(&partial).unwrap();
+    let loaded = store.load().unwrap().unwrap().snapshot;
+    network::validate_player_snapshot(&loaded, Some(&prepared)).unwrap();
+    let mut restored = build_app(&config, &loaded).unwrap();
+    // Restart reserves, but does not activate: no accumulated offline charge.
+    restored
+        .world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(key, 1, initial)
+        .unwrap();
+    for _ in 0..7 {
+        restored.world_mut().run_schedule(FixedUpdate);
+    }
+    assert_eq!(
+        capture(restored.world_mut()).unwrap().native_players,
+        partial.native_players
+    );
+    restored
+        .world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .activate(1)
+        .unwrap();
+    for _ in 0..4 {
+        restored.world_mut().run_schedule(FixedUpdate);
+    }
+    let final_state = capture(restored.world_mut())
+        .unwrap()
+        .native_players
+        .unwrap()
+        .projection(key)
+        .unwrap()
+        .checkpoint;
+    // Three active ticks, a whole idle second, then four active ticks span one
+    // complete phase: exactly one second of authored units, no float rounding.
+    assert_eq!(final_state.vitals.oxygen, initial.vitals.oxygen - 2);
+    assert_eq!(final_state.vitals.water, initial.vitals.water - 3);
+    assert_eq!(final_state.vitals.food, initial.vitals.food - 4);
+    assert_eq!(final_state.location_cm, initial.location_cm);
+    assert_eq!(final_state.vitals.health, initial.vitals.health);
+}
+
+#[test]
+fn consumption_configuration_refuses_missing_owner_and_invalid_rates() {
+    use icarus_bevy::native_player_runtime::ConsumptionConfig;
+    let (_directory, mut config) = inputs();
+    for values in [(0, 0, 0), (-1, 1, 1), (1, 10_000_001, 1)] {
+        config.player_consumption = Some(ConsumptionConfig {
+            oxygen: values.0,
+            water: values.1,
+            food: values.2,
+        });
+        assert!(config.validate().is_err());
+    }
+    config.player_consumption = Some(ConsumptionConfig {
+        oxygen: 1,
+        water: 0,
+        food: 0,
+    });
+    config.validate().unwrap();
+    config.player_persistence = None;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn failed_consumption_remains_closed_after_registry_returns_and_refuses_capture() {
+    use bevy::prelude::FixedUpdate;
+    use icarus_bevy::native_player_runtime::{ConsumptionConfig, consumption_runtime_health};
+    let (_directory, mut network_config) = inputs();
+    network_config.player_consumption = Some(ConsumptionConfig {
+        oxygen: 1,
+        water: 1,
+        food: 1,
+    });
+    assert!(
+        network::prepare_run(&network_config, network::peer_lab_config(&network_config)).is_err()
+    );
+    let (_, prepared) = network::prepare_run_with_tick_hz(
+        &network_config,
+        network::peer_lab_config(&network_config),
+        30,
+    )
+    .unwrap();
+    let config = ServerConfig {
+        network: network_config,
+        ..Default::default()
+    };
+    let mut app = build_app(&config, &network::fresh_player_snapshot(prepared.as_ref())).unwrap();
+    let registry = app.world_mut().remove_resource::<PlayerRegistry>().unwrap();
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(consumption_runtime_health(app.world()).is_err());
+    app.world_mut().insert_resource(registry);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(consumption_runtime_health(app.world()).is_err());
+    assert!(capture(app.world_mut()).is_err());
+}
+
+#[test]
+fn combined_clock_and_consumption_share_durable_tick_phase_and_activation() {
+    use bevy::prelude::FixedUpdate;
+    use icarus_bevy::{
+        authored_world_bootstrap::AuthoredClockConfig, native_player_runtime::ConsumptionConfig,
+        simulation::SimulationClock,
+    };
+    let (directory, mut network_config) = inputs();
+    let clock = AuthoredClockConfig {
+        initial_minute: 480,
+        seconds_per_day: 2,
+        tick_hz: 7,
+    };
+    network_config.authored_world.as_mut().unwrap().clock = Some(clock);
+    network_config.player_consumption = Some(ConsumptionConfig {
+        oxygen: 2,
+        water: 3,
+        food: 4,
+    });
+    let (_, prepared) = network::prepare_run_with_tick_hz(
+        &network_config,
+        network::peer_lab_config(&network_config),
+        7,
+    )
+    .unwrap();
+    let prepared = prepared.unwrap();
+    let server = ServerConfig {
+        tick_hz: 7,
+        network: network_config,
+        ..Default::default()
+    };
+    let mut app = build_app(&server, &network::fresh_player_snapshot(Some(&prepared))).unwrap();
+    let key = PlayerKey::new(2, 0).unwrap();
+    let initial = PlayerCheckpoint {
+        location_cm: [100.0, 200.0, 300.0],
+        vitals: prepared.initial_vitals,
+    };
+    {
+        let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
+        registry.reserve(key, 1, initial).unwrap();
+        registry.activate(1).unwrap();
+    }
+    for _ in 0..3 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let partial = capture(app.world_mut()).unwrap();
+    assert_eq!(partial.tick, 3);
+    // The same public projection used by network preparation reads completed
+    // ticks, while scheduled consumption charges the preceding tick intervals.
+    let plan = clock.prepare().unwrap();
+    assert_eq!(plan.sample(partial.tick), (5520.0_f64 / 7.0) as f32);
+    let mut store =
+        SnapshotStore::open(&directory.path().join("combined-clock-consumption")).unwrap();
+    store.save(&partial).unwrap();
+    let loaded = store.load().unwrap().unwrap().snapshot;
+    network::validate_player_snapshot(&loaded, Some(&prepared)).unwrap();
+    assert_eq!(loaded.tick, partial.tick);
+    assert_eq!(
+        plan.sample(loaded.tick).to_bits(),
+        plan.sample(partial.tick).to_bits()
+    );
+    let mut restored = build_app(&server, &loaded).unwrap();
+    restored
+        .world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(key, 1, initial)
+        .unwrap();
+    // The world clock advances during a pending reconnect, but no vital charge
+    // is incurred. One idle second preserves the later consumption phase.
+    for _ in 0..7 {
+        restored.world_mut().run_schedule(FixedUpdate);
+    }
+    let idle = capture(restored.world_mut()).unwrap();
+    assert_eq!(idle.tick, 10);
+    assert_eq!(plan.sample(idle.tick), (480.0_f64 / 7.0) as f32);
+    assert_eq!(idle.native_players, partial.native_players);
+    restored
+        .world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .activate(1)
+        .unwrap();
+    for _ in 0..4 {
+        restored.world_mut().run_schedule(FixedUpdate);
+    }
+    let finished = capture(restored.world_mut()).unwrap();
+    assert_eq!(finished.tick, 14);
+    assert_eq!(
+        restored.world().resource::<SimulationClock>().tick,
+        finished.tick
+    );
+    assert_eq!(plan.sample(finished.tick), 480.0);
+    let mut expected = initial;
+    expected.vitals.oxygen -= 2;
+    expected.vitals.water -= 3;
+    expected.vitals.food -= 4;
+    let saved = finished
+        .native_players
+        .as_ref()
+        .unwrap()
+        .projection(key)
+        .unwrap();
+    assert_eq!(saved.checkpoint, expected);
+    // Confirm the final joint result, not just the intermediate phase, survives
+    // the generation store and still satisfies the exact enabled recipe.
+    store.save(&finished).unwrap();
+    let reopened = store.load().unwrap().unwrap().snapshot;
+    network::validate_player_snapshot(&reopened, Some(&prepared)).unwrap();
+    assert_eq!(reopened.tick, finished.tick);
+    assert_eq!(reopened.native_players, finished.native_players);
+    assert_eq!(plan.sample(reopened.tick), 480.0);
+}

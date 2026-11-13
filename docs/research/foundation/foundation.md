@@ -23,7 +23,9 @@ Authored schema-13 checkpoints retain explicit server vital edits and next-open
 placement through reconnect/save/reload (F-1172). Accepted account/slot bindings
 and reliable-pressure retries are authored-tested only; delayed-pawn stock-client
 continuation remains unqualified (U-038). Generation receipts acknowledge the
-submitted snapshot, not later edits.
+submitted snapshot, not later edits. Opt-in authored consumption uses exact
+integer ticks, activated players and atomic batches; rate-bound restart and
+reconnect checks pass (F-1174), without original-rate or stock-client proof.
 
 Optional authored day phase samples saved simulation ticks (F-1173). Offline
 ticks advance it; downtime does not. Wire repair and selected-generation recovery

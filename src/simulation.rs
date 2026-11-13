@@ -831,6 +831,14 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
             64,
         )?);
     }
+    if let Some(consumption) = config.network.player_consumption {
+        consumption.validate()?;
+        ensure!(
+            snapshot.native_players.is_some(),
+            "player consumption requires schema 13"
+        );
+        crate::native_player_runtime::install_consumption(&mut app, consumption, config.tick_hz);
+    }
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
     }
@@ -1004,6 +1012,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         world.get_resource::<crate::native_player_runtime::PlayerRegistry>(),
     ) {
         (Some(expected), Some(registry)) => {
+            crate::native_player_runtime::consumption_runtime_health(world)?;
             let players = registry.snapshot();
             ensure!(
                 players.context() == expected,

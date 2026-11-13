@@ -164,6 +164,21 @@ clock path is unchanged. `WORLD_TIME_SECONDS`, mission/prospect elapsed fields a
 timers retain their own existing behavior. This uniform rule does not recover the
 original world curve or qualify sky/daylight effects or stock-client compatibility.
 
+Optional `[network.player_consumption]`: `oxygen`, `water`, `food` are
+independently authored integer units per simulated second, each 0..10000000,
+at least one positive; requires `player_persistence`. Only activated
+authenticated attachments consume. Per tick the charge is
+`floor((tick+1)*rate/tick_hz)-floor(tick*rate/tick_hz)`; saved ticks retain
+fractional phase across restart. Disconnected and pending players incur no
+charge or offline catch-up. Currents clamp at zero; health, stamina, maxima
+and position stay unchanged. No depletion damage or original gameplay rates
+are inferred. Consumption precedes checkpoint bridging and save capture.
+A failed batch changes no selected record, latches the runtime closed, stops
+admission and rejects capture; `run` exits nonzero. Rates and `tick_hz` are
+part of the enabled recipe: retain both to reopen a store. Omission preserves
+the existing checkpoint recipe and disables consumption.
+
+
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is written once as a content-addressed

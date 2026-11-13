@@ -53,7 +53,7 @@ F-1170 qualifies empty-session deadline save, teardown and copied-store reopen.
 Nonempty CM remains synthetic (F-1171); browser/client and populated persistence
 remain unqualified (U-038). F-1004 covers a no-player listing.
 
-Opt-in checkpoints: [schema-13 setup and boundaries](../architecture.md#persistence).
+Opt-in [checkpoints and consumption](../architecture.md#persistence).
 Delayed-pawn stock-client continuation remains unqualified.
 
 `native_join_probe`: [diagnostics](network-readiness.md),

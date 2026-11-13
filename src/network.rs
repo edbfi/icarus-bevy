@@ -2062,10 +2062,27 @@ pub fn prepare_run(
     network: &NetworkConfig,
     config: PeerLabConfig,
 ) -> Result<(Option<PreparedSession>, Option<PreparedPlayers>)> {
+    ensure!(
+        network.player_consumption.is_none(),
+        "player consumption requires explicit simulation rate preparation"
+    );
+    prepare_run_with_tick_hz(network, config, 30)
+}
+
+/// Explicit simulation rate, included in enabled consumption recipe identity.
+pub fn prepare_run_with_tick_hz(
+    network: &NetworkConfig,
+    config: PeerLabConfig,
+    tick_hz: u32,
+) -> Result<(Option<PreparedSession>, Option<PreparedPlayers>)> {
+    ensure!(
+        (1..=240).contains(&tick_hz),
+        "invalid consumption simulation rate"
+    );
+    network.validate()?;
     if network.player_persistence.is_none() {
         return Ok((prepare_session(network, config)?, None));
     }
-    network.validate()?;
     let release_text = read_configuration(
         network
             .release_profile
@@ -2124,6 +2141,11 @@ pub fn prepare_run(
         serde_json::to_vec(declaration)?,
         serde_json::to_vec(&resolved_vitals)?,
     ] {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part);
+    }
+    if let Some(consumption) = network.player_consumption {
+        let part = serde_json::to_vec(&("authored_consumption_v1", consumption, tick_hz))?;
         digest.update((part.len() as u64).to_le_bytes());
         digest.update(part);
     }
