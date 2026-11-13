@@ -241,7 +241,7 @@ impl NetworkConfig {
         );
         ensure!(
             self.bind.is_loopback() || self.hosting.is_some(),
-            "network.bind must be an IPv4 loopback address while the session layer is experimental"
+            "network.bind must be an IPv4 loopback address unless network.hosting is configured"
         );
         ensure!(
             (1..=MAX_NETWORK_PLAYERS).contains(&self.max_players),
