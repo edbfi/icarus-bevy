@@ -1927,6 +1927,13 @@ fn bind_session(
         .transpose()
 }
 
+fn session_map_url<'a>(network: &'a NetworkConfig, admission: &'a PeerLabAdmission) -> &'a str {
+    network
+        .hosting
+        .as_ref()
+        .map_or(admission.map_url, |hosting| hosting.map_url.as_str())
+}
+
 pub fn prepare_session(
     network: &NetworkConfig,
     mut config: PeerLabConfig,
@@ -1944,13 +1951,7 @@ pub fn prepare_session(
     }
     let plan = match (&profile, &config.admission) {
         (Some(profile), Some(admission)) => profile
-            .player_controller_open_plan(
-                network
-                    .hosting
-                    .as_ref()
-                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-                SPAWN_LOCATION,
-            )
+            .player_controller_open_plan(session_map_url(network, admission), SPAWN_LOCATION)
             .context("compose the PlayerController open plan")?,
         _ => None,
     };
@@ -1973,13 +1974,7 @@ pub fn prepare_session(
                 .admission
                 .as_ref()
                 .context("authored world requires admission")?;
-            world.plan(
-                profile,
-                network
-                    .hosting
-                    .as_ref()
-                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-            )
+            world.plan(profile, session_map_url(network, admission))
         })
         .transpose()?;
     let authored_session = if network.authored_replication.is_some() {
@@ -2006,12 +2001,7 @@ pub fn prepare_session(
             .admission
             .as_ref()
             .context("controller startup requires admission")?;
-        let pawn = profile.pawn_open_plan(
-            network
-                .hosting
-                .as_ref()
-                .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-        )?;
+        let pawn = profile.pawn_open_plan(session_map_url(network, admission))?;
         crate::experimental::peer_lab::validate_controller_startup(
             profile,
             &network.controller_startup,
@@ -2029,12 +2019,7 @@ pub fn prepare_session(
         (None, ..) => None,
         (Some(_), Some(pawn), ..) => pawn,
         (Some(_), None, Some(profile), Some(admission)) => profile
-            .pawn_open_plan(
-                network
-                    .hosting
-                    .as_ref()
-                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-            )
+            .pawn_open_plan(session_map_url(network, admission))
             .context("compose the pawn open plan")?,
         _ => None,
     }
@@ -2043,23 +2028,13 @@ pub fn prepare_session(
     // Prepare release plans before acquiring the session socket.
     let player_state = match (&profile, &config.admission) {
         (Some(profile), Some(admission)) if plan.is_some() => profile
-            .player_state_open_plan(
-                network
-                    .hosting
-                    .as_ref()
-                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-            )
+            .player_state_open_plan(session_map_url(network, admission))
             .context("compose the PlayerState open plan")?,
         _ => None,
     };
     let game_state = match (&profile, &config.admission) {
         (Some(profile), Some(admission)) if plan.is_some() => profile
-            .game_state_open_plan(
-                network
-                    .hosting
-                    .as_ref()
-                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-            )
+            .game_state_open_plan(session_map_url(network, admission))
             .context("compose the GameState open plan")?,
         _ => None,
     };
@@ -2121,33 +2096,18 @@ pub fn prepare_session(
             && let (Some(profile), Some(admission)) = (&profile, &config.admission)
         {
             let managers = profile
-                .manager_open_plans(
-                    network
-                        .hosting
-                        .as_ref()
-                        .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-                )
+                .manager_open_plans(session_map_url(network, admission))
                 .context("compose the manager open plans")?;
             if !managers.is_empty() {
                 lab.enable_manager_opens(managers, MANAGER_FIRST_CHANNEL)?;
                 if let Some(quest_base) = profile
-                    .quest_open_base_plan(
-                        network
-                            .hosting
-                            .as_ref()
-                            .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-                    )
+                    .quest_open_base_plan(session_map_url(network, admission))
                     .context("compose the quest open base plan")?
                 {
                     lab.enable_quest_opens(quest_base)?;
                 }
                 saved_managers = profile
-                    .saved_manager_open_plans(
-                        network
-                            .hosting
-                            .as_ref()
-                            .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
-                    )
+                    .saved_manager_open_plans(session_map_url(network, admission))
                     .context("compose the saved manager open plans")?;
             }
         }
@@ -2269,12 +2229,9 @@ fn validate_static_installation(bound: &mut BoundNetwork, network: &NetworkConfi
         ensure!(
             bound.lab.config().local_network_version == Some(release.network_checksum)
                 && session.level
-                    == crate::experimental::session_open::map_level_chain(
-                        network
-                            .hosting
-                            .as_ref()
-                            .map_or(admission.map_url, |hosting| hosting.map_url.as_str())
-                    )?,
+                    == crate::experimental::session_open::map_level_chain(session_map_url(
+                        network, admission
+                    ))?,
             "authored native replication release or level binding changed"
         );
         // This production host installs managers consecutively from 6 and

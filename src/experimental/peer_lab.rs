@@ -3511,32 +3511,8 @@ impl PeerLab {
         config: PeerLabConfig,
         authenticator: AuthClient,
     ) -> Result<Self> {
-        config.validate()?;
-        ensure!(
-            config.local_network_version.is_some(),
-            "authenticated listener requires a release pin"
-        );
-        ensure!(
-            config.admission.is_some(),
-            "authenticated listener requires admission policy"
-        );
-        ensure!(
-            !address.ip().is_multicast() && !address.ip().is_broadcast(),
-            "invalid game bind address"
-        );
-        let authority = CookieAuthority::random().context("cookie secret")?;
-        let socket = UdpSocket::bind(address).context("bind authenticated game listener")?;
-        socket.set_nonblocking(true)?;
-        let mut lab = Self::with_socket(socket, authority, config);
-        lab.authenticator = Some(authenticator);
-        // Authentication FString bodies can exceed the connection packet cap.
-        // Keep one extra byte to detect kernel truncation at either limit.
-        lab.buffer.resize(
-            lab.buffer
-                .len()
-                .max(super::steam_auth::MAX_DATAGRAM_BYTES + 1),
-            0,
-        );
+        let mut lab = Self::prepare(config)?;
+        lab.attach_listener(address, Some(authenticator))?;
         Ok(lab)
     }
 
@@ -3582,6 +3558,8 @@ impl PeerLab {
         let socket = UdpSocket::bind(address).context("bind session listener")?;
         socket.set_nonblocking(true)?;
         if authenticator.is_some() {
+            // Authentication FString bodies can exceed the connection packet
+            // cap. One extra byte detects kernel truncation at either limit.
             self.buffer.resize(
                 self.buffer
                     .len()

@@ -2086,9 +2086,15 @@ inventory_class = [{ path = "InventoryClass", checksum = 56 }, { path = "/Lab/In
             let before = capture(app.world_mut()).unwrap();
             let entities = app.world().iter_entities().count();
             let mut expected_guids = None;
-            // Static conflicts may now fail during bind's shared preflight;
-            // installation must remain atomic whichever boundary rejects.
-            let result = bind(&fixture.config.network).and_then(|bound| {
+            // Configured identities reject during preflight. The quest is
+            // appended afterward, so its conflicts must reach installation.
+            let result = if change < 3 && path != quest.archetype {
+                Err(bind(&fixture.config.network)
+                    .err()
+                    .expect("configured static conflict must reject in preflight"))
+            } else {
+                let bound = bind(&fixture.config.network)
+                    .expect("agreement or post-preflight quest must bind");
                 expected_guids = Some((
                     bound.lab.guid_cache().clone().assign_dynamic().unwrap(),
                     bound
@@ -2098,7 +2104,7 @@ inventory_class = [{ path = "InventoryClass", checksum = 56 }, { path = "/Lab/In
                         .assign_static(&[PathSegment::new("/Lab/Unassigned", 0, false)]),
                 ));
                 network::install_configured(&mut app, bound, &fixture.config.network)
-            });
+            };
             assert!(capture(app.world_mut()).unwrap() == before);
             if change < 3 {
                 let error = result.expect_err("reject conflicting metadata in last binding");
@@ -3378,14 +3384,28 @@ fn production_host_reserves_all_authored_session_manager_and_quest_channels() {
             assert_eq!(bound.lab.add_quest_open(quest.clone()).unwrap(), 9);
             Ok(bound)
         };
-        fixture.write_declaration();
         let mut app = build_app(&fixture.config, &fixture.snapshot).unwrap();
-        let error = bind(&fixture.config.network)
-            .and_then(|bound| network::install_configured(&mut app, bound, &fixture.config.network))
-            .expect_err("floor 6 overlaps reserved plans during preflight or installation");
-        assert!(format!("{error:#}").contains("reserved"));
-        assert!(!app.is_plugin_added::<ReplicationPlugin>());
-        assert!(capture(app.world_mut()).unwrap() == fixture.snapshot);
+        let entities = app.world().iter_entities().count();
+        for floor in [6, 9] {
+            fixture.declaration["first_channel"] = json!(floor);
+            fixture.write_declaration();
+            let error = if floor == 6 {
+                bind(&fixture.config.network)
+                    .err()
+                    .expect("manager channels must reject in preflight")
+            } else {
+                let bound = bind(&fixture.config.network)
+                    .expect("floor 9 passes before the quest is appended");
+                network::install_configured(&mut app, bound, &fixture.config.network)
+                    .expect_err("appended quest must reject during installation")
+            };
+            assert!(format!("{error:#}").contains("reserved"));
+            assert_eq!(app.world().iter_entities().count(), entities);
+            assert!(!app.is_plugin_added::<ReplicationPlugin>());
+            assert!(!app.world().contains_resource::<PeerLab>());
+            assert!(!app.world().contains_resource::<NativeReplicationCounts>());
+            assert!(capture(app.world_mut()).unwrap() == fixture.snapshot);
+        }
         fixture.declaration["first_channel"] = json!(10);
         fixture.write_declaration();
         let address = network::install_configured(
