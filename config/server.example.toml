@@ -24,7 +24,7 @@ session_timeout_seconds = 30
 # Reopening offline retains this table and the same prepared input recipe.
 # Controller/GameState/PlayerState precede the deferred pawn in this mode;
 # continuation under that order is unqualified with stock clients. Health and
-# position edits are explicit server operations, not client movement or XP.
+# position edits have a library API only, with no runtime caller or operator UI.
 # [network.player_persistence]
 # prospect_id = "stable-authored-workshop"
 # map_url = "/Authored/Maps/Workshop"

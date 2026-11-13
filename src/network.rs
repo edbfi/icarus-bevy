@@ -2060,27 +2060,27 @@ pub fn prepare_run(
         return Ok((prepare_session(network, config)?, None));
     }
     network.validate()?;
-    let release_text = read_configuration(
-        network
-            .release_profile
-            .as_deref()
-            .context("player release missing")?,
-    )?;
-    let profile = ReleaseProfile::parse(&release_text)?;
-    let bytes = read_gameplay_bytes(
-        network
-            .authored_gameplay
-            .as_deref()
-            .context("player recipe missing")?,
-    )?;
-    let mut tables = DataTables::runtime_bytes(
-        network
-            .data_pak
-            .as_deref()
-            .context("player protocol catalog missing")?,
-        &bytes,
-    )?;
-    validate_runtime_tables(&mut tables)?;
+    let release_path = network
+        .release_profile
+        .as_deref()
+        .context("player release missing")?;
+    let release_context = || format!("load network.release_profile {}", release_path.display());
+    let release_text = read_configuration(release_path).with_context(release_context)?;
+    let profile = ReleaseProfile::parse(&release_text).with_context(release_context)?;
+    let gameplay_path = network
+        .authored_gameplay
+        .as_deref()
+        .context("player recipe missing")?;
+    let bytes = read_gameplay_bytes(gameplay_path)
+        .with_context(|| format!("load network.authored_gameplay {}", gameplay_path.display()))?;
+    let catalog_path = network
+        .data_pak
+        .as_deref()
+        .context("player protocol catalog missing")?;
+    let catalog_context = || format!("load network.data_pak {}", catalog_path.display());
+    let mut tables =
+        DataTables::runtime_bytes(catalog_path, &bytes).with_context(catalog_context)?;
+    validate_runtime_tables(&mut tables).with_context(catalog_context)?;
     let initial_vitals = fresh_player_vitals(&mut tables)?;
     crate::native_players::PlayerCheckpoint {
         location_cm: [0.0; 3],

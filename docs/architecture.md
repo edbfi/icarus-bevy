@@ -128,8 +128,9 @@ from sharing that selection. Cancellation drops the pending player record withou
 refunding the point/counter. Retries reuse reservations; committed reconnects
 consume no point. The disabled path retains its legacy spawn/History/restore behavior.
 
-Server-owned `PlayerRegistry::edit` validates an expected revision and complete
-checkpoint atomically, preserving maxima/biome/growth. Reliable vital projection
+`PlayerRegistry::edit` is a library API with test callers only; no operator
+surface exists. It validates an expected revision and complete checkpoint
+atomically, preserving maxima/biome/growth. Reliable vital projection
 coalesces unsent revisions; enqueue success is neither client ACK nor disk publication.
 Placement edits affect the next pawn open only, without live teleport/movement
 simulation. Disconnect/revocation releases attachments and retains committed state.
