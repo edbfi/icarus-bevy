@@ -3260,15 +3260,38 @@ impl GameStateSession {
     }
 }
 
+/// An absent transport permits the ordinary installation validators to run
+/// before startup acquires sockets. It can never receive or send traffic.
+struct SessionSocket(Option<UdpSocket>);
+
+impl SessionSocket {
+    fn get(&self) -> io::Result<&UdpSocket> {
+        self.0.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "session listener not attached")
+        })
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.get()?.local_addr()
+    }
+    fn send_to(&self, bytes: &[u8], address: impl std::net::ToSocketAddrs) -> io::Result<usize> {
+        self.get()?.send_to(bytes, address)
+    }
+    fn recv_from(&self, bytes: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.get()?.recv_from(bytes)
+    }
+}
+
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
+    authored_map_url: Option<String>,
     private_rpc82_capture: Option<super::selected_rpc_capture::PrivateRpc82Capture>,
     private_pawn_bunch_capture:
         Option<super::selected_rpc_capture::pawn_bunches::PrivatePawnBunchCapture>,
     controller_startup: Option<Vec<ControllerStartupAction>>,
     controller_startup_bound: u32,
-    socket: UdpSocket,
+    socket: SessionSocket,
     authenticator: Option<AuthClient>,
     authority: CookieAuthority,
     started: Instant,
@@ -3376,6 +3399,23 @@ impl fmt::Debug for PeerLab {
 }
 
 impl PeerLab {
+    pub fn resolved_map_url(&self) -> Option<&str> {
+        self.authored_map_url.as_deref().or_else(|| {
+            self.config
+                .admission
+                .as_ref()
+                .map(|admission| admission.map_url)
+        })
+    }
+    pub(crate) fn set_authored_map_url(&mut self, map: String) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.socket.0.is_none(),
+            "map must be resolved before binding"
+        );
+        ArchiveText::text(&map)?;
+        self.authored_map_url = Some(map);
+        Ok(())
+    }
     /// Explicit private file sink. Installation is restricted to pre-admission
     /// setup so selection and budgets cannot be reset during a run.
     pub fn install_private_rpc82_capture(
@@ -3501,7 +3541,66 @@ impl PeerLab {
     }
 
     fn with_socket(socket: UdpSocket, authority: CookieAuthority, config: PeerLabConfig) -> Self {
+        Self::with_transport(SessionSocket(Some(socket)), authority, config)
+    }
+
+    /// Compose a session without acquiring any listener resources.
+    pub(crate) fn prepare(config: PeerLabConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self::with_transport(
+            SessionSocket(None),
+            CookieAuthority::random().context("cookie secret")?,
+            config,
+        ))
+    }
+
+    pub(crate) fn attach_listener(
+        &mut self,
+        address: SocketAddrV4,
+        authenticator: Option<AuthClient>,
+    ) -> Result<()> {
+        ensure!(self.socket.0.is_none(), "session listener already attached");
+        if authenticator.is_some() {
+            ensure!(
+                self.config.local_network_version.is_some(),
+                "authenticated listener requires a release pin"
+            );
+            ensure!(
+                self.config.admission.is_some(),
+                "authenticated listener requires admission policy"
+            );
+            ensure!(
+                !address.ip().is_multicast() && !address.ip().is_broadcast(),
+                "invalid game bind address"
+            );
+        } else {
+            ensure!(
+                address.ip().is_loopback(),
+                "the peer lab binds IPv4 loopback addresses only"
+            );
+        }
+        let socket = UdpSocket::bind(address).context("bind session listener")?;
+        socket.set_nonblocking(true)?;
+        if authenticator.is_some() {
+            self.buffer.resize(
+                self.buffer
+                    .len()
+                    .max(super::steam_auth::MAX_DATAGRAM_BYTES + 1),
+                0,
+            );
+        }
+        self.authenticator = authenticator;
+        self.socket = SessionSocket(Some(socket));
+        Ok(())
+    }
+
+    fn with_transport(
+        socket: SessionSocket,
+        authority: CookieAuthority,
+        config: PeerLabConfig,
+    ) -> Self {
         Self {
+            authored_map_url: None,
             private_rpc82_capture: None,
             private_pawn_bunch_capture: None,
             socket,
@@ -3563,6 +3662,36 @@ impl PeerLab {
             .collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// CM-only membership: consume queued revocations first, then include only
+    /// live peers whose admission committed Joined and whose ticket request was
+    /// accepted by the current backend. Duplicate accounts count once, sorted.
+    /// Login strings, names and preserved player state are never consulted.
+    pub fn authenticated_membership(&mut self) -> Result<crate::steam_presence::MasterMembership> {
+        self.poll_authentication();
+        let Some(auth) = &self.authenticator else {
+            return Ok(Default::default());
+        };
+        if !auth.is_available() {
+            return Ok(Default::default());
+        }
+        let membership = crate::steam_presence::MasterMembership::from_authenticated(
+            self.peers
+                .values()
+                .filter(|peer| {
+                    peer.admission.state == ClientLoginState::Joined
+                        && peer.connection_id.is_some()
+                        && peer.auth_accepted
+                        && peer.auth_request.is_some()
+                })
+                .filter_map(|peer| peer.auth_identity),
+        )?;
+        // Terminal backend loss wins even if it raced collection.
+        if !auth.is_available() {
+            return Ok(Default::default());
+        }
+        Ok(membership)
     }
 
     /// Reconcile independently authored slot identities before actor selection.
@@ -9692,7 +9821,12 @@ impl PeerLab {
                 let Some(admission) = &self.config.admission else {
                     return false;
                 };
-                ArchiveText::text(admission.map_url).and_then(|map_url| {
+                ArchiveText::text(
+                    self.authored_map_url
+                        .as_deref()
+                        .unwrap_or(admission.map_url),
+                )
+                .and_then(|map_url| {
                     ArchiveText::text(admission.game_name).and_then(|game_name| {
                         ArchiveText::text(admission.redirect_url).map(|redirect_url| {
                             ControlMessage::Welcome {
@@ -11065,6 +11199,48 @@ impl Drop for PeerLab {
 mod tests {
     use super::*;
 
+    #[test]
+    fn prepared_listener_retains_authentication_and_releases_on_drop() {
+        let (auth, backend) = AuthClient::test_bridge(8);
+        let mut lab = PeerLab::prepare(PeerLabConfig {
+            local_network_version: Some(1),
+            admission: Some(PeerLabAdmission::default()),
+            ..PeerLabConfig::default()
+        })
+        .unwrap();
+        assert!(lab.local_addr().is_err());
+        lab.set_authored_map_url("/Authored/Maps/Workshop".into())
+            .unwrap();
+        lab.attach_listener(
+            SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
+            Some(auth),
+        )
+        .unwrap();
+        assert!(lab.authenticator.is_some());
+        assert_eq!(
+            lab.authored_map_url.as_deref(),
+            Some("/Authored/Maps/Workshop")
+        );
+        assert!(lab.buffer.len() > super::super::steam_auth::MAX_DATAGRAM_BYTES);
+        let address = lab.local_addr().unwrap();
+        assert!(UdpSocket::bind(address).is_err());
+        drop(backend);
+        lab.poll();
+        assert!(!lab.session_counts().admitting);
+        drop(lab);
+        UdpSocket::bind(address).unwrap();
+    }
+
+    #[test]
+    fn prepared_unauthenticated_listener_stays_loopback_only() {
+        let mut lab = PeerLab::prepare(PeerLabConfig::default()).unwrap();
+        assert!(
+            lab.attach_listener(SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0), None)
+                .is_err()
+        );
+        assert!(lab.local_addr().is_err());
+    }
+
     fn pending_auth_peer() -> (
         PeerLab,
         UdpSocket,
@@ -11104,6 +11280,94 @@ mod tests {
         peer.auth_request = Some(1);
         peer.auth_identity = Some(0x0110_0001_0000_002a);
         (lab, socket, address, backend)
+    }
+
+    #[test]
+    fn cm_membership_requires_join_and_acceptance_and_tracks_revocation() {
+        use crate::steam_auth::{AuthEvent, AuthOutcome};
+        let (mut lab, _socket, address, backend) = pending_auth_peer();
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        backend
+            .event(AuthEvent {
+                request_id: 1,
+                outcome: AuthOutcome::Accepted,
+            })
+            .unwrap();
+        // Acceptance without a committed Join remains ineligible.
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        let peer = lab.peers.get_mut(&address).unwrap();
+        peer.admission.state = ClientLoginState::Joined;
+        peer.connection_id = Some(1);
+        let membership = lab.authenticated_membership().unwrap();
+        assert_eq!(
+            membership,
+            crate::steam_presence::MasterMembership::from_authenticated([0x0110_0001_0000_002a])
+                .unwrap()
+        );
+        assert!(!format!("{membership:?}").contains("765611"));
+        backend
+            .event(AuthEvent {
+                request_id: 1,
+                outcome: AuthOutcome::Rejected,
+            })
+            .unwrap();
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        assert!(!lab.has_peer(address));
+    }
+
+    #[test]
+    fn cm_membership_excludes_missing_auth_state_and_removed_peers() {
+        let (mut lab, _socket, address, backend) = pending_auth_peer();
+        let peer = lab.peers.get_mut(&address).unwrap();
+        peer.admission.state = ClientLoginState::Joined;
+        peer.connection_id = Some(1);
+        // Joined alone cannot make a pending ticket eligible.
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        lab.peers.get_mut(&address).unwrap().auth_accepted = true;
+        assert_eq!(lab.authenticated_membership().unwrap().len(), 1);
+        lab.peers.get_mut(&address).unwrap().auth_request = None;
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        lab.peers.get_mut(&address).unwrap().auth_request = Some(1);
+        lab.peers.get_mut(&address).unwrap().auth_identity = None;
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        lab.peers.get_mut(&address).unwrap().auth_identity = Some(0x0110_0001_0000_002a);
+        lab.remove_peer(address);
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        drop(backend);
+    }
+
+    #[test]
+    fn cm_membership_backend_loss_overrides_accepted_live_peer() {
+        let (mut lab, _socket, address, backend) = pending_auth_peer();
+        let peer = lab.peers.get_mut(&address).unwrap();
+        peer.admission.state = ClientLoginState::Joined;
+        peer.connection_id = Some(1);
+        peer.auth_accepted = true;
+        assert_eq!(lab.authenticated_membership().unwrap().len(), 1);
+        backend.fail();
+        assert!(lab.authenticated_membership().unwrap().is_empty());
+        assert!(!lab.is_admitting());
+    }
+
+    #[test]
+    fn cm_membership_duplicate_accounts_are_unique_until_last_connection_leaves() {
+        let (mut lab, _first_socket, first, _backend) = pending_auth_peer();
+        let (mut donor, _second_socket, second, _donor_backend) = pending_auth_peer();
+        let mut entry = donor.peers.remove(&second).unwrap();
+        entry.auth_request = Some(2);
+        entry.auth_accepted = true;
+        entry.admission.state = ClientLoginState::Joined;
+        entry.connection_id = Some(2);
+        lab.peers.insert(second, entry);
+        let entry = lab.peers.get_mut(&first).unwrap();
+        entry.auth_accepted = true;
+        entry.admission.state = ClientLoginState::Joined;
+        entry.connection_id = Some(1);
+        assert_eq!(lab.authenticated_membership().unwrap().len(), 1);
+        lab.remove_peer(first);
+        assert_eq!(lab.authenticated_membership().unwrap().len(), 1);
+        lab.remove_peer(second);
+        assert!(lab.authenticated_membership().unwrap().is_empty());
     }
 
     #[test]

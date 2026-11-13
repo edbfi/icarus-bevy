@@ -1659,6 +1659,7 @@ pub struct BoundNetwork {
     /// Bound to the same release/version/level as this host's controller plan.
     /// Kept private so an authored declaration cannot replace session identity.
     authored_session: Option<crate::session_replication::SessionReplication>,
+    declaration: Option<crate::native_replication::AuthoredReplication>,
 }
 
 /// Load and validate the configured release profile (bounded regular-file
@@ -1842,11 +1843,94 @@ pub fn bind_authenticated_with_parameters(
     bind_session(network, config, Some((address, authenticator)))
 }
 
+/// Owned, transport-free session. All lab installation uses the same validators
+/// as a live listener, without opening a temporary or production socket.
+pub struct PreparedSession {
+    network: NetworkConfig,
+    bound: BoundNetwork,
+}
+
+impl PreparedSession {
+    pub fn prepare_runtime(&mut self, autosave_seconds: u64) -> Result<()> {
+        if self.bound.lab.has_game_state_open() {
+            apply_server_settings(&mut self.bound.lab, autosave_seconds)?;
+        }
+        // Fresh hosts need a tracker even before any saved history exists.
+        if self.network.hosting.is_some()
+            && let Some((_, plan)) = self
+                .bound
+                .saved_managers
+                .iter()
+                .find(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+        {
+            self.bound
+                .lab
+                .add_manager_open(ManagerSlot::PlayerHistory, plan.clone())?;
+        }
+        validate_static_installation(&mut self.bound, &self.network)
+    }
+    /// Validate and install world-dependent authored replication while the
+    /// session still owns no listener. The declaration was read at preflight.
+    pub fn prepare_app(&mut self, app: &mut App) -> Result<()> {
+        ensure!(
+            !app.world().contains_resource::<PeerLab>() && !app.is_plugin_added::<PeerLabPlugin>(),
+            "network lab or plugin already installed"
+        );
+        prepare_installation(app, &mut self.bound, &self.network)
+    }
+
+    pub fn session_mut(&mut self) -> &mut BoundNetwork {
+        &mut self.bound
+    }
+
+    pub fn bind(mut self) -> Result<BoundNetwork> {
+        ensure!(
+            self.network.hosting.is_none(),
+            "hosting requires authenticated binding"
+        );
+        self.bound.lab.attach_listener(
+            SocketAddrV4::new(self.network.bind, self.network.port),
+            None,
+        )?;
+        Ok(self.bound)
+    }
+
+    pub fn bind_authenticated(
+        mut self,
+        address: SocketAddrV4,
+        client: crate::steam_service::AuthClient,
+    ) -> Result<BoundNetwork> {
+        ensure!(
+            self.network.hosting.is_none()
+                || address == SocketAddrV4::new(self.network.bind, self.network.port),
+            "hosting game address changed after preflight"
+        );
+        ensure!(
+            self.bound.release.is_some(),
+            "authenticated listener requires a release profile"
+        );
+        self.bound.lab.attach_listener(address, Some(client))?;
+        Ok(self.bound)
+    }
+}
+
 fn bind_session(
     network: &NetworkConfig,
-    mut config: PeerLabConfig,
+    config: PeerLabConfig,
     authentication: Option<(SocketAddrV4, crate::steam_service::AuthClient)>,
 ) -> Result<Option<BoundNetwork>> {
+    prepare_session(network, config)?
+        .map(|prepared| match authentication {
+            Some((address, client)) => prepared.bind_authenticated(address, client),
+            None => prepared.bind(),
+        })
+        .transpose()
+}
+
+pub fn prepare_session(
+    network: &NetworkConfig,
+    mut config: PeerLabConfig,
+) -> Result<Option<PreparedSession>> {
     if !network.enabled {
         return Ok(None);
     }
@@ -1860,7 +1944,13 @@ fn bind_session(
     }
     let plan = match (&profile, &config.admission) {
         (Some(profile), Some(admission)) => profile
-            .player_controller_open_plan(admission.map_url, SPAWN_LOCATION)
+            .player_controller_open_plan(
+                network
+                    .hosting
+                    .as_ref()
+                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+                SPAWN_LOCATION,
+            )
             .context("compose the PlayerController open plan")?,
         _ => None,
     };
@@ -1883,7 +1973,13 @@ fn bind_session(
                 .admission
                 .as_ref()
                 .context("authored world requires admission")?;
-            world.plan(profile, admission.map_url)
+            world.plan(
+                profile,
+                network
+                    .hosting
+                    .as_ref()
+                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+            )
         })
         .transpose()?;
     let authored_session = if network.authored_replication.is_some() {
@@ -1910,7 +2006,12 @@ fn bind_session(
             .admission
             .as_ref()
             .context("controller startup requires admission")?;
-        let pawn = profile.pawn_open_plan(admission.map_url)?;
+        let pawn = profile.pawn_open_plan(
+            network
+                .hosting
+                .as_ref()
+                .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+        )?;
         crate::experimental::peer_lab::validate_controller_startup(
             profile,
             &network.controller_startup,
@@ -1928,29 +2029,44 @@ fn bind_session(
         (None, ..) => None,
         (Some(_), Some(pawn), ..) => pawn,
         (Some(_), None, Some(profile), Some(admission)) => profile
-            .pawn_open_plan(admission.map_url)
+            .pawn_open_plan(
+                network
+                    .hosting
+                    .as_ref()
+                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+            )
             .context("compose the pawn open plan")?,
         _ => None,
     }
     .map(|pawn| anyhow::Ok((pawn, pawn_tables(tables.as_mut())?)))
     .transpose()?;
-    let address = SocketAddrV4::new(network.bind, network.port);
-    let mut lab = match authentication {
-        Some((address, authenticator)) => {
-            PeerLab::bind_authenticated(address, config, authenticator)
-        }
-        None => PeerLab::bind_address(address, config),
-    }
-    .context("bind the experimental network session socket")?;
+    // Prepare release plans before acquiring the session socket.
+    let player_state = match (&profile, &config.admission) {
+        (Some(profile), Some(admission)) if plan.is_some() => profile
+            .player_state_open_plan(
+                network
+                    .hosting
+                    .as_ref()
+                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+            )
+            .context("compose the PlayerState open plan")?,
+        _ => None,
+    };
+    let game_state = match (&profile, &config.admission) {
+        (Some(profile), Some(admission)) if plan.is_some() => profile
+            .game_state_open_plan(
+                network
+                    .hosting
+                    .as_ref()
+                    .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+            )
+            .context("compose the GameState open plan")?,
+        _ => None,
+    };
+    let mut lab = PeerLab::prepare(config)?;
     let mut saved_managers = Vec::new();
     if let Some(plan) = plan {
         lab.enable_player_controller_open(plan)?;
-        let player_state = match (&profile, &config.admission) {
-            (Some(profile), Some(admission)) => profile
-                .player_state_open_plan(admission.map_url)
-                .context("compose the PlayerState open plan")?,
-            _ => None,
-        };
         let has_pawn = pawn.is_some();
         if let Some((pawn, pawn_tables)) = pawn {
             pawn_tables.install(&mut lab, pawn)?;
@@ -1958,12 +2074,6 @@ fn bind_session(
             // to the cryptographic randomness used for handshake cookies.
             lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))?;
         }
-        let game_state = match (&profile, &config.admission) {
-            (Some(profile), Some(admission)) => profile
-                .game_state_open_plan(admission.map_url)
-                .context("compose the GameState open plan")?,
-            _ => None,
-        };
         if let Some(game_state) = game_state {
             lab.enable_game_state_open(game_state, game_state_values()?, GAME_STATE_CHANNEL_INDEX)?;
             // The server's own frame rate, measured as the original does.
@@ -2011,18 +2121,33 @@ fn bind_session(
             && let (Some(profile), Some(admission)) = (&profile, &config.admission)
         {
             let managers = profile
-                .manager_open_plans(admission.map_url)
+                .manager_open_plans(
+                    network
+                        .hosting
+                        .as_ref()
+                        .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+                )
                 .context("compose the manager open plans")?;
             if !managers.is_empty() {
                 lab.enable_manager_opens(managers, MANAGER_FIRST_CHANNEL)?;
                 if let Some(quest_base) = profile
-                    .quest_open_base_plan(admission.map_url)
+                    .quest_open_base_plan(
+                        network
+                            .hosting
+                            .as_ref()
+                            .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+                    )
                     .context("compose the quest open base plan")?
                 {
                     lab.enable_quest_opens(quest_base)?;
                 }
                 saved_managers = profile
-                    .saved_manager_open_plans(admission.map_url)
+                    .saved_manager_open_plans(
+                        network
+                            .hosting
+                            .as_ref()
+                            .map_or(admission.map_url, |hosting| hosting.map_url.as_str()),
+                    )
                     .context("compose the saved manager open plans")?;
             }
         }
@@ -2039,13 +2164,38 @@ fn bind_session(
             network.controller_startup.clone(),
         )?;
     }
-    Ok(Some(BoundNetwork {
-        lab,
-        release: profile.map(|profile| profile.pin),
-        tables,
-        saved_managers,
-        authored_session,
-    }))
+    if let Some(hosting) = &network.hosting {
+        lab.set_authored_map_url(hosting.map_url.clone())?;
+        let prospect = hosting.prospect();
+        let tables = tables
+            .as_mut()
+            .context("hosting protocol catalog missing")?;
+        ensure!(
+            tables
+                .row_index(PROSPECT_LIST_TABLE, &prospect.prospect_dt_key)?
+                .is_some(),
+            "authored hosting prospect row absent from protocol catalog"
+        );
+        lab.refresh_active_prospect(&prospect)?;
+    }
+    let declaration = network
+        .authored_replication
+        .as_deref()
+        .map(crate::native_replication::AuthoredReplication::load)
+        .transpose()?;
+    let mut prepared = PreparedSession {
+        network: network.clone(),
+        bound: BoundNetwork {
+            declaration,
+            lab,
+            release: profile.map(|profile| profile.pin),
+            tables,
+            saved_managers,
+            authored_session,
+        },
+    };
+    validate_static_installation(&mut prepared.bound, network)?;
+    Ok(Some(prepared))
 }
 
 /// Install a bound lab into the production app; returns its local address.
@@ -2059,25 +2209,52 @@ pub fn install(app: &mut App, lab: PeerLab) -> Result<SocketAddr> {
 /// native replication. All preparation precedes plugin/resource publication.
 pub fn install_configured(
     app: &mut App,
-    bound: BoundNetwork,
+    mut bound: BoundNetwork,
     network: &NetworkConfig,
 ) -> Result<SocketAddr> {
     ensure!(
         !app.world().contains_resource::<PeerLab>() && !app.is_plugin_added::<PeerLabPlugin>(),
         "network lab or plugin already installed"
     );
-    bound
-        .lab
-        .local_addr()
-        .context("network session socket address")?;
-    if let Some(path) = &network.authored_replication {
+    prepare_installation(app, &mut bound, network)?;
+    install(app, bound.lab)
+}
+
+fn prepare_installation(
+    app: &mut App,
+    bound: &mut BoundNetwork,
+    network: &NetworkConfig,
+) -> Result<()> {
+    validate_static_installation(bound, network)?;
+    if let Some(declaration) = bound.declaration.take() {
+        let session = bound
+            .authored_session
+            .take()
+            .context("authored native replication session plan missing")?;
+        let plan = crate::native_replication::prepare(
+            app.world_mut(),
+            declaration,
+            session,
+            bound.lab.config().packet.packet.limits.max_channels,
+        )?;
+        crate::native_replication::install(app, plan)?;
+    }
+    Ok(())
+}
+
+fn validate_static_installation(bound: &mut BoundNetwork, network: &NetworkConfig) -> Result<()> {
+    if bound.declaration.is_some() {
         ensure!(
             network.enabled,
             "authored native replication requires enabled networking"
         );
-        let declaration = crate::native_replication::AuthoredReplication::load(path)?;
-        let mut session = bound
+        let declaration = bound
+            .declaration
+            .as_ref()
+            .context("prepared replication declaration missing")?;
+        let session = bound
             .authored_session
+            .as_mut()
             .context("authored native replication session plan missing")?;
         let release = bound
             .release
@@ -2092,7 +2269,12 @@ pub fn install_configured(
         ensure!(
             bound.lab.config().local_network_version == Some(release.network_checksum)
                 && session.level
-                    == crate::experimental::session_open::map_level_chain(admission.map_url)?,
+                    == crate::experimental::session_open::map_level_chain(
+                        network
+                            .hosting
+                            .as_ref()
+                            .map_or(admission.map_url, |hosting| hosting.map_url.as_str())
+                    )?,
             "authored native replication release or level binding changed"
         );
         // This production host installs managers consecutively from 6 and
@@ -2130,15 +2312,13 @@ pub fn install_configured(
                 .chain(authored_paths.iter().map(Vec::as_slice)),
             bound.saved_managers.iter().map(|(_, plan)| plan),
         )?;
-        let plan = crate::native_replication::prepare(
-            app.world_mut(),
-            declaration,
-            session,
-            bound.lab.config().packet.packet.limits.max_channels,
-        )?;
-        crate::native_replication::install(app, plan)?;
+        ensure!(
+            declaration.first_channel >= session.first_channel
+                && declaration.first_channel < bound.lab.config().packet.packet.limits.max_channels,
+            "native replication channel floor invalid or reserved"
+        );
     }
-    install(app, bound.lab)
+    Ok(())
 }
 
 /// Current counts, the counts kept by [`teardown`], or `None` when the

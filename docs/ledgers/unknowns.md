@@ -3,7 +3,7 @@
 One row per open question. Tracked here; REA sessions mirror it. IDs are permanent.
 Status: open, investigating, blocked, contradicted, resolved.
 
-Last reconciled: 2026-11-12
+Last reconciled: 2026-11-13
 
 | ID | Question | Severity | Status | Next probe | Findings | REA id |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -44,7 +44,7 @@ Last reconciled: 2026-11-12
 | U-035 | Does native persistence survive physical power loss and required 72-hour runs? | high | open | Modeled/compressed checks pass; paced max 12 h lacks controller exits (F-833). A 48 h attempt stopped at its disk guard at 8.57 h (M-1055); another rerun lacks a final probe result (M-898). | F-235, F-239, F-427, F-429, F-870, F-511, F-872, F-873, F-671, F-833 |  |
 | U-036 | Does the CI definition pass on hosted CI? | low | resolved | Rerun on later feature heads (F-497) | F-497 |  |
 | U-037 | What is the active checksum/admission policy, and how are compatibility callbacks registered indirectly at runtime? | high | resolved | 0 version/PreLogin callbacks bound; IsClientMsgTypeValid and PreLogin/InitNewPlayer govern admission (F-712, F-713) | F-541, F-542, F-689, F-712, F-713, F-841, F-858 | M-749/unk_e0653fa021db, M-751/unk_b4b965b4c1c5 |
-| U-038 | Can a stock client complete an authenticated session against the native server? | critical | investigating | Two runs enter the world after pawn release, stay connected (F-1148); stats 0, no walk (U-080). Next: speed stats (F-1168), `run` default release, saved spawn F-1134 to F-1138 | F-968, F-1009, F-1051, F-1077, F-1084, F-1087 to F-1089, F-1093, F-1097, F-1099, F-1141 to F-1150 |  |
+| U-038 | Can a stock client complete an authenticated session against the native server? | critical | investigating | Probe entry F-1148; walking U-080. Next: run hosting/CM F-1170/F-1171, speeds F-1168, password F-1167, saved spawn F-1134 to F-1138 | F-968, F-1009, F-1051, F-1077, F-1084, F-1087 to F-1089, F-1093, F-1097, F-1099, F-1141 to F-1150 |  |
 | U-039 | What restoration use and gameplay identity does the singleton class's saved integer have? | medium | resolved | UFLODRecorderComponent +0xd8 saves FLODTiles.Num(); stitch compacts FLODTiles and restore ignores +0xd8 (F-716) | F-258, F-646, F-716 | M-755/unk_5cbf9cb30d7c |
 | U-040 | Which actor/inventory/construction/tame/mission fields exist, and can the reported producing build be independently confirmed? | high | open | No saved name or version string tells builds apart (F-635, F-896); write times put the save in the 3.0.29 window (F-685); producing server log would confirm it | F-262, F-421, F-635, F-643, F-648, F-668, F-680, F-685, F-894..F-896, F-736 |  |
 | U-041 | Can C001's complete concrete construction/vtable/archive-dispatch bridge be established? | high | resolved | 0x1418824d0 preserves rbx; 0x1418a9c80 sets FMemoryReader (v522) and calls +0xa0 -> +0x488 (F-722) | F-431, F-434..F-467, F-477, F-910, F-908, F-906, F-909, F-722 | M-761/unk_8696a7801cae |

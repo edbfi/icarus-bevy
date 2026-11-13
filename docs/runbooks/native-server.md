@@ -40,67 +40,69 @@ opens (F-671). `check-config` creates no state.
 
 ## Network sessions (experimental)
 
-Public `native_join_probe`, one Steam CM session:
-`cargo run --locked --example native_join_probe -- --name NativeResearch --seconds 300`.
-Defaults: UDP 17777/27015, one player, empty world;
-[case required](../gates.md#before-any-original-server-or-client-run).
-Listing/Auth/Join F-1010/F-1009; entry F-1148.
-Ready `authored_world`: `--seed` (1), `--seed-initialised` (true),
-`--flod-tile-count` (0). Startup: 1–32 actions, default none.
-World wire/count/release RPC/bounds checked before sockets/TLS/Steam.
-Probe [fresh-player stats](network-readiness.md#fresh-player-stats) (to walk),
-[join password](network-readiness.md#join-password).
-Diagnostics: [network readiness](network-readiness.md) (F-1045).
+Enabled networking stays loopback without hosting. Configure `[network.hosting]` per
+[the example](../../config/server.example.toml), including release/catalog,
+authored gameplay/world, stable prospect ID, row and map URL. Welcome, opens
+and advert share those identities. Replace example addresses/identities;
+no playable world is supplied. Enable networking with reachable game/query
+UDP ports and a fresh data directory.
+
+Run `check-config`, then `run` with `--config server.toml`.
+Hosting `seconds`: 1–86400; authentication requests/queues are bounded.
+`--compressed` and preserved prospects are refused. Runtime exit/deadline
+attempts teardown and final save.
+[Connected-run gates](../gates.md#before-any-original-server-or-client-run)
+apply, including the owner's word before a public passwordless listing.
+
+A2S shows occupancy without names; Steam CM receives accepted joined Steam
+IDs, not save data; logs/Debug/A2S omit them. Source/synthetic checks:
+F-1170/F-1171; live CM/browser/client behavior is unqualified (U-038).
+F-1004 covers only a no-player listing.
+
+`native_join_probe`: [diagnostics](network-readiness.md),
+[stats](network-readiness.md#fresh-player-stats),
+[passwords](network-readiness.md#join-password); observed entry F-1148.
 Level visibility actors (field-82 answers, M-1350) are gated
 ([gates](../gates.md)): `[network] level_visibility_actors = true` is refused;
 only the probe's `--level-visibility-actors true` enables them.
-Possession F-1088: `[network] controller_possession_properties` / probe
-`--controller-possession-properties`, default true, needs the pawn open.
-Records F-1077: `[network] connected_player_records` / probe
-`--connected-player-records` (ready field), default true, need the record class
-(3.0.34/3.0.35 pins) and pawn, PlayerState, GameState opens; else `run` omits
-them, the probe refuses. `false`: prior bunches.
-Unfreeze F-1099/F-1100: `[network] server_frozen_movement_release` / probe
-`--server-frozen-movement-release`, default true, needs records (else `run`
-omits it, the probe refuses). After the player's own record ACK plus
-`server_frozen_movement_release_delay_ms` (default 0, max 600000; probe
-`--server-frozen-movement-release-delay-ms`), one unreliable pawn update
-unfreezes it, resent on NAK. Probe line
-`native_join_frozen_movement` (`unix_ms`, per-session times) on schedule, send,
-ACK or abandonment.
-Move acks F-1127/F-1128: `[network] pawn_move_acks` / probe `--pawn-move-acks`,
-default false (no visible effect with a stock client, F-1150), need the pawn open
-(else `run` omits them, the probe refuses).
-Spawn points F-1139: `[network.spawn]` / probe `--spawn-location`,
-`--spawn-yaw`; default none (origin); [guidance](network-readiness.md#spawn-placement).
+Possession (`controller_possession_properties`, F-1088), connected records
+(`connected_player_records`, F-1077) and the player's record-ACK-gated pawn
+unfreeze (`server_frozen_movement_release`, F-1099/F-1100) default on.
+Missing opens/metadata: `run` omits, probe refuses. Release delay:
+`server_frozen_movement_release_delay_ms`,
+0–600000, default 0; the unreliable release resends on NAK. Probe
+`native_join_frozen_movement`: schedule/send/ACK/abandonment times.
+Optional `pawn_move_acks` defaults off (F-1127/F-1128; no observed walking
+benefit, F-1150), requires the pawn. Probe flags mirror these names with
+hyphens. `[network.spawn]` uses operator points; omission keeps the origin
+([placement](network-readiness.md#spawn-placement), F-1139/F-1140).
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
 
 All fields/release/controller/GameState/FLOD plans required; counts 0..=65535
-must fit both byte-order budgets before binding. No terrain (U-079).
+must fit both byte-order budgets before binding. Bootstrap supplies no terrain.
 `network_listening.authored_world`: configured inputs. Preserved prospects:
-reject post-load/pre-simulation/polling; socket may bind, stored state unchanged.
+reject after load, before binding/polling; stored state unchanged.
 Networking off: no bootstrap.
 
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
-CLI flags replace TOML; `[]` disables. Requires release/controller plans, plus
-settled pawn/GUID for restart. Successful opens precede actions.
-`network_listening`: actions. Readiness:
+CLI replaces TOML; `[]` disables. Needs release/controller plans and settled
+pawn/GUID for restart. Opens precede actions; `network_listening` lists them.
+Readiness:
 `controller_startup_actions_{pending,queued,settled,awaiting_ack}`,
-`controller_startup_sequences_{settled,failed}`. Pending: unqueued; queued: admitted; awaiting ACK: queued minus settled.
+`controller_startup_sequences_{settled,failed}`. Pending: unqueued; queued:
+admitted; awaiting ACK: queued minus settled.
 All actions must settle without failure under the
 [reliable-empty rule](network-readiness.md#readiness-counts).
 
-`[network]` enables `run`'s loopback peer lab (default off, F-875):
-
-Configure `[network]`:
+`[network]` defaults off (F-875):
 
 | Key | Default/example; constraint |
 | --- | --- |
 | `enabled` | `true` to enable |
-| `bind` | `"127.0.0.1"`; IPv4 loopback only |
-| `port` | `17777`; `0`: ephemeral; CLI `--network-port` |
+| `bind` | `"127.0.0.1"`; IPv4; nonloopback requires `[network.hosting]` |
+| `port` | `17777`; `0`: ephemeral lab only; CLI `--network-port` |
 | `max_players` | `8`; admission occupancy, 1..=64 |
 | `session_timeout_seconds` | `30`; idle/delivery/friends query, 1..=600 s |
 | `release_profile` | `"config/release.toml"`; optional Hello pin |
@@ -109,7 +111,7 @@ Configure `[network]`:
 | `join_password` | unset; never printed ([rules](network-readiness.md#join-password)) |
 
 
-Before `--data-dir`: profile/socket checks; mismatched Hello → Upgrade.
+Pure profile/plan checks precede state creation; mismatched Hello → Upgrade.
 Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes/drains/saves.
 `network_listening`: address/`version_check`; `status`/`stopped`: session counts.
 Prospect/mode F-804; data F-993. Monotonic delivery timeout: sent records lack

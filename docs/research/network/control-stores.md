@@ -29,8 +29,11 @@ F-514 to F-539, F-579, F-712 to F-714, F-740, F-857; U-014, U-044 resolved).
 
 S2, original 3.0.34: direct join and Steam auth F-1005, F-1006; auth frames
 and Login identity F-1007; release metadata F-1008. Native Steam auth and
-control Join pass (F-1009) and the authored prospect is selectable (F-1010);
-world entry stays blocked (U-079; U-038 open).
+control Join pass (F-1009) and the authored prospect is selectable (F-1010).
+Two probe runs enter the world after pawn release (F-1148); walking remains
+U-080. Authenticated run hosting and CM membership have source/synthetic
+qualification only (F-1170, F-1171); live CM/browser/client behavior remains
+U-038.
 
 ## Open
 
@@ -38,4 +41,4 @@ world entry stays blocked (U-079; U-038 open).
 
 ## Artifacts
 
-M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-780, M-791; M-1157..M-1175.
+M-005, M-012, M-023..M-046, M-281..M-283, M-288..M-297, M-301, M-302, M-315..M-346, M-353..M-357, M-370, M-371, M-749..M-754, M-763..M-765, M-770, M-771, M-776, M-777, M-780, M-791; M-1157..M-1175; M-1390.

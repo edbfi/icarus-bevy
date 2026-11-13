@@ -72,6 +72,8 @@ fn main() -> Result<()> {
     let version_tag = version_tag(&project_version)?;
     let query = UdpSocket::bind(cli.query_bind).context("bind the query port")?;
     let mut advert = Advert {
+        occupancy: None,
+        master_membership: None,
         server_steam_id: 0,
         name: cli.name,
         map: String::new(),

@@ -71,6 +71,46 @@ pub struct AdvertPlayer {
     pub connected_seconds: f32,
 }
 
+/// Authenticated hosting membership for the CM only. Diagnostics expose its
+/// size, never its contents; it has no serialization implementation.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct MasterMembership(Vec<u64>);
+
+impl std::fmt::Debug for MasterMembership {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MasterMembership")
+            .field("count", &self.len())
+            .finish()
+    }
+}
+
+impl MasterMembership {
+    pub(crate) fn from_authenticated(ids: impl IntoIterator<Item = u64>) -> Result<Self> {
+        let mut ids: Vec<_> = ids
+            .into_iter()
+            .take(crate::config::MAX_NETWORK_PLAYERS as usize + 1)
+            .collect();
+        ensure!(
+            ids.len() <= crate::config::MAX_NETWORK_PLAYERS as usize,
+            "hosting membership exceeds peer bound"
+        );
+        ensure!(
+            ids.iter().all(|id| *id != 0),
+            "invalid hosting membership identity"
+        );
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(Self(ids))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// Everything a server browser learns about this server.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Advert {
@@ -81,6 +121,11 @@ pub struct Advert {
     pub query_port: u16,
     pub max_players: u8,
     pub players: Vec<AdvertPlayer>,
+    /// Counts-only A2S occupancy; never publishes names or Steam IDs.
+    pub occupancy: Option<u8>,
+    /// Hosting-only CM identities, separate from named A2S player records.
+    /// `None` preserves the existing named-player conversion for legacy users.
+    pub master_membership: Option<MasterMembership>,
     pub version_tag: String,
     /// Prospect identifier of the loaded world, if any.
     pub prospect: Option<String>,
@@ -121,6 +166,14 @@ fn check_name(what: &str, value: &str) -> Result<()> {
 impl Advert {
     /// Reject values that would corrupt the comma/colon key lists.
     pub fn validate(&self) -> Result<()> {
+        if let Some(membership) = &self.master_membership {
+            ensure!(
+                membership.len() <= usize::from(self.max_players)
+                    && self.occupancy.map(usize::from) == Some(membership.len())
+                    && self.players.is_empty(),
+                "hosting membership and occupancy disagree"
+            );
+        }
         check_name("server name", &self.name)?;
         check_name("version tag", &self.version_tag)?;
         if let Some(prospect) = &self.prospect {
@@ -131,7 +184,8 @@ impl Advert {
             "map must not hold control characters"
         );
         ensure!(
-            self.players.len() <= usize::from(self.max_players),
+            self.players.len() <= usize::from(self.max_players)
+                && self.occupancy.is_none_or(|count| count <= self.max_players),
             "more players than the advertised maximum"
         );
         ensure!(
@@ -240,7 +294,9 @@ impl Advert {
             folder: b"Icarus".to_vec(),
             game: b"Icarus".to_vec(),
             app_id: 0,
-            players: u8::try_from(self.players.len()).unwrap_or(u8::MAX),
+            players: self
+                .occupancy
+                .unwrap_or_else(|| u8::try_from(self.players.len()).unwrap_or(u8::MAX)),
             max_players: self.max_players,
             bots: 0,
             server_type: b'd',
@@ -298,13 +354,22 @@ impl Advert {
             version: Some("0.0.0.1".to_owned()),
             product: Some("Icarus".to_owned()),
             region: Some(String::new()),
-            players: self
-                .players
-                .iter()
-                .map(|player| GameServerPlayer {
-                    steam_id: Some(player.steam_id),
-                })
-                .collect(),
+            players: if let Some(membership) = &self.master_membership {
+                membership
+                    .0
+                    .iter()
+                    .map(|id| GameServerPlayer {
+                        steam_id: Some(*id),
+                    })
+                    .collect()
+            } else {
+                self.players
+                    .iter()
+                    .map(|player| GameServerPlayer {
+                        steam_id: Some(player.steam_id),
+                    })
+                    .collect()
+            },
             max_players: Some(u32::from(self.max_players)),
             bot_count: Some(0),
             password: Some(false),
@@ -427,7 +492,15 @@ pub enum Admission {
 /// requests.
 pub fn serve_queries(socket: &UdpSocket, advert: &Mutex<Advert>, stop: &AtomicBool) -> Result<u64> {
     socket.set_read_timeout(Some(Duration::from_millis(250)))?;
-    let mut responder = QueryResponder::new()?;
+    serve_prepared_queries(socket, advert, stop, QueryResponder::new()?)
+}
+
+pub(crate) fn serve_prepared_queries(
+    socket: &UdpSocket,
+    advert: &Mutex<Advert>,
+    stop: &AtomicBool,
+    mut responder: QueryResponder,
+) -> Result<u64> {
     let mut buffer = [0u8; MAX_DATAGRAM + 1];
     let mut answered = 0;
     while !stop.load(Ordering::Relaxed) {
@@ -518,8 +591,13 @@ pub fn logon_game_server(
             },
         )
         .and_then(|mut session| {
-            let logon = session.logon_anonymous_game_server(ICARUS_APP_ID, private_ipv4)?;
-            Ok((session, logon))
+            match session.logon_anonymous_game_server(ICARUS_APP_ID, private_ipv4) {
+                Ok(logon) => Ok((session, logon)),
+                Err(error) => {
+                    session.close_bounded(Duration::from_secs(1));
+                    Err(error)
+                }
+            }
         });
         match attempt {
             Ok((session, logon)) => return Ok((session, logon, endpoint.clone())),
@@ -594,4 +672,121 @@ pub fn keep_listed(
 pub struct PresenceHandles {
     pub advert: Arc<Mutex<Advert>>,
     pub stop: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+    const A: u64 = 0x0110_0001_1234_5678;
+    const B: u64 = 0x0110_0001_8765_4321;
+
+    fn advert(ids: &[u64]) -> Advert {
+        let membership = MasterMembership::from_authenticated(ids.iter().copied()).unwrap();
+        Advert {
+            server_steam_id: 0,
+            name: "Authored host".into(),
+            map: "/Authored/Maps/Workshop".into(),
+            game_port: 17777,
+            query_port: 27015,
+            max_players: 8,
+            players: Vec::new(),
+            occupancy: Some(membership.len() as u8),
+            master_membership: Some(membership),
+            version_tag: "1.0-x-x".into(),
+            prospect: None,
+            prospect_info: None,
+            password_protected: true,
+        }
+    }
+
+    #[test]
+    fn synthetic_membership_uses_existing_fixed64_player_records_only() {
+        let advert = advert(&[B, A, B]);
+        advert.validate().unwrap();
+        let data = advert.game_server_data(7);
+        assert_eq!(data.revision, Some(7));
+        assert_eq!(
+            data.players
+                .iter()
+                .map(|player| player.steam_id)
+                .collect::<Vec<_>>(),
+            [Some(A), Some(B)]
+        );
+        let encoded = data.encode_to_vec();
+        let decoded = GameServerData::decode(encoded.as_slice()).unwrap();
+        assert_eq!(decoded, data);
+        for id in [A, B] {
+            let record = GameServerPlayer { steam_id: Some(id) }.encode_to_vec();
+            let mut expected = vec![0x09]; // player field 1, fixed64
+            expected.extend(id.to_le_bytes());
+            assert_eq!(record, expected);
+            let mut outer = vec![0x5a, 9]; // existing field 11, length-delimited
+            outer.extend(record);
+            assert!(encoded.windows(outer.len()).any(|part| part == outer));
+        }
+        assert_eq!(advert.info().players, 2);
+        assert!(advert.players().is_empty());
+    }
+
+    #[test]
+    fn membership_changes_drive_the_existing_revision_refresh_predicate() {
+        let empty = advert(&[]).game_server_data(0);
+        let joined = advert(&[B, A]).game_server_data(0);
+        let reordered = advert(&[A, B, A]).game_server_data(0);
+        let departed = advert(&[A]).game_server_data(0);
+        let due = |current: &GameServerData, previous: &GameServerData| {
+            crate::steam_service::presence_refresh_due(
+                current,
+                previous,
+                Duration::ZERO,
+                Duration::from_secs(60),
+            )
+        };
+        assert!(due(&joined, &empty));
+        assert!(!due(&reordered, &joined));
+        assert!(due(&departed, &joined));
+        assert!(due(&advert(&[B]).game_server_data(0), &departed));
+        assert!(due(&empty, &departed));
+        assert!(crate::steam_service::presence_refresh_due(
+            &empty,
+            &empty,
+            Duration::from_secs(60),
+            Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn membership_diagnostics_and_public_query_payloads_never_contain_ids() {
+        let advert = advert(&[A, B]);
+        let debug = format!("{advert:?} {:?}", advert.master_membership);
+        let public = [
+            encode_response(&Response::Info(advert.info())).unwrap(),
+            encode_response(&Response::Players(advert.players())).unwrap(),
+            encode_response(&Response::Rules(advert.rules())).unwrap(),
+        ];
+        for id in [A, B] {
+            assert!(!debug.contains(&id.to_string()));
+            assert!(!debug.contains(&format!("{id:x}")));
+            for payload in &public {
+                assert!(!payload.windows(8).any(|bytes| bytes == id.to_le_bytes()));
+                assert!(!String::from_utf8_lossy(payload).contains(&id.to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn membership_is_bounded_and_validation_rejects_split_counts() {
+        assert!(MasterMembership::from_authenticated(1..=65).is_err());
+        assert!(MasterMembership::from_authenticated([0]).is_err());
+        let mut advert = advert(&[A]);
+        advert.occupancy = Some(0);
+        assert!(advert.validate().is_err());
+        advert.occupancy = Some(1);
+        advert.players.push(AdvertPlayer {
+            steam_id: B,
+            name: "Authored legacy".into(),
+            connected_seconds: 0.0,
+        });
+        assert!(advert.validate().is_err());
+    }
 }
