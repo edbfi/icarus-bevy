@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-11.
+Last reconciled: 2026-11-13.
 
 ## Scope
 
@@ -24,8 +24,9 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   (F-1047), which native envelopes follow (F-1043). Public phases F-1045 and
   private headers F-1042 are observation boundaries.
 
-- 3.0.35: tags F-1031, class profiles F-1032, 296-table row registry F-1033.
-  Legacy row indices do not transfer.
+- 3.0.36: pin/tags F-1176, retained selected class semantics F-1177 and
+  ordered row widths F-1178. Static qualification only; connected behavior
+  remains unqualified for this release. Legacy row indices do not transfer.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7

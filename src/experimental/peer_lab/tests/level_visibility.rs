@@ -346,7 +346,7 @@ fn switch_off_level_reports_send_the_parent_commits_bunches() {
     // The probe's path: the production bind, then the lab API.
     let mut production_on = production_digest_lab(release_toml_config(false));
     production_on
-        .enable_level_visibility_actors(&release_toml_profile())
+        .enable_level_visibility_actors(&ReleaseProfile::release_3_0_35())
         .unwrap();
     assert!(production_on.has_level_visibility_actors());
     let on = level_report_session_digests(&mut production_on);
@@ -2095,11 +2095,14 @@ fn production_refuses_the_gated_switch_and_only_the_lab_api_enables_it() {
         ..crate::config::NetworkConfig::default()
     };
     assert!(!production_digest_lab(absent).has_level_visibility_actors());
-    // The probe's path: production bind, then the lab API.
+    // The tracked 3.0.36 pin has actor identities but no qualified decoder.
     let mut lab = production_digest_lab(release_toml_config(false));
-    lab.enable_level_visibility_actors(&release_toml_profile())
-        .unwrap();
-    assert!(lab.has_level_visibility_actors());
+    assert!(
+        lab.enable_level_visibility_actors(&release_toml_profile())
+            .is_err()
+    );
+    assert!(!lab.has_level_visibility_actors());
+    // The probe's path still works with an explicitly qualified 3.0.35 pin.
     let mut lab = production_digest_lab(crate::config::NetworkConfig {
         release_profile: pins[1].clone(),
         ..release_toml_config(false)

@@ -73,6 +73,8 @@ pub const TAG_NET_INDEX_HASH_3_0_32: u32 = 0x6d0f_676f;
 pub const TAG_NET_INDEX_HASH_3_0_34: u32 = 0x28cb_0f35;
 /// Derived gameplay-tag net-index hash for server 26425113 (3.0.35).
 pub const TAG_NET_INDEX_HASH_3_0_35: u32 = 0xbf0f_c0d8;
+/// Derived gameplay-tag net-index hash for server 26613688 (3.0.36).
+pub const TAG_NET_INDEX_HASH_3_0_36: u32 = 0x3cc9_3081;
 
 /// The string the engine hashes into the Hello network version.
 pub fn network_version_string(project_version: &str) -> String {
@@ -291,6 +293,7 @@ impl Default for ReleaseRowHandleProfile {
 
 impl ReleaseRowHandleProfile {
     /// Public server 26425113 registry and packaged row-count widths.
+    /// Server 26613688 retains the same ordered registry and widths (F-1178).
     pub fn release_3_0_35() -> Self {
         Self {
             table_count: 296,
@@ -708,7 +711,7 @@ impl ReleaseGameStateProfile {
             connected_players: subobject("ConnectedPlayers", 3_014_652_130),
             dialogue_system: subobject("DialogueSystem", 3_400_199_742),
             weather: subobject("WeatherComp", 3_554_357_950),
-            // Derived only for 3.0.34 and 3.0.35, which add it; older builds
+            // Derived for 3.0.34 through 3.0.36, which add it; older builds
             // send no record.
             connected_player_record: None,
         }
@@ -1241,9 +1244,34 @@ impl ReleaseProfile {
         profile
     }
 
+    /// Release metadata for public server 26613688 (3.0.36).
+    /// Tags are derived for this build (F-1176); selected class metadata and
+    /// ordered row registry retain the previous profile (F-1177, F-1178).
+    /// Static qualification does not establish stock-client compatibility.
+    pub fn release_3_0_36() -> Self {
+        let mut profile = Self::release_3_0_35();
+        let project_version = "3.0.36.159996-rel-DangerousHorizons".to_owned();
+        profile.pin = ReleasePin {
+            app_id: DEDICATED_SERVER_APP_ID,
+            build_id: 26_613_688,
+            network_checksum: network_checksum(&project_version),
+            project_version,
+        };
+        profile.tags.data_table_tag_count = 130;
+        profile.tags.ini_tag_count = 1_929;
+        profile.tags.unique_node_count = 2_343;
+        profile.tags.net_index_hash = TAG_NET_INDEX_HASH_3_0_36;
+        profile.tags.total_bits = 12;
+        profile.tags.effective_first_segment = 0;
+        profile.tags.container_bits = 6;
+        // Ordered registry and row widths match 3.0.35 exactly (F-1178).
+        profile.row_handles = ReleaseRowHandleProfile::release_3_0_35();
+        profile
+    }
+
     /// Built-in tag profile for a qualified build ID (`25793607`/`25793767` for
     /// 3.0.31, `25956137` for 3.0.32, `26313077` for 3.0.34,
-    /// `26425113` for 3.0.35). Other build IDs
+    /// `26425113` for 3.0.35, `26613688` for 3.0.36). Other build IDs
     /// require an explicit `[tags]` section so a weekly pin update cannot
     /// silently inherit an older build's tag metadata.
     fn default_tags_for_build(build_id: u64) -> Result<ReleaseTagProfile> {
@@ -1252,6 +1280,7 @@ impl ReleaseProfile {
             25_956_137 => Ok(Self::release_3_0_32().tags),
             26_313_077 => Ok(Self::release_3_0_34().tags),
             26_425_113 => Ok(Self::release_3_0_35().tags),
+            26_613_688 => Ok(Self::release_3_0_36().tags),
             _ => bail!(
                 "no built-in tag profile for build_id {build_id}; supply an explicit [tags] section"
             ),
@@ -1264,7 +1293,7 @@ impl ReleaseProfile {
         build_id: u64,
     ) -> Option<ReleasePlayerControllerProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 | 26_613_688 => {
                 Some(ReleasePlayerControllerProfile::icarus_survival())
             }
             _ => None,
@@ -1275,7 +1304,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_player_state_for_build(build_id: u64) -> Option<ReleasePlayerStateProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 | 26_613_688 => {
                 Some(ReleasePlayerStateProfile::icarus_survival())
             }
             _ => None,
@@ -1286,7 +1315,7 @@ impl ReleaseProfile {
     /// elsewhere, so a pin bump never inherits an older build's checksums.
     fn default_managers_for_build(build_id: u64) -> Option<ReleaseManagersProfile> {
         match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 => {
+            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 | 26_613_688 => {
                 Some(ReleaseManagersProfile::icarus_survival())
             }
             _ => None,
@@ -1302,16 +1331,19 @@ impl ReleaseProfile {
             }
             26_313_077 => Self::release_3_0_34().game_state,
             26_425_113 => Self::release_3_0_35().game_state,
+            26_613_688 => Self::release_3_0_36().game_state,
             _ => None,
         }
     }
 
-    /// Built-in level visibility actor identities: only for 3.0.34 and
-    /// 3.0.35, where the checksum was derived and matched; `None` elsewhere,
+    /// Built-in level visibility actor identities for 3.0.34, 3.0.35 and
+    /// 3.0.36 (F-1177); `None` elsewhere,
     /// so a pin bump never inherits them.
     fn default_level_actors_for_build(build_id: u64) -> Option<ReleaseLevelActorsProfile> {
         match build_id {
-            26_313_077 | 26_425_113 => Some(ReleaseLevelActorsProfile::icarus_world_settings()),
+            26_313_077 | 26_425_113 | 26_613_688 => {
+                Some(ReleaseLevelActorsProfile::icarus_world_settings())
+            }
             _ => None,
         }
     }
@@ -1323,6 +1355,7 @@ impl ReleaseProfile {
             25_793_607 | 25_793_767 | 25_956_137 => Some(ReleasePawnProfile::icarus_survival()),
             26_313_077 => Self::release_3_0_34().pawn,
             26_425_113 => Self::release_3_0_35().pawn,
+            26_613_688 => Self::release_3_0_36().pawn,
             _ => None,
         }
     }
@@ -1415,13 +1448,13 @@ impl ReleaseProfile {
             None => Self::default_tags_for_build(parsed.release.build_id)?,
         };
         let class_net_cache = parsed.class_net_cache.unwrap_or_default();
-        let row_handles = parsed.row_handles.unwrap_or_else(|| {
-            if parsed.release.build_id == 26_425_113 {
-                ReleaseRowHandleProfile::release_3_0_35()
-            } else {
-                ReleaseRowHandleProfile::default()
-            }
-        });
+        let row_handles = parsed
+            .row_handles
+            .unwrap_or_else(|| match parsed.release.build_id {
+                26_425_113 => ReleaseRowHandleProfile::release_3_0_35(),
+                26_613_688 => Self::release_3_0_36().row_handles,
+                _ => ReleaseRowHandleProfile::default(),
+            });
         let player_controller = parsed
             .player_controller
             .or_else(|| Self::default_player_controller_for_build(parsed.release.build_id));

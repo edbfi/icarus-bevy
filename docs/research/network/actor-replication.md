@@ -48,7 +48,9 @@ takes them verbatim as final cm/s (F-1164 to F-1166). The original picks a rocke
 spawn (F-1136), keeps kill-Z server-side (F-1137) and saves the client's last
 position (F-1135).
 
-Tags F-702/F-1031; sources F-828/F-832.
+Current pin/tags F-1176; selected class semantics F-1177; ordered row widths
+F-1178. Static comparison retains the selected protocol metadata; runtime
+behavior and client compatibility need fresh qualification. Sources F-828/F-832.
 Replay F-762.
 
 [World managers](../../specs/network/world-managers.md): managers, quests,
@@ -67,4 +69,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1406.

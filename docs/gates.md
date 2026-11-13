@@ -5,7 +5,7 @@ action. This is their only home; status, plan and digests link here.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-12
+Last reconciled: 2026-11-13
 
 ## Before any C001 original-code case
 
@@ -59,9 +59,9 @@ Last reconciled: 2026-11-12
   are bound in `experimental` (F-688, F-710 to F-714, F-729, F-757; U-014, U-037,
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
-  addresses and assumptions do not transfer automatically. The 3.0.35 pin's
-  tags, selected class profiles and row registry are qualified (F-1031 to
-  F-1033); connected behavior and visibility bindings still need qualification.
+  addresses and assumptions do not transfer automatically. The 3.0.36 pin's
+  tags, selected class profiles and row registry are statically qualified
+  (F-1176 to F-1178); connected behavior and visibility bindings still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 and entry reads
@@ -115,14 +115,13 @@ Last reconciled: 2026-11-12
 
 ## Before any original-server or client run
 
-- The standing instruction (given 2026-10-28, renewed 2026-11-11 and
-  2026-11-12; F-968, M-1359, M-1375) authorizes offline and online research,
+- The standing instruction (given 2026-10-28, renewed through
+  2026-11-13; F-1175, M-1400) authorizes offline and online research,
   Steam/network access, matched official-server runs and connected
   stock-client scenarios against either server without per-scenario approval,
   replacing the connected-test deferral (F-421; U-038, U-047, U-052). Prefer
   offline routes that answer equally well.
-- The 2026-11-12 instruction (M-1375) renews online and connected-run
-  authorization as on 2026-11-11 (M-1359). Both prepared runs listed a server
+- Both prepared runs listed a server
   publicly without a password and started on the owner's word, given before
   each launch (M-1375); they ran on 2026-11-12 (F-1141, F-1145). Any further
   connected run needs its own case and, if it lists a server publicly without

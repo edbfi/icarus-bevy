@@ -1142,10 +1142,12 @@ mod tests {
 
     #[test]
     fn level_visibility_actors_default_off_and_fail_closed_before_networking() {
-        let profile = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
+        let profile = ReleaseProfile::release_3_0_35();
+        let tracked = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
         let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
         assert!(!default.level_visibility_actors);
         assert!(!default.level_visibility_actors(&profile).unwrap());
+        assert!(!default.level_visibility_actors(&tracked).unwrap());
         let on = Options::try_parse_from([
             "probe",
             "--name",
@@ -1155,6 +1157,7 @@ mod tests {
         ])
         .unwrap();
         assert!(on.level_visibility_actors(&profile).unwrap());
+        assert!(on.level_visibility_actors(&tracked).is_err());
         for value in ["maybe", ""] {
             assert!(
                 Options::try_parse_from([
