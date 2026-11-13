@@ -55,13 +55,16 @@ pub const MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS: u64 = 600_000;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
+    /// Explicit bounded Steam hosting; absent retains the loopback lab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosting: Option<crate::native_hosting::HostingConfig>,
     /// Explicit independently authored seed and FLOD bootstrap, requiring a release profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authored_world: Option<crate::authored_world_bootstrap::AuthoredWorldBootstrap>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub controller_startup: Vec<crate::experimental::peer_lab::ControllerStartupAction>,
     pub enabled: bool,
-    /// IPv4 address to bind; loopback only while the layer is experimental.
+    /// IPv4 address to bind; nonloopback requires authenticated hosting.
     pub bind: Ipv4Addr,
     /// UDP port; zero selects an ephemeral port. The default matches the game
     /// port the offline reference probe targets; no compatibility is implied.
@@ -162,6 +165,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
+            hosting: None,
             authored_world: None,
             enabled: false,
             controller_startup: Vec::new(),
@@ -220,6 +224,9 @@ pub const LEVEL_VISIBILITY_ACTORS_GATED: &str = "network.level_visibility_actors
 
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(hosting) = &self.hosting {
+            hosting.validate(self)?;
+        }
         ensure!(!self.level_visibility_actors, LEVEL_VISIBILITY_ACTORS_GATED);
         if let Some(world) = &self.authored_world {
             world.validate()?;
@@ -233,8 +240,8 @@ impl NetworkConfig {
             "network.controller_startup exceeds 32 actions"
         );
         ensure!(
-            self.bind.is_loopback(),
-            "network.bind must be an IPv4 loopback address while the session layer is experimental"
+            self.bind.is_loopback() || self.hosting.is_some(),
+            "network.bind must be an IPv4 loopback address unless network.hosting is configured"
         );
         ensure!(
             (1..=MAX_NETWORK_PLAYERS).contains(&self.max_players),

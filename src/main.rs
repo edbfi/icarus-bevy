@@ -16,7 +16,7 @@ use icarus_bevy::{
     config::ConfigOptions,
     network,
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
-    simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
+    simulation::{RunClock, SimulationClock, TickMetrics, WorldSnapshot, build_app, capture},
 };
 use serde_json::json;
 
@@ -1056,12 +1056,16 @@ fn preserve_check_report(file: std::fs::File) -> Result<serde_json::Value> {
 
 /// `submitted` is when the committed snapshot was handed to the save worker;
 /// the latency covers queueing, serialization and durable publication.
-fn saved(receipt: SaveReceipt, submitted: Option<Instant>) {
-    eprintln!(
-        "{}",
+fn write_run_record(record: serde_json::Value) -> Result<()> {
+    use std::io::Write;
+    writeln!(std::io::stderr().lock(), "{record}").context("write native run status")
+}
+
+fn saved(receipt: SaveReceipt, submitted: Option<Instant>) -> Result<()> {
+    write_run_record(
         json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick,
-        "save_latency_micros": submitted.map(|time| time.elapsed().as_micros())})
-    );
+        "save_latency_micros": submitted.map(|time| time.elapsed().as_micros())}),
+    )
 }
 
 /// Autosave bookkeeping shared by the loop and a compressed run's wait.
@@ -1077,7 +1081,7 @@ impl Autosave {
         match polled {
             Ok(Some(receipt)) => {
                 self.last_commit = Some(now);
-                saved(receipt, self.submitted.take());
+                saved(receipt, self.submitted.take())?;
                 Ok(true)
             }
             Ok(None) => Ok(false),
@@ -1087,10 +1091,7 @@ impl Autosave {
                 }
                 self.submitted = None;
                 self.failures += 1;
-                eprintln!(
-                    "{}",
-                    json!({"event": "save_failed", "error": format!("{error:#}")})
-                );
+                write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))?;
                 Ok(true)
             }
         }
@@ -1164,15 +1165,73 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         !compressed || max_ticks.is_some(),
         "a compressed run needs max_ticks"
     );
-    // Load the release profile and bind before any world state opens: either
-    // failure exits without creating, locking or loading the data directory.
-    let bound = network::bind(&config.network)?;
-    let pinned_build = bound
+    ensure!(
+        !compressed || config.network.hosting.is_none(),
+        "hosting requires real-time simulation"
+    );
+    // Prepare owned inputs and every pure lab plan before world storage or listeners.
+    let mut prepared =
+        network::prepare_session(&config.network, network::peer_lab_config(&config.network))?;
+    if let Some(prepared) = &mut prepared {
+        prepared.prepare_runtime(config.autosave_seconds)?;
+    }
+    let pinned_build = prepared.as_mut().and_then(|prepared| {
+        prepared
+            .session_mut()
+            .release
+            .as_ref()
+            .map(|pin| pin.build_id)
+    });
+    let advert = config
+        .network
+        .hosting
         .as_ref()
-        .and_then(|bound| bound.release.as_ref())
-        .map(|pin| pin.build_id);
-    let store = SnapshotStore::open(&config.data_dir)?;
+        .map(|hosting| {
+            hosting.advert(
+                &config.network,
+                prepared
+                    .as_mut()
+                    .context("hosting session missing")?
+                    .session_mut()
+                    .release
+                    .as_ref()
+                    .context("hosting release missing")?,
+            )
+        })
+        .transpose()?;
+    // A restored directory need not contain the process lock. Look for state,
+    // then recheck under the lock below before using a fresh prepared world.
+    let existing_state = match std::fs::read_dir(&config.data_dir) {
+        Ok(entries) => {
+            let mut found = false;
+            for entry in entries {
+                let name = entry?.file_name();
+                found |= name == "manifest.json" || name.to_string_lossy().starts_with("snapshot-");
+            }
+            found
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error).context("inspect native state directory"),
+    };
+    let mut fresh_app = if !existing_state {
+        let mut app = build_app(&config, &WorldSnapshot::default())?;
+        if let Some(prepared) = &mut prepared {
+            prepared.prepare_app(&mut app)?;
+        }
+        Some(app)
+    } else {
+        None
+    };
+    let store = if config.data_dir.join("server.lock").exists() {
+        SnapshotStore::open_existing(&config.data_dir)?
+    } else {
+        SnapshotStore::open(&config.data_dir)?
+    };
     let loaded = store.load()?;
+    ensure!(
+        fresh_app.is_none() || loaded.is_none(),
+        "state appeared during fresh-session preflight; restart to load it"
+    );
     if loaded
         .as_ref()
         .is_some_and(|loaded| loaded.recovered_previous)
@@ -1183,6 +1242,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         );
     }
     let snapshot = loaded.map(|loaded| loaded.snapshot).unwrap_or_default();
+    ensure!(
+        config.network.hosting.is_none() || snapshot.preserved_prospect.is_none(),
+        "hosting preserved worlds require a qualified saved-map binding; only fresh authored hosting is supported"
+    );
     if config.network.enabled
         && let Some(world) = &config.network.authored_world
     {
@@ -1196,11 +1259,14 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 .context("max_ticks overflows simulation clock")
         })
         .transpose()?;
-    let mut app = build_app(&config, &snapshot)?;
+    let mut app = match fresh_app.take() {
+        Some(app) => app,
+        None => build_app(&config, &snapshot)?,
+    };
     if compressed {
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
-    let mut bound = bound;
+    let mut bound = prepared.as_mut().map(|prepared| prepared.session_mut());
     if let (Some(bound), Some(section)) = (&mut bound, &snapshot.preserved_prospect)
         && bound.lab.has_actor_uids()
     {
@@ -1241,11 +1307,6 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 json!({"event": "saved_player_controllers_unavailable", "reason": "save did not stage"})
             ),
         }
-    }
-    if let Some(bound) = &mut bound
-        && bound.lab.has_game_state_open()
-    {
-        network::apply_server_settings(&mut bound.lab, config.autosave_seconds)?;
     }
     let default_history = bound.as_ref().and_then(|bound| {
         bound
@@ -1297,8 +1358,28 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             plan,
         )?;
     }
-    let network_address = bound
-        .map(|bound| network::install_configured(&mut app, bound, &config.network))
+    if let Some(prepared) = &mut prepared {
+        prepared.prepare_app(&mut app)?;
+    }
+    let mut hosting = config
+        .network
+        .hosting
+        .as_ref()
+        .zip(advert)
+        .map(|(config, advert)| icarus_bevy::native_hosting::NativeHosting::start(config, advert))
+        .transpose()?;
+    let network_address = prepared
+        .map(|prepared| {
+            let bound = if let Some(hosting) = &hosting {
+                prepared.bind_authenticated(
+                    std::net::SocketAddrV4::new(config.network.bind, config.network.port),
+                    hosting.client(),
+                )?
+            } else {
+                prepared.bind()?
+            };
+            network::install_configured(&mut app, bound, &config.network)
+        })
         .transpose()?;
     app.finish();
     app.cleanup();
@@ -1307,6 +1388,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     let signal = Arc::clone(&stopping);
     ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
         .context("install SIGINT/SIGTERM handler")?;
+    let activation_result = hosting
+        .as_mut()
+        .map(|hosting| hosting.activate())
+        .transpose();
 
     let clock = RunClock {
         compressed,
@@ -1324,17 +1409,18 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     let mut clamped_frames = 0_u64;
     let mut previous_frame = Instant::now();
     let interval = config.tick_interval();
-    eprintln!(
-        "{}",
-        json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
+    let run_result = (|| -> Result<()> {
+        activation_result?;
+        write_run_record(
+            json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
         "icarus_compatible": false, "gameplay_ready": false,
         "native_schema": snapshot.schema_version, "compressed": compressed,
-        "network_enabled": network_address.is_some()})
-    );
-    if let Some(address) = network_address {
-        // The server's own bound address, configured limits and pinned build;
-        // never a client-supplied value.
-        let mut record = json!({"event": "network_listening", "experimental": true,
+        "network_enabled": network_address.is_some()}),
+        )?;
+        if let Some(address) = network_address {
+            // The server's own bound address, configured limits and pinned build;
+            // never a client-supplied value.
+            let mut record = json!({"event": "network_listening", "experimental": true,
             "address": address.to_string(), "max_players": config.network.max_players,
             "session_timeout_seconds": config.network.session_timeout_seconds,
             "version_check": pinned_build.is_some(), "release_build_id": pinned_build,
@@ -1345,56 +1431,78 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             // Whether one is set; never the password.
             "join_password": config.network.join_password.is_set(),
             "icarus_compatible": false, "gameplay_ready": false});
-        if let Some(world) = &config.network.authored_world {
-            record["authored_world"] = json!(world);
-        }
-        eprintln!("{}", with_native_replication_counts(record, app.world()));
-    }
-
-    loop {
-        let frame = Instant::now();
-        if !compressed
-            && frame.duration_since(previous_frame) > interval * config.max_catch_up_ticks
-        {
-            clamped_frames += 1;
-        }
-        previous_frame = frame;
-        // Manual runner still executes Bevy's complete app schedules and clocks.
-        app.update();
-        icarus_bevy::native_lifecycle_runtime::modifier_runtime_health(app.world())?;
-        let tick = app.world().resource::<SimulationClock>().tick;
-        let now = clock.elapsed(tick);
-        autosave.observe(writer.poll(), now)?;
-        if stopping.load(Ordering::SeqCst) || target_tick.is_some_and(|target| tick >= target) {
-            // Admission stops before any drain or final-save work.
-            network::stop_admission(app.world_mut());
-            break;
-        }
-        if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds) {
-            // A compressed run keeps every autosave by awaiting the one in
-            // flight; a stop request leaves the wait for the bounded shutdown.
-            while compressed && writer.is_busy() && !autosave.observe(writer.poll(), now)? {
-                if stopping.load(Ordering::SeqCst) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(1));
+            if let Some(world) = &config.network.authored_world {
+                record["authored_world"] = json!(world);
             }
-            if stopping.load(Ordering::SeqCst) {
+            if let Some(hosting) = &config.network.hosting {
+                record["hosting"] = json!({"seconds": hosting.seconds,
+                    "auth_request_budget": icarus_bevy::steam_service::ServiceLimits::default().max_requests,
+                    "query_port": hosting.query_port});
+            }
+            write_run_record(with_native_replication_counts(record, app.world()))?;
+        }
+        loop {
+            if stopping.load(Ordering::SeqCst)
+                || hosting.as_ref().is_some_and(|hosting| hosting.stopped())
+            {
                 network::stop_admission(app.world_mut());
                 break;
             }
-            if !writer.is_busy() {
-                writer.submit(capture(app.world_mut())?)?;
-                // The interval runs from submission, after capture.
-                last_save_request = clock.elapsed(tick);
-                autosave.submitted = Some(Instant::now());
+            let frame = Instant::now();
+            if !compressed
+                && frame.duration_since(previous_frame) > interval * config.max_catch_up_ticks
+            {
+                clamped_frames += 1;
             }
-        }
-        if now.saturating_sub(last_status) >= Duration::from_secs(config.status_interval_seconds) {
-            let metrics = app.world().resource::<TickMetrics>();
-            eprintln!(
-                "{}",
-                with_native_replication_counts(
+            previous_frame = frame;
+            // Manual runner still executes Bevy's complete app schedules and clocks.
+            app.update();
+            icarus_bevy::native_lifecycle_runtime::modifier_runtime_health(app.world())?;
+            let tick = app.world().resource::<SimulationClock>().tick;
+            let now = clock.elapsed(tick);
+            autosave.observe(writer.poll(), now)?;
+            if let Some(hosting) = &hosting {
+                let membership = app
+                    .world_mut()
+                    .get_resource_mut::<icarus_bevy::experimental::peer_lab::PeerLab>()
+                    .context("hosting session missing")?
+                    .authenticated_membership()?;
+                hosting.membership(membership)?;
+            }
+            if stopping.load(Ordering::SeqCst)
+                || target_tick.is_some_and(|target| tick >= target)
+                || hosting.as_ref().is_some_and(|hosting| hosting.stopped())
+            {
+                // Admission stops before any drain or final-save work.
+                network::stop_admission(app.world_mut());
+                break;
+            }
+            if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds)
+            {
+                // A compressed run keeps every autosave by awaiting the one in
+                // flight; a stop request leaves the wait for the bounded shutdown.
+                while compressed && writer.is_busy() && !autosave.observe(writer.poll(), now)? {
+                    if stopping.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                if stopping.load(Ordering::SeqCst) {
+                    network::stop_admission(app.world_mut());
+                    break;
+                }
+                if !writer.is_busy() {
+                    writer.submit(capture(app.world_mut())?)?;
+                    // The interval runs from submission, after capture.
+                    last_save_request = clock.elapsed(tick);
+                    autosave.submitted = Some(Instant::now());
+                }
+            }
+            if now.saturating_sub(last_status)
+                >= Duration::from_secs(config.status_interval_seconds)
+            {
+                let metrics = app.world().resource::<TickMetrics>();
+                write_run_record(with_native_replication_counts(
                     json!({"event": "status", "tick": tick,
                 "gameplay_ready": false, "save_in_flight": writer.is_busy(),
                 "save_failures": autosave.failures,
@@ -1407,15 +1515,16 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
                 "sessions": network::session_counts(app.world()),
                 "readiness": app.world().get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>().map(|lab| lab.readiness_counts())}),
-                    app.world()
-                )
-            );
-            last_status = now;
+                    app.world(),
+                ))?;
+                last_status = now;
+            }
+            if !compressed {
+                thread::sleep(interval.saturating_sub(frame.elapsed()));
+            }
         }
-        if !compressed {
-            thread::sleep(interval.saturating_sub(frame.elapsed()));
-        }
-    }
+        Ok(())
+    })();
 
     // Idempotent: admission is already stopped; close every session and drop
     // the socket before the bounded drain and final save.
@@ -1425,32 +1534,57 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         .get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>()
         .map(|lab| lab.readiness_counts());
     let sessions = network::teardown(app.world_mut());
-    let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
-    // A failed in-flight autosave is reported as in the loop; the final save still runs.
-    match writer.settle_before(deadline)? {
-        Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
-        Some(Err(error)) => eprintln!(
-            "{}",
-            json!({"event": "save_failed", "error": format!("{error:#}")})
-        ),
-        None => {}
-    }
-    ensure!(
-        Instant::now() < deadline,
-        "snapshot shutdown deadline exceeded before final capture"
-    );
-    let final_submitted = Instant::now();
-    writer.submit_before(capture(app.world_mut())?, deadline)?;
-    if let Some(receipt) = writer.finish_before(deadline)? {
-        saved(receipt, Some(final_submitted));
-    }
-    eprintln!(
-        "{}",
-        with_native_replication_counts(
+    let hosting_result = hosting
+        .take()
+        .map(|hosting| hosting.stop_and_join())
+        .transpose();
+    // Always attempt persistence, but retain the earlier failure if shutdown
+    // also fails (for example, an already-disconnected save worker).
+    let finalization_result = (|| -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
+        // A failed in-flight autosave is reported as in the loop; the final save still runs.
+        let shutdown_output = match writer.settle_before(deadline)? {
+            Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
+            Some(Err(error)) => {
+                write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))
+            }
+            None => Ok(()),
+        };
+        ensure!(
+            Instant::now() < deadline,
+            "snapshot shutdown deadline exceeded before final capture"
+        );
+        let final_submitted = Instant::now();
+        writer.submit_before(capture(app.world_mut())?, deadline)?;
+        let final_output = writer
+            .finish_before(deadline)?
+            .map(|receipt| saved(receipt, Some(final_submitted)))
+            .transpose();
+        let stopped_output = write_run_record(with_native_replication_counts(
             json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
         "gameplay_ready": false, "sessions": sessions, "readiness_before_shutdown": readiness}),
-            app.world()
-        )
-    );
-    Ok(())
+            app.world(),
+        ));
+        shutdown_output?;
+        final_output?;
+        stopped_output?;
+        Ok(())
+    })();
+    // Keep secondary failures observable without letting a failed diagnostic
+    // replace the original error. Run records already go to stderr.
+    if run_result.is_err()
+        && let Err(error) = &hosting_result
+    {
+        let _ = write_run_record(json!({"event": "shutdown_failed", "phase": "hosting",
+            "error": format!("{error:#}")}));
+    }
+    if (run_result.is_err() || hosting_result.is_err())
+        && let Err(error) = &finalization_result
+    {
+        let _ = write_run_record(json!({"event": "shutdown_failed", "phase": "finalization",
+            "error": format!("{error:#}")}));
+    }
+    run_result?;
+    hosting_result?;
+    finalization_result
 }

@@ -570,6 +570,8 @@ fn main() -> Result<()> {
         ..ProspectInfo::default()
     };
     let mut advert = Advert {
+        occupancy: None,
+        master_membership: None,
         server_steam_id: 0,
         name: options.name.clone(),
         map: String::new(),
@@ -1616,6 +1618,8 @@ mod tests {
         let ready = locked.ready_event(1, &settings);
         assert_eq!(ready["join_password"], true);
         let advert = Advert {
+            occupancy: None,
+            master_membership: None,
             server_steam_id: 1,
             name: locked.name.clone(),
             map: String::new(),

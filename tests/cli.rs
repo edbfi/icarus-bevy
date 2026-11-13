@@ -90,6 +90,35 @@ fn headless_process_saves_then_resumes_its_clock() {
 }
 
 #[test]
+fn restored_state_without_process_lock_resumes_on_first_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let run = || {
+        cli()
+            .args(["run", "--compressed", "--max-ticks", "3", "--data-dir"])
+            .arg(directory.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    let first = fs::read(directory.path().join("snapshot-1.json")).unwrap();
+    fs::remove_file(directory.path().join("server.lock")).unwrap();
+    let resumed = run();
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(
+        fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+        first
+    );
+    let store = icarus_bevy::persistence::SnapshotStore::open(directory.path()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert_eq!(loaded.snapshot.tick, 6);
+    assert!(!loaded.recovered_previous);
+}
+
+#[test]
 fn compressed_run_keeps_every_autosave_of_its_simulated_time() {
     let directory = tempfile::tempdir().unwrap();
     assert!(
@@ -432,6 +461,46 @@ fn termination_signals_commit_before_clean_exit() {
         server.wait_event("stopped");
         assert!(directory.path().join("manifest.json").exists());
     }
+}
+
+#[test]
+fn broken_status_pipe_commits_progress_before_failing() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("server.toml");
+    fs::write(
+        &config,
+        "tick_hz = 120\nautosave_seconds = 3600\nstatus_interval_seconds = 1\n",
+    )
+    .unwrap();
+    let mut child = cli()
+        .args(["run", "--config"])
+        .arg(&config)
+        .arg("--data-dir")
+        .arg(directory.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stream = child.stderr.take().unwrap();
+    let (sender, logs) = mpsc::channel();
+    let mut server = RunningServer { child, logs };
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        // Closing the only reader makes the next paced status write fail.
+        // The long autosave interval leaves final shutdown responsible for
+        // committing the progress made after the started event.
+        drop(reader);
+        let _ = sender.send(line);
+    });
+    server.wait_event("started");
+    assert!(!server.wait_exit().success());
+
+    let store = icarus_bevy::persistence::SnapshotStore::open(directory.path()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert!(!loaded.recovered_previous);
+    assert!(loaded.snapshot.tick > 0);
 }
 
 #[test]
