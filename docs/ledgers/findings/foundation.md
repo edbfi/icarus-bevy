@@ -9,6 +9,8 @@ Before restructure: 96ddb0b:docs/ledgers/findings.md
 
 Last reconciled: 2026-11-13
 
+F-968 is retired in favor of F-1175.
+
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | F-868 | Native config validates with CLI overrides and no-write inspection; a fixed-step ECS loop keeps stable authored IDs, coherent snapshot capture and bounded catch-up with counters; its 30 Hz development tick rate is provisional, not an ICARUS property | observed | authored-test, review | high; native config and loop |  | active |
@@ -60,7 +62,6 @@ Last reconciled: 2026-11-13
 | F-932 | Earlier native holds reported 0 save failures/tick misses, p99 <=151 us, gaps <=278 ms and RSS ~113 MB flat | measured | authored-test; M-849, M-861, M-865, M-1019 | high; 8 h RSS until swapped; 8 h probe pre-#57; no 10.1 h stats or later-code/ICARUS performance proof | U-035 | active |
 | F-938 | Authored spatial hosts validate atomically; lifecycle slots activate and optionally replace after per-peer close ACK with fresh GUIDs; motion/flags repair loss | measured | authored-test; M-829, M-831, M-1040, M-1051, M-1056, M-1135, M-1136 | high; no original replacement, pose import, gameplay/physics/subclass/client proof | U-025, U-038, U-052 | active |
 | F-952 | Authored bridge costs improve by workload; small/idle ranges overlap and p95 varies; debug/release idle and 2/8-peer release measured | measured | authored-test/runtime-capture; M-1057, M-1060, M-1063, M-1064, M-1069, M-1070, M-1075, M-1076, M-1088 | high; 3 pairs; combined candidates; no per-change attribution or reference/client/ICARUS/RSS proof | U-035, U-049 | active |
-| F-968 | 2026-11-13 renewal: offline/online research, Steam/network, matched server and stock-client runs without per-scenario approval | observed | authorization; M-1103, M-1138, M-1155, M-1177, M-1179, M-1183, M-1191, M-1201, M-1245, M-1273, M-1307, M-1331, M-1334, M-1359, M-1375, M-1397 | high; technical gates remain; client play needs user | U-038, U-047, U-052 | superseded-by F-1175 |
 | F-993 | Runtime data.pak supplies row names/order only; object and bool values require a separate authored profile with matching row identities; missing coverage cannot fall back to packaged values | measured | authored-test; M-1130 | high; authored fixtures and loopback CLI; provenance and compatibility unproved | U-069 | active |
 | F-995 | Native updates retain raw/wire state, reject unknown/duplicate IDs atomically, clear zero, coalesce behind ACKs, retry pressure and repair loss; authority setters notify accepted raw changes once before publishing caller-resolved state | measured | authored-test; M-1139, M-1143 | high; F-996 ordering; no ticking/original listeners/persistence/client proof | U-069 | active |
 | F-998 | Native pawn temperatures distinguish unknown from zero and coalesce with modifier times in one reliable update; internal setters run F-997 before publishing caller-resolved state | measured | authored-test; M-1146 | high; queued-open identity, ACK/pressure/loss/reconnect; no automatic climate/ticking/persistence/client proof | U-069 | active |
