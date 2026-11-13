@@ -2239,6 +2239,42 @@ fn declared_preserved_session_uses_effective_legacy_overlay() {
     assert_eq!(candidate.prospect_row(), units("Legacy_Key"));
     assert!(candidate.diagnostics().legacy_overlay);
     assert_eq!(inner, before);
+
+    // Legacy fields can supply the effective identity without a ProspectInfo
+    // root. Reuse the strict stager's defaults and migration in that case.
+    let info_root = struct_tag("ProspectInfo", "ProspectInfo", &prospect_info());
+    let without_info = [
+        int("Version", 1),
+        string("ProspectID", "effective-legacy-id"),
+        string("ProspectDTKey", "Legacy_Key"),
+        string("ProspectMapName", "LegacyMap"),
+        original[int("Version", 2).len() + info_root.len()..].to_vec(),
+    ]
+    .concat();
+    let before_without_info = without_info.clone();
+    let tags = read_root(&without_info, TagProfile::MemoryArchive522).unwrap();
+    let (_, legacy_roots, _) = stage_prospect_save_state_with_root_values(
+        &tags.tags,
+        TagProfile::MemoryArchive522,
+        MAX_BOUNDED_COMPONENT_BYTES,
+        None,
+    )
+    .unwrap();
+    assert!(!legacy_roots.source_presence().prospect_info);
+    let before_roots = legacy_roots.clone();
+    let candidate = assess(
+        &legacy_roots,
+        &binding,
+        &context,
+        &IdentityOverrides::default(),
+    )
+    .expect("version-1 effective identity does not require a raw ProspectInfo root");
+    assert_eq!(candidate.prospect_id(), units("effective-legacy-id"));
+    assert_eq!(candidate.prospect_row(), units("Legacy_Key"));
+    assert!(candidate.lobby_name().is_empty());
+    assert!(candidate.diagnostics().legacy_overlay);
+    assert_eq!(legacy_roots, before_roots);
+    assert_eq!(without_info, before_without_info);
 }
 
 fn session_catalog(map: &str, rows: &[&str]) -> icarus_bevy::import_plan::ContentCatalog {

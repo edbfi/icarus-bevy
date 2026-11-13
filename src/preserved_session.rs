@@ -150,11 +150,7 @@ pub fn assess<'a>(
     }
     text(saved_map)?;
     text(binding.saved_map)?;
-    if !roots.source_presence().prospect_info
-        || info.prospect_id.is_empty()
-        || info.prospect_dt_key.is_empty()
-        || saved_map.is_empty()
-    {
+    if info.prospect_id.is_empty() || info.prospect_dt_key.is_empty() || saved_map.is_empty() {
         return Err(Refusal::MissingIdentity);
     }
     let url = binding.canonical_map_url;
