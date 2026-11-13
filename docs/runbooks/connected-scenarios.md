@@ -1,6 +1,6 @@
 # Connected scenarios
 
-[Gates](../gates.md), F-968. User plays; empty servers pause.
+[Gates](../gates.md), F-1175. User plays; empty servers pause.
 Synthetic: time only (F-895).
 
 ## B: server here

@@ -108,11 +108,13 @@ reconnects never raise it or `incomplete`. `connection_seen` and `shape_seen` sh
 
 ### Offline selected RPC82 replay
 
-Checkout root; existing parents, new report:
+Checkout root; existing parents, new report. Bind a case-local release profile
+matching the capture's qualified 3.0.34 or 3.0.35 release. The tracked 3.0.36
+profile is not accepted for this replay.
 
 ```bash
 python3 tools/cargo_guard.py build --locked --example capture_decode
-python3 tools/cargo_guard.py --hold-target -- timeout 60s target/debug/examples/capture_decode selected-visibility work/<case>/selected-rpc82.jsonl work/<case>/replay.json --release-profile config/release.toml --archive normal-little-endian-package-map-custom --layout normal-single-custom-struct
+python3 tools/cargo_guard.py --hold-target -- timeout 60s target/debug/examples/capture_decode selected-visibility work/<case>/selected-rpc82.jsonl work/<case>/replay.json --release-profile work/<case>/release.toml --archive normal-little-endian-package-map-custom --layout normal-single-custom-struct
 ```
 
 Caller asserts archive/layout; null-map:

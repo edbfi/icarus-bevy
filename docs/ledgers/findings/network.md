@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-12
+Last reconciled: 2026-11-13
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -125,3 +125,6 @@ Last reconciled: 2026-11-12
 | F-1032 | Build 26425113 retains selected 3.0.34 class identities/layouts: 42 native classes, 5881 CRC inputs, 24 field layers and 25 cooked classes compare equal; cache bounds retained | derived | static-metadata; M-1198, M-1264, M-1265, M-1281, M-1282, M-1283, M-1284, M-1285 | bounded; protocol only; no stock gameplay/quest-open proof | U-038, U-079 | active |
 | F-1033 | Build 26425113 publishes 296 ordered row tables; 26313077 has 295. Current widths: 3 zero-byte, 28 two-byte, remaining one-byte; legacy 293-table indices do not transfer | observed | static-registry, row-counts; M-1286/ev_652dcdcc0721, M-1287, M-1288/ev_e16dd4ed5146, M-1289, M-1290 | bounded; protocol indices/counts only; no gameplay values or client qualification | U-038 | active |
 | F-1169 | Native lossy join (authored loopback clients, Hello to frozen-movement release), keyed drop/duplicate/reorder at 10-45% loss, blackouts, one-way outages to 300 steps: 500 seeds x 11 scenarios, 0 failures; 9,690 of 10,000 sessions complete, 310 silenced idle-close | measured | authored-test; M-1387 | high; loopback; authored client; injected timers; no auth | U-038 | active |
+| F-1176 | Public build 26613688 pins 3.0.36.159996-rel-DangerousHorizons, checksum 3984737729; 130 data tags + 1929 INI tags yield 2343 nodes/hash 0x3cc93081; old tag replay passes | derived | protocol-metadata; M-1403/ev_52a2435bf23f, M-1404, M-1405 | bounded; widths 12/0/6; metadata only, no runtime compatibility proof | U-038 | active |
+| F-1177 | 3.0.36 retains 42 core native classes/5881 CRC inputs, 24 cache layers and 48 unique expanded native classes; 26 cooked classes/52 members retain protocol semantics, two pairs change byte hashes | derived | static-metadata; M-1403/ev_f883070c4229, M-1403/ev_3f1c56e2fd93, M-1405 | bounded; selected ancestry/fields equal; no gameplay, visibility or client proof | U-038 | active |
+| F-1178 | 3.0.36 retains all 296 ordered table names and widths: 3 zero-byte, 28 two-byte, others one-byte; initializer slots and count*8 publication bound | derived | static-registry; M-1403/ev_d0adf684a1d8, M-1405 | bounded; SetupTables PDB query had no match, not a function-identity claim; no gameplay values or runtime proof | U-038 | active |

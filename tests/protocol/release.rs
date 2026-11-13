@@ -35,7 +35,7 @@ fn the_tracked_pin_is_consistent() {
     assert_eq!(pin.network_checksum, network_checksum(&pin.project_version));
 
     let profile = ReleaseProfile::load(&path).unwrap();
-    assert_eq!(profile, ReleaseProfile::release_3_0_35());
+    assert_eq!(profile, ReleaseProfile::release_3_0_36());
 }
 
 #[test]
@@ -131,6 +131,135 @@ fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
+    let profile = ReleaseProfile::release_3_0_36();
+    profile.validate().unwrap();
+    assert_eq!(profile.pin.build_id, 26_613_688);
+    assert_eq!(
+        profile.pin.project_version,
+        "3.0.36.159996-rel-DangerousHorizons"
+    );
+    assert_eq!(profile.pin.network_checksum, 3_984_737_729);
+    assert_eq!(profile.tags.data_table_tag_count, 130);
+    assert_eq!(profile.tags.ini_tag_count, 1_929);
+    assert_eq!(profile.tags.unique_node_count, 2_343);
+    assert_eq!(profile.tags.net_index_hash, 0x3cc9_3081);
+    assert_eq!(
+        (
+            profile.tags.total_bits,
+            profile.tags.effective_first_segment,
+            profile.tags.container_bits
+        ),
+        (12, 0, 6)
+    );
+    let previous = ReleaseProfile::release_3_0_35();
+    assert_ne!(profile.tags.net_index_hash, previous.tags.net_index_hash);
+    assert_ne!(
+        profile.tags.unique_node_count,
+        previous.tags.unique_node_count
+    );
+    assert_eq!(profile.player_controller, previous.player_controller);
+    assert_eq!(profile.player_state, previous.player_state);
+    assert_eq!(profile.game_state, previous.game_state);
+    assert_eq!(profile.pawn, previous.pawn);
+    assert_eq!(profile.managers, previous.managers);
+    assert!(profile.level_actors.is_none());
+    assert_eq!(profile.class_net_cache, previous.class_net_cache);
+    // Current-build ordered registry and widths match 3.0.35 (F-1178).
+    assert_eq!(profile.row_handles, previous.row_handles);
+    let text = "[release]\napp_id = 2089300\nbuild_id = 26613688\nproject_version = \"3.0.36.159996-rel-DangerousHorizons\"\nnetwork_checksum = 3984737729\n";
+    assert_eq!(ReleaseProfile::parse(text).unwrap(), profile);
+    assert!(ReleaseProfile::parse(&text.replace("26613688", "26613689")).is_err());
+    assert!(ReleaseProfile::parse(&text.replace("3984737729", "1299872271")).is_err());
+    use icarus_bevy::experimental::visibility::{
+        VisibilityArchiveProfile, VisibilityDecodeProfile,
+    };
+    assert!(
+        VisibilityDecodeProfile::qualify(
+            &profile,
+            VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom
+        )
+        .is_err()
+    );
+    assert!(
+        profile
+            .quest_open_base_plan("/Game/Maps/Test/Test")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn release_3_0_36_rejects_previous_hello_and_accepts_current_hello() {
+    use icarus_bevy::experimental::{
+        control_messages::{ControlCodec, ControlMessage},
+        packet::{PacketConfig, Receiver},
+        peer_lab::PeerLab,
+        probe_client::{ProbeClient, ProbeConfig},
+    };
+    use std::{
+        net::UdpSocket,
+        thread,
+        time::{Duration, Instant},
+    };
+    let profile = ReleaseProfile::release_3_0_36();
+    let mut lab =
+        PeerLab::bind(0, PeerLabConfig::default().with_release_profile(&profile)).unwrap();
+    for (version, accepted) in [
+        (ReleaseProfile::release_3_0_35().pin.network_checksum, false),
+        (profile.pin.network_checksum, true),
+    ] {
+        let address = lab.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.connect(address).unwrap();
+            let mut client = ProbeClient::connect(
+                socket,
+                ProbeConfig {
+                    packet: PacketConfig {
+                        magic_bits: 0,
+                        receiver: Receiver::Server,
+                        limits: PeerLabConfig::default().packet.packet.limits,
+                    },
+                    codec: ControlCodec::default(),
+                    handshake_timeout: Duration::from_millis(500),
+                    handshake_attempts: 2,
+                    reply_window: Duration::from_millis(250),
+                    max_datagrams: 8,
+                },
+            )
+            .unwrap();
+            client
+                .hello(version, "")
+                .unwrap()
+                .messages()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !worker.is_finished() && Instant::now() < deadline {
+            lab.poll();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.is_finished(), "bounded authored Hello exchange");
+        let messages = worker.join().unwrap();
+        if accepted {
+            assert!(matches!(
+                messages.as_slice(),
+                [ControlMessage::Challenge { .. }]
+            ));
+        } else {
+            assert_eq!(
+                messages,
+                vec![ControlMessage::Upgrade {
+                    version: profile.pin.network_checksum
+                }]
+            );
+        }
+    }
 }
 
 #[test]
@@ -1217,6 +1346,7 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
         (ReleaseProfile::release_3_0_32(), false),
         (ReleaseProfile::release_3_0_34(), true),
         (ReleaseProfile::release_3_0_35(), true),
+        (ReleaseProfile::release_3_0_36(), true),
     ];
     for (profile, derived) in builtins {
         let pin = &profile.pin;
@@ -1265,8 +1395,8 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
     assert!(parsed.connected_players_plan().unwrap().is_none());
 }
 
-/// Level visibility actor identities were derived for 3.0.34 and 3.0.35
-/// only: built-ins and pin-only TOML for older builds carry none, an explicit
+/// Level visibility actor identity selection includes 3.0.34 and 3.0.35
+/// only: built-ins and pin-only TOML for other builds carry none, an explicit
 /// `[level_actors]` overrides them, and invalid sections fail to parse.
 #[test]
 fn level_actors_are_built_in_only_where_derived_and_overridable() {
@@ -1276,6 +1406,7 @@ fn level_actors_are_built_in_only_where_derived_and_overridable() {
         (ReleaseProfile::release_3_0_32(), false),
         (ReleaseProfile::release_3_0_34(), true),
         (ReleaseProfile::release_3_0_35(), true),
+        (ReleaseProfile::release_3_0_36(), false),
     ];
     let pin_toml = |pin: &icarus_bevy::experimental::release::ReleasePin, build: u64| {
         format!(

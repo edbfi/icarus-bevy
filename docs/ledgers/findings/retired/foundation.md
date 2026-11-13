@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../foundation.md): superseded by a summary
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-11-10
+Last reconciled: 2026-11-13
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -143,3 +143,4 @@ Last reconciled: 2026-11-10
 | F-214 | Older server build 25621760 and client build 25793767 are distinct; no original runtime, client session or network experiment ran in this continuation. | observed | review | high; continuation 2026-10-12; Client correspondences are bounded static only | U-031 | retired: historical |
 | F-266 | Bounded Ghidra pass reached its analysis time limit and exported zero functions. | observed | tool-receipt; M-159; build 25621760 | high; one bounded pass; Behavior unresolved |  | retired: receipt |
 | F-484 | Authored Python passes basedpyright recommended on 3.15.0 at 0 errors / 0 warnings (from 18/418 across 10 files) without added ignores; typed CLI and output schemas replaced untyped plumbing with unchanged static CLI output | observed | static-typecheck | high; authored Python under src, tests and tools; excludes .agents/ and skills |  | retired: receipt |
+| F-968 | Instruction renewed 2026-11-12 permits offline/online research, Steam/network, matched server runs, stock-client scenarios without per-scenario approval | observed | authorization; M-1103, M-1138, M-1155, M-1177, M-1179, M-1183, M-1191, M-1201, M-1245, M-1273, M-1307, M-1331, M-1334, M-1359, M-1375 | high; technical gates remain; client play needs user | U-038, U-047, U-052 | retired |

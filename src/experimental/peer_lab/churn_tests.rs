@@ -63,9 +63,10 @@ fn network_config() -> NetworkConfig {
 }
 
 /// Turn level visibility actors on through the lab API, as the bounded
-/// join probe does: production configuration refuses the switch.
+/// join probe does, using the qualified 3.0.35 decoder fixture rather than
+/// the moving release pin. Production configuration refuses the switch.
 fn enable_levels(lab: &mut PeerLab) {
-    let profile = ReleaseProfile::load(&release_toml()).expect("release");
+    let profile = ReleaseProfile::release_3_0_35();
     lab.enable_level_visibility_actors(&profile)
         .expect("level visibility actors");
 }
