@@ -38,6 +38,65 @@ fn the_tracked_pin_is_consistent() {
     assert_eq!(profile, ReleaseProfile::release_3_0_36());
 }
 
+/// Every frozen release file is complete and parses to exactly the built-in
+/// constructor it replaces, including the 3.0.31 client build alias, which
+/// shares every 3.0.31 value except its build id.
+#[test]
+fn release_profile_files_equal_the_constructors_they_replace() {
+    use icarus_bevy::experimental::release::{release_fixture, release_fixture_path};
+    let mut alias = ReleaseProfile::release_3_0_31();
+    alias.pin.build_id = 25_793_767;
+    for (name, expected) in [
+        ("3.0.31", ReleaseProfile::release_3_0_31()),
+        ("3.0.31-client-25793767", alias),
+        ("3.0.32", ReleaseProfile::release_3_0_32()),
+        ("3.0.34", ReleaseProfile::release_3_0_34()),
+        ("3.0.35", ReleaseProfile::release_3_0_35()),
+        ("3.0.36", ReleaseProfile::release_3_0_36()),
+    ] {
+        assert_eq!(release_fixture(name), expected, "{name}");
+        // The pin-only text the constructors used to back resolves to the same
+        // value, so the file is exactly what the build id selected.
+        let pin = &expected.pin;
+        let pin_only = format!(
+            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
+            pin.app_id, pin.build_id, pin.project_version, pin.network_checksum
+        );
+        assert_eq!(
+            ReleaseProfile::parse(&pin_only).unwrap(),
+            expected,
+            "{name}"
+        );
+        let text = std::fs::read_to_string(release_fixture_path(name)).unwrap();
+        for section in [
+            "[release]",
+            "[tags]",
+            "[class_net_cache]",
+            "[row_handles]",
+            "[player_controller]",
+            "[player_state]",
+            "[game_state]",
+            "[pawn]",
+            "[managers]",
+        ] {
+            assert!(text.contains(&format!("\n{section}\n")), "{name} {section}");
+        }
+        assert_eq!(
+            text.contains("\n[level_actors]\n"),
+            expected.level_actors.is_some(),
+            "{name}"
+        );
+    }
+    let fixture = std::fs::read_to_string(release_fixture_path("3.0.36")).unwrap();
+    let active =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
+            .unwrap();
+    assert_eq!(
+        ReleaseProfile::parse(&active).unwrap(),
+        ReleaseProfile::parse(&fixture).unwrap()
+    );
+}
+
 #[test]
 fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     use icarus_bevy::experimental::rep_layout::PawnLayoutVersion;

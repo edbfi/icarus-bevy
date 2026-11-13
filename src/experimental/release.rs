@@ -1878,3 +1878,28 @@ impl ReleaseProfile {
         Self::parse(&fs::read_to_string(path).with_context(|| path.display().to_string())?)
     }
 }
+
+/// Directory of the frozen release profiles of the historical builds, one
+/// complete file per release named by its project version prefix (for
+/// example `3.0.32.toml`). They are test and research inputs, not server
+/// configuration: the server loads only the file its configuration names.
+pub const RELEASE_FIXTURE_DIR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/releases");
+
+/// Path of the frozen release profile `name` (`"3.0.32"` names
+/// `tests/fixtures/releases/3.0.32.toml`).
+pub fn release_fixture_path(name: &str) -> std::path::PathBuf {
+    assert!(
+        !name.is_empty() && !name.contains(['/', '\\']) && name != "..",
+        "release fixture names are plain file stems"
+    );
+    Path::new(RELEASE_FIXTURE_DIR).join(format!("{name}.toml"))
+}
+
+/// Load the frozen release profile `name` for tests and examples; panics,
+/// naming the file, when it is missing or invalid.
+pub fn release_fixture(name: &str) -> ReleaseProfile {
+    let path = release_fixture_path(name);
+    ReleaseProfile::load(&path)
+        .unwrap_or_else(|error| panic!("release fixture {}: {error:#}", path.display()))
+}
