@@ -28,7 +28,7 @@ official-save import remain unimplemented and unvalidated. Offline research has 
 
 ## Quick start
 
-Requires native Linux, Git, Python 3.15 and Rust 1.99.1 (pinned with Rustfmt and Clippy). Bevy
+Requires native Linux, Git, Python 3.15 and Rust 1.100.0 (pinned with Rustfmt and Clippy). Bevy
 0.20.1 runs headless; no GPU, display, original game files or Proton are needed.
 
 ```bash

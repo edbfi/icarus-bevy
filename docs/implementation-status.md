@@ -5,7 +5,7 @@ Checkpoint: [findings](ledgers/findings/), [unknowns](ledgers/unknowns.md),
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-11-12
+Last reconciled: 2026-11-13
 
 ## Summary
 
@@ -34,7 +34,7 @@ Digests: [foundation](research/foundation/foundation.md) and
 | M0: reference baseline | In progress | 435 files hashed; build 25621760; entry-map startup and save outer format observed; PE/PDB/MSF identities verified (F-878; U-034 resolved); producing log U-040 pending |
 | M1: original bug reproduction | Pending | No reported crash reproduced or official bug fixed (F-217); controlled workloads pending |
 | M2: interoperability/data feasibility | In progress, partial observations | Stateless exchange observed; anonymous official-data fetch/table row handles F-830/F-831; protocol/world/import feasibility gates open |
-| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.99.1/Bevy 0.20.1 tested; opt-in authored loopback F-875; stock-client slice awaits M2 |
+| M3: Bevy gameplay slice | In progress, foundation only | Rust 1.100.0/Bevy 0.20.1 tested; opt-in authored loopback F-875; stock-client slice awaits M2 |
 | M4: complete behavior | Pending | All required compatibility matrix entries must pass |
 | M5: migration/hardening | Pending, native hardening underway | Filesystem faults, lossless save generations/autosaves F-567/F-873; randomized readers/peer lab never panic, corrupt stores recover committed state or fail closed F-604 to F-607/F-611. Lossless typing/import blockers F-766/F-898; meanings/migration fidelity unvalidated |
 | M6: optimization/qualification | Pending | Matched reference workloads and full release gates required |
