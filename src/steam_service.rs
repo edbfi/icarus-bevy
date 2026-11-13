@@ -73,6 +73,9 @@ impl fmt::Debug for AuthClient {
 }
 
 impl AuthClient {
+    pub(crate) fn is_available(&self) -> bool {
+        self.shared.check().is_ok()
+    }
     /// Allocate a unique correlation across every clone and replacement peer lab.
     /// Exhaustion is terminal; IDs never wrap or restart within one service.
     pub fn allocate_request_id(&self) -> Result<u64> {
@@ -254,6 +257,7 @@ pub struct SteamService {
     client: AuthClient,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<Result<RegistrationReport>>>,
+    active: Arc<AtomicBool>,
 }
 
 struct StopOnExit(Arc<AtomicBool>);
@@ -270,6 +274,29 @@ impl SteamService {
         presence: PresenceHandles,
         deadline: Instant,
         limits: ServiceLimits,
+    ) -> Result<Self> {
+        Self::spawn_active(session, presence, deadline, limits, true)
+    }
+
+    pub fn spawn_unlisted(
+        session: CmSession,
+        presence: PresenceHandles,
+        deadline: Instant,
+        limits: ServiceLimits,
+    ) -> Result<Self> {
+        Self::spawn_active(session, presence, deadline, limits, false)
+    }
+
+    pub fn activate(&self) {
+        self.active.store(true, Ordering::Release);
+    }
+
+    fn spawn_active(
+        session: CmSession,
+        presence: PresenceHandles,
+        deadline: Instant,
+        limits: ServiceLimits,
+        initially_active: bool,
     ) -> Result<Self> {
         let prepare = (|| {
             limits.validate()?;
@@ -289,22 +316,52 @@ impl SteamService {
             }
         };
         let stop = presence.stop.clone();
+        let active = Arc::new(AtomicBool::new(initially_active));
+        let worker_active = active.clone();
+        // Keep ownership recoverable if the OS refuses the worker thread.
+        let pending_session = Arc::new(Mutex::new(Some(session)));
+        let worker_session = pending_session.clone();
         let worker = thread::Builder::new()
             .name("steam-service".to_owned())
             .spawn(move || {
                 let _stop_on_exit = StopOnExit(presence.stop.clone());
-                let mut session = session;
-                let result = run(&mut session, &presence, deadline, limits, &backend);
+                let mut session = worker_session
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Steam session ownership unavailable"))?
+                    .take()
+                    .context("Steam session already taken")?;
+                let result = run(
+                    &mut session,
+                    &presence,
+                    deadline,
+                    limits,
+                    &backend,
+                    &worker_active,
+                );
                 backend.shared.fail();
                 presence.stop.store(true, Ordering::Release);
                 session.close_bounded(limits.poll_interval);
                 result
             })
-            .context("spawn Steam service")?;
+            .context("spawn Steam service");
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                client.shared.fail();
+                stop.store(true, Ordering::Release);
+                if let Ok(mut session) = pending_session.lock()
+                    && let Some(session) = session.take()
+                {
+                    session.close_bounded(limits.poll_interval);
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
             client,
             stop,
             worker: Some(worker),
+            active,
         })
     }
 
@@ -353,6 +410,7 @@ fn run(
     deadline: Instant,
     limits: ServiceLimits,
     backend: &Backend,
+    active: &AtomicBool,
 ) -> Result<RegistrationReport> {
     let mut auth = AuthSessions::new(
         ICARUS_APP_ID,
@@ -370,6 +428,9 @@ fn run(
     };
     let outcome = (|| -> Result<()> {
         if presence.stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !await_activation(active, &presence.stop, deadline, limits.poll_interval) {
             return Ok(());
         }
         session.send_bounded(
@@ -444,7 +505,12 @@ fn run(
                 "Steam advert identity changed during service"
             );
             let data = current.game_server_data(0);
-            if data != listed || last_update.elapsed() >= limits.presence_refresh {
+            if presence_refresh_due(
+                &data,
+                &listed,
+                last_update.elapsed(),
+                limits.presence_refresh,
+            ) {
                 revision = revision
                     .checked_add(1)
                     .context("Steam advert revision exhausted")?;
@@ -480,6 +546,30 @@ fn run(
     Ok(report)
 }
 
+fn await_activation(
+    active: &AtomicBool,
+    stop: &AtomicBool,
+    deadline: Instant,
+    poll: Duration,
+) -> bool {
+    while !active.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
+    }
+    !stop.load(Ordering::Acquire) && Instant::now() < deadline
+}
+
+pub(crate) fn presence_refresh_due(
+    current: &crate::steam_fetch::proto::GameServerData,
+    listed: &crate::steam_fetch::proto::GameServerData,
+    elapsed: Duration,
+    refresh: Duration,
+) -> bool {
+    current != listed || elapsed >= refresh
+}
+
 #[cfg(test)]
 pub(crate) struct TestBackend(Backend);
 
@@ -506,6 +596,33 @@ impl TestBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unlisted_activation_never_outlives_stop_or_deadline() {
+        use super::*;
+        let active = AtomicBool::new(false);
+        let stop = AtomicBool::new(false);
+        assert!(!await_activation(
+            &active,
+            &stop,
+            Instant::now() + Duration::from_millis(2),
+            Duration::from_millis(1)
+        ));
+        stop.store(true, Ordering::Release);
+        active.store(true, Ordering::Release);
+        assert!(!await_activation(
+            &active,
+            &stop,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(1)
+        ));
+        stop.store(false, Ordering::Release);
+        assert!(await_activation(
+            &active,
+            &stop,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(1)
+        ));
+    }
     use super::*;
     use crate::steam_auth::AuthOutcome;
 

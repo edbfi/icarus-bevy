@@ -7,9 +7,9 @@ autosave_seconds = 60
 shutdown_timeout_seconds = 10
 status_interval_seconds = 10
 
-# EXPERIMENTAL loopback-only session layer built from the peer lab: handshake,
-# Hello/Login/Welcome/Join admission counts only. No ICARUS compatibility,
-# replication or gameplay. Keep disabled outside authored-probe testing.
+# EXPERIMENTAL session layer; disabled by default. Omit [network.hosting] for
+# the loopback peer lab. Authenticated public hosting is explicit and bounded;
+# protocol/gameplay compatibility remains unproven.
 [network]
 enabled = false
 bind = "127.0.0.1"
@@ -28,3 +28,21 @@ session_timeout_seconds = 30
 # points = [
 #   { x = 0.0, y = 0.0, z = 0.0, yaw = 0.0 },
 # ]
+
+# Optional bounded Steam-authenticated production hosting. Requires enabled
+# networking, explicit game/query ports, release_profile, data_pak,
+# authored_gameplay and [network.authored_world]. Simulation must run in real
+# time. Preserved prospects are refused until saved-map binding is qualified.
+# These are independently authored example identities, not playable map data.
+# A2S exposes counts; Steam CM receives accepted joined Steam IDs, not save data.
+# [network.hosting]
+# query_bind = "0.0.0.0"
+# query_port = 27015
+# private_ip = "192.0.2.1" # documentation-only; replace with the host address
+# seconds = 3600 # 1..=86400; finite authentication budget also applies
+# name = "Authored workshop"
+# map_url = "/Authored/Maps/Workshop"
+# prospect_id = "stable-authored-workshop"
+# prospect_row = "AuthoredProspect" # must exist in the configured protocol catalog
+# lobby_name = "Workshop"
+# difficulty = 2

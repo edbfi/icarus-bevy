@@ -16,6 +16,8 @@ use icarus_bevy::{
 
 fn authored_advert() -> Advert {
     Advert {
+        occupancy: None,
+        master_membership: None,
         server_steam_id: 0x0140_0000_0000_0001,
         name: "authored-native".to_owned(),
         map: String::new(),
@@ -154,6 +156,8 @@ fn only_a_password_protected_listing_carries_the_locked_rule() {
 fn adverts_reject_values_that_would_corrupt_key_lists() {
     for name in ["", "a,b", "a:b", "a\nb", &"x".repeat(64)] {
         let advert = Advert {
+            occupancy: None,
+            master_membership: None,
             name: name.to_owned(),
             ..authored_advert()
         };
@@ -294,6 +298,8 @@ fn every_query_needs_a_challenge_bound_to_source_and_window() {
 #[test]
 fn long_rule_sets_are_split_within_a_datagram() {
     let advert = Advert {
+        occupancy: None,
+        master_membership: None,
         prospect_info: Some("A".repeat(3_000)),
         ..authored_advert()
     };
@@ -357,6 +363,8 @@ fn a_fixed_guess_is_never_a_valid_challenge() {
 #[test]
 fn prospect_info_precedes_the_prospect_rule_and_player_names_are_checked() {
     let advert = Advert {
+        occupancy: None,
+        master_membership: None,
         prospect_info: Some("AAAA".to_owned()),
         ..authored_advert()
     };
@@ -370,6 +378,8 @@ fn prospect_info_precedes_the_prospect_rule_and_player_names_are_checked() {
 
     for name in ["a\0b", "a\nb", &"x".repeat(64)] {
         let advert = Advert {
+            occupancy: None,
+            master_membership: None,
             players: vec![AdvertPlayer {
                 steam_id: 1,
                 name: name.to_owned(),
@@ -428,4 +438,25 @@ fn game_server_messages_use_the_public_field_numbers() {
         data.encode_to_vec(),
         [0xa2, 0x01, 0x01, b'a', 0xc0, 0x01, 0x03]
     );
+}
+
+#[test]
+fn counts_only_occupancy_updates_a2s_without_master_identity_records() {
+    let mut advert = authored_advert();
+    for count in [0, 1, 2, 1, 0] {
+        advert.occupancy = Some(count);
+        advert.validate().unwrap();
+        assert_eq!(advert.info().players, count);
+        let listing = advert.game_server_data(1);
+        assert!(listing.players.is_empty());
+        assert!(
+            listing
+                .players
+                .iter()
+                .all(|player| player.steam_id.is_none())
+        );
+        assert!(advert.players().is_empty());
+    }
+    advert.occupancy = Some(3);
+    assert!(advert.validate().is_err());
 }

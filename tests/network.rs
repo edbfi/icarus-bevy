@@ -834,26 +834,80 @@ fn production_run_with_max_ticks_reports_sessions_and_exits_cleanly() {
 }
 
 #[test]
-fn network_bind_failure_exits_before_world_state_is_created() {
+fn network_bind_failure_preserves_durable_world_and_never_starts() {
+    use icarus_bevy::persistence::SnapshotStore;
+
     let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = occupied.local_addr().unwrap().port().to_string();
-    let directory = tempfile::tempdir().unwrap();
-    let config = server_config(directory.path());
-    let state = directory.path().join("state");
-    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
-        .arg("run")
-        .arg("--config")
-        .arg(&config)
-        .args(["--network-port", &port, "--max-ticks", "1", "--data-dir"])
-        .arg(&state)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let logs = String::from_utf8_lossy(&output.stderr);
-    assert!(logs.contains("\"event\":\"fatal\""), "{logs}");
-    assert!(logs.contains("bind"), "{logs}");
-    assert!(!logs.contains("\"event\":\"started\""), "{logs}");
-    assert!(!state.exists());
+    for existing in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = server_config(directory.path());
+        let state = directory.path().join("state");
+        let initial = WorldSnapshot {
+            tick: 41,
+            ..WorldSnapshot::default()
+        };
+        if existing {
+            let mut store = SnapshotStore::open(&state).unwrap();
+            store
+                .save(&WorldSnapshot {
+                    tick: 40,
+                    ..WorldSnapshot::default()
+                })
+                .unwrap();
+            store.save(&initial).unwrap();
+        }
+        let files = || -> std::collections::BTreeMap<_, _> {
+            fs::read_dir(&state)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect()
+        };
+        let before = if existing { Some(files()) } else { None };
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .arg("run")
+            .arg("--config")
+            .arg(&config)
+            .args(["--network-port", &port, "--max-ticks", "1", "--data-dir"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let logs = String::from_utf8_lossy(&output.stderr);
+        assert!(logs.contains("\"event\":\"fatal\""), "{logs}");
+        assert!(logs.contains("bind"), "{logs}");
+        for event in [
+            "started",
+            "network_listening",
+            "status",
+            "save_committed",
+            "stopped",
+        ] {
+            assert!(!logs.contains(&format!("\"event\":\"{event}\"")), "{logs}");
+        }
+        if let Some(before) = before {
+            assert_eq!(files(), before, "bind failure changed committed files");
+        } else {
+            // World validation precedes listener attachment. A fresh store
+            // may acquire its lock directory, but must publish no generation.
+            assert_eq!(
+                files(),
+                std::collections::BTreeMap::from([(
+                    std::ffi::OsString::from("server.lock"),
+                    Vec::new()
+                ),])
+            );
+        }
+        // Reopening also proves the failed child released the writer lock.
+        let store = SnapshotStore::open_existing(&state).unwrap();
+        assert_eq!(
+            store.load().unwrap().map(|loaded| loaded.snapshot),
+            existing.then_some(initial)
+        );
+    }
 }
 
 #[test]
@@ -9356,4 +9410,256 @@ fn a_fresh_join_with_tables_opens_the_pawn_with_its_replicated_stats() {
         pairs,
         [(58, 600), (61, 900), (65, 300), (69, 300), (73, 450)]
     );
+}
+
+#[test]
+fn prepared_session_owns_plans_without_acquiring_listener() {
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let config = NetworkConfig {
+        enabled: true,
+        port: occupied.local_addr().unwrap().port(),
+        ..NetworkConfig::default()
+    };
+    let mut prepared = network::prepare_session(&config, network::peer_lab_config(&config))
+        .unwrap()
+        .unwrap();
+    assert!(prepared.session_mut().lab.local_addr().is_err());
+    assert!(prepared.bind().is_err());
+    drop(occupied);
+    let prepared = network::prepare_session(&config, network::peer_lab_config(&config))
+        .unwrap()
+        .unwrap();
+    let bound = prepared.bind().unwrap();
+    assert_eq!(bound.lab.local_addr().unwrap().port(), config.port);
+}
+
+#[test]
+fn prepared_session_rejects_bad_inputs_without_listener() {
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let declaration = directory.path().join("replication.json");
+    fs::write(&declaration, "{}").unwrap();
+    for config in [
+        NetworkConfig {
+            enabled: true,
+            max_players: 0,
+            ..NetworkConfig::default()
+        },
+        NetworkConfig {
+            enabled: true,
+            release_profile: Some(directory.path().join("missing.toml")),
+            ..NetworkConfig::default()
+        },
+        NetworkConfig {
+            enabled: true,
+            data_pak: Some(directory.path().join("missing.pak")),
+            ..NetworkConfig::default()
+        },
+        NetworkConfig {
+            enabled: true,
+            authored_replication: Some(declaration),
+            ..NetworkConfig::default()
+        },
+    ] {
+        let config = NetworkConfig {
+            port: occupied.local_addr().unwrap().port(),
+            ..config
+        };
+        let error = network::prepare_session(&config, network::peer_lab_config(&config))
+            .err()
+            .expect("invalid input must fail preflight");
+        assert!(!format!("{error:#}").contains("bind session listener"));
+    }
+}
+
+#[test]
+fn invalid_owned_plan_and_authored_table_fail_before_occupied_listener() {
+    use icarus_bevy::experimental::peer_lab::PeerLabAdmission;
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let config = NetworkConfig {
+        enabled: true,
+        port: occupied.local_addr().unwrap().port(),
+        release_profile: Some(release_toml()),
+        ..NetworkConfig::default()
+    };
+    let mut parameters = network::peer_lab_config(&config);
+    parameters.admission = Some(PeerLabAdmission {
+        map_url: "invalid-map",
+        ..PeerLabAdmission::default()
+    });
+    let error = network::prepare_session(&config, parameters).err().unwrap();
+    assert!(!format!("{error:#}").contains("bind session listener"));
+    let pak = directory.path().join("authored.pak");
+    fs::write(
+        &pak,
+        pak_writer::official_pak(&[("Flags/D_SessionFlags.json", b"not-json".to_vec())]),
+    )
+    .unwrap();
+    let gameplay = directory.path().join("authored-gameplay.json");
+    fs::write(&gameplay, "{}").unwrap();
+    let config = NetworkConfig {
+        data_pak: Some(pak),
+        authored_gameplay: Some(gameplay),
+        ..config
+    };
+    let error = network::prepare_session(&config, network::peer_lab_config(&config))
+        .err()
+        .unwrap();
+    assert!(!format!("{error:#}").contains("bind session listener"));
+    assert!(!directory.path().join("state").exists());
+}
+
+#[test]
+fn prepared_session_consumes_release_once_despite_later_file_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let release = directory.path().join("release.toml");
+    fs::copy(release_toml(), &release).unwrap();
+    let config = NetworkConfig {
+        enabled: true,
+        port: 0,
+        release_profile: Some(release.clone()),
+        ..NetworkConfig::default()
+    };
+    let mut prepared = network::prepare_session(&config, network::peer_lab_config(&config))
+        .unwrap()
+        .unwrap();
+    let pin = prepared.session_mut().release.clone();
+    fs::write(&release, "invalid replacement").unwrap();
+    let bound = prepared.bind().unwrap();
+    assert_eq!(bound.release, pin);
+    assert!(bound.lab.has_game_state_open());
+}
+
+#[test]
+fn fresh_authored_host_preflight_resolves_one_stable_map_and_prospect() {
+    use icarus_bevy::{
+        authored_world_bootstrap::AuthoredWorldBootstrap,
+        data_pak::DataPak,
+        gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+        native_hosting::HostingConfig,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let pak = directory.path().join("authored.pak");
+    fs::write(
+        &pak,
+        pak_writer::fresh_join_pak_with(&[(
+            "Prospects/D_ProspectList.json",
+            pak_writer::table_json(&["AuthoredWorkshop"]),
+        )]),
+    )
+    .unwrap();
+    let gameplay = directory.path().join("gameplay.json");
+    let authored = fresh_player_profile(
+        &mut DataPak::open(&pak).unwrap(),
+        &FreshPlayerValues::default(),
+    )
+    .unwrap();
+    fs::write(&gameplay, serde_json::to_vec(&authored).unwrap()).unwrap();
+    let hosting = HostingConfig {
+        query_bind: "127.0.0.1".parse().unwrap(),
+        query_port: 27015,
+        private_ip: "127.0.0.1".parse().unwrap(),
+        seconds: 60,
+        name: "Authored workshop".into(),
+        map_url: "/Authored/Maps/Workshop".into(),
+        prospect_id: "stable-workshop".into(),
+        prospect_row: "AuthoredWorkshop".into(),
+        lobby_name: "Workshop".into(),
+        difficulty: 2,
+    };
+    let config = NetworkConfig {
+        enabled: true,
+        release_profile: Some(release_toml()),
+        data_pak: Some(pak),
+        authored_gameplay: Some(gameplay),
+        hosting: Some(hosting.clone()),
+        authored_world: Some(AuthoredWorldBootstrap {
+            seed: 42,
+            seed_initialised: true,
+            flod_tile_count: 0,
+        }),
+        ..NetworkConfig::default()
+    };
+    for _ in 0..2 {
+        let mut prepared = network::prepare_session(&config, network::peer_lab_config(&config))
+            .unwrap()
+            .unwrap();
+        prepared.prepare_runtime(60).unwrap();
+        let bound = prepared.session_mut();
+        assert!(bound.lab.local_addr().is_err());
+        assert_eq!(bound.lab.resolved_map_url(), Some(hosting.map_url.as_str()));
+        let advert = hosting
+            .advert(&config, bound.release.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(advert.map, bound.lab.resolved_map_url().unwrap());
+        assert_eq!(advert.prospect.as_deref(), Some("stable-workshop"));
+        assert!(
+            prepared.bind().is_err(),
+            "hosting cannot fall back to unauthenticated binding"
+        );
+    }
+    let mut invalid = config.clone();
+    invalid.hosting.as_mut().unwrap().prospect_row = "MissingAuthoredProspect".into();
+    assert!(network::prepare_session(&invalid, network::peer_lab_config(&invalid)).is_err());
+    assert!(
+        config
+            .authored_world
+            .as_ref()
+            .unwrap()
+            .validate_preserved_prospect(true)
+            .is_err()
+    );
+}
+
+#[test]
+fn hosting_invalid_preflight_leaves_state_directory_absent() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("server.toml");
+    let state = directory.path().join("state");
+    let game = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let query = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let authored = format!(
+        r#"
+[network]
+enabled = true
+port = {}
+release_profile = "missing-authored-release.toml"
+data_pak = "missing-authored-catalog.pak"
+authored_gameplay = "missing-authored-gameplay.json"
+[network.authored_world]
+seed = 42
+seed_initialised = true
+flod_tile_count = 0
+[network.hosting]
+query_bind = "127.0.0.1"
+query_port = {}
+private_ip = "127.0.0.1"
+seconds = 0
+name = "Authored workshop"
+map_url = "/Authored/Maps/Workshop"
+prospect_id = "stable-workshop"
+prospect_row = "AuthoredWorkshop"
+lobby_name = "Workshop"
+difficulty = 2
+"#,
+        game.local_addr().unwrap().port(),
+        query.local_addr().unwrap().port()
+    );
+    fs::write(&config, authored).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .arg("run")
+        .arg("--config")
+        .arg(&config)
+        .arg("--data-dir")
+        .arg(&state)
+        .args(["--max-ticks", "1"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("hosting seconds"), "{stderr}");
+    assert!(!stderr.contains("bind hosting"), "{stderr}");
+    assert!(!stderr.contains("\"event\":\"started\""), "{stderr}");
+    assert!(!state.exists());
 }
