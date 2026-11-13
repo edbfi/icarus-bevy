@@ -212,6 +212,7 @@ fn preserved_snapshot(tick: u64, preserved: &Arc<PreservedSection>) -> WorldSnap
         native_inventories: None,
         native_inventory_owner_import: None,
         native_inventory_authority: None,
+        native_players: None,
         native_modifiers: None,
     }
 }

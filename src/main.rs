@@ -16,7 +16,7 @@ use icarus_bevy::{
     config::ConfigOptions,
     network,
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
-    simulation::{RunClock, SimulationClock, TickMetrics, WorldSnapshot, build_app, capture},
+    simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
 use serde_json::json;
 
@@ -1170,8 +1170,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         "hosting requires real-time simulation"
     );
     // Prepare owned inputs and every pure lab plan before world storage or listeners.
-    let mut prepared =
-        network::prepare_session(&config.network, network::peer_lab_config(&config.network))?;
+    let (mut prepared, players) =
+        network::prepare_run(&config.network, network::peer_lab_config(&config.network))?;
     if let Some(prepared) = &mut prepared {
         prepared.prepare_runtime(config.autosave_seconds)?;
     }
@@ -1214,7 +1214,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         Err(error) => return Err(error).context("inspect native state directory"),
     };
     let mut fresh_app = if !existing_state {
-        let mut app = build_app(&config, &WorldSnapshot::default())?;
+        let initial = network::fresh_player_snapshot(players.as_ref());
+        let mut app = build_app(&config, &initial)?;
+        network::install_player_registry(app.world_mut(), players.as_ref(), &config.network)?;
         if let Some(prepared) = &mut prepared {
             prepared.prepare_app(&mut app)?;
         }
@@ -1241,7 +1243,10 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             json!({"event": "recovered_previous_generation", "warning": "current snapshot was unusable; restored preceding committed state"})
         );
     }
-    let snapshot = loaded.map(|loaded| loaded.snapshot).unwrap_or_default();
+    let snapshot = loaded
+        .map(|loaded| loaded.snapshot)
+        .unwrap_or_else(|| network::fresh_player_snapshot(players.as_ref()));
+    network::validate_player_snapshot(&snapshot, players.as_ref())?;
     ensure!(
         config.network.hosting.is_none() || snapshot.preserved_prospect.is_none(),
         "hosting preserved worlds require a qualified saved-map binding; only fresh authored hosting is supported"
@@ -1263,6 +1268,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         Some(app) => app,
         None => build_app(&config, &snapshot)?,
     };
+    network::install_player_registry(app.world_mut(), players.as_ref(), &config.network)?;
     if compressed {
         app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     }
@@ -1529,6 +1535,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     // Idempotent: admission is already stopped; close every session and drop
     // the socket before the bounded drain and final save.
     network::stop_admission(app.world_mut());
+    network::drain_player_bridge(app.world_mut());
     let readiness = app
         .world()
         .get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>()

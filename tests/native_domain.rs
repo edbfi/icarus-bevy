@@ -93,3 +93,6 @@ mod native_world_storage;
 
 #[path = "native_domain/persistence_fuzz.rs"]
 mod persistence_fuzz;
+
+#[path = "native_domain/native_players.rs"]
+mod native_players;

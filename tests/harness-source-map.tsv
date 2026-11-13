@@ -122,3 +122,4 @@ visibility_state	tests/visibility_state.rs	replication_domain	tests/replication_
 visibility_gather	tests/visibility_gather.rs	replication_domain	tests/replication_domain/visibility_gather.rs	visibility_gather::	in-process
 native_authored_inventory	tests/native_authored_inventory.rs	native_domain	tests/native_domain/native_authored_inventory.rs	native_authored_inventory::	in-process
 native_inventory_transactions	tests/native_inventory_transactions.rs	native_domain	tests/native_domain/native_inventory_transactions.rs	native_inventory_transactions::	in-process
+native_players	tests/native_players.rs	native_domain	tests/native_domain/native_players.rs	native_players::	in-process

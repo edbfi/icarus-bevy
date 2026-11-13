@@ -710,9 +710,42 @@ pub fn compose_live_pawn_update(
     modifiers: &[RestoredModifier],
     order: ByteOrder,
 ) -> Result<RestoredPawnUpdate> {
-    let temperature_values = temperatures
+    compose_live_pawn_vitals_update(
+        cache,
+        exports,
+        plan,
+        key,
+        temperatures,
+        modifiers,
+        None,
+        order,
+    )
+}
+
+/// Extend the existing reliable live component update with a complete
+/// server-owned vital checkpoint. This changes CharacterState values only;
+/// checkpoint placement is applied by the next pawn open.
+#[expect(clippy::too_many_arguments)]
+pub fn compose_live_pawn_vitals_update(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    temperatures: Option<&PawnTemperatureState>,
+    modifiers: &[RestoredModifier],
+    vitals: Option<&super::pawn_open::CharacterVitals>,
+    order: ByteOrder,
+) -> Result<RestoredPawnUpdate> {
+    let mut temperature_values = temperatures
         .map(PawnTemperatureState::values)
         .unwrap_or_default();
+    if let Some(vitals) = vitals {
+        temperature_values.extend(vitals.values());
+        temperature_values.insert(
+            character_state_handle::CURRENT_ALIVE_STATE,
+            RepValue::Enum(u32::from(vitals.health < 1)),
+        );
+    }
     ensure!(
         !temperature_values.is_empty() || !modifiers.is_empty(),
         "a live pawn update carries values"

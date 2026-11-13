@@ -55,6 +55,10 @@ pub const MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS: u64 = 600_000;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
+    /// Authored fresh-world checkpoints. The delayed pawn exchange is
+    /// unqualified with stock clients; absence retains the ordinary path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_persistence: Option<PlayerPersistenceConfig>,
     /// Explicit bounded Steam hosting; absent retains the loopback lab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosting: Option<crate::native_hosting::HostingConfig>,
@@ -165,6 +169,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
+            player_persistence: None,
             hosting: None,
             authored_world: None,
             enabled: false,
@@ -187,6 +192,17 @@ impl Default for NetworkConfig {
             spawn: crate::spawn_placement::SpawnConfig::default(),
         }
     }
+}
+
+/// Explicit context for the authored schema-13 player experiment. Kept
+/// independently of hosting so an offline reopen validates the same recipe.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlayerPersistenceConfig {
+    pub prospect_id: String,
+    pub map_url: String,
+    pub prospect_row: String,
+    pub difficulty: u8,
 }
 
 /// `network.join_password`, refused without quoting it. Read as any TOML
@@ -224,6 +240,41 @@ pub const LEVEL_VISIBILITY_ACTORS_GATED: &str = "network.level_visibility_actors
 
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(players) = &self.player_persistence {
+            ensure!(
+                self.release_profile.is_some()
+                    && self.authored_gameplay.is_some()
+                    && self.data_pak.is_some()
+                    && self.authored_world.is_some(),
+                "player persistence requires release, authored world, gameplay and protocol catalog"
+            );
+            ensure!(
+                self.authored_replication.is_none(),
+                "player persistence does not support native world composition"
+            );
+            ensure!(
+                !players.prospect_id.is_empty()
+                    && players.prospect_id.len() <= 63
+                    && !players.prospect_row.is_empty()
+                    && players.prospect_row.len() <= 63
+                    && players.difficulty <= 4,
+                "invalid player persistence context"
+            );
+            crate::experimental::session_open::map_level_chain(&players.map_url)?;
+            if self.enabled {
+                let hosting = self
+                    .hosting
+                    .as_ref()
+                    .context("player persistence networking requires authenticated hosting")?;
+                ensure!(
+                    hosting.prospect_id == players.prospect_id
+                        && hosting.map_url == players.map_url
+                        && hosting.prospect_row == players.prospect_row
+                        && hosting.difficulty == players.difficulty,
+                    "player persistence context disagrees with hosting"
+                );
+            }
+        }
         if let Some(hosting) = &self.hosting {
             hosting.validate(self)?;
         }

@@ -119,7 +119,7 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
                             == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS)
                         || schema
                             == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS);
-                    self.future |= schema > current;
+                    self.future |= schema > u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYERS);
                 }
             } else {
                 map.next_value::<IgnoredAny>()?;
@@ -748,9 +748,9 @@ mod tests {
             }
             for future_first in [false, true] {
                 let (first, second) = if future_first {
-                    (13, schema)
+                    (14, schema)
                 } else {
-                    (schema, 13)
+                    (schema, 14)
                 };
                 let bytes = format!(
                     "{{\"schema_version\":{first},\"tick\":null,\"schema_version\":{second}}}"
@@ -762,6 +762,7 @@ mod tests {
                 );
             }
         }
+        assert!(!header(b"{\"schema_version\":13}").unwrap());
         for schema in 1..=8 {
             assert!(!header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
         }

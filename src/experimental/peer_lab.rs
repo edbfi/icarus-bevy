@@ -201,6 +201,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    native_player_runtime::PlayerRegistry,
+    native_players::{PlayerCheckpoint, PlayerKey, PlayerProjection},
     spawn_placement::{Placement, PlacementSource, Resolution, SpawnConfig, SpawnResolver},
     steam_auth::{AuthOutcome, VerifiedTicket, decode_ticket_hex},
     steam_presence::ICARUS_APP_ID,
@@ -251,7 +253,8 @@ use super::pawn_open::{
     compose_pawn_open,
 };
 use super::pawn_restore::{
-    CurrentPawnState, compose_live_pawn_update, compose_restored_pawn_update, restore_saved_pawn,
+    CurrentPawnState, compose_live_pawn_vitals_update, compose_restored_pawn_update,
+    restore_saved_pawn,
 };
 use super::ping::PingEstimator;
 use super::profile_exchange::{
@@ -2498,6 +2501,10 @@ impl ControllerFieldDiagnostics {
 }
 
 struct PeerEntry {
+    checkpoint_epoch: Option<u64>,
+    checkpoint_projection: Option<PlayerProjection>,
+    checkpoint_enqueued_revision: Option<u64>,
+    checkpoint_active: bool,
     /// This session's own connected-player record.
     connected_player: Option<ConnectedPlayerRecord>,
     /// Record indices this connection was last sent in its array, in order.
@@ -3285,6 +3292,9 @@ impl SessionSocket {
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
+    /// Authored checkpoint experiment; absent keeps the qualified ordering.
+    checkpoint_initial_vitals: Option<super::pawn_open::CharacterVitals>,
+    next_checkpoint_epoch: u64,
     authored_map_url: Option<String>,
     private_rpc82_capture: Option<super::selected_rpc_capture::PrivateRpc82Capture>,
     private_pawn_bunch_capture:
@@ -3399,6 +3409,207 @@ impl fmt::Debug for PeerLab {
 }
 
 impl PeerLab {
+    /// Explicit authored-only delayed-pawn mode. Authentication is checked at
+    /// each bridge pass; Login names and IDs are never registry authority.
+    pub fn enable_player_checkpoints(
+        &mut self,
+        initial: super::pawn_open::CharacterVitals,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty(),
+            "player checkpoints must precede peers"
+        );
+        PlayerCheckpoint {
+            location_cm: [0.0; 3],
+            vitals: initial,
+        }
+        .validate()?;
+        ensure!(
+            self.player_controller_open.is_some()
+                && self.pawn_open.is_some()
+                && self.player_state_open.is_some()
+                && self.game_state_open.is_some(),
+            "player checkpoints require all bootstrap actor plans"
+        );
+        self.checkpoint_initial_vitals = Some(initial);
+        Ok(())
+    }
+
+    /// Bounded synchronous bridge, sequenced after packet/auth polling and
+    /// before simulation/capture. Registry ownership outlives the lab.
+    pub fn bridge_player_checkpoints(&mut self, registry: &mut PlayerRegistry) {
+        let Some(initial_vitals) = self.checkpoint_initial_vitals else {
+            return;
+        };
+        // A revocation already queued by the backend wins over this pass.
+        self.poll_authentication();
+        self.refresh_checkpoint_projections(registry);
+        let live: BTreeSet<u64> = self
+            .peers
+            .values()
+            .filter_map(|entry| entry.checkpoint_epoch)
+            .collect();
+        for epoch in registry.active_epochs() {
+            if !live.contains(&epoch) {
+                registry.detach(epoch);
+            }
+        }
+        let friends_ready = !self.peers.values().any(|entry| {
+            entry.player.is_some()
+                && (entry.friends_query_pending || !entry.profiles.friend_ids_ready)
+        });
+        let mut addresses: Vec<_> = self.peers.keys().copied().collect();
+        addresses.sort_unstable();
+        for address in addresses {
+            let Some(entry) = self.peers.get(&address) else {
+                continue;
+            };
+            let eligible = entry.auth_accepted
+                && entry.auth_request.is_some()
+                && entry.admission.state == ClientLoginState::Joined;
+            if !eligible {
+                if let Some(epoch) = entry.checkpoint_epoch {
+                    registry.detach(epoch);
+                    self.remove_peer(address);
+                }
+                continue;
+            }
+            let (Some(account), Some(begin), Some(slot)) = (
+                entry.auth_identity,
+                entry.character_slot,
+                entry.profiles.character_slot,
+            ) else {
+                continue;
+            };
+            let key = match PlayerKey::new(account, slot) {
+                Ok(key) if begin >= 0 && begin == slot => key,
+                _ => {
+                    self.fail_profile_exchange(address);
+                    continue;
+                }
+            };
+            if entry.checkpoint_epoch.is_none() {
+                let Some(next) = self.next_checkpoint_epoch.checked_add(1) else {
+                    self.fail_profile_exchange(address);
+                    continue;
+                };
+                let epoch = self.next_checkpoint_epoch;
+                self.next_checkpoint_epoch = next;
+                let Some(plan) = self.player_controller_open.as_ref() else {
+                    continue;
+                };
+                let resolution = self.spawn.peek(None, plan.spawn_location);
+                let initial = PlayerCheckpoint {
+                    location_cm: resolution.placement.location.map(f64::from),
+                    vitals: initial_vitals,
+                };
+                let projection = match registry.reserve(key, epoch, initial) {
+                    Ok(projection) => projection,
+                    Err(_) => {
+                        self.fail_profile_exchange(address);
+                        continue;
+                    }
+                };
+                if projection.is_new {
+                    self.spawn.commit(&resolution);
+                    count_placement(&mut self.stats, &resolution);
+                }
+                if let Some(entry) = self.peers.get_mut(&address) {
+                    entry.checkpoint_epoch = Some(epoch);
+                    entry.checkpoint_projection = Some(projection);
+                    entry.placement = Some(Placement {
+                        location: projection.checkpoint.location_cm.map(|value| value as f32),
+                        yaw: None,
+                        source: if projection.is_new {
+                            resolution.placement.source
+                        } else {
+                            PlacementSource::Saved
+                        },
+                    });
+                    if let Some(pending) = &mut entry.initial_opens {
+                        pending.retry_ready = true;
+                    }
+                }
+                self.continue_initial_opens(address);
+            }
+            let Some(entry) = self.peers.get(&address) else {
+                continue;
+            };
+            let Some(epoch) = entry.checkpoint_epoch else {
+                continue;
+            };
+            let activate = entry.profiles.completed && friends_ready;
+            let projection = if activate {
+                registry.activate(epoch).ok()
+            } else {
+                registry.projection(epoch)
+            };
+            let Some(projection) = projection else {
+                registry.detach(epoch);
+                self.fail_profile_exchange(address);
+                continue;
+            };
+            if let Some(entry) = self.peers.get_mut(&address) {
+                if entry
+                    .checkpoint_projection
+                    .is_none_or(|old| old.revision != projection.revision)
+                {
+                    entry.pawn_property_retry_ready = true;
+                }
+                entry.checkpoint_projection = Some(projection);
+                entry.checkpoint_active |= activate;
+            }
+        }
+        // Character completion may have become ready while the pawn opened.
+        // Do not change the existing friends-ready finalisation policy.
+        self.finalise_connected_players();
+        // Immediately cancel reservations abandoned by permanent composition
+        // failure, without waiting for another app update.
+        let live: BTreeSet<_> = self
+            .peers
+            .values()
+            .filter_map(|entry| entry.checkpoint_epoch)
+            .collect();
+        for epoch in registry.active_epochs() {
+            if !live.contains(&epoch) {
+                registry.detach(epoch);
+            }
+        }
+        self.update_pawn_properties();
+    }
+
+    fn refresh_checkpoint_projections(&mut self, registry: &PlayerRegistry) {
+        let mut stale = Vec::new();
+        for (address, entry) in &mut self.peers {
+            let Some(epoch) = entry.checkpoint_epoch else {
+                continue;
+            };
+            if let Some(projection) = registry.projection(epoch) {
+                if entry
+                    .checkpoint_projection
+                    .is_none_or(|old| old.revision != projection.revision)
+                {
+                    entry.pawn_property_retry_ready = true;
+                }
+                // For a pending pawn only, placement must follow the latest
+                // committed checkpoint; never mutate placement of a live pawn.
+                if entry.checkpoint_enqueued_revision.is_none()
+                    && let Some(placement) = &mut entry.placement
+                {
+                    placement.location =
+                        projection.checkpoint.location_cm.map(|value| value as f32);
+                }
+                entry.checkpoint_projection = Some(projection);
+            } else {
+                entry.checkpoint_projection = None;
+                stale.push(*address);
+            }
+        }
+        for address in stale {
+            self.fail_profile_exchange(address);
+        }
+    }
+
     pub fn resolved_map_url(&self) -> Option<&str> {
         self.authored_map_url.as_deref().or_else(|| {
             self.config
@@ -3579,6 +3790,8 @@ impl PeerLab {
     ) -> Self {
         Self {
             authored_map_url: None,
+            checkpoint_initial_vitals: None,
+            next_checkpoint_epoch: 1,
             private_rpc82_capture: None,
             private_pawn_bunch_capture: None,
             socket,
@@ -4790,20 +5003,30 @@ impl PeerLab {
                 },
                 _ => PawnTemperatureState::default(),
             };
-            if due.is_empty() && temperature_due.is_empty() {
+            let vital_due = entry.checkpoint_projection.filter(|projection| {
+                entry.auth_accepted
+                    && entry.auth_request.is_some()
+                    && entry.admission.state == ClientLoginState::Joined
+                    && entry.checkpoint_epoch.is_some()
+                    && entry.checkpoint_enqueued_revision != Some(projection.revision)
+            });
+            if due.is_empty() && temperature_due.is_empty() && vital_due.is_none() {
                 continue;
             }
             let sent = (|| {
                 let key = pawn_key(entry.connection_id.context("no pawn connection")?);
                 let mut cache = self.guid_cache.clone();
                 let mut exports = entry.exports.clone();
-                let update = compose_live_pawn_update(
+                let update = compose_live_pawn_vitals_update(
                     &mut cache,
                     &mut exports,
                     plan,
                     key,
                     (!temperature_due.is_empty()).then_some(&temperature_due),
                     &due,
+                    vital_due
+                        .as_ref()
+                        .map(|projection| &projection.checkpoint.vitals),
                     entry.peer.connection_byte_order(),
                 )?;
                 let sent = entry.peer.reliable_actor_update_datagrams(
@@ -4818,6 +5041,12 @@ impl PeerLab {
             })();
             match sent {
                 Ok(sent) => {
+                    if let Some(projection) = vital_due {
+                        entry.checkpoint_enqueued_revision = Some(projection.revision);
+                        if let Some(values) = &mut entry.pawn_character_state {
+                            values.extend(projection.checkpoint.vitals.values());
+                        }
+                    }
                     if !due.is_empty() {
                         bump(&mut self.stats.modifier_time_updates_queued);
                     }
@@ -7104,6 +7333,10 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        checkpoint_epoch: None,
+                        checkpoint_projection: None,
+                        checkpoint_enqueued_revision: None,
+                        checkpoint_active: false,
                         connected_player: None,
                         connected_players_sent: Vec::new(),
                         connected_players_pending: false,
@@ -7964,6 +8197,20 @@ impl PeerLab {
                 self.level_visibility_report(address, parameter);
             }
             ControllerCall::Begin(slot) => {
+                if self.checkpoint_initial_vitals.is_some()
+                    && (slot < 0
+                        || entry
+                            .character_slot
+                            .is_some_and(|previous| previous != slot)
+                        || entry
+                            .initial_opens
+                            .as_ref()
+                            .and_then(|pending| pending.begin_slot)
+                            .is_some_and(|previous| previous != slot))
+                {
+                    self.fail_profile_exchange(address);
+                    return;
+                }
                 if slot == -1
                     || entry.character_slot.is_some()
                     || entry.player.is_none()
@@ -8016,6 +8263,18 @@ impl PeerLab {
                 bump(&mut self.stats.friends_lists_received);
             }
             ControllerCall::Profile(response) => {
+                if self.checkpoint_initial_vitals.is_some()
+                    && response.kind == ProfileKind::Character
+                    && response.success
+                    && profile_exchange::validated_character_slot(
+                        &response.values,
+                        entry.character_slot,
+                    )
+                    .is_err()
+                {
+                    self.fail_profile_exchange(address);
+                    return;
+                }
                 bump(match response.kind {
                     ProfileKind::User => &mut self.stats.profile_user_responses_recognized,
                     ProfileKind::Character => {
@@ -8082,6 +8341,19 @@ impl PeerLab {
     }
 
     fn accept_profile(&mut self, address: SocketAddrV4, kind: ProfileKind, values: Vec<RepValue>) {
+        if self.checkpoint_initial_vitals.is_some() && kind == ProfileKind::Character {
+            let valid = profile_exchange::validated_character_slot(
+                &values,
+                self.peers
+                    .get(&address)
+                    .and_then(|entry| entry.character_slot),
+            )
+            .is_ok();
+            if !valid {
+                self.fail_profile_exchange(address);
+                return;
+            }
+        }
         let sent = (|| {
             let plan = self
                 .player_state_open
@@ -8308,7 +8580,11 @@ impl PeerLab {
         let ready: Vec<SocketAddrV4> = self
             .peers
             .iter()
-            .filter(|(_, entry)| entry.profiles.completed && !entry.profiles.finalised)
+            .filter(|(_, entry)| {
+                entry.profiles.completed
+                    && !entry.profiles.finalised
+                    && (self.checkpoint_initial_vitals.is_none() || entry.checkpoint_active)
+            })
             .map(|(address, _)| *address)
             .collect();
         let world_seconds = self.started.elapsed().as_secs_f32();
@@ -8324,8 +8600,10 @@ impl PeerLab {
                 records_finalised = true;
             }
             bump(&mut self.stats.players_finalised);
-            self.restore_returning_pawn_uid(address);
-            self.add_new_player_to_history(address);
+            if self.checkpoint_initial_vitals.is_none() {
+                self.restore_returning_pawn_uid(address);
+                self.add_new_player_to_history(address);
+            }
         }
         if records_finalised {
             // Only connections that can carry records now; one whose GameState
@@ -9919,7 +10197,7 @@ impl PeerLab {
             return false;
         }
         let mut remaining = VecDeque::from([InitialOpenStage::Controller]);
-        if self.pawn_open.is_some() {
+        if self.pawn_open.is_some() && self.checkpoint_initial_vitals.is_none() {
             remaining.push_back(InitialOpenStage::Pawn);
         }
         if self.game_state_open.is_some() {
@@ -9927,6 +10205,10 @@ impl PeerLab {
         }
         if self.player_state_open.is_some() {
             remaining.push_back(InitialOpenStage::PlayerState);
+        }
+        // Only the authored checkpoint path bootstraps identity before pawn.
+        if self.pawn_open.is_some() && self.checkpoint_initial_vitals.is_some() {
+            remaining.push_back(InitialOpenStage::Pawn);
         }
         let mut extras: Vec<_> = self
             .manager_opens
@@ -10093,6 +10375,15 @@ impl PeerLab {
                 return;
             };
             let guids = pending.controller_guids;
+            if self.checkpoint_initial_vitals.is_some()
+                && matches!(stage, InitialOpenStage::Pawn)
+                && self
+                    .peers
+                    .get(&address)
+                    .is_none_or(|entry| entry.checkpoint_projection.is_none())
+            {
+                return;
+            }
             let outcome = match stage {
                 InitialOpenStage::Controller => self.send_initial_controller_open(address),
                 InitialOpenStage::Pawn => match guids {
@@ -10111,6 +10402,19 @@ impl PeerLab {
                 InitialOpenStage::Manager(index) => self.send_manager_open(address, index),
                 InitialOpenStage::Quest(index) => self.send_quest_open(address, index),
             };
+            if self.checkpoint_initial_vitals.is_some()
+                && matches!(outcome, InitialOpenOutcome::Failed)
+                && matches!(
+                    stage,
+                    InitialOpenStage::Controller
+                        | InitialOpenStage::Pawn
+                        | InitialOpenStage::GameState
+                        | InitialOpenStage::PlayerState
+                )
+            {
+                self.fail_profile_exchange(address);
+                return;
+            }
             let Some(entry) = self.peers.get_mut(&address) else {
                 return;
             };
@@ -10235,7 +10539,9 @@ impl PeerLab {
             }
         };
         // Built: the placement is this connection's, committed with the GUIDs.
-        if let Some(resolution) = pending {
+        if let Some(resolution) = pending
+            && self.checkpoint_initial_vitals.is_none()
+        {
             self.spawn.commit(&resolution);
             count_placement(&mut self.stats, &resolution);
             entry.placement = Some(resolution.placement);
@@ -10281,6 +10587,18 @@ impl PeerLab {
             return InitialOpenOutcome::Failed;
         };
         let mut content = content.clone();
+        if self.checkpoint_initial_vitals.is_some() {
+            let Some(projection) = entry.checkpoint_projection else {
+                return InitialOpenOutcome::Deferred;
+            };
+            content
+                .character_state
+                .extend(projection.checkpoint.vitals.values());
+            content.character_state.insert(
+                super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
+                RepValue::Enum(u32::from(projection.checkpoint.vitals.health < 1)),
+            );
+        }
         let mut claimed = entry.pending_pawn_uid;
         if let Some(library) = &mut self.actor_uids {
             let grant = claimed.or_else(|| {
@@ -10372,6 +10690,9 @@ impl PeerLab {
             .as_ref()
             .map_or(0, |stats| stats.items.len() as u64);
         entry.pawn_character_state = Some(state.content.character_state);
+        if let Some(projection) = entry.checkpoint_projection {
+            entry.checkpoint_enqueued_revision = Some(projection.revision);
+        }
         commit_exports(&mut exports, &sent);
         entry.exports = exports;
         entry.ack_pending = false;
@@ -10384,6 +10705,8 @@ impl PeerLab {
             bump(&mut self.stats.pawn_opens_sent);
             self.stats.pawn_open_stats_sent =
                 self.stats.pawn_open_stats_sent.saturating_add(stat_pairs);
+        }
+        if delivered || self.checkpoint_initial_vitals.is_some() {
             self.complete_player_initialisation(address);
         }
         self.connected_player_actor_opened(address);
@@ -10895,7 +11218,9 @@ impl PeerLab {
         self.retry_frozen_movement_release();
         self.retry_pawn_move_acks(Instant::now());
         self.retry_pending_player_history();
-        self.update_pawn_properties();
+        if self.checkpoint_initial_vitals.is_none() {
+            self.update_pawn_properties();
+        }
         self.send_acks();
         self.update_game_state();
         // Lowest priority: after every other pass of this poll, bounded.
@@ -11101,8 +11426,19 @@ impl Plugin for PeerLabPlugin {
     }
 }
 
-fn poll_peer_lab(mut lab: ResMut<PeerLab>) {
+fn poll_peer_lab(mut lab: ResMut<PeerLab>, registry: Option<ResMut<PlayerRegistry>>) {
+    if let Some(registry) = registry.as_ref() {
+        lab.refresh_checkpoint_projections(registry);
+    }
     lab.poll();
+    if lab.checkpoint_initial_vitals.is_some() {
+        if let Some(mut registry) = registry {
+            lab.bridge_player_checkpoints(&mut registry);
+        } else {
+            // Never publish a default pawn when the configured owner vanished.
+            lab.shutdown();
+        }
+    }
 }
 
 /// A returning pawn's restored stats (F-988) from its opened inventories,
@@ -20158,6 +20494,7 @@ mod tests {
     mod lossy_join;
     mod move_acks;
     mod pawn_capture;
+    mod player_checkpoints;
     mod record_ack_gating;
     mod spawn_placement;
 }

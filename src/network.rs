@@ -69,6 +69,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail, ensure};
 use bevy::prelude::{App, Resource, World};
+use sha2::{Digest, Sha256};
 
 use crate::{
     config::{NetworkConfig, read_configuration},
@@ -1679,14 +1680,19 @@ pub fn release_profile(network: &NetworkConfig) -> Result<Option<ReleaseProfile>
 /// Bind pak row identities to authored gameplay before planning the session.
 fn load_data_tables(path: &std::path::Path, gameplay: &std::path::Path) -> Result<DataTables> {
     let mut tables = DataTables::runtime(path, gameplay)?;
+    validate_runtime_tables(&mut tables)?;
+    Ok(tables)
+}
+
+fn validate_runtime_tables(tables: &mut DataTables) -> Result<()> {
     tables.rows(SESSION_FLAGS_TABLE)?;
     tables.rows(FACTION_MISSIONS_TABLE)?;
     tables.row_bool(FACTION_MISSIONS_TABLE, RETRY_TIMEOUT_FIELD, 0)?;
     if tables.has_table(QUESTS_TABLE) {
         quest_table_rows(tables.objects(QUESTS_TABLE)?)?;
     }
-    pawn_content(Some(&mut tables))?;
-    Ok(tables)
+    pawn_content(Some(tables))?;
+    Ok(())
 }
 
 /// `network.data_pak`'s row identities bound to `network.authored_gameplay`'s
@@ -1848,6 +1854,8 @@ pub fn bind_authenticated_with_parameters(
 pub struct PreparedSession {
     network: NetworkConfig,
     bound: BoundNetwork,
+    player_context: Option<crate::native_players::PlayerContext>,
+    player_context_prepared: bool,
 }
 
 impl PreparedSession {
@@ -1876,6 +1884,14 @@ impl PreparedSession {
             !app.world().contains_resource::<PeerLab>() && !app.is_plugin_added::<PeerLabPlugin>(),
             "network lab or plugin already installed"
         );
+        if let Some(context) = &self.player_context {
+            crate::native_player_runtime::install(
+                app.world_mut(),
+                context,
+                self.network.max_players as usize,
+            )?;
+            self.player_context_prepared = true;
+        }
         prepare_installation(app, &mut self.bound, &self.network)
     }
 
@@ -1900,6 +1916,10 @@ impl PreparedSession {
         address: SocketAddrV4,
         client: crate::steam_service::AuthClient,
     ) -> Result<BoundNetwork> {
+        ensure!(
+            self.player_context.is_none() || self.player_context_prepared,
+            "player context must be prepared against schema 13 before authenticated binding"
+        );
         ensure!(
             self.network.hosting.is_none()
                 || address == SocketAddrV4::new(self.network.bind, self.network.port),
@@ -1936,7 +1956,7 @@ fn session_map_url<'a>(network: &'a NetworkConfig, admission: &'a PeerLabAdmissi
 
 pub fn prepare_session(
     network: &NetworkConfig,
-    mut config: PeerLabConfig,
+    config: PeerLabConfig,
 ) -> Result<Option<PreparedSession>> {
     if !network.enabled {
         return Ok(None);
@@ -1945,7 +1965,214 @@ pub fn prepare_session(
     let profile = release_profile(network)?;
     // The tables run reads are loaded here, so a pak without them fails
     // before the socket binds rather than at the first apply.
-    let mut tables = data_tables(network)?;
+    let tables = data_tables(network)?;
+    ensure!(
+        network.player_persistence.is_none(),
+        "player persistence requires prepare_run and a schema-13 registry"
+    );
+    prepare_session_inputs(network, config, profile, tables)
+}
+
+/// Immutable startup result prepared from the same owned bytes used to parse
+/// gameplay. It remains available for offline schema-13 reopen validation.
+#[derive(Clone)]
+pub struct PreparedPlayers {
+    pub context: crate::native_players::PlayerContext,
+    pub initial_vitals: CharacterVitals,
+}
+
+pub fn fresh_player_snapshot(
+    players: Option<&PreparedPlayers>,
+) -> crate::simulation::WorldSnapshot {
+    match players {
+        Some(players) => crate::simulation::WorldSnapshot {
+            schema_version: crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
+            native_players: Some(crate::native_players::PlayerSnapshot::empty(
+                players.context.clone(),
+            )),
+            ..Default::default()
+        },
+        None => crate::simulation::WorldSnapshot::default(),
+    }
+}
+
+/// Explicit feature/context match, before any listener or Steam operation.
+/// Existing foundation stores are deliberately not promoted to schema 13.
+pub fn validate_player_snapshot(
+    snapshot: &crate::simulation::WorldSnapshot,
+    players: Option<&PreparedPlayers>,
+) -> Result<()> {
+    match (players, snapshot.native_players.as_ref()) {
+        (Some(prepared), Some(stored)) => {
+            ensure!(
+                snapshot.schema_version == crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
+                "player persistence requires schema 13"
+            );
+            ensure!(
+                stored.context() == &prepared.context,
+                "player context mismatch"
+            );
+            stored.validate()?;
+        }
+        (None, None) => ensure!(
+            snapshot.schema_version != crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
+            "schema 13 requires configured player persistence context"
+        ),
+        _ => bail!("player persistence requires a fresh schema-13 store and matching context"),
+    }
+    Ok(())
+}
+
+pub fn install_player_registry(
+    world: &mut World,
+    players: Option<&PreparedPlayers>,
+    network: &NetworkConfig,
+) -> Result<()> {
+    if let Some(players) = players {
+        crate::native_player_runtime::install(
+            world,
+            &players.context,
+            network.max_players as usize,
+        )?;
+    }
+    Ok(())
+}
+
+/// Finish the bounded authored bridge before removing the network owner.
+/// Committed state lives in PlayerRegistry and survives lab destruction.
+pub fn drain_player_bridge(world: &mut World) {
+    if world.contains_resource::<PeerLab>()
+        && world.contains_resource::<crate::native_player_runtime::PlayerRegistry>()
+    {
+        world.resource_scope(|world, mut lab: bevy::prelude::Mut<PeerLab>| {
+            let mut registry = world.resource_mut::<crate::native_player_runtime::PlayerRegistry>();
+            lab.bridge_player_checkpoints(&mut registry);
+        });
+    }
+}
+
+/// Prepare player context and optional session before storage/Steam/listeners.
+pub fn prepare_run(
+    network: &NetworkConfig,
+    config: PeerLabConfig,
+) -> Result<(Option<PreparedSession>, Option<PreparedPlayers>)> {
+    if network.player_persistence.is_none() {
+        return Ok((prepare_session(network, config)?, None));
+    }
+    network.validate()?;
+    let release_text = read_configuration(
+        network
+            .release_profile
+            .as_deref()
+            .context("player release missing")?,
+    )?;
+    let profile = ReleaseProfile::parse(&release_text)?;
+    let bytes = read_gameplay_bytes(
+        network
+            .authored_gameplay
+            .as_deref()
+            .context("player recipe missing")?,
+    )?;
+    let mut tables = DataTables::runtime_bytes(
+        network
+            .data_pak
+            .as_deref()
+            .context("player protocol catalog missing")?,
+        &bytes,
+    )?;
+    validate_runtime_tables(&mut tables)?;
+    let initial_vitals = fresh_player_vitals(&mut tables)?;
+    crate::native_players::PlayerCheckpoint {
+        location_cm: [0.0; 3],
+        vitals: initial_vitals,
+    }
+    .validate()?;
+    let declaration = network
+        .player_persistence
+        .as_ref()
+        .context("player context missing")?;
+    // Bind the resolved protocol row identities too: authored JSON may omit
+    // the growth catalog, whose row order still determines the initial state.
+    let resolved_vitals = [
+        initial_vitals.health,
+        initial_vitals.max_health,
+        initial_vitals.stamina,
+        initial_vitals.max_stamina,
+        initial_vitals.oxygen,
+        initial_vitals.max_oxygen,
+        initial_vitals.water,
+        initial_vitals.max_water,
+        initial_vitals.food,
+        initial_vitals.max_food,
+        i32::from(initial_vitals.biome_row),
+        i32::from(initial_vitals.growth_row),
+    ];
+    // Length-prefix each independently prepared input, including resolved
+    // initial vitals, so reopening cannot silently change the initial recipe.
+    let mut digest = Sha256::new();
+    for part in [
+        bytes,
+        release_text.into_bytes(),
+        serde_json::to_vec(&network.spawn)?,
+        serde_json::to_vec(&network.authored_world)?,
+        serde_json::to_vec(declaration)?,
+        serde_json::to_vec(&resolved_vitals)?,
+    ] {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part);
+    }
+    let players = PreparedPlayers {
+        context: crate::native_players::PlayerContext::new(
+            declaration.prospect_id.encode_utf16().collect(),
+            declaration.map_url.clone(),
+            &profile.pin,
+            digest.finalize().into(),
+        )?,
+        initial_vitals,
+    };
+    let session = if network.enabled {
+        let mut session = prepare_session_inputs(network, config, Some(profile), Some(tables))?
+            .context("player session missing")?;
+        session
+            .bound
+            .lab
+            .enable_player_checkpoints(initial_vitals)?;
+        session.player_context = Some(players.context.clone());
+        Some(session)
+    } else {
+        None
+    };
+    Ok((session, Some(players)))
+}
+
+fn read_gameplay_bytes(path: &std::path::Path) -> Result<Vec<u8>> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(crate::nonblocking_flag())
+        .open(path)
+        .context("open authored player recipe")?;
+    let limit = crate::data_pak::MAX_GAMEPLAY_BYTES;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= limit,
+        "invalid authored player recipe size"
+    );
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "authored player recipe byte limit"
+    );
+    Ok(bytes)
+}
+
+fn prepare_session_inputs(
+    network: &NetworkConfig,
+    mut config: PeerLabConfig,
+    profile: Option<ReleaseProfile>,
+    mut tables: Option<DataTables>,
+) -> Result<Option<PreparedSession>> {
     if let Some(profile) = &profile {
         config = config.with_release_profile(profile);
     }
@@ -2145,6 +2372,8 @@ pub fn prepare_session(
         .transpose()?;
     let mut prepared = PreparedSession {
         network: network.clone(),
+        player_context: None,
+        player_context_prepared: false,
         bound: BoundNetwork {
             declaration,
             lab,
@@ -2306,6 +2535,13 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
         let counts = lab.session_counts();
         drop(lab);
         world.insert_resource(ClosedSessions(counts));
+    }
+    if let Some(mut registry) =
+        world.get_resource_mut::<crate::native_player_runtime::PlayerRegistry>()
+    {
+        for epoch in registry.active_epochs() {
+            registry.detach(epoch);
+        }
     }
     crate::native_replication::teardown(world);
     crate::session_replication::clear_viewers(world);

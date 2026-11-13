@@ -39,6 +39,8 @@ use serde_json::Value;
 #[path = "common/modifier_tick.rs"]
 mod modifier_tick;
 mod pak_writer;
+#[path = "network/player_checkpoints.rs"]
+mod player_checkpoints;
 #[path = "common/profile_pressure.rs"]
 mod profile_pressure;
 #[path = "common/profiles.rs"]

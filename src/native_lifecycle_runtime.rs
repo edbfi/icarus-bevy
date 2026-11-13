@@ -1829,6 +1829,7 @@ pub(crate) fn capture_lifecycle(world: &World) -> Result<WorldSnapshot> {
         native_inventory_contracts: definitions.inventory_snapshot.as_deref().cloned(),
         native_inventory_owner_import: definitions.inventory_imported.as_deref().cloned(),
         native_inventory_authority: definitions.inventory_authority.as_deref().cloned(),
+        native_players: None,
         native_inventories: inventories,
         native_modifiers: modifiers,
         preserved_prospect: world
