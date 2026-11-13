@@ -6,14 +6,16 @@
 //! original server compares that value for exact equality and answers a
 //! mismatch with Upgrade (F-563). Server code, gameplay-tag tables and paks
 //! change between weekly builds too (F-686, F-700, F-702), so per-release
-//! protocol metadata is isolated in [`ReleaseProfile`]: `config/release.toml`
-//! holds the active pin and profile parameters, and `tools/release_watch.py`
-//! moves or diffs it when Steam's public branch moves.
-//! Nothing here claims compatibility with the pinned build.
+//! protocol metadata is data, not code: a [`ReleaseProfile`] is read from one
+//! complete release file whose build id is only a label. `config/release.toml`
+//! is the active release; the frozen historical releases live under
+//! `tests/fixtures/releases/` ([`ReleaseProfile::fixture`]), and
+//! `tools/release_watch.py` checks, diffs and repins when Steam's public
+//! branch moves. Nothing here claims compatibility with the pinned build.
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
 use super::{
@@ -38,13 +40,6 @@ use super::{
         replicated_connected_player_rep_layout, weather_manager_component_rep_layout,
         world_talent_manager_rep_layout,
     },
-    rep_rpc::{
-        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-        BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND, BP_MOUNT_BASE_FIELD_INDEX_BOUND,
-        BP_MOUNT_HORSE_FIELD_INDEX_BOUND, BP_TAME_BASE_FIELD_INDEX_BOUND,
-        INVENTORY_FIELD_INDEX_BOUND, STAT_CONTAINER_FIELD_INDEX_BOUND,
-        UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
-    },
     session_open::{
         COMPONENT_HANDLES, ComponentBlock, ComponentExport, PLAYER_CONTROLLER_CHANNEL_INDEX,
         PLAYER_STATE_CHANNEL_INDEX, PathSegment, PlayerControllerOpenPlan, PlayerControllerProfile,
@@ -62,19 +57,6 @@ pub const NETWORK_CHANGELIST: u32 = 0;
 pub const ENGINE_NETWORK_VERSION: u32 = 17;
 /// Game network protocol version, zero-filled (F-541).
 pub const GAME_NETWORK_VERSION: u32 = 0;
-
-/// Observed gameplay-tag net-index hash (`NetworkGameplayTagNodeIndexHash`,
-/// F-702) for 3.0.31 (`build_id = 25793607`, 2,299 unique sorted nodes).
-pub const TAG_NET_INDEX_HASH_3_0_31: u32 = 0xdc78_0a27;
-/// Observed gameplay-tag net-index hash (`NetworkGameplayTagNodeIndexHash`,
-/// F-702) for 3.0.32 (`build_id = 25956137`, 2,302 unique sorted nodes).
-pub const TAG_NET_INDEX_HASH_3_0_32: u32 = 0x6d0f_676f;
-/// Qualified gameplay-tag net-index hash for server 26313077 (3.0.34).
-pub const TAG_NET_INDEX_HASH_3_0_34: u32 = 0x28cb_0f35;
-/// Derived gameplay-tag net-index hash for server 26425113 (3.0.35).
-pub const TAG_NET_INDEX_HASH_3_0_35: u32 = 0xbf0f_c0d8;
-/// Derived gameplay-tag net-index hash for server 26613688 (3.0.36).
-pub const TAG_NET_INDEX_HASH_3_0_36: u32 = 0x3cc9_3081;
 
 /// The string the engine hashes into the Hello network version.
 pub fn network_version_string(project_version: &str) -> String {
@@ -116,25 +98,25 @@ pub struct ReleasePin {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseTagProfile {
-    /// Declared tag rows in `Data/Tags/D_Tags` (130 in 3.0.31/32, F-702);
-    /// descriptive qualification count.
+    /// Declared tag rows in `Data/Tags/D_Tags` (F-702); descriptive
+    /// qualification count.
     pub data_table_tag_count: u32,
     /// Declared `GameplayTagList` entries in `DefaultGameplayTags.ini`
-    /// (1,886 in 3.0.31; 1,889 in 3.0.32, F-702); descriptive qualification count.
+    /// (F-702); descriptive qualification count.
     pub ini_tag_count: u32,
     /// Unique sorted tag nodes after dot-prefix expansion (`NetIndexTrueBitNum`
-    /// input: 2,299 in 3.0.31; 2,302 in 3.0.32, F-702).
+    /// input, F-702).
     pub unique_node_count: u16,
-    /// `NetIndexTrueBitNum` (`1..=16`; 12 in 3.0.31/32, F-702).
+    /// `NetIndexTrueBitNum` (`1..=16`, F-702).
     pub total_bits: u8,
-    /// Configured `NetIndexFirstBitSegment` before clamping (`0..=16`; 16 in
-    /// `DefaultGameplayTags.ini`, F-702); descriptive qualification metadata.
+    /// Configured `NetIndexFirstBitSegment` before clamping (`0..=16`, read
+    /// from `DefaultGameplayTags.ini`, F-702); descriptive qualification metadata.
     pub configured_first_segment: u8,
     /// Effective `first_segment` passed to [`TagEncoding::NetIndex`] (`0` or
     /// `>= total_bits` selects unsplit `total_bits` packing, F-591, F-702).
     pub effective_first_segment: u8,
-    /// `NumBitsForContainerSize` (`1..=8`; 6 in 3.0.31/32, F-702); descriptive
-    /// qualification metadata validated against `1..=8`.
+    /// `NumBitsForContainerSize` (`1..=8`, F-702); descriptive qualification
+    /// metadata validated against `1..=8`.
     pub container_bits: u8,
     /// Chained lowercase UTF-16LE CRC-32 (`NetworkGameplayTagNodeIndexHash`,
     /// F-702); descriptive qualification hash.
@@ -212,22 +194,6 @@ pub struct ReleaseClassNetCacheBounds {
     pub bp_icarus_player_controller_survival: u32,
 }
 
-impl Default for ReleaseClassNetCacheBounds {
-    fn default() -> Self {
-        Self {
-            stat_container: STAT_CONTAINER_FIELD_INDEX_BOUND,
-            inventory: INVENTORY_FIELD_INDEX_BOUND,
-            ui_projection_mount_status: UI_PROJECTION_MOUNT_STATUS_FIELD_INDEX_BOUND,
-            bp_icarus_player_state: BP_ICARUS_PLAYER_STATE_FIELD_INDEX_BOUND,
-            bp_mount_base: BP_MOUNT_BASE_FIELD_INDEX_BOUND,
-            bp_mount_horse: BP_MOUNT_HORSE_FIELD_INDEX_BOUND,
-            bp_tame_base: BP_TAME_BASE_FIELD_INDEX_BOUND,
-            bp_icarus_player_controller_survival:
-                BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
-        }
-    }
-}
-
 impl ReleaseClassNetCacheBounds {
     pub fn validate(&self) -> Result<()> {
         for (name, bound) in [
@@ -268,7 +234,8 @@ impl ReleaseClassNetCacheBounds {
 /// profile from `SetupTables`.
 ///
 /// Release-specific row widths applied to replication layouts. The standalone
-/// low-level reader and writer retain their historical default registry.
+/// low-level reader and writer keep their static registry
+/// ([`Self::static_codec_registry`]).
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseRowHandleProfile {
@@ -281,27 +248,17 @@ pub struct ReleaseRowHandleProfile {
     pub two_byte_row_tables: Vec<u16>,
 }
 
-impl Default for ReleaseRowHandleProfile {
-    fn default() -> Self {
+impl ReleaseRowHandleProfile {
+    /// The registry the standalone low-level `rep_layout` codec reads from its
+    /// static `ICARUS_*_ROW_TABLES` tables. A profile whose `[row_handles]`
+    /// equals it keeps the plain `RowHandle` commands; any other registry is
+    /// applied as explicit widths ([`ReleaseProfile::apply_row_handle_profile`]).
+    /// This is the codec's own table, not a fallback for an absent section.
+    pub fn static_codec_registry() -> Self {
         Self {
             table_count: ICARUS_ROW_HANDLE_TABLE_COUNT,
             zero_row_tables: ICARUS_ZERO_ROW_TABLES.to_vec(),
             two_byte_row_tables: ICARUS_TWO_BYTE_ROW_TABLES.to_vec(),
-        }
-    }
-}
-
-impl ReleaseRowHandleProfile {
-    /// Public server 26425113 registry and packaged row-count widths.
-    /// Server 26613688 retains the same ordered registry and widths (F-1178).
-    pub fn release_3_0_35() -> Self {
-        Self {
-            table_count: 296,
-            zero_row_tables: vec![63, 166, 183],
-            two_byte_row_tables: vec![
-                0, 30, 55, 65, 66, 75, 82, 86, 94, 114, 136, 137, 138, 150, 154, 179, 180, 204,
-                210, 212, 218, 233, 237, 240, 251, 255, 257, 281,
-            ],
         }
     }
 
@@ -337,11 +294,12 @@ impl ReleaseRowHandleProfile {
         Ok(())
     }
 
-    /// Row-index byte width (`0`, `1`, `2`) for `table_index`.
+    /// Row-index byte width (`0`, `1`, `2`) for `table_index` in this registry.
     ///
-    /// Descriptive helper matching [`super::rep_layout::icarus_row_handle_width_bytes`];
-    /// the low-level `rep_layout` codec still reads the static
-    /// `ICARUS_*_ROW_TABLES` tables directly.
+    /// [`ReleaseProfile::apply_row_handle_profile`] binds these widths into
+    /// every layout a release plans, so they are wire-significant; only the
+    /// plain `RowHandle` command of the standalone codec reads the static
+    /// `ICARUS_*_ROW_TABLES` registry.
     pub fn row_width_bytes(&self, table_index: u16) -> Result<u8> {
         if table_index == ICARUS_ROW_HANDLE_NONE {
             return Ok(0);
@@ -460,61 +418,6 @@ pub struct ReleaseManagersProfile {
 }
 
 impl ReleaseManagersProfile {
-    /// The managers reproduced bit-exactly against the 3.0.31 capture
-    /// (F-859, F-861, F-862, F-866, F-914). For 3.0.32 the nine checksums, including the Blueprint
-    /// `BP_DisasterController_C`'s, are among the values the 25956137
-    /// derivation reproduces unchanged (M-820, behind F-780); the component
-    /// set and order are assumed unchanged.
-    pub fn icarus_survival() -> Self {
-        let native = |class: &str, checksum| {
-            vec![
-                ReleasePathSegment {
-                    path: format!("Default__{class}"),
-                    checksum,
-                    no_load: false,
-                },
-                ReleasePathSegment {
-                    path: "/Script/Icarus".to_owned(),
-                    checksum: 0,
-                    no_load: false,
-                },
-            ]
-        };
-        Self {
-            quest_manager: native("QuestManager", 3_539_440_926),
-            inventory_container_manager: native("InventoryContainerManager", 3_504_939_521),
-            player_history_tracker: native("PlayerHistoryTracker", 243_959_002),
-            flod: vec![
-                ReleasePathSegment {
-                    path: "Default__BP_IcarusFLOD_Default_C".to_owned(),
-                    checksum: 519_276_901,
-                    no_load: false,
-                },
-                ReleasePathSegment {
-                    path: "/Game/BP/FLOD/BP_IcarusFLOD_Default".to_owned(),
-                    checksum: 0,
-                    no_load: false,
-                },
-            ],
-            radiation_manager: native("RadiationManager", 2_158_376_861),
-            world_talent_manager: native("WorldTalentManager", 3_510_503_235),
-            disaster_controller: vec![
-                ReleasePathSegment {
-                    path: "Default__BP_DisasterController_C".to_owned(),
-                    checksum: 2_281_024_597,
-                    no_load: false,
-                },
-                ReleasePathSegment {
-                    path: "/Game/BP/Systems/Disaster/BP_DisasterController".to_owned(),
-                    checksum: 0,
-                    no_load: false,
-                },
-            ],
-            stat_container_checksum: 4_037_894_903,
-            actor_state_checksum: 455_559_420,
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         validate_archetype("managers quest_manager", &self.quest_manager)?;
         validate_archetype(
@@ -552,25 +455,6 @@ pub struct ReleasePlayerStateProfile {
 }
 
 impl ReleasePlayerStateProfile {
-    /// `BP_IcarusPlayerState_C`: reproduced bit-exactly against the 3.0.31
-    /// capture and derived unchanged for 3.0.32 (F-780, F-784).
-    pub fn icarus_survival() -> Self {
-        Self {
-            archetype: vec![
-                ReleasePathSegment {
-                    path: "Default__BP_IcarusPlayerState_C".to_owned(),
-                    checksum: 628_225_127,
-                    no_load: false,
-                },
-                ReleasePathSegment {
-                    path: "/Game/BP/Systems/BP_IcarusPlayerState".to_owned(),
-                    checksum: 0,
-                    no_load: false,
-                },
-            ],
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         validate_archetype("player_state", &self.archetype)
     }
@@ -599,23 +483,6 @@ pub struct ReleaseLevelActorsProfile {
 pub const MAX_LEVEL_ACTOR_NAMES: usize = 4;
 
 impl ReleaseLevelActorsProfile {
-    /// `IcarusWorldSettings_0` and `BP_IcarusWorldSettings_C` with
-    /// `ClassChecksum(AWorldSettings) = 3401274505`, computed with the
-    /// retained checksum algorithm from public server 26425113 (3.0.35) and
-    /// equal to every world-settings actor export of the retained 3.0.34
-    /// session, whose subclasses add no net properties (M-1350). Built in
-    /// only for those two builds; other builds need an explicit
-    /// `[level_actors]`.
-    pub fn icarus_world_settings() -> Self {
-        Self {
-            names: vec![
-                "IcarusWorldSettings_0".to_owned(),
-                "BP_IcarusWorldSettings_C".to_owned(),
-            ],
-            checksum: 3_401_274_505,
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         ensure!(
             (1..=MAX_LEVEL_ACTOR_NAMES).contains(&self.names.len()),
@@ -674,69 +541,13 @@ pub struct ReleaseGameStateProfile {
     pub weather: ReleaseSubobject,
     /// The class export chain of the `UReplicatedConnectedPlayer` records the
     /// `ConnectedPlayers` component lists: `ReplicatedConnectedPlayer` with its
-    /// class network checksum, then `/Script/Icarus`. Optional in an explicit
-    /// `[game_state]` section; without it no record is sent.
+    /// class network checksum, then `/Script/Icarus`. Optional; without it
+    /// no record is sent.
     #[serde(default)]
     pub connected_player_record: Option<Vec<ReleasePathSegment>>,
 }
 
 impl ReleaseGameStateProfile {
-    /// `BP_IcarusGameState_C`: reproduced bit-exactly against the 3.0.31
-    /// capture (F-794). For 3.0.32 the six checksums are among the 77 oracle
-    /// values the 25956137 derivation reproduces (M-820, behind F-780); the
-    /// component set and order are assumed unchanged.
-    pub fn icarus_survival() -> Self {
-        let segment = |path: &str, checksum| ReleasePathSegment {
-            path: path.to_owned(),
-            checksum,
-            no_load: false,
-        };
-        let subobject = |name: &str, checksum| ReleaseSubobject {
-            name: name.to_owned(),
-            checksum,
-        };
-        Self {
-            archetype: vec![
-                segment("Default__BP_IcarusGameState_C", 2_614_124_130),
-                segment("/Game/BP/Systems/BP_IcarusGameState", 0),
-            ],
-            game_mode_class: vec![
-                segment("BP_IcarusGameMode_C", 2_281_024_597),
-                segment("/Game/BP/Systems/BP_IcarusGameMode", 0),
-            ],
-            spectator_class: vec![
-                segment("SpectatorPawn", 3_712_879_475),
-                segment("/Script/Engine", 0),
-            ],
-            connected_players: subobject("ConnectedPlayers", 3_014_652_130),
-            dialogue_system: subobject("DialogueSystem", 3_400_199_742),
-            weather: subobject("WeatherComp", 3_554_357_950),
-            // Derived for 3.0.34 through 3.0.36, which add it; older builds
-            // send no record.
-            connected_player_record: None,
-        }
-    }
-
-    /// `ReplicatedConnectedPlayer` (class network checksum 3049816867, derived
-    /// with the retained checksum algorithm from public servers 26425113 and
-    /// 26313077, identical, and equal to the S2 export's checksum), then its
-    /// package `/Script/Icarus` (F-1072).
-    /// Not derived for 3.0.31 or 3.0.32, whose built-ins omit it.
-    pub fn connected_player_record_chain() -> Vec<ReleasePathSegment> {
-        vec![
-            ReleasePathSegment {
-                path: "ReplicatedConnectedPlayer".to_owned(),
-                checksum: 3_049_816_867,
-                no_load: false,
-            },
-            ReleasePathSegment {
-                path: "/Script/Icarus".to_owned(),
-                checksum: 0,
-                no_load: false,
-            },
-        ]
-    }
-
     pub fn validate(&self) -> Result<()> {
         validate_archetype("game_state", &self.archetype)?;
         validate_archetype("game_state game_mode_class", &self.game_mode_class)?;
@@ -793,8 +604,8 @@ pub struct ReleasePawnComponent {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleasePawnProfile {
-    /// Actor-property schema selected independently of exported class checksums.
-    #[serde(default)]
+    /// Actor-property schema selected independently of exported class
+    /// checksums; required, so a release never inherits a layout.
     pub layout_version: PawnLayoutVersion,
     pub archetype: Vec<ReleasePathSegment>,
     pub components: Vec<ReleasePawnComponent>,
@@ -809,62 +620,6 @@ pub struct ReleasePawnProfile {
 }
 
 impl ReleasePawnProfile {
-    /// `BP_IcarusPlayerCharacterSurvival_C`: reproduced bit-exactly against the
-    /// 3.0.31 capture (F-797), with the component bools and the inventory
-    /// class it carries. For 3.0.32 the archetype, component and `Inventory`
-    /// checksums are among the 77 oracle values the 25956137 derivation
-    /// reproduces (M-820, behind F-780); the component set, order and bools
-    /// are assumed unchanged.
-    pub fn icarus_survival() -> Self {
-        let segment = |path: &str, checksum| ReleasePathSegment {
-            path: path.to_owned(),
-            checksum,
-            no_load: false,
-        };
-        let subobject = |name: &str, checksum| ReleasePawnComponent {
-            name: name.to_owned(),
-            checksum,
-            rep_bools: Vec::new(),
-        };
-        let active = |name: &str, checksum| ReleasePawnComponent {
-            name: name.to_owned(),
-            checksum,
-            rep_bools: vec![(2, true)],
-        };
-        Self {
-            layout_version: PawnLayoutVersion::Legacy,
-            archetype: vec![
-                segment("Default__BP_IcarusPlayerCharacterSurvival_C", 430_507_263),
-                segment("/Game/BP/Player/BP_IcarusPlayerCharacterSurvival", 0),
-            ],
-            components: vec![
-                subobject("Stat Container", 4_037_894_903),
-                active("InventoryComponent", 46_421_488),
-                subobject("AudioContext", 4_273_702_982),
-                subobject("FeedbackAudioComponent", 3_400_199_742),
-                subobject("ActorState", 692_782_745),
-                active("Stomach", 3_911_258_249),
-                active("Processing", 1_023_342_657),
-                active("BP_Weight", 46_421_488),
-                active("BP_SwimmingComponent", 165_351_633),
-                active("BP_ShelteredComponent", 2_435_860_737),
-                subobject("BP_PlayerBuildingPlacement", 1_301_726_856),
-                active("Experience", 46_421_488),
-                subobject("BP_PlayerMovementAudioComponent", 1_588_614_535),
-                subobject("BP_PlayerMusicComponent", 681_416_933),
-                active("BP_Flammable_Player", 3_465_019_412),
-                subobject("BP_UIProjectionComponent_Player", 1_863_489_512),
-            ],
-            stat_container: "Stat Container".to_owned(),
-            actor_state: "ActorState".to_owned(),
-            inventory_component: "InventoryComponent".to_owned(),
-            inventory_class: vec![
-                segment("Inventory", 1_798_236_809),
-                segment("/Script/Icarus", 0),
-            ],
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         validate_archetype("pawn", &self.archetype)?;
         ensure!(!self.components.is_empty(), "pawn needs its components");
@@ -931,57 +686,6 @@ fn validate_rep_bools(name: &str, rep_bools: &[(u32, bool)]) -> Result<()> {
 }
 
 impl ReleasePlayerControllerProfile {
-    /// `BP_IcarusPlayerControllerSurvival_C` identifiers: reproduced bit-exactly
-    /// against the 3.0.31 capture (`F-779`) and derived unchanged for 3.0.32
-    /// from its own binary and paks (`F-780`).
-    pub fn icarus_survival() -> Self {
-        let segment = |path: &str, checksum| ReleasePathSegment {
-            path: path.to_owned(),
-            checksum,
-            no_load: false,
-        };
-        let component = |name: &str, checksum, block, rep_bools: &[(u32, bool)]| ReleaseComponent {
-            name: name.to_owned(),
-            checksum,
-            block,
-            rep_bools: rep_bools.to_vec(),
-        };
-        use ReleaseComponentBlockKind::{Create, None, RepBools};
-        Self {
-            archetype: vec![
-                segment(
-                    "Default__BP_IcarusPlayerControllerSurvival_C",
-                    3_911_321_073,
-                ),
-                segment("/Game/BP/Player/BP_IcarusPlayerControllerSurvival", 0),
-            ],
-            components: vec![
-                component(
-                    "BackendProxyComponent",
-                    4_100_406_609,
-                    RepBools,
-                    &[(2, true)],
-                ),
-                component("PlayerDataComponent", 3_400_199_742, None, &[]),
-                component("BestiaryManagerComponent", 2_451_266_650, Create, &[]),
-                component(
-                    "ResourceNetworkDataRequesterComponent",
-                    3_500_113_941,
-                    Create,
-                    &[],
-                ),
-                component("BP_CriticalHitComponent", 1_900_637_040, Create, &[]),
-                component("BP_HuntingManager", 2_334_391_351, Create, &[]),
-                component(
-                    "BP_NetworkProxyComponent",
-                    997_381_320,
-                    RepBools,
-                    &[(2, true)],
-                ),
-            ],
-        }
-    }
-
     pub fn validate(&self) -> Result<()> {
         validate_archetype("player_controller", &self.archetype)?;
         ensure!(
@@ -1034,18 +738,20 @@ impl ReleasePlayerControllerProfile {
     }
 }
 
-/// Explicit, data-driven protocol profile for one ICARUS release (`docs/architecture.md#release-tracking`).
+/// Data-driven protocol profile for one ICARUS release, read from one
+/// complete release file (`docs/architecture.md#release-tracking`); the
+/// library holds no per-release values.
 ///
 /// `pin`, `engine_network_version`, `tags.tag_encoding()`, and `class_net_cache`
 /// drive [`super::peer_lab::PeerLabConfig::with_release_profile`] and
-/// `examples/capture_decode.rs`; `game_network_version`, `row_handles`, and the
-/// remaining `tags` fields record descriptive release-qualification metadata.
-/// `player_controller` feeds [`super::session_open`]; it is `None` for builds
-/// without a built-in or explicit `[player_controller]` section. Likewise
-/// `player_state`, `game_state` and `pawn` feed the PlayerState, GameState
-/// and pawn open plans and are `None` without a built-in or explicit
-/// `[player_state]`, `[game_state]` or `[pawn]` section. `level_actors`
-/// names the actors a level visibility report opens (`[level_actors]`).
+/// `examples/capture_decode.rs`; `row_handles` binds the row-handle widths of
+/// every layout this profile plans ([`Self::apply_row_handle_profile`]).
+/// `game_network_version` and the remaining `tags` fields record descriptive
+/// release-qualification metadata. `player_controller` feeds
+/// [`super::session_open`]; `player_state`, `game_state`, `pawn` and
+/// `managers` feed their open plans; `level_actors` names the actors a level
+/// visibility report opens. Each is `None` exactly when the file omits its
+/// section, which turns that open off ([`Self::parse`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseProfile {
     pub pin: ReleasePin,
@@ -1073,6 +779,8 @@ struct ReleasePinFile {
     release: ReleasePin,
 }
 
+/// A release file as written. Required sections are `Option` here only so
+/// [`ReleaseProfile::parse`] can name a missing one.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReleaseFile {
@@ -1127,241 +835,6 @@ impl ReleasePin {
 }
 
 impl ReleaseProfile {
-    /// Built-in profile for the 3.0.31 reference capture build (`25793607`
-    /// server / `25793767` client, `3.0.31.158478-rel-DangerousHorizons`,
-    /// F-689, F-702..F-708).
-    pub fn release_3_0_31() -> Self {
-        let project_version = "3.0.31.158478-rel-DangerousHorizons".to_owned();
-        let network_checksum = network_checksum(&project_version);
-        Self {
-            pin: ReleasePin {
-                app_id: DEDICATED_SERVER_APP_ID,
-                build_id: 25_793_607,
-                project_version,
-                network_checksum,
-            },
-            engine_network_version: ENGINE_NETWORK_VERSION,
-            game_network_version: GAME_NETWORK_VERSION,
-            tags: ReleaseTagProfile {
-                data_table_tag_count: 130,
-                ini_tag_count: 1_886,
-                unique_node_count: 2_299,
-                total_bits: 12,
-                configured_first_segment: 16,
-                effective_first_segment: 0,
-                container_bits: 6,
-                net_index_hash: TAG_NET_INDEX_HASH_3_0_31,
-            },
-            class_net_cache: ReleaseClassNetCacheBounds::default(),
-            row_handles: ReleaseRowHandleProfile::default(),
-            player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
-            player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
-            game_state: Some(ReleaseGameStateProfile::icarus_survival()),
-            pawn: Some(ReleasePawnProfile::icarus_survival()),
-            managers: Some(ReleaseManagersProfile::icarus_survival()),
-            // Not derived for this build.
-            level_actors: None,
-        }
-    }
-
-    /// Built-in profile for the pinned 3.0.32 release (`25956137`,
-    /// `3.0.32.158743-rel-DangerousHorizons`, F-700, F-702..F-708).
-    pub fn release_3_0_32() -> Self {
-        let project_version = "3.0.32.158743-rel-DangerousHorizons".to_owned();
-        let network_checksum = network_checksum(&project_version);
-        Self {
-            pin: ReleasePin {
-                app_id: DEDICATED_SERVER_APP_ID,
-                build_id: 25_956_137,
-                project_version,
-                network_checksum,
-            },
-            engine_network_version: ENGINE_NETWORK_VERSION,
-            game_network_version: GAME_NETWORK_VERSION,
-            tags: ReleaseTagProfile {
-                data_table_tag_count: 130,
-                ini_tag_count: 1_889,
-                unique_node_count: 2_302,
-                total_bits: 12,
-                configured_first_segment: 16,
-                effective_first_segment: 0,
-                container_bits: 6,
-                net_index_hash: TAG_NET_INDEX_HASH_3_0_32,
-            },
-            class_net_cache: ReleaseClassNetCacheBounds::default(),
-            row_handles: ReleaseRowHandleProfile::default(),
-            player_controller: Some(ReleasePlayerControllerProfile::icarus_survival()),
-            player_state: Some(ReleasePlayerStateProfile::icarus_survival()),
-            game_state: Some(ReleaseGameStateProfile::icarus_survival()),
-            pawn: Some(ReleasePawnProfile::icarus_survival()),
-            managers: Some(ReleaseManagersProfile::icarus_survival()),
-            // Not derived for this build.
-            level_actors: None,
-        }
-    }
-
-    /// Built-in profile for the qualified 3.0.34 server (`26313077`). The
-    /// pawn adds `bIsReworkedCharacter`; other retained identities are unchanged.
-    /// This profile does not qualify stock-client gameplay or quest class opens.
-    pub fn release_3_0_34() -> Self {
-        let mut profile = Self::release_3_0_32();
-        let project_version = "3.0.34.159385-rel-DangerousHorizons".to_owned();
-        profile.pin = ReleasePin {
-            app_id: DEDICATED_SERVER_APP_ID,
-            build_id: 26_313_077,
-            network_checksum: network_checksum(&project_version),
-            project_version,
-        };
-        profile.tags.ini_tag_count = 1_921;
-        profile.tags.unique_node_count = 2_335;
-        profile.tags.net_index_hash = TAG_NET_INDEX_HASH_3_0_34;
-        if let Some(pawn) = &mut profile.pawn {
-            pawn.layout_version = PawnLayoutVersion::ReworkedCharacter;
-            pawn.archetype[0].checksum = 537_502_963;
-        }
-        if let Some(game_state) = &mut profile.game_state {
-            game_state.connected_player_record =
-                Some(ReleaseGameStateProfile::connected_player_record_chain());
-        }
-        profile.level_actors = Some(ReleaseLevelActorsProfile::icarus_world_settings());
-        profile
-    }
-
-    /// Release metadata for public server 26425113 (3.0.35).
-    /// Retained class identities and layouts match the previous profile;
-    /// this does not establish stock-client gameplay compatibility.
-    pub fn release_3_0_35() -> Self {
-        let mut profile = Self::release_3_0_34();
-        let project_version = "3.0.35.159586-rel-DangerousHorizons".to_owned();
-        profile.pin = ReleasePin {
-            app_id: DEDICATED_SERVER_APP_ID,
-            build_id: 26_425_113,
-            network_checksum: network_checksum(&project_version),
-            project_version,
-        };
-        profile.tags.ini_tag_count = 1_932;
-        profile.tags.unique_node_count = 2_346;
-        profile.tags.net_index_hash = TAG_NET_INDEX_HASH_3_0_35;
-        profile.row_handles = ReleaseRowHandleProfile::release_3_0_35();
-        profile
-    }
-
-    /// Release metadata for public server 26613688 (3.0.36).
-    /// Tags are derived for this build (F-1176); selected class metadata and
-    /// ordered row registry retain the previous profile (F-1177, F-1178).
-    /// Static qualification does not establish stock-client compatibility.
-    pub fn release_3_0_36() -> Self {
-        let mut profile = Self::release_3_0_35();
-        let project_version = "3.0.36.159996-rel-DangerousHorizons".to_owned();
-        profile.pin = ReleasePin {
-            app_id: DEDICATED_SERVER_APP_ID,
-            build_id: 26_613_688,
-            network_checksum: network_checksum(&project_version),
-            project_version,
-        };
-        profile.tags.data_table_tag_count = 130;
-        profile.tags.ini_tag_count = 1_929;
-        profile.tags.unique_node_count = 2_343;
-        profile.tags.net_index_hash = TAG_NET_INDEX_HASH_3_0_36;
-        profile.tags.total_bits = 12;
-        profile.tags.effective_first_segment = 0;
-        profile.tags.container_bits = 6;
-        // Ordered registry and row widths match 3.0.35 exactly (F-1178).
-        profile.row_handles = ReleaseRowHandleProfile::release_3_0_35();
-        // F-1177 compares class metadata, not level-actor instance names.
-        profile.level_actors = None;
-        profile
-    }
-
-    /// Built-in tag profile for a qualified build ID (`25793607`/`25793767` for
-    /// 3.0.31, `25956137` for 3.0.32, `26313077` for 3.0.34,
-    /// `26425113` for 3.0.35, `26613688` for 3.0.36). Other build IDs
-    /// require an explicit `[tags]` section so a weekly pin update cannot
-    /// silently inherit an older build's tag metadata.
-    fn default_tags_for_build(build_id: u64) -> Result<ReleaseTagProfile> {
-        match build_id {
-            25_793_607 | 25_793_767 => Ok(Self::release_3_0_31().tags),
-            25_956_137 => Ok(Self::release_3_0_32().tags),
-            26_313_077 => Ok(Self::release_3_0_34().tags),
-            26_425_113 => Ok(Self::release_3_0_35().tags),
-            26_613_688 => Ok(Self::release_3_0_36().tags),
-            _ => bail!(
-                "no built-in tag profile for build_id {build_id}; supply an explicit [tags] section"
-            ),
-        }
-    }
-
-    /// Built-in PlayerController identifiers for a qualified build ID; `None`
-    /// elsewhere, so a pin bump never inherits an older build's checksums.
-    fn default_player_controller_for_build(
-        build_id: u64,
-    ) -> Option<ReleasePlayerControllerProfile> {
-        match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 | 26_613_688 => {
-                Some(ReleasePlayerControllerProfile::icarus_survival())
-            }
-            _ => None,
-        }
-    }
-
-    /// Built-in PlayerState identifiers for a qualified build ID; `None`
-    /// elsewhere, so a pin bump never inherits an older build's checksums.
-    fn default_player_state_for_build(build_id: u64) -> Option<ReleasePlayerStateProfile> {
-        match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 | 26_613_688 => {
-                Some(ReleasePlayerStateProfile::icarus_survival())
-            }
-            _ => None,
-        }
-    }
-
-    /// Built-in manager identifiers for a qualified build ID; `None`
-    /// elsewhere, so a pin bump never inherits an older build's checksums.
-    fn default_managers_for_build(build_id: u64) -> Option<ReleaseManagersProfile> {
-        match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 | 26_313_077 | 26_425_113 | 26_613_688 => {
-                Some(ReleaseManagersProfile::icarus_survival())
-            }
-            _ => None,
-        }
-    }
-
-    /// Built-in GameState identifiers for a qualified build ID; `None`
-    /// elsewhere, so a pin bump never inherits an older build's checksums.
-    fn default_game_state_for_build(build_id: u64) -> Option<ReleaseGameStateProfile> {
-        match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 => {
-                Some(ReleaseGameStateProfile::icarus_survival())
-            }
-            26_313_077 => Self::release_3_0_34().game_state,
-            26_425_113 => Self::release_3_0_35().game_state,
-            26_613_688 => Self::release_3_0_36().game_state,
-            _ => None,
-        }
-    }
-
-    /// Built-in level visibility actor identities for 3.0.34 and 3.0.35,
-    /// where their checksums were derived and matched; `None` elsewhere.
-    /// Static class equality alone does not qualify another build's actors.
-    fn default_level_actors_for_build(build_id: u64) -> Option<ReleaseLevelActorsProfile> {
-        match build_id {
-            26_313_077 | 26_425_113 => Some(ReleaseLevelActorsProfile::icarus_world_settings()),
-            _ => None,
-        }
-    }
-
-    /// Built-in pawn identifiers for a qualified build ID; `None` elsewhere,
-    /// so a pin bump never inherits an older build's checksums.
-    fn default_pawn_for_build(build_id: u64) -> Option<ReleasePawnProfile> {
-        match build_id {
-            25_793_607 | 25_793_767 | 25_956_137 => Some(ReleasePawnProfile::icarus_survival()),
-            26_313_077 => Self::release_3_0_34().pawn,
-            26_425_113 => Self::release_3_0_35().pawn,
-            26_613_688 => Self::release_3_0_36().pawn,
-            _ => None,
-        }
-    }
-
     /// Validate all release-profile invariants.
     pub fn validate(&self) -> Result<()> {
         self.pin.validate()?;
@@ -1439,55 +912,35 @@ impl ReleaseProfile {
             .collect()
     }
 
-    /// Parse a release TOML file (`[release]` plus optional `[tags]`,
-    /// `[class_net_cache]`, `[row_handles]`, `[player_controller]`,
-    /// `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and
-    /// `[level_actors]` sections) and validate it.
+    /// Parse a complete release TOML file and validate it.
+    ///
+    /// The build id is only a label: no value is looked up by it, and an
+    /// absent section never takes another release's values. `[release]`,
+    /// `[tags]`, `[class_net_cache]` and `[row_handles]` are required because
+    /// the wire uses them unconditionally (the Hello version, every tag
+    /// encoding, the `FClassNetCache` field bounds, the row-handle widths of
+    /// every planned layout); a file without one fails with an error naming
+    /// it. `[player_controller]`, `[player_state]`, `[game_state]`, `[pawn]`,
+    /// `[managers]` and `[level_actors]` are optional: absent means the
+    /// release does not carry that open, which stays off.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleaseFile>(text).context("release profile")?;
-        let tags = match parsed.tags {
-            Some(tags) => tags,
-            None => Self::default_tags_for_build(parsed.release.build_id)?,
-        };
-        let class_net_cache = parsed.class_net_cache.unwrap_or_default();
-        let row_handles = parsed
-            .row_handles
-            .unwrap_or_else(|| match parsed.release.build_id {
-                26_425_113 => ReleaseRowHandleProfile::release_3_0_35(),
-                26_613_688 => Self::release_3_0_36().row_handles,
-                _ => ReleaseRowHandleProfile::default(),
-            });
-        let player_controller = parsed
-            .player_controller
-            .or_else(|| Self::default_player_controller_for_build(parsed.release.build_id));
-        let player_state = parsed
-            .player_state
-            .or_else(|| Self::default_player_state_for_build(parsed.release.build_id));
-        let game_state = parsed
-            .game_state
-            .or_else(|| Self::default_game_state_for_build(parsed.release.build_id));
-        let pawn = parsed
-            .pawn
-            .or_else(|| Self::default_pawn_for_build(parsed.release.build_id));
-        let managers = parsed
-            .managers
-            .or_else(|| Self::default_managers_for_build(parsed.release.build_id));
-        let level_actors = parsed
-            .level_actors
-            .or_else(|| Self::default_level_actors_for_build(parsed.release.build_id));
+        fn required<T>(section: &str, value: Option<T>) -> Result<T> {
+            value.with_context(|| format!("release profile lacks required section [{section}]"))
+        }
         let profile = Self {
+            tags: required("tags", parsed.tags)?,
+            class_net_cache: required("class_net_cache", parsed.class_net_cache)?,
+            row_handles: required("row_handles", parsed.row_handles)?,
             pin: parsed.release,
             engine_network_version: ENGINE_NETWORK_VERSION,
             game_network_version: GAME_NETWORK_VERSION,
-            tags,
-            class_net_cache,
-            row_handles,
-            player_controller,
-            player_state,
-            game_state,
-            pawn,
-            managers,
-            level_actors,
+            player_controller: parsed.player_controller,
+            player_state: parsed.player_state,
+            game_state: parsed.game_state,
+            pawn: parsed.pawn,
+            managers: parsed.managers,
+            level_actors: parsed.level_actors,
         };
         profile.validate()?;
         Ok(profile)
@@ -1499,7 +952,7 @@ impl ReleaseProfile {
         layout: &mut [super::rep_layout::RepCommand],
     ) -> Result<()> {
         self.row_handles.validate()?;
-        if self.row_handles == ReleaseRowHandleProfile::default() {
+        if self.row_handles == ReleaseRowHandleProfile::static_codec_registry() {
             fn restore_legacy(layout: &mut [super::rep_layout::RepCommand]) {
                 use super::rep_layout::RepCommand;
                 for command in layout {

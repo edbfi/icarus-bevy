@@ -27,6 +27,38 @@ fn checksums_match_the_logged_formula() {
     );
 }
 
+/// Sections a release file must carry; the others are optional.
+const REQUIRED_SECTIONS: [&str; 4] = ["release", "tags", "class_net_cache", "row_handles"];
+/// Sections whose absence turns that open off.
+const OPTIONAL_SECTIONS: [&str; 6] = [
+    "player_controller",
+    "player_state",
+    "game_state",
+    "pawn",
+    "managers",
+    "level_actors",
+];
+
+fn release_table(text: &str) -> toml::Table {
+    text.parse().unwrap()
+}
+
+/// `release` (a `[release]` table) plus the required sections of the frozen
+/// 3.0.32 profile and no optional section.
+fn required_only(release: &str) -> String {
+    let fixture =
+        release_table(&std::fs::read_to_string(ReleaseProfile::fixture_path("3.0.32")).unwrap());
+    let mut required = toml::Table::new();
+    for name in &REQUIRED_SECTIONS[1..] {
+        required.insert((*name).to_owned(), fixture[*name].clone());
+    }
+    format!("{release}{}", toml::to_string(&required).unwrap())
+}
+
+/// The active release file is a complete, valid profile whose evidence-bound
+/// values hold: its checksum is the one the version string derives, the pin
+/// reader agrees with the profile, and no section is marked carried over
+/// from an earlier build (`tools/release_watch.py pin`).
 #[test]
 fn the_tracked_pin_is_consistent() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml");
@@ -35,65 +67,117 @@ fn the_tracked_pin_is_consistent() {
     assert_eq!(pin.network_checksum, network_checksum(&pin.project_version));
 
     let profile = ReleaseProfile::load(&path).unwrap();
-    assert_eq!(profile, ReleaseProfile::fixture("3.0.36"));
-}
-
-/// Every frozen release file is complete and parses to exactly the built-in
-/// constructor it replaces, including the 3.0.31 client build alias, which
-/// shares every 3.0.31 value except its build id.
-#[test]
-fn release_profile_files_equal_the_constructors_they_replace() {
-    let mut alias = ReleaseProfile::release_3_0_31();
-    alias.pin.build_id = 25_793_767;
-    for (name, expected) in [
-        ("3.0.31", ReleaseProfile::release_3_0_31()),
-        ("3.0.31-client-25793767", alias),
-        ("3.0.32", ReleaseProfile::release_3_0_32()),
-        ("3.0.34", ReleaseProfile::release_3_0_34()),
-        ("3.0.35", ReleaseProfile::release_3_0_35()),
-        ("3.0.36", ReleaseProfile::release_3_0_36()),
-    ] {
-        assert_eq!(ReleaseProfile::fixture(name), expected, "{name}");
-        // The pin-only text the constructors used to back resolves to the same
-        // value, so the file is exactly what the build id selected.
-        let pin = &expected.pin;
-        let pin_only = format!(
-            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
-            pin.app_id, pin.build_id, pin.project_version, pin.network_checksum
-        );
-        assert_eq!(
-            ReleaseProfile::parse(&pin_only).unwrap(),
-            expected,
-            "{name}"
-        );
-        let text = std::fs::read_to_string(ReleaseProfile::fixture_path(name)).unwrap();
-        for section in [
-            "[release]",
-            "[tags]",
-            "[class_net_cache]",
-            "[row_handles]",
-            "[player_controller]",
-            "[player_state]",
-            "[game_state]",
-            "[pawn]",
-            "[managers]",
-        ] {
-            assert!(text.contains(&format!("\n{section}\n")), "{name} {section}");
-        }
-        assert_eq!(
-            text.contains("\n[level_actors]\n"),
-            expected.level_actors.is_some(),
+    assert_eq!(profile.pin, pin);
+    profile.validate().unwrap();
+    assert_eq!(
+        PeerLabConfig::default()
+            .with_release_profile(&profile)
+            .local_network_version,
+        Some(network_checksum(&pin.project_version))
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !text.contains("CARRIED OVER"),
+        "unqualified carried-over sections"
+    );
+    let table = release_table(&text);
+    for name in REQUIRED_SECTIONS {
+        assert!(table.contains_key(name), "{name}");
+    }
+    for name in table.keys() {
+        assert!(
+            REQUIRED_SECTIONS.contains(&name.as_str())
+                || OPTIONAL_SECTIONS.contains(&name.as_str()),
             "{name}"
         );
     }
-    let fixture = std::fs::read_to_string(ReleaseProfile::fixture_path("3.0.36")).unwrap();
-    let active =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
-            .unwrap();
-    assert_eq!(
-        ReleaseProfile::parse(&active).unwrap(),
-        ReleaseProfile::parse(&fixture).unwrap()
-    );
+    // The connected server opens every class the active release carries.
+    for (name, present) in [
+        ("player_controller", profile.player_controller.is_some()),
+        ("player_state", profile.player_state.is_some()),
+        ("game_state", profile.game_state.is_some()),
+        ("pawn", profile.pawn.is_some()),
+        ("managers", profile.managers.is_some()),
+    ] {
+        assert!(present, "{name}");
+    }
+}
+
+/// Every frozen release file is complete: it carries each required section
+/// and every class section, and `[level_actors]` exactly where those
+/// identities were derived (3.0.34 and 3.0.35). The 3.0.31 client-build file
+/// differs from 3.0.31 only in its build id. Removing a required section
+/// fails with an error naming it; removing an optional one turns it off and
+/// never falls back to other values.
+#[test]
+fn release_profile_files_are_complete() {
+    for (name, build_id, level_actors) in [
+        ("3.0.31", 25_793_607, false),
+        ("3.0.31-client-25793767", 25_793_767, false),
+        ("3.0.32", 25_956_137, false),
+        ("3.0.34", 26_313_077, true),
+        ("3.0.35", 26_425_113, true),
+        ("3.0.36", 26_613_688, false),
+    ] {
+        let profile = ReleaseProfile::fixture(name);
+        assert_eq!(profile.pin.build_id, build_id, "{name}");
+        assert_eq!(
+            profile.pin.network_checksum,
+            network_checksum(&profile.pin.project_version),
+            "{name}"
+        );
+        assert_eq!(profile.level_actors.is_some(), level_actors, "{name}");
+        let text = std::fs::read_to_string(ReleaseProfile::fixture_path(name)).unwrap();
+        let table = release_table(&text);
+        for section in REQUIRED_SECTIONS.iter().chain(&OPTIONAL_SECTIONS[..5]) {
+            assert!(table.contains_key(*section), "{name} {section}");
+        }
+        for section in &REQUIRED_SECTIONS[1..] {
+            let mut without = table.clone();
+            without.remove(*section);
+            let error = ReleaseProfile::parse(&toml::to_string(&without).unwrap()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("release profile lacks required section [{section}]"),
+                "{name}"
+            );
+        }
+        for section in OPTIONAL_SECTIONS {
+            let mut without = table.clone();
+            without.remove(section);
+            let parsed = ReleaseProfile::parse(&toml::to_string(&without).unwrap()).unwrap();
+            let expected = match section {
+                "player_controller" => ReleaseProfile {
+                    player_controller: None,
+                    ..profile.clone()
+                },
+                "player_state" => ReleaseProfile {
+                    player_state: None,
+                    ..profile.clone()
+                },
+                "game_state" => ReleaseProfile {
+                    game_state: None,
+                    ..profile.clone()
+                },
+                "pawn" => ReleaseProfile {
+                    pawn: None,
+                    ..profile.clone()
+                },
+                "managers" => ReleaseProfile {
+                    managers: None,
+                    ..profile.clone()
+                },
+                _ => ReleaseProfile {
+                    level_actors: None,
+                    ..profile.clone()
+                },
+            };
+            assert_eq!(parsed, expected, "{name} {section}");
+        }
+    }
+    let mut alias = ReleaseProfile::fixture("3.0.31-client-25793767");
+    alias.pin.build_id = 25_793_607;
+    assert_eq!(alias, ReleaseProfile::fixture("3.0.31"));
 }
 
 #[test]
@@ -136,10 +220,6 @@ fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     );
     assert_eq!(Some(game_state), previous.game_state);
     assert_eq!(profile.managers, previous.managers);
-    let parsed = ReleaseProfile::parse(
-        "[release]\napp_id = 2089300\nbuild_id = 26313077\nproject_version = \"3.0.34.159385-rel-DangerousHorizons\"\nnetwork_checksum = 4087436304\n",
-    ).unwrap();
-    assert_eq!(parsed, profile);
     assert!(
         profile
             .quest_open_base_plan("/Game/Maps/Test/Test")
@@ -177,10 +257,6 @@ fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
     assert_eq!(profile.row_handles.row_width_bytes(30).unwrap(), 2);
     assert_eq!(profile.row_handles.row_width_bytes(295).unwrap(), 1);
     assert!(profile.row_handles.row_width_bytes(296).is_err());
-    let parsed = ReleaseProfile::parse(
-        "[release]\napp_id = 2089300\nbuild_id = 26425113\nproject_version = \"3.0.35.159586-rel-DangerousHorizons\"\nnetwork_checksum = 1299872271\n",
-    ).unwrap();
-    assert_eq!(parsed, profile);
     assert_eq!(
         PeerLabConfig::default()
             .with_release_profile(&profile)
@@ -232,9 +308,18 @@ fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
     assert_eq!(profile.class_net_cache, previous.class_net_cache);
     // Current-build ordered registry and widths match 3.0.35 (F-1178).
     assert_eq!(profile.row_handles, previous.row_handles);
-    let text = "[release]\napp_id = 2089300\nbuild_id = 26613688\nproject_version = \"3.0.36.159996-rel-DangerousHorizons\"\nnetwork_checksum = 3984737729\n";
-    assert_eq!(ReleaseProfile::parse(text).unwrap(), profile);
-    assert!(ReleaseProfile::parse(&text.replace("26613688", "26613689")).is_err());
+    // The build id is only a label: another id selects no other values, while
+    // a checksum that does not match the version string still fails.
+    let text = std::fs::read_to_string(ReleaseProfile::fixture_path("3.0.36")).unwrap();
+    let relabelled = ReleaseProfile::parse(&text.replace("26613688", "26613689")).unwrap();
+    assert_eq!(relabelled.pin.build_id, 26_613_689);
+    assert_eq!(
+        ReleaseProfile {
+            pin: profile.pin.clone(),
+            ..relabelled
+        },
+        profile
+    );
     assert!(ReleaseProfile::parse(&text.replace("3984737729", "1299872271")).is_err());
     use icarus_bevy::experimental::visibility::{
         VisibilityArchiveProfile, VisibilityDecodeProfile,
@@ -466,8 +551,27 @@ table_count = 293
 zero_row_tables = [62, 164, 181]
 two_byte_row_tables = [0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 148, 152, 177, 178, 201, 207, 209, 215, 230, 234, 237, 248, 252, 254, 278]
 "#;
+    // The required sections alone parse to the 3.0.32 values with every
+    // optional open off: nothing is filled in from the build id.
     let parsed = ReleaseProfile::parse(toml_text).unwrap();
-    assert_eq!(parsed, ReleaseProfile::fixture("3.0.32"));
+    assert_eq!(
+        parsed,
+        ReleaseProfile {
+            player_controller: None,
+            player_state: None,
+            game_state: None,
+            pawn: None,
+            managers: None,
+            level_actors: None,
+            ..ReleaseProfile::fixture("3.0.32")
+        }
+    );
+    assert!(
+        parsed
+            .player_controller_open_plan("/Game/Maps/Test/Test", [0.0; 3])
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -507,11 +611,10 @@ fn invalid_profile_bounds_and_tables_fail_closed() {
 fn a_stale_checksum_or_unknown_field_is_rejected() {
     let good = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0.0\"\nnetwork_checksum = 1447163286\n";
     assert!(ReleasePin::parse(good).is_ok());
-    assert!(
-        ReleaseProfile::parse(good)
-            .unwrap_err()
-            .to_string()
-            .contains("no built-in tag profile for build_id 1")
+    // A pin alone is no profile, whatever its build id.
+    assert_eq!(
+        ReleaseProfile::parse(good).unwrap_err().to_string(),
+        "release profile lacks required section [tags]"
     );
     let stale = good.replace("1447163286", "1447163287");
     assert!(
@@ -575,7 +678,10 @@ fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
 
 #[test]
 fn player_controller_sections_parse_and_fail_closed() {
-    let release = "[release]\napp_id = 2089300\nbuild_id = 25956137\nproject_version = \"3.0.32.158743-rel-DangerousHorizons\"\nnetwork_checksum = 243431684\n";
+    let release = required_only(
+        "[release]\napp_id = 2089300\nbuild_id = 25956137\nproject_version = \"3.0.32.158743-rel-DangerousHorizons\"\nnetwork_checksum = 243431684\n",
+    );
+    let release = release.as_str();
     let section = r#"
 [player_controller]
 archetype = [
@@ -595,21 +701,18 @@ components = [
         Some(player_controller),
         ReleaseProfile::fixture("3.0.32").player_controller
     );
-    // A known build without the section gets its built-in identifiers; an
-    // unknown build gets none rather than an older build's.
+    // Without the section there are no identifiers, even for a build whose
+    // frozen profile carries them, and an unknown build parses alike.
     assert_eq!(
         ReleaseProfile::parse(release).unwrap().player_controller,
-        ReleaseProfile::fixture("3.0.32").player_controller
+        None
     );
     let unknown = release
         .replace("25956137", "1")
         .replace("3.0.32.158743-rel-DangerousHorizons", "1.0.0")
         .replace("243431684", "1447163286");
-    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
     assert_eq!(
-        ReleaseProfile::parse(&format!("{unknown}{tags}"))
-            .unwrap()
-            .player_controller,
+        ReleaseProfile::parse(&unknown).unwrap().player_controller,
         None
     );
     for bad in [
@@ -795,7 +898,6 @@ fn game_state_sections_parse_and_fail_closed() {
             icarus_bevy::experimental::release::network_checksum("1.0")
         ),
     );
-    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
     let section = "[game_state]\n\
         archetype = [{ path = \"Default__G_C\", checksum = 1 }, { path = \"/Game/G\", checksum = 0 }]\n\
         game_mode_class = [{ path = \"M_C\", checksum = 2 }, { path = \"/Game/M\", checksum = 0 }]\n\
@@ -803,8 +905,8 @@ fn game_state_sections_parse_and_fail_closed() {
         connected_players = { name = \"A\", checksum = 4 }\n\
         dialogue_system = { name = \"B\", checksum = 5 }\n\
         weather = { name = \"C\", checksum = 6 }\n";
-    let base = format!("{release}{tags}");
-    // Unknown builds get no built-in identifiers.
+    let base = required_only(&release);
+    // Without the section there are no identifiers.
     assert!(ReleaseProfile::parse(&base).unwrap().game_state.is_none());
     let parsed = ReleaseProfile::parse(&format!("{base}{section}")).unwrap();
     let plan = parsed
@@ -1206,10 +1308,10 @@ fn pawn_sections_parse_and_fail_closed() {
             icarus_bevy::experimental::release::network_checksum("1.0")
         ),
     );
-    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
     let components = "components = [{ name = \"S\", checksum = 2 }, { name = \"I\", checksum = 3, rep_bools = [[2, true]] }, { name = \"A\", checksum = 4 }]\n";
     let section = format!(
         "[pawn]\n\
+        layout_version = \"legacy\"\n\
         archetype = [{{ path = \"Default__P_C\", checksum = 1 }}, {{ path = \"/Game/P\", checksum = 0 }}]\n\
         {components}\
         stat_container = \"S\"\n\
@@ -1217,8 +1319,8 @@ fn pawn_sections_parse_and_fail_closed() {
         inventory_component = \"I\"\n\
         inventory_class = [{{ path = \"Bag\", checksum = 9 }}, {{ path = \"/Script/P\", checksum = 0 }}]\n"
     );
-    let base = format!("{release}{tags}");
-    // Unknown builds get no built-in identifiers.
+    let base = required_only(&release);
+    // Without the section there are no identifiers.
     let without = ReleaseProfile::parse(&base).unwrap();
     assert!(without.pawn.is_none());
     assert!(
@@ -1256,8 +1358,8 @@ fn pawn_sections_parse_and_fail_closed() {
     assert!(plan.components[0].rep_bools.is_empty());
     assert_eq!(plan.content.inventory_class[0].path, "Bag");
     let versioned = section.replace(
-        "[pawn]\n",
-        "[pawn]\nlayout_version = \"reworked_character\"\n",
+        "layout_version = \"legacy\"",
+        "layout_version = \"reworked_character\"",
     );
     let versioned = ReleaseProfile::parse(&format!("{base}{versioned}")).unwrap();
     let new_plan = versioned
@@ -1270,7 +1372,7 @@ fn pawn_sections_parse_and_fail_closed() {
     );
     assert_eq!(new_plan.layout.len(), 90);
     assert_eq!(plan.layout.len(), 89);
-    let invalid = section.replace("[pawn]\n", "[pawn]\nlayout_version = \"future\"\n");
+    let invalid = section.replace("\"legacy\"", "\"future\"");
     assert!(ReleaseProfile::parse(&format!("{base}{invalid}")).is_err());
     for bad in [
         section.replace("rep_bools = [[2, true]]", "rep_bools = [[3, true]]"),
@@ -1300,6 +1402,8 @@ fn pawn_sections_parse_and_fail_closed() {
         section.replace("checksum = 4 }", "checksum = 4, extra = 1 }"),
         format!("{section}extra = 1\n"),
         section.replace(components, "components = []\n"),
+        // The layout is never inherited: a pawn must name its own.
+        section.replace("layout_version = \"legacy\"\n", ""),
     ] {
         assert_ne!(bad, section);
         assert!(
@@ -1309,8 +1413,8 @@ fn pawn_sections_parse_and_fail_closed() {
     }
 }
 
-/// World manager identifiers (F-859): built in for the qualified builds,
-/// none for unknown ones, parsed from `[managers]` and validated.
+/// World manager identifiers (F-859): carried by the frozen profiles, none
+/// without `[managers]`, parsed from `[managers]` and validated.
 #[test]
 fn manager_sections_parse_and_fail_closed() {
     use icarus_bevy::experimental::manager_open::ManagerSlot;
@@ -1338,8 +1442,7 @@ fn manager_sections_parse_and_fail_closed() {
             icarus_bevy::experimental::release::network_checksum("1.0")
         ),
     );
-    let tags = "[tags]\ndata_table_tag_count = 130\nini_tag_count = 1889\nunique_node_count = 2302\ntotal_bits = 12\nconfigured_first_segment = 16\neffective_first_segment = 0\ncontainer_bits = 6\nnet_index_hash = 1829726063\n";
-    let base = format!("{release}{tags}");
+    let base = required_only(&release);
     let unknown = ReleaseProfile::parse(&base).unwrap();
     assert!(unknown.managers.is_none());
     assert!(
@@ -1400,33 +1503,32 @@ fn manager_sections_parse_and_fail_closed() {
     }
 }
 
-/// The `ReplicatedConnectedPlayer` chain was derived for 3.0.34 and 3.0.35
-/// only: built-ins and pin-only TOML for older builds carry none, so they
-/// send no connected-player record.
+/// The `ReplicatedConnectedPlayer` chain was derived from 3.0.34 on: the
+/// older frozen profiles (and the 3.0.31 client-build file) carry none, so
+/// they send no connected-player record, and a `[game_state]` without the
+/// chain sends none whatever the build.
 #[test]
-fn connected_player_record_chain_is_built_in_only_where_derived() {
-    use icarus_bevy::experimental::release::network_checksum;
-    let builtins = [
-        (ReleaseProfile::fixture("3.0.31"), false),
-        (ReleaseProfile::fixture("3.0.32"), false),
-        (ReleaseProfile::fixture("3.0.34"), true),
-        (ReleaseProfile::fixture("3.0.35"), true),
-        (ReleaseProfile::fixture("3.0.36"), true),
-    ];
-    for (profile, derived) in builtins {
-        let pin = &profile.pin;
+fn connected_player_record_chain_is_carried_only_where_derived() {
+    for (name, derived) in [
+        ("3.0.31", false),
+        ("3.0.31-client-25793767", false),
+        ("3.0.32", false),
+        ("3.0.34", true),
+        ("3.0.35", true),
+        ("3.0.36", true),
+    ] {
+        let profile = ReleaseProfile::fixture(name);
         let chain = profile
             .game_state
             .as_ref()
             .unwrap()
             .connected_player_record
             .clone();
-        assert_eq!(chain.is_some(), derived, "{}", pin.build_id);
+        assert_eq!(chain.is_some(), derived, "{name}");
         assert_eq!(
             profile.connected_players_plan().unwrap().is_some(),
             derived,
-            "{}",
-            pin.build_id
+            "{name}"
         );
         if let Some(chain) = chain {
             assert_eq!(
@@ -1437,73 +1539,57 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
                 (chain[1].path.as_str(), chain[1].checksum),
                 ("/Script/Icarus", 0)
             );
+            let mut table = release_table(
+                &std::fs::read_to_string(ReleaseProfile::fixture_path(name)).unwrap(),
+            );
+            table["game_state"]
+                .as_table_mut()
+                .unwrap()
+                .remove("connected_player_record");
+            let without = ReleaseProfile::parse(&toml::to_string(&table).unwrap()).unwrap();
+            assert!(
+                without.connected_players_plan().unwrap().is_none(),
+                "{name}"
+            );
+            assert!(
+                without
+                    .game_state_open_plan("/Game/Maps/Test/Test")
+                    .unwrap()
+                    .is_some()
+            );
         }
-        let parsed = ReleaseProfile::parse(&format!(
-            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
-            pin.app_id,
-            pin.build_id,
-            pin.project_version,
-            network_checksum(&pin.project_version)
-        ))
-        .unwrap();
-        assert_eq!(parsed.game_state, profile.game_state, "{}", pin.build_id);
     }
-    // The 3.0.31 client build shares the 3.0.31 built-ins.
-    let client = ReleaseProfile::fixture("3.0.31");
-    let parsed = ReleaseProfile::parse(&format!(
-        "[release]\napp_id = {}\nbuild_id = 25793767\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
-        client.pin.app_id,
-        client.pin.project_version,
-        network_checksum(&client.pin.project_version)
-    ))
-    .unwrap();
-    assert!(parsed.connected_players_plan().unwrap().is_none());
 }
 
-/// Level visibility actor identity selection includes 3.0.34 and 3.0.35
-/// only: built-ins and pin-only TOML for other builds carry none, an explicit
-/// `[level_actors]` overrides them, and invalid sections fail to parse.
+/// Level visibility actor identities are carried by the 3.0.34 and 3.0.35
+/// profiles only; an explicit `[level_actors]` names any others, and invalid
+/// sections fail to parse.
 #[test]
-fn level_actors_are_built_in_only_where_derived_and_overridable() {
-    use icarus_bevy::experimental::release::{ReleaseLevelActorsProfile, network_checksum};
-    let builtins = [
-        (ReleaseProfile::fixture("3.0.31"), false),
-        (ReleaseProfile::fixture("3.0.32"), false),
-        (ReleaseProfile::fixture("3.0.34"), true),
-        (ReleaseProfile::fixture("3.0.35"), true),
-        (ReleaseProfile::fixture("3.0.36"), false),
-    ];
-    let pin_toml = |pin: &icarus_bevy::experimental::release::ReleasePin, build: u64| {
-        format!(
-            "[release]\napp_id = {}\nbuild_id = {build}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
-            pin.app_id,
-            pin.project_version,
-            network_checksum(&pin.project_version)
-        )
-    };
-    for (profile, derived) in builtins {
-        let pin = &profile.pin;
-        assert_eq!(profile.level_actors.is_some(), derived, "{}", pin.build_id);
+fn level_actors_are_carried_only_where_derived_and_overridable() {
+    use icarus_bevy::experimental::release::ReleaseLevelActorsProfile;
+    for (name, derived) in [
+        ("3.0.31", false),
+        ("3.0.32", false),
+        ("3.0.34", true),
+        ("3.0.35", true),
+        ("3.0.36", false),
+    ] {
+        let profile = ReleaseProfile::fixture(name);
+        assert_eq!(profile.level_actors.is_some(), derived, "{name}");
         if let Some(actors) = &profile.level_actors {
-            assert_eq!(
-                Some(actors),
-                ReleaseProfile::fixture("3.0.35").level_actors.as_ref()
-            );
             assert_eq!(
                 actors.names,
                 ["IcarusWorldSettings_0", "BP_IcarusWorldSettings_C"]
             );
             assert_eq!(actors.checksum, 3_401_274_505);
         }
-        let parsed = ReleaseProfile::parse(&pin_toml(pin, pin.build_id)).unwrap();
-        assert_eq!(
-            parsed.level_actors, profile.level_actors,
-            "{}",
-            pin.build_id
-        );
     }
     let pin = ReleaseProfile::fixture("3.0.32").pin;
-    let base = pin_toml(&pin, pin.build_id);
+    let base = required_only(&format!(
+        "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
+        pin.app_id, pin.build_id, pin.project_version, pin.network_checksum
+    ));
+    assert_eq!(ReleaseProfile::parse(&base).unwrap().level_actors, None);
     let explicit = ReleaseProfile::parse(&format!(
         "{base}[level_actors]\nnames = [\"AuthoredSettings_0\"]\nchecksum = 7\n"
     ))

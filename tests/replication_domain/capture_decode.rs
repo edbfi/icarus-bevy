@@ -1267,17 +1267,7 @@ fn inbound_cli_validates_all_bindings_before_exclusive_output_creation() -> Resu
     let input = work.join("authored.jsonl");
     let output = work.join("metadata.jsonl");
     let profile_path = work.join("release.toml");
-    let profile = ReleaseProfile::fixture("3.0.32");
-    fs::write(
-        &profile_path,
-        format!(
-            "[release]\napp_id={}\nbuild_id={}\nproject_version={:?}\nnetwork_checksum={}\n",
-            profile.pin.app_id,
-            profile.pin.build_id,
-            profile.pin.project_version,
-            profile.pin.network_checksum
-        ),
-    )?;
+    fs::copy(ReleaseProfile::fixture_path("3.0.32"), &profile_path)?;
     fs::write(
         &input,
         json_lines(&[inbound_row(1, 10, vec![inbound_actor(None)?])?]),

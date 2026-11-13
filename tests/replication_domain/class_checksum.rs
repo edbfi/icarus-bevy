@@ -339,7 +339,7 @@ fn backend_proxy_component() -> Vec<P> {
 #[test]
 fn backend_proxy_component_matches_the_controller_subobject_checksum() {
     // The controller's `BackendProxyComponent` subobject exports this checksum
-    // (`ReleasePlayerControllerProfile::icarus_survival`, F-779/F-780), so the
+    // (the frozen profiles' `[player_controller]`, F-779/F-780), so the
     // subobject is a plain `UBackendProxyComponent`, whose net cache indexes its
     // profile RPCs (F-954).
     let actor_component = class_checksum(

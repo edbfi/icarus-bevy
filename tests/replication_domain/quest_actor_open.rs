@@ -1135,11 +1135,7 @@ fn synthetic_quest_pak(dir: &std::path::Path, quest_rows_json: &str) -> std::pat
 /// independently of the repository's moving release pin.
 fn qualified_quest_release(dir: &std::path::Path) -> std::path::PathBuf {
     let path = dir.join("quest_release.toml");
-    std::fs::write(
-        &path,
-        "[release]\napp_id = 2089300\nbuild_id = 25956137\nproject_version = \"3.0.32.158743-rel-DangerousHorizons\"\nnetwork_checksum = 243431684\n",
-    )
-    .unwrap();
+    std::fs::copy(ReleaseProfile::fixture_path("3.0.32"), &path).unwrap();
     path
 }
 

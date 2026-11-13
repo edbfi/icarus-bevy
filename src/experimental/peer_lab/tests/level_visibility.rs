@@ -2031,7 +2031,6 @@ fn a_big_endian_connection_keeps_field_82_ignored() {
 /// the visibility decoder is not qualified for.
 #[test]
 fn production_refuses_the_gated_switch_and_only_the_lab_api_enables_it() {
-    use super::super::super::release::network_checksum;
     use crate::config::{LEVEL_VISIBILITY_ACTORS_GATED, ServerConfig};
     // Configuration load.
     let refused = toml::from_str::<ServerConfig>("[network]\nlevel_visibility_actors = true\n")
@@ -2052,25 +2051,33 @@ fn production_refuses_the_gated_switch_and_only_the_lab_api_enables_it() {
     }
     // Every bind.
     let directory = tempfile::tempdir().unwrap();
-    let pin = |version: &str, build: u64, actors: bool| {
-        let mut text = format!(
-            "[release]\napp_id = 2089300\nbuild_id = {build}\nproject_version = \"{version}\"\nnetwork_checksum = {}\n",
-            network_checksum(version)
-        );
+    // A frozen profile with its level actors replaced by an authored set, or
+    // with none.
+    let pin = |name: &str, actors: bool| {
+        let mut table: toml::Table = std::fs::read_to_string(ReleaseProfile::fixture_path(name))
+            .unwrap()
+            .parse()
+            .unwrap();
+        table.remove("level_actors");
         if actors {
-            text.push_str("[level_actors]\nnames = [\"AuthoredWorldSettings_0\"]\nchecksum = 1\n");
+            table.insert(
+                "level_actors".to_owned(),
+                toml::Value::Table(
+                    "names = [\"AuthoredWorldSettings_0\"]\nchecksum = 1\n"
+                        .parse()
+                        .unwrap(),
+                ),
+            );
         }
-        let path = directory.path().join(format!("{build}-{actors}.toml"));
-        std::fs::write(&path, text).unwrap();
+        let path = directory.path().join(format!("{name}-{actors}.toml"));
+        std::fs::write(&path, toml::to_string(&table).unwrap()).unwrap();
         path
     };
-    let older = "3.0.32.158743-rel-DangerousHorizons";
-    let current = "3.0.35.159586-rel-DangerousHorizons";
     let pins = [
         None,
-        Some(pin(current, 26_425_113, true)),
-        Some(pin(older, 25_956_137, true)),
-        Some(pin(older, 25_956_137, false)),
+        Some(pin("3.0.35", true)),
+        Some(pin("3.0.32", true)),
+        Some(pin("3.0.32", false)),
     ];
     for release in &pins {
         let config = |level_visibility_actors| crate::config::NetworkConfig {

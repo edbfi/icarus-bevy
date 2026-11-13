@@ -92,6 +92,19 @@ configured_first_segment = 0
 effective_first_segment = 0
 container_bits = 1
 net_index_hash = 0
+[class_net_cache]
+stat_container = 5
+inventory = 11
+ui_projection_mount_status = 7
+bp_icarus_player_state = 38
+bp_mount_base = 84
+bp_mount_horse = 85
+bp_tame_base = 86
+bp_icarus_player_controller_survival = 183
+[row_handles]
+table_count = 293
+zero_row_tables = [62, 164, 181]
+two_byte_row_tables = [0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 148, 152, 177, 178, 201, 207, 209, 215, 230, 234, 237, 248, 252, 254, 278]
 [player_controller]
 archetype = [
     { path = "Default__AuthoredController_C", checksum = 7 },
@@ -1976,6 +1989,7 @@ fn configured_static_path_identities_reject_atomically_and_accept_agreement() {
 [player_state]
 archetype = [{ path = "PlayerState", checksum = 51 }, { path = "/Lab/PlayerState", checksum = 0 }]
 [pawn]
+layout_version = "legacy"
 archetype = [{ path = "Pawn", checksum = 52 }, { path = "/Lab/Pawn", checksum = 0 }]
 components = [{ name = "Stats", checksum = 53 }, { name = "State", checksum = 54 }, { name = "Inventory", checksum = 55 }]
 stat_container = "Stats"

@@ -4126,20 +4126,8 @@ fn production_records_follow_the_switch_and_the_release_chain() {
     assert!(parsed.validate().is_ok());
     let parsed: ServerConfig = toml::from_str("[network]\nenabled = true\n").unwrap();
     assert!(parsed.network.connected_player_records);
-    let directory = tempfile::tempdir().unwrap();
-    let older = ReleaseProfile::fixture("3.0.32");
-    let path = directory.path().join("release-3032.toml");
-    fs::write(
-        &path,
-        format!(
-            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
-            older.pin.app_id,
-            older.pin.build_id,
-            older.pin.project_version,
-            older.pin.network_checksum
-        ),
-    )
-    .unwrap();
+    // The frozen 3.0.32 profile carries no connected-player record chain.
+    let path = ReleaseProfile::fixture_path("3.0.32");
     for (release, records, expected) in [
         (release_toml(), true, true),
         (release_toml(), false, false),
