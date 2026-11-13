@@ -90,6 +90,35 @@ fn headless_process_saves_then_resumes_its_clock() {
 }
 
 #[test]
+fn restored_state_without_process_lock_resumes_on_first_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let run = || {
+        cli()
+            .args(["run", "--compressed", "--max-ticks", "3", "--data-dir"])
+            .arg(directory.path())
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    let first = fs::read(directory.path().join("snapshot-1.json")).unwrap();
+    fs::remove_file(directory.path().join("server.lock")).unwrap();
+    let resumed = run();
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(
+        fs::read(directory.path().join("snapshot-1.json")).unwrap(),
+        first
+    );
+    let store = icarus_bevy::persistence::SnapshotStore::open(directory.path()).unwrap();
+    let loaded = store.load().unwrap().unwrap();
+    assert_eq!(loaded.snapshot.tick, 6);
+    assert!(!loaded.recovered_previous);
+}
+
+#[test]
 fn compressed_run_keeps_every_autosave_of_its_simulated_time() {
     let directory = tempfile::tempdir().unwrap();
     assert!(

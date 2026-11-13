@@ -1199,10 +1199,21 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             )
         })
         .transpose()?;
-    // A missing state directory implies the empty authored starting world.
-    // Validate its world-dependent installation before creating that directory.
-    let existing_store = config.data_dir.join("server.lock").exists();
-    let mut fresh_app = if !existing_store {
+    // A restored directory need not contain the process lock. Look for state,
+    // then recheck under the lock below before using a fresh prepared world.
+    let existing_state = match std::fs::read_dir(&config.data_dir) {
+        Ok(entries) => {
+            let mut found = false;
+            for entry in entries {
+                let name = entry?.file_name();
+                found |= name == "manifest.json" || name.to_string_lossy().starts_with("snapshot-");
+            }
+            found
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error).context("inspect native state directory"),
+    };
+    let mut fresh_app = if !existing_state {
         let mut app = build_app(&config, &WorldSnapshot::default())?;
         if let Some(prepared) = &mut prepared {
             prepared.prepare_app(&mut app)?;
@@ -1211,7 +1222,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     } else {
         None
     };
-    let store = if existing_store {
+    let store = if config.data_dir.join("server.lock").exists() {
         SnapshotStore::open_existing(&config.data_dir)?
     } else {
         SnapshotStore::open(&config.data_dir)?
@@ -1527,34 +1538,39 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         .take()
         .map(|hosting| hosting.stop_and_join())
         .transpose();
-    let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
-    // A failed in-flight autosave is reported as in the loop; the final save still runs.
-    let shutdown_output = match writer.settle_before(deadline)? {
-        Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
-        Some(Err(error)) => {
-            write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))
-        }
-        None => Ok(()),
-    };
-    ensure!(
-        Instant::now() < deadline,
-        "snapshot shutdown deadline exceeded before final capture"
-    );
-    let final_submitted = Instant::now();
-    writer.submit_before(capture(app.world_mut())?, deadline)?;
-    let final_output = writer
-        .finish_before(deadline)?
-        .map(|receipt| saved(receipt, Some(final_submitted)))
-        .transpose();
-    let stopped_output = write_run_record(with_native_replication_counts(
-        json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
+    // Always attempt persistence, but retain the earlier failure if shutdown
+    // also fails (for example, an already-disconnected save worker).
+    let finalization_result = (|| -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
+        // A failed in-flight autosave is reported as in the loop; the final save still runs.
+        let shutdown_output = match writer.settle_before(deadline)? {
+            Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
+            Some(Err(error)) => {
+                write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))
+            }
+            None => Ok(()),
+        };
+        ensure!(
+            Instant::now() < deadline,
+            "snapshot shutdown deadline exceeded before final capture"
+        );
+        let final_submitted = Instant::now();
+        writer.submit_before(capture(app.world_mut())?, deadline)?;
+        let final_output = writer
+            .finish_before(deadline)?
+            .map(|receipt| saved(receipt, Some(final_submitted)))
+            .transpose();
+        let stopped_output = write_run_record(with_native_replication_counts(
+            json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
         "gameplay_ready": false, "sessions": sessions, "readiness_before_shutdown": readiness}),
-        app.world(),
-    ));
+            app.world(),
+        ));
+        shutdown_output?;
+        final_output?;
+        stopped_output?;
+        Ok(())
+    })();
     run_result?;
     hosting_result?;
-    shutdown_output?;
-    final_output?;
-    stopped_output?;
-    Ok(())
+    finalization_result
 }
