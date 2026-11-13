@@ -1105,7 +1105,7 @@ impl ReleasePin {
         Self::parse(&fs::read_to_string(path).with_context(|| path.display().to_string())?)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.project_version.is_ascii() && !self.project_version.is_empty(),
             "project_version must be nonempty ASCII"

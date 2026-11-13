@@ -165,6 +165,19 @@ struct CatalogReferences {
 }
 
 impl ContentCatalog {
+    /// Exact format-2 root-map declaration only; no runtime URL equivalence.
+    pub(crate) fn declares_session_map(&self, map: &[u16]) -> bool {
+        self.world
+            .as_ref()
+            .is_some_and(|world| world.contains_map(map))
+    }
+
+    /// Dedicated D_ProspectList membership only, using the existing
+    /// ASCII-folded row set. Generic authored DataRow lists do not count.
+    pub(crate) fn contains_protocol_prospect(&self, row: &[u16]) -> bool {
+        self.prospect_rows.contains(&fold_case(row))
+    }
+
     pub fn empty() -> Self {
         Self::default()
     }
