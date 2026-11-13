@@ -47,30 +47,39 @@ Provide official-settings import/mapping and report unsupported settings.
 ICARUS ships weekly. The Hello network version hashes the project version
 string and is compared for exact equality (F-541, F-563); server code,
 gameplay-tag tables and paks change between builds (F-700, F-702).
-Release-specific protocol facts are therefore data, not scattered code
-constants:
+Release-specific protocol facts are therefore data, not code: a release is
+one complete profile file, its build id is only a label, and the library holds
+no per-release values.
 
-- `config/release.toml` pins one official build (`[release]` plus optional
-  `[tags]`, `[class_net_cache]`, `[row_handles]` and `[player_controller]`
-  overrides, validated by `experimental::release::ReleaseProfile`).
+- `config/release.toml` is the active release, validated by
+  `experimental::release::ReleaseProfile`. `[release]` (app, build, project
+  version, checked network checksum), `[tags]`, `[class_net_cache]` and
+  `[row_handles]` are required, since the wire uses them unconditionally; a
+  missing one fails with an error naming it. `[player_controller]`,
+  `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and
+  `[level_actors]` are optional: absent turns that open off, never another
+  release's values.
+- Historical releases are frozen profiles under `tests/fixtures/releases/`,
+  one file per release (`3.0.32.toml`); tests and examples load them with
+  `ReleaseProfile::fixture("3.0.32")` or `fixture_path`. The remaining gates
+  keyed on build-id lists (quest class opens, visibility decoding, inbound
+  controller bounds) are the next piece of this design.
 - `tools/release_watch.py check` compares the pin with Steam's public branch
   (anonymous app info); the daily `Release watch` workflow opens an issue when
   the pin falls behind and closes resolved or superseded release issues.
-  `pin --install DIR` rewrites the pin, and `diff --older DIR --newer DIR`
-  compares build IDs, versions, checksums, PE section sizes and tag/node counts.
-- `ReleaseProfile` isolates per-release protocol metadata (project version,
-  network checksum, tag net-index widths and `NetworkGameplayTagNodeIndexHash`,
-  `FClassNetCache` bounds and `FRowHandle` table widths) for `PeerLabConfig` and
-  `examples/capture_decode`; with `release_watch.py diff` and capture replay,
-  weekly updates are mechanical unless wire semantics change.
-- `render_pin` writes `[release]` only, and `ReleaseProfile::parse` fails
-  closed on an unknown `build_id` without `[tags]`: a new build needs a built-in
-  profile or a qualified `[tags]` section.
-- A bump is version- and profile-only until the weekly diff shows otherwise:
-  compare the two builds' sections, public symbols and replicated layouts, and
-  re-run the compatibility scenarios. Compatibility claims name the build they
-  were made against; the native server answers only the pinned version by
-  default.
+  `diff --older DIR --newer DIR` compares build IDs, versions, checksums, PE
+  section sizes and tag/node counts.
+- `pin --install DIR` rewrites only `[release]` in place. The other sections
+  stay, so the server still loads the file, but a `CARRIED OVER` comment in
+  the file and the command's output name them as unqualified for the new
+  build; a committed pin carries no such marker.
+- A weekly bump, until a qualifier tool generates profiles, is a qualified
+  edit of the data file: fetch the public server, run `diff`, re-derive each
+  section for the new build (tags, class checksums, row registry, layouts),
+  write the values, remove the marker and re-run the compatibility scenarios.
+  No Rust change is needed unless a wire structure changed. Compatibility
+  claims name the build they were made against; the native server answers
+  only the pinned version by default.
 
 ## Persistence
 
