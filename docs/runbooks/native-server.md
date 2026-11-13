@@ -54,10 +54,10 @@ attempts teardown and final save.
 [Connected-run gates](../gates.md#before-any-original-server-or-client-run)
 apply, including the owner's word before a public passwordless listing.
 
-A2S shows occupancy without names; Steam CM receives accepted joined Steam
-IDs, not save data; logs/Debug/A2S omit them. Source/synthetic checks:
-F-1170/F-1171; live CM/browser/client behavior is unqualified (U-038).
-F-1004 covers only a no-player listing.
+A2S shows counts; CM receives accepted joined IDs, omitted from logs/Debug/A2S.
+F-1170 qualifies empty-session deadline save, teardown and copied-store reopen.
+Nonempty CM remains synthetic (F-1171); browser/client and populated persistence
+remain unqualified (U-038). F-1004 covers a no-player listing.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
