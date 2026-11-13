@@ -69,4 +69,4 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1406.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407.

@@ -26,7 +26,8 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
 
 - 3.0.36: pin/tags F-1176, retained selected class semantics F-1177 and
   ordered row widths F-1178. Static qualification only; connected behavior
-  remains unqualified for this release. Legacy row indices do not transfer.
+  remains unqualified for this release; level-actor instance identities stay
+  unset. Legacy row indices do not transfer.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7

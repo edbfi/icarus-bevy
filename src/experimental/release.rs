@@ -1266,6 +1266,8 @@ impl ReleaseProfile {
         profile.tags.container_bits = 6;
         // Ordered registry and row widths match 3.0.35 exactly (F-1178).
         profile.row_handles = ReleaseRowHandleProfile::release_3_0_35();
+        // F-1177 compares class metadata, not level-actor instance names.
+        profile.level_actors = None;
         profile
     }
 
@@ -1336,14 +1338,12 @@ impl ReleaseProfile {
         }
     }
 
-    /// Built-in level visibility actor identities for 3.0.34, 3.0.35 and
-    /// 3.0.36 (F-1177); `None` elsewhere,
-    /// so a pin bump never inherits them.
+    /// Built-in level visibility actor identities for 3.0.34 and 3.0.35,
+    /// where their checksums were derived and matched; `None` elsewhere.
+    /// Static class equality alone does not qualify another build's actors.
     fn default_level_actors_for_build(build_id: u64) -> Option<ReleaseLevelActorsProfile> {
         match build_id {
-            26_313_077 | 26_425_113 | 26_613_688 => {
-                Some(ReleaseLevelActorsProfile::icarus_world_settings())
-            }
+            26_313_077 | 26_425_113 => Some(ReleaseLevelActorsProfile::icarus_world_settings()),
             _ => None,
         }
     }

@@ -59,9 +59,10 @@ Delayed-pawn stock-client continuation remains unqualified.
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
 [passwords](network-readiness.md#join-password); observed entry F-1148.
-Level visibility actors (field-82 answers, M-1350) are gated
-([gates](../gates.md)): `[network] level_visibility_actors = true` is refused;
-only the probe's `--level-visibility-actors true` enables them.
+Visibility actors remain [gated](../gates.md): `run` refuses the switch.
+The probe's `--level-visibility-actors true` needs an explicit
+`--release-profile` for qualified 3.0.34/3.0.35 inputs; the tracked 3.0.36
+pin has no actor identities and refuses decoding.
 Possession (`controller_possession_properties`, F-1088), connected records
 (`connected_player_records`, F-1077) and the player's record-ACK-gated pawn
 unfreeze (`server_frozen_movement_release`, F-1099/F-1100) default on.

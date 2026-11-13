@@ -166,7 +166,7 @@ fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
     assert_eq!(profile.game_state, previous.game_state);
     assert_eq!(profile.pawn, previous.pawn);
     assert_eq!(profile.managers, previous.managers);
-    assert_eq!(profile.level_actors, previous.level_actors);
+    assert!(profile.level_actors.is_none());
     assert_eq!(profile.class_net_cache, previous.class_net_cache);
     // Current-build ordered registry and widths match 3.0.35 (F-1178).
     assert_eq!(profile.row_handles, previous.row_handles);
@@ -1395,8 +1395,8 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
     assert!(parsed.connected_players_plan().unwrap().is_none());
 }
 
-/// Level visibility actor identity selection includes 3.0.34, 3.0.35 and 3.0.36
-/// only: built-ins and pin-only TOML for older builds carry none, an explicit
+/// Level visibility actor identity selection includes 3.0.34 and 3.0.35
+/// only: built-ins and pin-only TOML for other builds carry none, an explicit
 /// `[level_actors]` overrides them, and invalid sections fail to parse.
 #[test]
 fn level_actors_are_built_in_only_where_derived_and_overridable() {
@@ -1406,7 +1406,7 @@ fn level_actors_are_built_in_only_where_derived_and_overridable() {
         (ReleaseProfile::release_3_0_32(), false),
         (ReleaseProfile::release_3_0_34(), true),
         (ReleaseProfile::release_3_0_35(), true),
-        (ReleaseProfile::release_3_0_36(), true),
+        (ReleaseProfile::release_3_0_36(), false),
     ];
     let pin_toml = |pin: &icarus_bevy::experimental::release::ReleasePin, build: u64| {
         format!(
