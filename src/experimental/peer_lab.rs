@@ -195,12 +195,15 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use bevy::{
     app::{RunFixedMainLoop, RunFixedMainLoopSystems},
-    prelude::{App, IntoScheduleConfigs, Plugin, ResMut, Resource, resource_exists},
+    prelude::{
+        App, Fixed, IntoScheduleConfigs, Plugin, Res, ResMut, Resource, Time, resource_exists,
+    },
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    authored_world_bootstrap::AuthoredClockPlan,
     native_player_runtime::PlayerRegistry,
     native_players::{PlayerCheckpoint, PlayerKey, PlayerProjection},
     spawn_placement::{Placement, PlacementSource, Resolution, SpawnConfig, SpawnResolver},
@@ -3196,6 +3199,8 @@ struct GameStateSession {
     locked_missions: Vec<LockedMission>,
     /// The world's time of day, advanced to the instant `clock_at`.
     clock: Option<TimeOfDayClock>,
+    /// Authored rational projection of the last completed simulation tick.
+    sampled_clock: Option<SampledDayClock>,
     clock_at: Instant,
     /// `ServerFPS` over the poll intervals, the last poll at `polled_at`
     /// (an instant, so intervals keep their resolution on long runs).
@@ -3206,6 +3211,12 @@ struct GameStateSession {
     /// `NetworkingStatus` as last gathered: the enabled base with the joined
     /// players listed at each update pass (F-810).
     networking: Option<NetworkingStatus>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SampledDayClock {
+    plan: AuthoredClockPlan,
+    minute: f32,
 }
 
 impl GameStateSession {
@@ -3242,6 +3253,15 @@ impl GameStateSession {
                     .values
                     .insert(handle::TIME_OF_DAY, RepValue::Float(time_of_day.to_bits()));
             }
+        }
+        if let Some(clock) = self.sampled_clock {
+            state
+                .values
+                .insert(handle::TIME_OF_DAY, RepValue::Float(clock.minute.to_bits()));
+            state.values.insert(
+                handle::SECONDS_PER_GAME_DAY,
+                RepValue::Int(clock.plan.seconds_per_day()),
+            );
         }
         state.values.insert(
             handle::WORLD_TIME_SECONDS,
@@ -5551,6 +5571,7 @@ impl PeerLab {
             level_time: None,
             locked_missions: Vec::new(),
             clock: None,
+            sampled_clock: None,
             clock_at: Instant::now(),
             fps: None,
             polled_at: Instant::now(),
@@ -6180,9 +6201,56 @@ impl PeerLab {
         let Some(session) = &mut self.game_state_open else {
             bail!("no GameState open is enabled");
         };
+        ensure!(
+            session.sampled_clock.is_none(),
+            "authored and monotonic day clocks are exclusive"
+        );
         session.clock = Some(clock);
         session.clock_at = Instant::now();
         Ok(())
+    }
+
+    /// Use a validated authored clock sampled from completed simulation ticks.
+    /// The plan/sample is transient; SimulationClock remains the only authority.
+    pub fn enable_authored_time_of_day(
+        &mut self,
+        plan: AuthoredClockPlan,
+        tick: u64,
+    ) -> Result<()> {
+        let session = self
+            .game_state_open
+            .as_mut()
+            .context("no GameState open is enabled")?;
+        ensure!(
+            session.clock.is_none(),
+            "authored and monotonic day clocks are exclusive"
+        );
+        ensure!(
+            session.sampled_clock.is_none(),
+            "authored day clock already enabled"
+        );
+        session.sampled_clock = Some(SampledDayClock {
+            plan,
+            minute: plan.sample(tick),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn authored_clock_plan(&self) -> Option<AuthoredClockPlan> {
+        self.game_state_open
+            .as_ref()?
+            .sampled_clock
+            .map(|clock| clock.plan)
+    }
+
+    pub(crate) fn sample_authored_time_of_day(&mut self, tick: u64) {
+        if let Some(clock) = self
+            .game_state_open
+            .as_mut()
+            .and_then(|session| session.sampled_clock.as_mut())
+        {
+            clock.minute = clock.plan.sample(tick);
+        }
     }
 
     /// Measure `ServerFPS` with `meter` over the intervals between polls
@@ -10760,7 +10828,11 @@ impl PeerLab {
             world_time_at: world_seconds,
             ..GameStateReplica::default()
         };
-        for handle in update_handles() {
+        for handle in update_handles().chain(
+            session
+                .sampled_clock
+                .map(|_| super::game_state_open::handle::SECONDS_PER_GAME_DAY),
+        ) {
             // Absent from an open: the class default.
             if let Some(value) = state
                 .values
@@ -11270,7 +11342,12 @@ impl PeerLab {
                 session
                     .clock
                     .as_ref()
-                    .map(|clock| RepValue::Float(clock.time_of_day().to_bits())),
+                    .map(|clock| RepValue::Float(clock.time_of_day().to_bits()))
+                    .or_else(|| {
+                        session
+                            .sampled_clock
+                            .map(|clock| RepValue::Float(clock.minute.to_bits()))
+                    }),
             ),
             (
                 handle::SERVER_FPS,
@@ -11291,6 +11368,12 @@ impl PeerLab {
                     .and_then(|value| value.or_else(|| class_default(handle::LOCKED_MISSIONS))),
             ),
         ];
+        if let Some(clock) = session.sampled_clock {
+            changing.push((
+                handle::SECONDS_PER_GAME_DAY,
+                Some(RepValue::Int(clock.plan.seconds_per_day())),
+            ));
+        }
         match session.networking.as_ref().map(NetworkingStatus::values) {
             Some(Ok(values)) => changing.extend(values.into_iter().map(|(h, v)| (h, Some(v)))),
             Some(Err(_)) => bump(&mut self.stats.game_state_update_errors),
@@ -11317,7 +11400,17 @@ impl PeerLab {
             if !entry.peer.actor_channel_settled(channel) {
                 continue;
             }
-            let values = replica.due(world_seconds, &changing);
+            let mut values = replica.due(world_seconds, &changing);
+            if let Some(clock) = session.sampled_clock
+                && values.contains_key(&handle::TIME_OF_DAY)
+            {
+                // The authored sample carries its declared rate with it;
+                // ordinary latest-value notifications own both handles.
+                values.insert(
+                    handle::SECONDS_PER_GAME_DAY,
+                    RepValue::Int(clock.plan.seconds_per_day()),
+                );
+            }
             if values.is_empty() {
                 continue;
             }
@@ -11422,7 +11515,30 @@ impl Plugin for PeerLabPlugin {
     }
 }
 
-fn poll_peer_lab(mut lab: ResMut<PeerLab>, registry: Option<ResMut<PlayerRegistry>>) {
+fn poll_peer_lab(
+    mut lab: ResMut<PeerLab>,
+    registry: Option<ResMut<PlayerRegistry>>,
+    clock: Option<Res<crate::simulation::SimulationClock>>,
+    fixed: Option<Res<Time<Fixed>>>,
+) {
+    if let Some(plan) = lab.authored_clock_plan() {
+        let Some(clock) = clock else {
+            lab.shutdown();
+            return;
+        };
+        // Match ServerConfig::tick_interval without making Duration the
+        // rational sampler's time authority.
+        let expected = Duration::from_secs_f64(1.0 / f64::from(plan.tick_hz()));
+        if fixed
+            .as_ref()
+            .is_none_or(|time| time.timestep() != expected)
+        {
+            lab.shutdown();
+            return;
+        }
+        // Poll may accept Join and compose updates; both see this completed tick.
+        lab.sample_authored_time_of_day(clock.tick);
+    }
     if let Some(registry) = registry.as_ref() {
         lab.refresh_checkpoint_projections(registry);
     }
@@ -20485,6 +20601,7 @@ mod tests {
             assert!(!text.contains("AuthoredUnreliable"));
         }
     }
+    mod authored_world_clock;
     mod friends_query_deadline;
     mod level_visibility;
     mod lossy_join;

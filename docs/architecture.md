@@ -138,6 +138,32 @@ existing save worker. An edit accepted during an in-flight save belongs to a lat
 capture; the earlier receipt gives it no durability promise. No player inventory
 owner, client-driven progression or original-save import is inferred.
 
+Optional uniform authored time uses the existing simulation tick, not a second
+persisted clock. With schema-13 player persistence, configure:
+
+```toml
+[network.authored_world.clock]
+initial_minute = 480
+seconds_per_day = 3600
+tick_hz = 30
+```
+
+`initial_minute`: 0–1439; `seconds_per_day`: positive i32; `tick_hz`: 1–240,
+equal to the resolved server rate. Clock inputs are part of the existing player
+recipe: reopen with the same inputs/rate; changing them refuses rather than
+resetting phase. Omission preserves clockless recipe bytes and behavior. Existing
+schemas and unsupported native world compositions are not implicitly promoted.
+
+Phase is an authored rational function of the last completed simulation tick.
+Offline simulation advances it; server downtime does not. Reopen/recovery resumes
+from the selected generation's tick, so unsaved ticks may be lost. Sampling occurs
+before session polling, so a Join and updates use the same completed-tick phase.
+GameState opens are reliable; updates retain existing unreliable latest-value
+ACK/NAK repair, without promising every intermediate tick. The legacy monotonic
+clock path is unchanged. `WORLD_TIME_SECONDS`, mission/prospect elapsed fields and
+timers retain their own existing behavior. This uniform rule does not recover the
+original world curve or qualify sky/daylight effects or stock-client compatibility.
+
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is written once as a content-addressed

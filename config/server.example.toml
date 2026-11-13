@@ -42,6 +42,14 @@ session_timeout_seconds = 30
 #   { x = 0.0, y = 0.0, z = 0.0, yaw = 0.0 },
 # ]
 
+# OPTIONAL uniform authored clock; requires the schema-13 player feature above.
+# Reopen with the same recipe; tick_hz must equal the global server tick_hz.
+# Offline ticks advance phase; stopped-server time does not. No daylight claim.
+# [network.authored_world.clock]
+# initial_minute = 480
+# seconds_per_day = 3600
+# tick_hz = 30
+
 # Optional bounded Steam-authenticated production hosting. Requires enabled
 # networking, explicit game/query ports, release_profile, data_pak,
 # authored_gameplay and [network.authored_world]. Simulation must run in real

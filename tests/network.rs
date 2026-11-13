@@ -9110,6 +9110,7 @@ fn authored_world_config_is_explicit_strict_and_validated_before_bind() {
     ] {
         let config = NetworkConfig {
             authored_world: Some(AuthoredWorldBootstrap {
+                clock: None,
                 seed: i32::MIN,
                 seed_initialised: false,
                 flod_tile_count: count,
@@ -9142,6 +9143,7 @@ fn authored_world_join_sends_seed_and_flod_without_duplicate_managers() {
     let base_managers = lab_manager_plans(&profile).len();
     let (mut app, address) = server_app(&NetworkConfig {
         authored_world: Some(AuthoredWorldBootstrap {
+            clock: None,
             seed: -7,
             seed_initialised: true,
             flod_tile_count: 2,
@@ -9259,6 +9261,7 @@ fn authored_world_planner_rejects_missing_session_prerequisites() {
     };
     let mut profile = ReleaseProfile::load(&release_toml()).unwrap();
     let world = AuthoredWorldBootstrap {
+        clock: None,
         seed: i32::MAX,
         seed_initialised: true,
         flod_tile_count: 0,
@@ -9577,6 +9580,7 @@ fn fresh_authored_host_preflight_resolves_one_stable_map_and_prospect() {
         authored_gameplay: Some(gameplay),
         hosting: Some(hosting.clone()),
         authored_world: Some(AuthoredWorldBootstrap {
+            clock: None,
             seed: 42,
             seed_initialised: true,
             flod_tile_count: 0,

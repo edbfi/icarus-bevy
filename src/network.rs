@@ -1880,6 +1880,7 @@ impl PreparedSession {
     /// Validate and install world-dependent authored replication while the
     /// session still owns no listener. The declaration was read at preflight.
     pub fn prepare_app(&mut self, app: &mut App) -> Result<()> {
+        self.player_context_prepared = false;
         ensure!(
             !app.world().contains_resource::<PeerLab>() && !app.is_plugin_added::<PeerLabPlugin>(),
             "network lab or plugin already installed"
@@ -1890,9 +1891,10 @@ impl PreparedSession {
                 context,
                 self.network.max_players as usize,
             )?;
-            self.player_context_prepared = true;
         }
-        prepare_installation(app, &mut self.bound, &self.network)
+        prepare_installation(app, &mut self.bound, &self.network)?;
+        self.player_context_prepared = self.player_context.is_some();
+        Ok(())
     }
 
     pub fn session_mut(&mut self) -> &mut BoundNetwork {
@@ -1900,6 +1902,10 @@ impl PreparedSession {
     }
 
     pub fn bind(mut self) -> Result<BoundNetwork> {
+        ensure!(
+            self.bound.lab.authored_clock_plan().is_none() || self.player_context_prepared,
+            "authored day clock must be prepared against schema 13 before binding"
+        );
         ensure!(
             self.network.hosting.is_none(),
             "hosting requires authenticated binding"
@@ -2343,6 +2349,13 @@ fn prepare_session_inputs(
         lab.extend_game_state_values(values)?;
         lab.add_manager_open(ManagerSlot::Flod, flod)?;
     }
+    if let Some(clock) = network
+        .authored_world
+        .as_ref()
+        .and_then(|world| world.clock.as_ref())
+    {
+        lab.enable_authored_time_of_day(clock.prepare()?, 0)?;
+    }
     if !network.controller_startup.is_empty() {
         lab.enable_controller_startup(
             profile
@@ -2415,6 +2428,23 @@ fn prepare_installation(
     network: &NetworkConfig,
 ) -> Result<()> {
     validate_static_installation(bound, network)?;
+    if let Some(plan) = bound.lab.authored_clock_plan() {
+        let tick = app
+            .world()
+            .get_resource::<crate::simulation::SimulationClock>()
+            .context("authored day clock requires SimulationClock")?
+            .tick;
+        let expected = std::time::Duration::from_secs_f64(1.0 / f64::from(plan.tick_hz()));
+        let fixed = app
+            .world()
+            .get_resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+            .context("authored day clock requires fixed time")?;
+        ensure!(
+            fixed.timestep() == expected,
+            "authored day clock fixed timestep mismatch"
+        );
+        bound.lab.sample_authored_time_of_day(tick);
+    }
     if let Some(declaration) = bound.declaration.take() {
         let session = bound
             .authored_session
@@ -2548,4 +2578,94 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
     world
         .get_resource::<ClosedSessions>()
         .map(|closed| closed.0.clone())
+}
+
+#[cfg(test)]
+mod authored_clock_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn failed_clock_preparation_cannot_authorize_either_binding_path() {
+        use crate::{
+            authored_world_bootstrap::AuthoredClockConfig,
+            config::ServerConfig,
+            native_players::{PlayerContext, PlayerSnapshot},
+            simulation::{SNAPSHOT_SCHEMA_PLAYERS, SimulationClock, WorldSnapshot, build_app},
+        };
+        for authenticated in [false, true] {
+            let profile = ReleaseProfile::release_3_0_32();
+            let map = PeerLabAdmission::default().map_url;
+            let context = PlayerContext::new(
+                "authored-clock".encode_utf16().collect(),
+                map.into(),
+                &profile.pin,
+                [19; 32],
+            )
+            .unwrap();
+            let mut lab = PeerLab::prepare(PeerLabConfig {
+                admission: Some(PeerLabAdmission::default()),
+                ..Default::default()
+            })
+            .unwrap();
+            lab.enable_player_controller_open(
+                profile
+                    .player_controller_open_plan(map, SPAWN_LOCATION)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            lab.enable_game_state_open(
+                profile.game_state_open_plan(map).unwrap().unwrap(),
+                game_state_values().unwrap(),
+                GAME_STATE_CHANNEL_INDEX,
+            )
+            .unwrap();
+            lab.enable_authored_time_of_day(
+                AuthoredClockConfig {
+                    initial_minute: 480,
+                    seconds_per_day: 3600,
+                    tick_hz: 30,
+                }
+                .prepare()
+                .unwrap(),
+                0,
+            )
+            .unwrap();
+            let mut prepared = PreparedSession {
+                network: NetworkConfig::default(),
+                player_context: Some(context.clone()),
+                player_context_prepared: false,
+                bound: BoundNetwork {
+                    lab,
+                    release: Some(profile.pin),
+                    tables: None,
+                    saved_managers: Vec::new(),
+                    authored_session: None,
+                    declaration: None,
+                },
+            };
+            let snapshot = WorldSnapshot {
+                schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+                native_players: Some(PlayerSnapshot::empty(context)),
+                ..Default::default()
+            };
+            let mut app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+            prepared.prepare_app(&mut app).unwrap();
+            assert!(prepared.player_context_prepared);
+            app.world_mut().remove_resource::<SimulationClock>();
+            assert!(prepared.prepare_app(&mut app).is_err());
+            assert!(!prepared.player_context_prepared);
+            assert!(prepared.session_mut().lab.local_addr().is_err());
+            let error = if authenticated {
+                let (auth, _backend) = crate::steam_service::AuthClient::test_bridge(8);
+                prepared
+                    .bind_authenticated(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0), auth)
+                    .err()
+                    .unwrap()
+            } else {
+                prepared.bind().err().unwrap()
+            };
+            assert!(format!("{error:#}").contains("must be prepared"));
+        }
+    }
 }

@@ -34,6 +34,7 @@ fn inputs() -> (tempfile::TempDir, NetworkConfig) {
         data_pak: Some(pak),
         authored_gameplay: Some(gameplay),
         authored_world: Some(AuthoredWorldBootstrap {
+            clock: None,
             seed: 42,
             seed_initialised: true,
             flod_tile_count: 0,
@@ -286,5 +287,110 @@ fn actual_offline_runner_creates_reopens_and_refuses_unconfigured_player_store()
             .unwrap()
             .checkpoint,
         checkpoint.checkpoint
+    );
+}
+
+#[test]
+fn authored_clock_recipe_rejects_clockless_reopen_and_changed_declared_rate() {
+    use icarus_bevy::authored_world_bootstrap::AuthoredClockConfig;
+    let (_directory, mut config) = inputs();
+    let (_, clockless) = network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    let old = network::fresh_player_snapshot(clockless.as_ref());
+    config.authored_world.as_mut().unwrap().clock = Some(AuthoredClockConfig {
+        initial_minute: 480,
+        seconds_per_day: 3600,
+        tick_hz: 30,
+    });
+    let (_, clocked) = network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    assert!(network::validate_player_snapshot(&old, clocked.as_ref()).is_err());
+    let snapshot = network::fresh_player_snapshot(clocked.as_ref());
+    config
+        .authored_world
+        .as_mut()
+        .unwrap()
+        .clock
+        .as_mut()
+        .unwrap()
+        .tick_hz = 31;
+    let (_, changed) = network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    assert!(network::validate_player_snapshot(&snapshot, changed.as_ref()).is_err());
+    let server = ServerConfig {
+        network: config,
+        tick_hz: 30,
+        ..Default::default()
+    };
+    assert!(
+        server.validate().is_err(),
+        "offline global rate cannot reinterpret declared ticks"
+    );
+}
+
+#[test]
+fn authored_clock_prebind_requires_restored_owner_and_actual_fixed_timestep() {
+    use icarus_bevy::{
+        authored_world_bootstrap::AuthoredClockConfig, native_hosting::HostingConfig,
+        simulation::SimulationClock,
+    };
+    let (directory, mut config) = inputs();
+    let pak = directory.path().join("clock-prospect.pak");
+    fs::write(
+        &pak,
+        pak_writer::fresh_join_pak_with(&[(
+            "Prospects/D_ProspectList.json",
+            pak_writer::table_json(&["AuthoredWorkshop"]),
+        )]),
+    )
+    .unwrap();
+    config.data_pak = Some(pak);
+    config.enabled = true;
+    config.hosting = Some(HostingConfig {
+        query_bind: "127.0.0.1".parse().unwrap(),
+        query_port: 27015,
+        private_ip: "127.0.0.1".parse().unwrap(),
+        seconds: 60,
+        name: "Authored clock".into(),
+        map_url: "/Authored/Maps/Workshop".into(),
+        prospect_id: "authored-checkpoint".into(),
+        prospect_row: "AuthoredWorkshop".into(),
+        lobby_name: "Clock".into(),
+        difficulty: 2,
+    });
+    config.authored_world.as_mut().unwrap().clock = Some(AuthoredClockConfig {
+        initial_minute: 480,
+        seconds_per_day: 3600,
+        tick_hz: 30,
+    });
+    let (session, prepared) =
+        network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    let mut session = session.unwrap();
+    let snapshot = WorldSnapshot {
+        tick: 27_000,
+        ..network::fresh_player_snapshot(prepared.as_ref())
+    };
+    let server = ServerConfig {
+        network: config,
+        ..Default::default()
+    };
+    let mut app = build_app(&server, &snapshot).unwrap();
+    app.world_mut()
+        .resource_mut::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+        .set_timestep(Duration::from_millis(50));
+    let error = session.prepare_app(&mut app).unwrap_err();
+    assert!(format!("{error:#}").contains("fixed timestep mismatch"));
+    assert!(session.session_mut().lab.local_addr().is_err());
+    app.world_mut()
+        .resource_mut::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+        .set_timestep(server.tick_interval());
+    app.world_mut().remove_resource::<SimulationClock>();
+    let error = session.prepare_app(&mut app).unwrap_err();
+    assert!(format!("{error:#}").contains("requires SimulationClock"));
+    assert!(session.session_mut().lab.local_addr().is_err());
+    app.insert_resource(SimulationClock {
+        tick: snapshot.tick,
+    });
+    session.prepare_app(&mut app).unwrap();
+    assert!(
+        session.session_mut().lab.local_addr().is_err(),
+        "preparation opens no listener"
     );
 }

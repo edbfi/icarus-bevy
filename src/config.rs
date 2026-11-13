@@ -282,6 +282,10 @@ impl NetworkConfig {
         if let Some(world) = &self.authored_world {
             world.validate()?;
             ensure!(
+                world.clock.is_none() || self.player_persistence.is_some(),
+                "authored clock requires player persistence schema 13"
+            );
+            ensure!(
                 self.release_profile.is_some(),
                 "network.authored_world requires a release profile"
             );
@@ -455,10 +459,101 @@ impl ServerConfig {
             (1..=3600).contains(&self.status_interval_seconds),
             "status_interval_seconds must be 1..=3600"
         );
+        if let Some(clock) = self
+            .network
+            .authored_world
+            .as_ref()
+            .and_then(|world| world.clock.as_ref())
+        {
+            ensure!(
+                clock.tick_hz == self.tick_hz,
+                "authored clock tick_hz differs from server tick_hz"
+            );
+        }
         self.network.validate()
     }
 
     pub fn tick_interval(&self) -> Duration {
         Duration::from_secs_f64(1.0 / f64::from(self.tick_hz))
+    }
+}
+
+#[cfg(test)]
+mod authored_clock_config_tests {
+    use super::*;
+    use crate::authored_world_bootstrap::{AuthoredClockConfig, AuthoredWorldBootstrap};
+    fn offline() -> ServerConfig {
+        ServerConfig {
+            network: NetworkConfig {
+                release_profile: Some("authored-release.toml".into()),
+                data_pak: Some("authored.pak".into()),
+                authored_gameplay: Some("authored.json".into()),
+                player_persistence: Some(PlayerPersistenceConfig {
+                    prospect_id: "authored".into(),
+                    map_url: "/Authored/Map".into(),
+                    prospect_row: "AuthoredRow".into(),
+                    difficulty: 2,
+                }),
+                authored_world: Some(AuthoredWorldBootstrap {
+                    seed: 42,
+                    seed_initialised: true,
+                    flod_tile_count: 0,
+                    clock: Some(AuthoredClockConfig {
+                        initial_minute: 480,
+                        seconds_per_day: 3600,
+                        tick_hz: 30,
+                    }),
+                }),
+                ..NetworkConfig::default()
+            },
+            ..ServerConfig::default()
+        }
+    }
+    #[test]
+    fn offline_clock_requires_player_context_and_matching_actual_tick_rate() {
+        let mut config = offline();
+        assert!(config.validate().is_ok());
+        config.tick_hz = 60;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("tick_hz")
+        );
+        config.tick_hz = 30;
+        config.network.player_persistence = None;
+        assert!(
+            config
+                .network
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires player persistence")
+        );
+    }
+    #[test]
+    fn invalid_authored_clock_is_rejected_even_without_networking() {
+        let mut config = offline();
+        assert!(!config.network.enabled);
+        config
+            .network
+            .authored_world
+            .as_mut()
+            .unwrap()
+            .clock
+            .as_mut()
+            .unwrap()
+            .seconds_per_day = 0;
+        assert!(config.validate().is_err());
+    }
+    #[test]
+    fn omitted_clock_keeps_ordinary_tick_rate_configuration_valid() {
+        let mut config = offline();
+        config.network.authored_world.as_mut().unwrap().clock = None;
+        config.tick_hz = 60;
+        assert!(config.validate().is_ok());
+        config.network.player_persistence = None;
+        assert!(config.validate().is_ok());
     }
 }

@@ -316,6 +316,7 @@ mod tests {
                 seed: 42,
                 seed_initialised: true,
                 flod_tile_count: 0,
+                clock: None,
             }),
             ..NetworkConfig::default()
         };

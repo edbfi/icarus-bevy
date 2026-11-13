@@ -74,14 +74,15 @@ benefit, F-1150), requires the pawn. Probe flags mirror these names with
 hyphens. `[network.spawn]` uses operator points; omission keeps the origin
 ([placement](network-readiness.md#spawn-placement), F-1139/F-1140).
 
-Optional independent `run` bootstrap: `[network.authored_world]` with
-`seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
-
-All fields/release/controller/GameState/FLOD plans required; counts 0..=65535
-must fit both byte-order budgets before binding. Bootstrap supplies no terrain.
-`network_listening.authored_world`: configured inputs. Preserved prospects:
-reject after load, before binding/polling; stored state unchanged.
-Networking off: no actor bootstrap; player context is still validated.
+Optional `run` bootstrap: `[network.authored_world]` with `seed = 1`,
+`seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
+Release/controller/GameState/FLOD plans required; counts 0..=65535 must fit both
+byte-order budgets before binding. No terrain is supplied. Preserved prospects
+refuse before binding; stored state stays unchanged. Networking off: no actor
+bootstrap; player context is still validated.
+Optional `.clock` resumes saved tick phase:
+[declaration, rate/recipe limits and publication](../architecture.md#persistence).
+No downtime catch-up or original daylight qualification.
 
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
 CLI replaces TOML; `[]` disables. Needs release/controller plans and settled
