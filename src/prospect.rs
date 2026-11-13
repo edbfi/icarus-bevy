@@ -16,7 +16,7 @@ use crate::experimental::component::{
     BaseComponent, MAX_BOUNDED_COMPONENT_BYTES, read_base_component_with_limit,
 };
 use crate::experimental::property_tree::{
-    BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, PropertyTree, TreeLimits,
+    BaseComponentTree, MAX_TREE_DEPTH, MAX_TREE_NODES, TreeLimits,
 };
 use crate::experimental::prospect_info::{
     PlayerHistoryEntry, ProspectInfo, SavedContainerManager, SavedGameMode, SavedQuestActor,
@@ -24,14 +24,14 @@ use crate::experimental::prospect_info::{
 };
 use crate::experimental::recorders::{
     RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
-    stage_prospect_save_state,
+    stage_prospect_save_state, stage_prospect_save_state_with_root_values,
 };
 use crate::experimental::restore_rules::normalize_prospect_name;
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
 use crate::experimental::tagged::{
     ParsedRecord, RootTagSummary, TagProfile, is_name, read_record, read_root,
 };
-use crate::experimental::typed_value::{Gap, TypedComponent, TypedSummary, TypedTree};
+use crate::experimental::typed_value::{Gap, TypedComponent, TypedSummary};
 use crate::json::JsonObject;
 use crate::preservation::{PreserveLimits, PreservedSection};
 
@@ -392,21 +392,25 @@ pub fn saved_player_controllers_from_payload(
 pub fn saved_prospect_from_payload(payload: &[u8]) -> Result<SavedProspect> {
     let profile = TagProfile::MemoryArchive522;
     let tags = read_root(payload, profile).context("invalid experimental root tags")?;
-    stage_prospect_save_state(&tags.tags, profile, MAX_BOUNDED_COMPONENT_BYTES, None)
-        .context("invalid staged FProspectSaveState")?;
-    let mut info = None;
-    for root in &tags.tags {
-        let ParsedRecord::Property(property) = read_record(root.record, profile)? else {
-            continue;
-        };
-        if is_name(&property.name, "ProspectInfo") {
-            let tree = PropertyTree::parse(property.tag.payload, profile, TYPED_TREE_LIMITS)
-                .context("invalid ProspectInfo tree")?;
-            let (typed, _) = TypedTree::from_tree(&tree)?;
-            info = Some(ProspectInfo::from_tree(&typed)?);
-        }
-    }
-    let info = info.context("the prospect has no ProspectInfo")?;
+    let (_, roots, _) = stage_prospect_save_state_with_root_values(
+        &tags.tags,
+        profile,
+        MAX_BOUNDED_COMPONENT_BYTES,
+        None,
+    )
+    .context("invalid staged FProspectSaveState")?;
+    let info = roots
+        .resolved_prospect_info()
+        .context("unresolved effective ProspectInfo enums")?;
+    ensure!(
+        roots.source_presence().prospect_info
+            && !info.prospect_id.is_empty()
+            && !info.prospect_dt_key.is_empty()
+            && String::from_utf16(&info.prospect_id).is_ok()
+            && String::from_utf16(&info.prospect_dt_key).is_ok(),
+        "unavailable effective prospect identity"
+    );
+    let info = info.clone();
     let recorders =
         read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
     let mut game_mode = None;
