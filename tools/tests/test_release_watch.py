@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -21,8 +22,19 @@ from tools.release_watch import (
     pinned_build,
     project_version,
     public_build,
-    render_pin,
+    release_table,
+    render_release,
+    repin,
 )
+
+from tools.runtime_types import JsonObject, integer_field, json_object, parse_json, string_field
+
+TRACKED = Path(__file__).resolve().parents[2] / "config/release.toml"
+
+
+def _toml(text: str) -> JsonObject:
+    return json_object(parse_json(json.dumps(tomllib.loads(text))))
+
 
 APP_INFO = '''"2089300"
 {
@@ -145,20 +157,58 @@ class ReleaseWatchTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 _ = project_version(json.dumps(bad))
 
-    def test_pin_rewrites_the_file_from_a_fetched_install(self) -> None:
+    def test_pin_rewrites_only_the_release_table_and_marks_the_rest_carried_over(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "steamapps").mkdir()
             _ = (root / "steamapps/appmanifest_2089300.acf").write_text('"AppState"\n{\n\t"buildid"\t\t"25793607"\n}\n')
             (root / "Icarus/Config").mkdir(parents=True)
             _ = (root / "Icarus/Config/version.json").write_text(json.dumps(VERSION))
+            profile = root / "release.toml"
+            before = TRACKED.read_text()
+            _ = profile.write_text(before)
             args = Arguments()
-            args.install, args.pin = str(root), str(root / "release.toml")
-            self.assertEqual(pin(args), 0)
-            text = (root / "release.toml").read_text()
-            self.assertEqual(text, render_pin(25793607, "3.0.31.158478-rel-DangerousHorizons"))
-            self.assertEqual(pinned_build(root / "release.toml"), 25793607)
+            args.install, args.pin = str(root), str(profile)
+            with patch("sys.stdout"), patch("sys.stderr"):
+                self.assertEqual(pin(args), 0)
+            text = profile.read_text()
+            self.assertEqual(pinned_build(profile), 25793607)
+            start, end = release_table(text)
+            self.assertEqual("".join(text.splitlines(keepends=True)[start:end]),
+                             render_release(25793607, "3.0.31.158478-rel-DangerousHorizons"))
+            old, new = _toml(before), _toml(text)
+            self.assertEqual(sorted(new), sorted(old))
+            for section in old:
+                if section != "release":
+                    self.assertEqual(new[section], old[section], section)
+            old_build = integer_field(json_object(old["release"]), "build_id")
+            self.assertIn(f"# CARRIED OVER from build {old_build} (", text)
+            self.assertIn("UNQUALIFIED", text)
+
+            # A second unqualified bump keeps naming the last qualified build.
+            again, carried, qualified = repin(text, 7, "9.9.9.1-rel-Test")
+            self.assertEqual(qualified, old_build)
+            self.assertEqual(carried, [name for name in old if name != "release"])
+            self.assertEqual(again.count("# CARRIED OVER"), 1)
+            self.assertEqual(integer_field(json_object(_toml(again)["release"]), "build_id"), 7)
+            # Re-pinning the same build changes nothing.
+            self.assertEqual(repin(text, 25793607, "3.0.31.158478-rel-DangerousHorizons"), (text, [], None))
             self.assertEqual(manifest_build('"buildid" "7"'), 7)
+
+    def test_pin_refuses_a_file_the_server_could_not_load(self) -> None:
+        bare = render_release(25793607, "3.0.31.158478-rel-DangerousHorizons")
+        with self.assertRaises(ValueError):
+            _ = repin(bare, 7, "9.9.9.1-rel-Test")
+        with self.assertRaises(ValueError):
+            _ = repin(bare + "[tags]\nx = 1\n" + bare, 7, "9.9.9.1-rel-Test")
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(FileNotFoundError):
+            args = Arguments()
+            args.install, args.pin = directory, str(Path(directory) / "missing.toml")
+            (Path(directory) / "steamapps").mkdir()
+            _ = (Path(directory) / "steamapps/appmanifest_2089300.acf").write_text('"buildid" "7"')
+            (Path(directory) / "Icarus/Config").mkdir(parents=True)
+            _ = (Path(directory) / "Icarus/Config/version.json").write_text(json.dumps(VERSION))
+            _ = pin(args)
 
     def test_pe_section_and_ini_tag_diff_between_installs(self) -> None:
         pe_old = _synthetic_pe_header([(b".text", 100_000), (b".pdata", 10_000)])
@@ -206,9 +256,16 @@ class ReleaseWatchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 _ = diff_installs(older, newer)
 
-    def test_tracked_pin_matches_the_renderer(self) -> None:
-        tracked = Path(__file__).resolve().parents[2] / "config/release.toml"
-        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.36.159996-rel-DangerousHorizons"))
+    def test_tracked_pin_matches_the_renderer_and_is_qualified(self) -> None:
+        text = TRACKED.read_text()
+        release = json_object(_toml(text)["release"])
+        version = string_field(release, "project_version")
+        self.assertEqual(release["network_checksum"], network_checksum(version))
+        start, end = release_table(text)
+        self.assertEqual("".join(text.splitlines(keepends=True)[start:end]),
+                         render_release(pinned_build(TRACKED), version))
+        # The committed pin is qualified: no section is carried over.
+        self.assertNotIn("# CARRIED OVER", text)
 
 
 if __name__ == "__main__":

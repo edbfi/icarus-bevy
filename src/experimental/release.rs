@@ -1066,8 +1066,9 @@ pub struct ReleaseProfile {
     pub level_actors: Option<ReleaseLevelActorsProfile>,
 }
 
+/// The `[release]` table of a release file; the other sections are the
+/// profile's and are ignored here.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReleasePinFile {
     release: ReleasePin,
 }
@@ -1097,7 +1098,8 @@ struct ReleaseFile {
 }
 
 impl ReleasePin {
-    /// Parse a pin file and check its stored checksum.
+    /// Parse the `[release]` table of a release file and check its stored
+    /// checksum.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleasePinFile>(text).context("release pin")?;
         parsed.release.validate()?;

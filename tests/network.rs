@@ -5311,17 +5311,22 @@ fn returning_pawns_send_supported_saved_content_after_the_uid() {
         .unwrap();
         let profile_path = if case == Case::MissingStomach {
             let path = directory.path().join("release.toml");
-            let mut text = fs::read_to_string(release_toml()).unwrap();
-            text.push_str(r#"
-[pawn]
+            // The tracked profile with an authored pawn that has no stomach.
+            let mut profile: toml::Table =
+                fs::read_to_string(release_toml()).unwrap().parse().unwrap();
+            let pawn: toml::Table = r#"
+layout_version = "legacy"
 archetype = [{ path = "Default__P_C", checksum = 1 }, { path = "/Game/P", checksum = 0 }]
 components = [{ name = "S", checksum = 2 }, { name = "I", checksum = 3 }, { name = "A", checksum = 4 }]
 stat_container = "S"
 inventory_component = "I"
 actor_state = "A"
 inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksum = 0 }]
-"#);
-            fs::write(&path, text).unwrap();
+"#
+            .parse()
+            .unwrap();
+            profile.insert("pawn".to_owned(), toml::Value::Table(pawn));
+            fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
             path
         } else {
             release_toml()

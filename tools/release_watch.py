@@ -3,8 +3,10 @@
 
 `check` asks Steam (anonymous SteamCMD app info, nothing downloaded) for the
 dedicated server's public build and compares it with the pin; exit status 3
-means the pin is behind. `pin --install DIR` rewrites the pin from a fetched
-install's app manifest and Icarus/Config/version.json. `diff --older DIR
+means the pin is behind. `pin --install DIR` rewrites only the `[release]`
+table of the complete profile from a fetched install's app manifest and
+Icarus/Config/version.json; every other section is carried over, marked in the
+file and in the output as unqualified for the new build. `diff --older DIR
 --newer DIR` compares two fetched server installs (manifest build ID,
 project_version, network_checksum, PE section sizes and DefaultGameplayTags.ini
 tag counts) so weekly updates start with a mechanical intake and diff report.
@@ -26,7 +28,7 @@ import zlib
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.runtime_types import JsonObject, json_object, parse_json
+from tools.runtime_types import JsonObject, JsonValue, json_object, parse_json
 
 APP_ID = 2089300
 PIN = Path(__file__).resolve().parents[1] / "config/release.toml"
@@ -219,12 +221,66 @@ def diff_installs(older: Path, newer: Path) -> JsonObject:
     }
 
 
-def render_pin(build_id: int, version: str) -> str:
-    return ("# The official release this repository targets. ICARUS ships weekly; move this\n"
-            + "# pin with `python3 tools/release_watch.py pin --install <fetched install>`\n"
-            + '# (docs/architecture.md, "Release tracking"). The checksum is derived and checked.\n'
-            + f"[release]\napp_id = {APP_ID}\nbuild_id = {build_id}\n"
+CARRIED_OVER_PREFIX = "# CARRIED OVER from build "
+
+
+def render_release(build_id: int, version: str) -> str:
+    """The `[release]` table for one build; the checksum is derived."""
+    return (f"[release]\napp_id = {APP_ID}\nbuild_id = {build_id}\n"
             + f'project_version = "{version}"\nnetwork_checksum = {network_checksum(version)}\n')
+
+
+def release_table(text: str) -> tuple[int, int]:
+    """Line span `[start, end)` of the `[release]` header and its key lines."""
+    lines = text.splitlines(keepends=True)
+    headers = [index for index, line in enumerate(lines) if line.strip() == "[release]"]
+    if len(headers) != 1:
+        raise ValueError("release profile needs exactly one [release] table")
+    end = headers[0] + 1
+    while end < len(lines) and lines[end].strip() and not lines[end].lstrip().startswith(("#", "[")):
+        end += 1
+    return headers[0], end
+
+
+def carried_over_marker(build_id: int, version: str) -> str:
+    return (f"{CARRIED_OVER_PREFIX}{build_id} ({version}): every section below\n"
+            + "# was qualified for that build and is UNQUALIFIED for this [release].\n"
+            + "# Qualify each section for this build, then delete this comment.\n")
+
+
+def carried_over_from(text: str) -> int | None:
+    """The last qualified build a carried-over marker names, if any."""
+    match = re.search(r"^" + re.escape(CARRIED_OVER_PREFIX) + r"([0-9]+) ", text, re.MULTILINE)
+    return int(match[1]) if match is not None else None
+
+
+def repin(text: str, build_id: int, version: str) -> tuple[str, list[str], int | None]:
+    """Replace the `[release]` table of a complete profile in place.
+
+    Returns the new text, the carried-over section names and the build they
+    were last qualified for (`None` when the build is unchanged). Sections are
+    never dropped, so the server can still load the file; a marker comment
+    after `[release]` names the build they came from. An existing marker keeps
+    naming the last qualified build across repeated unqualified bumps.
+    """
+    parsed = json_object(parse_json(json.dumps(tomllib.loads(text))))
+    previous = json_object(parsed.get("release", None))
+    sections = [name for name in parsed if name != "release"]
+    if not sections:
+        raise ValueError("release profile has only [release]; the server cannot load it")
+    old_build, old_version = previous.get("build_id"), previous.get("project_version")
+    if not isinstance(old_build, int) or isinstance(old_build, bool) or not isinstance(old_version, str):
+        raise ValueError("pinned [release] needs build_id and project_version")
+    lines = text.splitlines(keepends=True)
+    start, end = release_table(text)
+    head, rest = "".join(lines[:start]), "".join(lines[end:])
+    if old_build == build_id and old_version == version:
+        return text, [], None
+    qualified = carried_over_from(text)
+    if qualified is None:
+        rest = "\n" + carried_over_marker(old_build, old_version) + rest
+        qualified = old_build
+    return head + render_release(build_id, version) + rest, sections, qualified
 
 
 def pinned_build(pin_path: Path) -> int:
@@ -248,8 +304,16 @@ def pin(args: Arguments) -> int:
     install = Path(args.install)
     build = manifest_build((install / f"steamapps/appmanifest_{APP_ID}.acf").read_text())
     version = project_version((install / "Icarus/Config/version.json").read_text())
-    _ = Path(args.pin).write_text(render_pin(build, version))
-    print(json.dumps({"build_id": build, "project_version": version, "network_checksum": network_checksum(version)}))
+    path = Path(args.pin)
+    text, carried, qualified = repin(path.read_text(), build, version)
+    _ = path.write_text(text)
+    report: JsonObject = {"build_id": build, "project_version": version, "network_checksum": network_checksum(version),
+                          "carried_over_sections": list[JsonValue](carried), "qualified_for_build": qualified}
+    print(json.dumps(report))
+    if carried:
+        print(f"release_watch: only [release] now names build {build}; sections {', '.join(carried)} are carried "
+              + f"over from build {qualified} and are UNQUALIFIED for build {build}. Qualify them before relying "
+              + "on this pin.", file=sys.stderr)
     return 0
 
 
