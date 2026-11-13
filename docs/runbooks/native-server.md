@@ -41,7 +41,8 @@ opens (F-671). `check-config` creates no state.
 ## Network sessions (experimental)
 
 Loopback without hosting. Hosting: [example](../../config/server.example.toml),
-fresh storage and reachable game/query UDP ports.
+fresh storage and reachable game/query UDP ports. Run `check-config` first;
+passing validates configuration, not a playable world or client compatibility.
 `seconds`: 1–86400; bounded auth requests/queues; no compressed/preserved worlds.
 Exit/deadline attempts teardown/final save.
 [Connected-run gates](../gates.md#before-any-original-server-or-client-run) apply,

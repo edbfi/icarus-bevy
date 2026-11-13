@@ -1,7 +1,7 @@
 //! Authored bridge contracts. Synthetic backend acceptance below exercises the
 //! post-authentication boundary; it does not verify a Steam ticket or client.
 use super::super::super::{
-    actor_channel::{read_actor_bunch_body, read_spawn},
+    actor_channel::{read_actor_bunch_body, read_player_controller_open_bunch_body, read_spawn},
     archive::ByteOrder,
     control_messages::{NetIdType, NetIdValue, UniqueNetId},
     packet::{BitWriter, Bunch, Payload},
@@ -310,6 +310,47 @@ fn health_checkpoint_survives_reload_and_reconnect_does_not_rotate_spawn() {
             .iter()
             .any(|b| b.header.channel_index == PAWN_CHANNEL_INDEX)
     );
+    // Bootstrap precedes validated slot lookup: decode both controller locations.
+    let plan = lab.player_controller_open.as_ref().unwrap();
+    let mut body = BitWriter::new();
+    for bunch in bootstrap.iter().filter(|b| {
+        b.header.channel_index == plan.channel_index && !b.header.has_package_map_exports
+    }) {
+        append_bits(&mut body, &bunch.payload);
+        if !bunch.header.partial || bunch.header.partial_final {
+            break;
+        }
+    }
+    let actor = actor_codec(plan.engine_net_version, ByteOrder::Little);
+    let controller =
+        read_player_controller_open_bunch_body(&mut Payload::from_writer(body).reader(), &actor)
+            .unwrap();
+    assert_eq!(
+        controller.spawn.dynamic.unwrap().location,
+        Some(
+            crate::experimental::session_open::quantize_spawn_vector([400.0, 500.0, 600.0])
+                .unwrap()
+        )
+    );
+    let properties = read_rep_properties(
+        &mut controller.blocks[0].payload.reader(),
+        &plan.actor_layout,
+        &RepLayoutCodec {
+            actor,
+            checksums: false,
+            limits: Default::default(),
+        },
+    )
+    .unwrap();
+    let spawn_location = properties
+        .entries
+        .iter()
+        .find(|entry| entry.handle == 19)
+        .unwrap();
+    assert_eq!(
+        spawn_location.value,
+        RepValue::Vector([400.0f32.to_bits(), 500.0f32.to_bits(), 600.0f32.to_bits()])
+    );
     identify(&mut lab, &socket, &mut client, address, 3, 3);
     lab.bridge_player_checkpoints(&mut registry);
     let opened = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
@@ -582,4 +623,55 @@ fn client_profile_xp_and_reported_location_never_mutate_checkpoint() {
     entry.pawn_moves.location = Some(([999.0; 3], Instant::now()));
     lab.bridge_player_checkpoints(&mut registry);
     assert_eq!(registry.snapshot(), before);
+}
+
+#[test]
+fn revoked_new_reservation_consumes_one_point_without_refund_or_retry_consumption() {
+    let (mut lab, mut registry) = (lab(), registry());
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_spawns_configured, 1);
+    assert!(registry.snapshot().is_empty());
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_spawns_configured, 1);
+    let (auth, backend) = AuthClient::test_bridge(8);
+    lab.authenticator = Some(auth);
+    backend
+        .event(crate::steam_auth::AuthEvent {
+            request_id: 1,
+            outcome: AuthOutcome::Revoked,
+        })
+        .unwrap();
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(!lab.peers.contains_key(&address));
+    assert!(registry.snapshot().is_empty());
+    assert_eq!(
+        lab.spawn.peek(None, [0.0; 3]).placement.location,
+        [400.0, 500.0, 600.0]
+    );
+    let (socket, address, mut client, _) = peer(&mut lab, 2, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(
+        lab.peers[&address].placement.unwrap().location,
+        [400.0, 500.0, 600.0]
+    );
+    assert_eq!(lab.stats.pawn_spawns_configured, 2);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_spawns_configured, 2);
+    lab.remove_peer(address);
+    lab.bridge_player_checkpoints(&mut registry);
+    let (socket, address, mut client, _) = peer(&mut lab, 3, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_spawns_configured, 2);
+    assert_eq!(
+        lab.peers[&address].placement.unwrap().location,
+        [400.0, 500.0, 600.0]
+    );
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_spawns_configured, 2);
 }

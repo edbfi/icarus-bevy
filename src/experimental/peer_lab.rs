@@ -6459,13 +6459,13 @@ impl PeerLab {
         self.pawn_move_acks
     }
 
-    /// Place joining players at `config`'s validated spawn points,
-    /// round-robin by join (F-1139): each connection's controller open (its
-    /// spawn record and handle 19) and pawn open (its spawn record) carry
-    /// the point's location; a yaw is kept but not sent (F-1140). A
-    /// configured placement also starts that session's move store. Empty
-    /// points restore the plan's location. Needs the controller open; must
-    /// be called before any peer exists.
+    /// Configure validated spawn points before admission. Legacy joins commit
+    /// one point for matching controller spawn/handle 19 and pawn spawn (F-1140).
+    /// Checkpoint controllers only peek provisionally; new validated reservations
+    /// commit once for the later pawn, without refund on cancellation. Committed
+    /// reconnects use saved pawn placement and consume no point. Controller and
+    /// pawn locations can differ; client effects remain unqualified. Yaw is kept
+    /// but unsent. Empty points use the plan location. Needs a controller plan.
     pub fn enable_spawn_points(&mut self, config: &SpawnConfig) -> Result<()> {
         ensure!(
             self.peers.is_empty() && self.peak_peers == 0,
@@ -10497,16 +10497,12 @@ impl PeerLab {
         let Some(entry) = self.peers.get_mut(&address) else {
             return InitialOpenOutcome::Failed;
         };
-        // One placement per connection, fixed by its controller open (F-1140).
-        // Look without consuming: the resolver, counters and slot change only
-        // once this open's datagrams are built, below. A failed open consumes
-        // no point; a deferred one looks again on retry, which is safe because
-        // nothing of it was sent, and a retry before any other join gets the
-        // same point. The restored saved location is not available here: the
-        // save's character is matched at finalisation
-        // (`restore_returning_pawn_uid`, which needs the character profile's
-        // slot), after the controller and pawn open at Join, so `saved` is
-        // `None` until the restore pipeline can match a player first.
+        // Legacy mode fixes placement when this controller open commits (F-1140).
+        // Checkpoint mode cannot resolve the saved slot yet: its controller opens
+        // first using an uncommitted provisional peek. A later validated reservation
+        // chooses the pawn checkpoint; the two wire locations may differ. Client
+        // interpretation of that divergence is unqualified. New reservations commit
+        // a point once, even if later cancelled; committed reconnects consume none.
         let (placement, pending) = match entry.placement {
             Some(placement) => (placement, None),
             None => {
@@ -10538,7 +10534,7 @@ impl PeerLab {
                 return self.initial_open_failure(address, &error, channel);
             }
         };
-        // Built: the placement is this connection's, committed with the GUIDs.
+        // Legacy only: commit placement with GUIDs. Checkpoint bootstrap stays provisional.
         if let Some(resolution) = pending
             && self.checkpoint_initial_vitals.is_none()
         {

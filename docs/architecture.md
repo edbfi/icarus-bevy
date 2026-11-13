@@ -114,11 +114,19 @@ instead of refilling/resetting players. Passwords, tickets and names are exclude
 from recipe identity.
 
 Keys require an accepted live ticket request, Joined admission and matching
-nonnegative Begin/Character slots. Login strings, names, profile XP and client move
-reports confer no authority. One account/slot has one live attachment. Reconnect
-restores its checkpoint before the authored pawn open. This mode first opens Controller,
-GameState and PlayerState; stock-client continuation in this order is unqualified.
-The ordinary disabled path retains its actor order and History/restore behavior.
+nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP
+and client move reports confer no authority. Limits: 4,096 retained records,
+64 per account, no eviction. One account/slot has one live attachment; a duplicate
+newcomer refuses until detach/timeout, using shared profile-failure counters.
+
+Controller/GameState/PlayerState bootstrap precedes validated slot lookup. The
+controller spawn record and handle 19 use a provisional uncommitted spawn peek;
+the later pawn uses its resolved checkpoint, so their locations may differ.
+Client effects of this divergence/order are unqualified. A new reservation commits
+one spawn point/counter increment immediately, preventing concurrent reservations
+from sharing that selection. Cancellation drops the pending player record without
+refunding the point/counter. Retries reuse reservations; committed reconnects
+consume no point. The disabled path retains its legacy spawn/History/restore behavior.
 
 Server-owned `PlayerRegistry::edit` validates an expected revision and complete
 checkpoint atomically, preserving maxima/biome/growth. Reliable vital projection
