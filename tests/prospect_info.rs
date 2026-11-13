@@ -1752,7 +1752,13 @@ fn saved_projection_uses_effective_legacy_identity_and_rejects_reset() {
         let before = inner.clone();
         let result = saved_prospect_from_payload(&inner);
         if version == 0 {
-            assert!(result.is_err());
+            assert_eq!(
+                result
+                    .err()
+                    .expect("reset identity must reject")
+                    .to_string(),
+                "unavailable effective prospect identity"
+            );
         } else {
             let info = result.unwrap().info;
             assert_eq!(
@@ -1790,10 +1796,22 @@ fn saved_projection_rejects_unknown_enums_and_empty_identity() {
         info[offset + known.len()..].to_vec(),
     ]
     .concat();
-    assert!(saved_prospect_from_payload(&payload(&unknown, &[])).is_err());
+    assert_eq!(
+        saved_prospect_from_payload(&payload(&unknown, &[]))
+            .err()
+            .expect("unknown enum must reject")
+            .to_string(),
+        "unresolved effective ProspectInfo enums"
+    );
     let id = string("ProspectID", "lab-prospect");
     let empty = [string("ProspectID", ""), info[id.len()..].to_vec()].concat();
-    assert!(saved_prospect_from_payload(&payload(&empty, &[])).is_err());
+    assert_eq!(
+        saved_prospect_from_payload(&payload(&empty, &[]))
+            .err()
+            .expect("empty identity must reject")
+            .to_string(),
+        "unavailable effective prospect identity"
+    );
 }
 
 #[test]
