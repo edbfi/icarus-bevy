@@ -1850,3 +1850,411 @@ fn saved_projection_rejects_unpaired_utf16_identity_without_mutating_input() {
         }
     }
 }
+
+// This fixture reuses the strict authored root framing/stager, not a new parser.
+fn staged_session_roots(
+    info: &[u8],
+    version: i32,
+    map: &[u16],
+) -> icarus_bevy::experimental::recorders::StagedRootValues {
+    use icarus_bevy::experimental::{
+        archive::{ByteOrder, encode_string},
+        component::MAX_BOUNDED_COMPONENT_BYTES,
+        recorders::stage_prospect_save_state_with_root_values,
+        tagged::read_root,
+    };
+    let original = payload(info, &[]);
+    let inner = [
+        int("Version", version),
+        tag(
+            "ProspectMapName",
+            "StrProperty",
+            &[0],
+            &encode_string(map, ByteOrder::Little).unwrap(),
+        ),
+        original[int("Version", 2).len()..].to_vec(),
+    ]
+    .concat();
+    let before = inner.clone();
+    let framed = read_root(&inner, TagProfile::MemoryArchive522).unwrap();
+    let (_, roots, _) = stage_prospect_save_state_with_root_values(
+        &framed.tags,
+        TagProfile::MemoryArchive522,
+        MAX_BOUNDED_COMPONENT_BYTES,
+        None,
+    )
+    .unwrap();
+    assert_eq!(inner, before);
+    roots
+}
+
+#[test]
+fn declared_preserved_session_identity_is_bounded_private_and_non_activating() {
+    use icarus_bevy::{
+        experimental::release::ReleasePin,
+        preserved_session::{DeclaredBinding, IdentityOverrides, PreparedContext, assess},
+    };
+    let map = units("PrivateSavedMap");
+    let roots = staged_session_roots(&prospect_info(), 2, &map);
+    let before = roots.clone();
+    let release = ReleasePin {
+        app_id: 2089300,
+        build_id: 7,
+        project_version: "authored-test".into(),
+        network_checksum: icarus_bevy::experimental::release::network_checksum("authored-test"),
+    };
+    let catalog = session_catalog("PrivateSavedMap", &["Lab_Key"]);
+    let binding = DeclaredBinding {
+        saved_map: &map,
+        canonical_map_url: "/Authored/One/Map",
+        release: &release,
+        catalog_sha256: [7; 32],
+    };
+    let context = PreparedContext {
+        release: &release,
+        catalog_sha256: [7; 32],
+        authored_catalog: &catalog,
+    };
+    let candidate = assess(&roots, &binding, &context, &IdentityOverrides::default()).unwrap();
+    assert_eq!(candidate.prospect_id(), units("lab-prospect"));
+    assert_eq!(candidate.prospect_row(), units("Lab_Key"));
+    assert_eq!(candidate.saved_map(), map);
+    assert_eq!(candidate.canonical_map_url(), "/Authored/One/Map");
+    assert_eq!(roots, before);
+    let diagnostics = candidate.diagnostics();
+    assert!(!diagnostics.catalog_authenticated);
+    assert!(!diagnostics.world_imported);
+    for public in [
+        format!("{candidate:?}"),
+        serde_json::to_string(&diagnostics).unwrap(),
+    ] {
+        for private in [
+            "lab-prospect",
+            "Lab_Key",
+            "PrivateSavedMap",
+            "/Authored/One/Map",
+        ] {
+            assert!(!public.contains(private));
+        }
+    }
+}
+
+#[test]
+fn declared_preserved_session_refuses_reset_unknown_maps_context_and_overrides() {
+    use icarus_bevy::{
+        experimental::release::ReleasePin,
+        preserved_session::{DeclaredBinding, IdentityOverrides, PreparedContext, Refusal, assess},
+    };
+    let map = units("ExactSavedMap");
+    let info = prospect_info();
+    let roots = staged_session_roots(&info, 2, &map);
+    let release = ReleasePin {
+        app_id: 2089300,
+        build_id: 7,
+        project_version: "authored-test".into(),
+        network_checksum: icarus_bevy::experimental::release::network_checksum("authored-test"),
+    };
+    let catalog = session_catalog("ExactSavedMap", &["Lab_Key"]);
+    let mut binding = DeclaredBinding {
+        saved_map: &map,
+        canonical_map_url: "/Authored/One/Map",
+        release: &release,
+        catalog_sha256: [7; 32],
+    };
+    let mut context = PreparedContext {
+        release: &release,
+        catalog_sha256: [7; 32],
+        authored_catalog: &catalog,
+    };
+    let check = |roots: &icarus_bevy::experimental::recorders::StagedRootValues,
+                 binding: &DeclaredBinding<'_>,
+                 context: &PreparedContext<'_>,
+                 overrides: &IdentityOverrides<'_>,
+                 expected| {
+        let before = roots.clone();
+        assert_eq!(
+            assess(roots, binding, context, overrides).unwrap_err(),
+            expected
+        );
+        assert_eq!(*roots, before);
+    };
+    let no_override = IdentityOverrides::default();
+    check(
+        &staged_session_roots(&info, 0, &map),
+        &binding,
+        &context,
+        &no_override,
+        Refusal::ResetIdentity,
+    );
+    check(
+        &staged_session_roots(&info, 2, &[]),
+        &binding,
+        &context,
+        &no_override,
+        Refusal::MissingIdentity,
+    );
+    check(
+        &staged_session_roots(&info, 2, &[0xd800]),
+        &binding,
+        &context,
+        &no_override,
+        Refusal::InvalidUtf16,
+    );
+    let oversized_binding_map = vec![65; 1025];
+    binding.saved_map = &oversized_binding_map;
+    check(&roots, &binding, &context, &no_override, Refusal::Limit);
+    binding.saved_map = &map;
+    let oversized_override = vec![65; 1025];
+    check(
+        &roots,
+        &binding,
+        &context,
+        &IdentityOverrides {
+            prospect_id: Some(&oversized_override),
+            ..Default::default()
+        },
+        Refusal::Limit,
+    );
+    for (field, value) in [
+        ("ProspectID", "lab-prospect"),
+        ("ProspectDTKey", "Lab_Key"),
+        ("LobbyName", ""),
+    ] {
+        use icarus_bevy::experimental::archive::{ByteOrder, encode_string};
+        let original = string(field, value);
+        let offset = info
+            .windows(original.len())
+            .position(|bytes| bytes == original)
+            .unwrap();
+        let changed = [
+            info[..offset].to_vec(),
+            tag(
+                field,
+                "StrProperty",
+                &[0],
+                &encode_string(&[0xd800], ByteOrder::Little).unwrap(),
+            ),
+            info[offset + original.len()..].to_vec(),
+        ]
+        .concat();
+        check(
+            &staged_session_roots(&changed, 2, &map),
+            &binding,
+            &context,
+            &no_override,
+            Refusal::InvalidUtf16,
+        );
+    }
+    let different = units("Other/ExactSavedMap");
+    binding.saved_map = &different;
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::MapMismatch,
+    );
+    binding.saved_map = &map;
+    binding.canonical_map_url = "/Authored/../Map";
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::InvalidBinding,
+    );
+    binding.canonical_map_url = "/Authored/Two/Map";
+    // Equal URL leaf names do not participate in saved-map matching at all.
+    assert!(assess(&roots, &binding, &context, &no_override).is_ok());
+    context.catalog_sha256 = [8; 32];
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::CatalogMismatch,
+    );
+    context.catalog_sha256 = [7; 32];
+    let mut invalid_release = release.clone();
+    invalid_release.network_checksum ^= 1;
+    binding.release = &invalid_release;
+    context.release = &invalid_release;
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::InvalidRelease,
+    );
+    binding.release = &release;
+    context.release = &release;
+    let mut other_release = release.clone();
+    other_release.build_id += 1;
+    context.release = &other_release;
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::ReleaseMismatch,
+    );
+    context.release = &release;
+    let no_rows = session_catalog("ExactSavedMap", &[]);
+    context.authored_catalog = &no_rows;
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::MissingProspectRow,
+    );
+    let generic_row = icarus_bevy::import_plan::ContentCatalog::parse(
+        "format=2\n[references]\ndata_row=['Lab_Key']\n[[world.maps]]\nname='ExactSavedMap'\n",
+    )
+    .unwrap();
+    context.authored_catalog = &generic_row;
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::MissingProspectRow,
+    );
+    let folded_rows = session_catalog("ExactSavedMap", &["lab_key"]);
+    context.authored_catalog = &folded_rows;
+    assert!(assess(&roots, &binding, &context, &no_override).is_ok());
+    let flat =
+        icarus_bevy::import_plan::ContentCatalog::from_references(["ExactSavedMap", "Lab_Key"]);
+    context.authored_catalog = &flat;
+    check(
+        &roots,
+        &binding,
+        &context,
+        &no_override,
+        Refusal::UndeclaredMap,
+    );
+    context.authored_catalog = &catalog;
+    let override_id = units("conflicting-id");
+    check(
+        &roots,
+        &binding,
+        &context,
+        &IdentityOverrides {
+            prospect_id: Some(&override_id),
+            ..Default::default()
+        },
+        Refusal::ConflictingOverride,
+    );
+    for overrides in [
+        IdentityOverrides {
+            prospect_row: Some(&override_id),
+            ..Default::default()
+        },
+        IdentityOverrides {
+            lobby_name: Some(&override_id),
+            ..Default::default()
+        },
+        IdentityOverrides {
+            canonical_map_url: Some("/Authored/Other/Map"),
+            ..Default::default()
+        },
+    ] {
+        check(
+            &roots,
+            &binding,
+            &context,
+            &overrides,
+            Refusal::ConflictingOverride,
+        );
+    }
+    let known = enumerator("Difficulty", "EMissionDifficulty", "Hard");
+    let offset = info
+        .windows(known.len())
+        .position(|bytes| bytes == known)
+        .unwrap();
+    let unknown = [
+        info[..offset].to_vec(),
+        enumerator("Difficulty", "EMissionDifficulty", "Unsupported"),
+        info[offset + known.len()..].to_vec(),
+    ]
+    .concat();
+    check(
+        &staged_session_roots(&unknown, 2, &map),
+        &binding,
+        &context,
+        &no_override,
+        Refusal::UnknownEnums,
+    );
+}
+
+#[test]
+fn declared_preserved_session_uses_effective_legacy_overlay() {
+    use icarus_bevy::{
+        experimental::{
+            component::MAX_BOUNDED_COMPONENT_BYTES,
+            recorders::stage_prospect_save_state_with_root_values, release::ReleasePin,
+            tagged::read_root,
+        },
+        preserved_session::{DeclaredBinding, IdentityOverrides, PreparedContext, assess},
+    };
+    let map = units("LegacyMap");
+    let original = payload(&prospect_info(), &[]);
+    let inner = [
+        int("Version", 1),
+        string("ProspectID", "effective-legacy-id"),
+        string("ProspectDTKey", "Legacy_Key"),
+        string("ProspectMapName", "LegacyMap"),
+        original[int("Version", 2).len()..].to_vec(),
+    ]
+    .concat();
+    let before = inner.clone();
+    let root_tags = read_root(&inner, TagProfile::MemoryArchive522).unwrap();
+    let (_, roots, _) = stage_prospect_save_state_with_root_values(
+        &root_tags.tags,
+        TagProfile::MemoryArchive522,
+        MAX_BOUNDED_COMPONENT_BYTES,
+        None,
+    )
+    .unwrap();
+    let release = ReleasePin {
+        app_id: 2089300,
+        build_id: 7,
+        project_version: "authored-test".into(),
+        network_checksum: icarus_bevy::experimental::release::network_checksum("authored-test"),
+    };
+    let catalog = session_catalog("LegacyMap", &["Legacy_Key"]);
+    let binding = DeclaredBinding {
+        saved_map: &map,
+        canonical_map_url: "/Authored/Legacy",
+        release: &release,
+        catalog_sha256: [7; 32],
+    };
+    let context = PreparedContext {
+        release: &release,
+        catalog_sha256: [7; 32],
+        authored_catalog: &catalog,
+    };
+    let candidate = assess(&roots, &binding, &context, &IdentityOverrides::default()).unwrap();
+    assert_eq!(candidate.prospect_id(), units("effective-legacy-id"));
+    assert_eq!(candidate.prospect_row(), units("Legacy_Key"));
+    assert!(candidate.diagnostics().legacy_overlay);
+    assert_eq!(inner, before);
+}
+
+fn session_catalog(map: &str, rows: &[&str]) -> icarus_bevy::import_plan::ContentCatalog {
+    use icarus_bevy::{data_pak::DataPak, import_plan::ContentCatalog};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("authored.pak");
+    let table = pak_writer::table_json(rows);
+    std::fs::write(
+        &path,
+        pak_writer::write_pak(&[("D_ProspectList.json", &table, false)]),
+    )
+    .unwrap();
+    let mut pak = DataPak::open(&path).unwrap();
+    ContentCatalog::parse(&format!("format=2\n[[world.maps]]\nname='{map}'\n"))
+        .unwrap()
+        .with_data_tables(&mut pak)
+        .unwrap()
+        .0
+}

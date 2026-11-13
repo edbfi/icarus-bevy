@@ -32,6 +32,7 @@ pub mod network;
 pub mod pawn_stats;
 pub mod persistence;
 pub mod preservation;
+pub mod preserved_session;
 pub mod prospect;
 pub mod replication;
 #[cfg(test)]
