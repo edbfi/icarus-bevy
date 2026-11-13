@@ -40,24 +40,21 @@ opens (F-671). `check-config` creates no state.
 
 ## Network sessions (experimental)
 
-Enabled networking stays loopback without hosting. Configure `[network.hosting]` per
-[the example](../../config/server.example.toml), including release/catalog,
-authored gameplay/world, stable prospect ID, row and map URL. Welcome, opens
-and advert share those identities. Replace example addresses/identities;
-no playable world is supplied. Enable networking with reachable game/query
-UDP ports and a fresh data directory.
-
-Run `check-config`, then `run` with `--config server.toml`.
-Hosting `seconds`: 1–86400; authentication requests/queues are bounded.
-`--compressed` and preserved prospects are refused. Runtime exit/deadline
-attempts teardown and final save.
-[Connected-run gates](../gates.md#before-any-original-server-or-client-run)
-apply, including the owner's word before a public passwordless listing.
+Loopback without hosting. Hosting: [example](../../config/server.example.toml),
+fresh storage and reachable game/query UDP ports. Run `check-config` first;
+passing validates configuration, not a playable world or client compatibility.
+`seconds`: 1–86400; bounded auth requests/queues; no compressed/preserved worlds.
+Exit/deadline attempts teardown/final save.
+[Connected-run gates](../gates.md#before-any-original-server-or-client-run) apply,
+including the owner's word before public passwordless listing.
 
 A2S shows counts; CM receives accepted joined IDs, omitted from logs/Debug/A2S.
 F-1170 qualifies empty-session deadline save, teardown and copied-store reopen.
 Nonempty CM remains synthetic (F-1171); browser/client and populated persistence
 remain unqualified (U-038). F-1004 covers a no-player listing.
+
+Opt-in checkpoints: [schema-13 setup and boundaries](../architecture.md#persistence).
+Delayed-pawn stock-client continuation remains unqualified.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
@@ -84,7 +81,7 @@ All fields/release/controller/GameState/FLOD plans required; counts 0..=65535
 must fit both byte-order budgets before binding. Bootstrap supplies no terrain.
 `network_listening.authored_world`: configured inputs. Preserved prospects:
 reject after load, before binding/polling; stored state unchanged.
-Networking off: no bootstrap.
+Networking off: no actor bootstrap; player context is still validated.
 
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
 CLI replaces TOML; `[]` disables. Needs release/controller plans and settled
@@ -135,7 +132,7 @@ Unreadable saved ID fails startup; failed claim skips open, counts
 close the session (original: kick). ACK/NAK retries opens/profiles/one pending
 control reply per peer. Queueing admits; Begin awaits PlayerState; pawn retries
 retain UID (F-1011).
-Restore: F-973/F-975; limits: F-964/F-1056. Vital bounds use authoritative
+Without player checkpoints, restore: F-973/F-975; limits: F-964/F-1056. Vital bounds use authoritative
 maxima regardless of replication (F-1055). Gaps withhold derived stats/saved
 vitals; other fields restore. Unmatched players enter History
 (F-967); unanswered clients cannot complete (F-959). Rejected staging drops

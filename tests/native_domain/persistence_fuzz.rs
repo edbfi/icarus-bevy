@@ -119,6 +119,7 @@ fn snapshot(tick: u64, value: i32) -> WorldSnapshot {
         native_inventories: None,
         native_inventory_owner_import: None,
         native_inventory_authority: None,
+        native_players: None,
         native_modifiers: None,
     }
 }

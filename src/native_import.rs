@@ -861,6 +861,7 @@ pub fn prepare_c001_inert_import(
         native_inventories: None,
         native_inventory_owner_import: None,
         native_inventory_authority: None,
+        native_players: None,
         native_modifiers: None,
         native_relationships: None,
         native_lifecycle: None,

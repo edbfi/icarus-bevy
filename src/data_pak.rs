@@ -536,7 +536,17 @@ impl DataTables {
             bytes.len() as u64 <= MAX_GAMEPLAY_BYTES,
             "authored gameplay byte limit"
         );
-        let profile: AuthoredGameplay = serde_json::from_slice(&bytes)
+        Self::runtime_bytes(pak_path, &bytes)
+    }
+
+    /// Parse the same owned recipe bytes that startup binds into its player
+    /// context. The caller may hash these bytes without reopening the path.
+    pub fn runtime_bytes(pak_path: &Path, bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            bytes.len() as u64 <= MAX_GAMEPLAY_BYTES,
+            "authored gameplay byte limit"
+        );
+        let profile: AuthoredGameplay = serde_json::from_slice(bytes)
             .map_err(|error| crate::json_parse_error("authored gameplay JSON", error))?;
         ensure!(
             profile.schema_version == 1,

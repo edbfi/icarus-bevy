@@ -77,13 +77,68 @@ constants:
 Persistence uses versioned domain snapshots: coherent simulation boundary,
 worker serialization, checksummed new generation, synchronized storage, atomic
 manifest publication, preceding valid generation retained. Autosave defaults to
-60 seconds. Acknowledge only durable publication; validate/migrate before activation.
+60 seconds. `SaveReceipt` acknowledges its submitted generation/tick after durable
+publication, not later in-memory edits. Validate or explicitly migrate before activation.
 Capture requires all components declared by the current native domain schema;
 an identified entity with missing required data must fail before publication.
 Authored schemas 4–11 (F-919, F-922, F-923, F-927, F-931) pin their
 activation, reject incomplete state and never promote implicitly; bounds imply
 neither physics nor navigation. Contracts: the
 [authored-worlds runbook](runbooks/authored-worlds.md).
+
+Opt-in schema 13 combines foundation entities/clock with authored player checkpoints
+in one save generation. `native_players` defines private records;
+`native_player_runtime::PlayerRegistry` owns live reservations and committed state
+independently of `PeerLab`. Only fresh, non-preserved foundation worlds are supported.
+Existing schemas 1–12, preserved/imported worlds and native actor/lifecycle/inventory
+composition refuse before Steam or sockets. Disabling the feature cannot load or
+downgrade schema 13.
+
+Configure release/catalog, independently authored gameplay and
+`[network.authored_world]`, then add context matching hosting:
+
+```toml
+[network.player_persistence]
+prospect_id = "stable-authored-workshop"
+map_url = "/Authored/Maps/Workshop"
+prospect_row = "AuthoredProspect"
+difficulty = 2
+```
+
+Online use requires authenticated hosting. Offline reopen sets `network.enabled = false`
+and omits `[network.hosting]`, retaining the player feature/context and all prepared
+inputs. Reopen pins prospect/map/row/difficulty, release, exact owned gameplay/release
+bytes, resolved initial vitals, authored bootstrap and spawn configuration.
+Formatting changes to either input file change recipe identity. Mismatch refuses
+instead of refilling/resetting players. Passwords, tickets and names are excluded
+from recipe identity.
+
+Keys require an accepted live ticket request, Joined admission and matching
+nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP
+and client move reports confer no authority. Limits: 4,096 retained records,
+64 per account, no eviction. One account/slot has one live attachment; a duplicate
+newcomer refuses until detach/timeout, using shared profile-failure counters.
+
+Controller/GameState/PlayerState bootstrap precedes validated slot lookup. The
+controller spawn record and handle 19 use a provisional uncommitted spawn peek;
+the later pawn uses its resolved checkpoint, so their locations may differ.
+Client effects of this divergence/order are unqualified. A new reservation commits
+one spawn point/counter increment immediately, preventing concurrent reservations
+from sharing that selection. Cancellation drops the pending player record without
+refunding the point/counter. Retries reuse reservations; committed reconnects
+consume no point. The disabled path retains its legacy spawn/History/restore behavior.
+
+`PlayerRegistry::edit` is a library API with test callers only; no operator
+surface exists. It validates an expected revision and complete checkpoint
+atomically, preserving maxima/biome/growth. Reliable vital projection
+coalesces unsent revisions; enqueue success is neither client ACK nor disk publication.
+Placement edits affect the next pawn open only, without live teleport/movement
+simulation. Disconnect/revocation releases attachments and retains committed state.
+Shutdown drains the bridge before teardown and captures the registry through the
+existing save worker. An edit accepted during an in-flight save belongs to a later
+capture; the earlier receipt gives it no durability promise. No player inventory
+owner, client-driven progression or original-save import is inferred.
+
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
 unchanged into every later generation and is written once as a content-addressed

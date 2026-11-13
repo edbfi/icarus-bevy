@@ -18,6 +18,19 @@ max_players = 8
 # Native inbound-idle / outstanding-delivery-progress timeout; removal is local.
 session_timeout_seconds = 30
 
+# OPTIONAL authored server-owned checkpoints, fresh schema-13 stores only.
+# Requires release_profile, data_pak, authored_gameplay and authored_world.
+# Online use also requires authenticated hosting with the exact same context.
+# Reopening offline retains this table and the same prepared input recipe.
+# Controller/GameState/PlayerState precede the deferred pawn in this mode;
+# continuation under that order is unqualified with stock clients. Health and
+# position edits have a library API only, with no runtime caller or operator UI.
+# [network.player_persistence]
+# prospect_id = "stable-authored-workshop"
+# map_url = "/Authored/Maps/Workshop"
+# prospect_row = "AuthoredProspect"
+# difficulty = 2
+
 # EXPERIMENTAL: where joining players' pawns and controllers open, in
 # centimetres (Unreal axes, Z up), round-robin by join; at most 64 points, each
 # component within +-1,048,576 cm; yaw (degrees, within one turn) is checked

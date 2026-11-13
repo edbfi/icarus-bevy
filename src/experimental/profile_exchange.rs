@@ -171,6 +171,14 @@ pub(crate) fn character_slot(values: &[RepValue]) -> Result<i32> {
     Ok(*slot)
 }
 
+/// Authored checkpoint identity gate; it deliberately imposes no invented
+/// official upper slot bound. Error text contains no supplied values.
+pub(crate) fn validated_character_slot(values: &[RepValue], begin: Option<i32>) -> Result<i32> {
+    let slot = character_slot(values)?;
+    ensure!(slot >= 0 && begin == Some(slot), "character slot conflict");
+    Ok(slot)
+}
+
 /// A reliable PlayerState update for one phase's contiguous handles.
 pub(crate) fn player_state_update(
     first_handle: u32,

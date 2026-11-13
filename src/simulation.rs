@@ -64,6 +64,8 @@ pub const SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS: u32 = 10;
 pub const SNAPSHOT_SCHEMA_MODIFIER_OWNERS: u32 = 11;
 /// Independent authored stacked inventories with a reproducible initial recipe.
 pub const SNAPSHOT_SCHEMA_INVENTORY_OWNERS: u32 = 12;
+/// Independently authored player checkpoints in a non-preserved foundation world.
+pub const SNAPSHOT_SCHEMA_PLAYERS: u32 = 13;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -80,9 +82,59 @@ pub struct EntityRecord {
     pub position: Position,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldSnapshot {
+    pub schema_version: u32,
+    pub tick: u64,
+
+    pub entities: Vec<EntityRecord>,
+    /// Lossless, value-opaque supplied-save state carried unchanged between
+    /// generations; required in schemas 2, 3, 5 and 8–10, optional in 4, 6, 7, 11 and 12.
+    /// Shared and held compactly as its verified native encoding. Schema 5
+    /// separately records its explicitly accepted authored interpretation.
+    /// Serde writes the section inline under the stored `schema_version`, which is
+    /// a loadable document only for schema 2; the snapshot store writes schemas
+    /// 3 through 12 itself, with a sidecar reference.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::preservation::snapshot_section"
+    )]
+    pub preserved_prospect: Option<Arc<PreservedSection>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_world: Option<NativeWorldSnapshot>,
+    /// Required for schema 5, optional in schema 6; immutable source interpretation,
+    /// independent of mutable native actor poses and simulation ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_import: Option<C001InertImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_relationships: Option<NativeRelationshipsSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_lifecycle: Option<LifecycleSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_modifiers: Option<crate::native_modifiers::ModifierWorldSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_owner_import: Option<C001OwnerImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scalar_contracts: Option<ScalarOwnerContractsSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scalar_owner_import: Option<C001ScalarOwnerImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory_contracts: Option<InventoryContractsSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventories: Option<InventoryStateSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory_owner_import: Option<C001InventoryOwnerImportMetadataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_inventory_authority: Option<crate::native_inventory::AuthoredInventoryAuthorityV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_players: Option<crate::native_players::PlayerSnapshot>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorldSnapshotFields {
     pub schema_version: u32,
     pub tick: u64,
     #[serde(deserialize_with = "crate::json::objects")]
@@ -126,6 +178,46 @@ pub struct WorldSnapshot {
     pub native_inventory_owner_import: Option<C001InventoryOwnerImportMetadataV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_inventory_authority: Option<crate::native_inventory::AuthoredInventoryAuthorityV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::native_players::deserialize_optional"
+    )]
+    pub native_players: Option<crate::native_players::PlayerSnapshot>,
+}
+
+impl<'de> Deserialize<'de> for WorldSnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields = crate::json::JsonObject::<WorldSnapshotFields>::deserialize(deserializer)
+            .map_err(|_| serde::de::Error::custom("invalid native snapshot fields"))?
+            .0;
+        if fields.schema_version != SNAPSHOT_SCHEMA_PLAYERS && fields.native_players.is_some() {
+            return Err(serde::de::Error::custom(
+                "snapshot schema cannot hold player checkpoints",
+            ));
+        }
+        Ok(Self {
+            schema_version: fields.schema_version,
+            tick: fields.tick,
+            entities: fields.entities,
+            preserved_prospect: fields.preserved_prospect,
+            native_world: fields.native_world,
+            native_import: fields.native_import,
+            native_relationships: fields.native_relationships,
+            native_lifecycle: fields.native_lifecycle,
+            native_modifiers: fields.native_modifiers,
+            native_owner_import: fields.native_owner_import,
+            native_scalar_contracts: fields.native_scalar_contracts,
+            native_scalar_owner_import: fields.native_scalar_owner_import,
+            native_inventory_contracts: fields.native_inventory_contracts,
+            native_inventories: fields.native_inventories,
+            native_inventory_owner_import: fields.native_inventory_owner_import,
+            native_inventory_authority: fields.native_inventory_authority,
+            native_players: fields.native_players,
+        })
+    }
 }
 
 impl Default for WorldSnapshot {
@@ -147,12 +239,49 @@ impl Default for WorldSnapshot {
             native_inventories: None,
             native_inventory_owner_import: None,
             native_inventory_authority: None,
+            native_players: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version == SNAPSHOT_SCHEMA_PLAYERS {
+            self.native_players
+                .as_ref()
+                .context("schema 13 requires player checkpoints")?
+                .validate()?;
+            ensure!(
+                self.preserved_prospect.is_none()
+                    && self.native_world.is_none()
+                    && self.native_import.is_none()
+                    && self.native_relationships.is_none()
+                    && self.native_lifecycle.is_none()
+                    && self.native_modifiers.is_none()
+                    && self.native_owner_import.is_none()
+                    && self.native_scalar_contracts.is_none()
+                    && self.native_scalar_owner_import.is_none()
+                    && self.native_inventory_contracts.is_none()
+                    && self.native_inventories.is_none()
+                    && self.native_inventory_owner_import.is_none()
+                    && self.native_inventory_authority.is_none(),
+                "schema 13 supports only foundation state"
+            );
+            let mut ids = BTreeSet::new();
+            for entity in &self.entities {
+                ensure!(
+                    entity.id.0 != 0
+                        && ids.insert(entity.id)
+                        && entity.position.0.iter().all(|v| v.is_finite()),
+                    "invalid foundation record"
+                );
+            }
+            return Ok(());
+        }
+        ensure!(
+            self.native_players.is_none(),
+            "snapshot schema cannot hold player checkpoints"
+        );
         if self.schema_version != SNAPSHOT_SCHEMA_INVENTORY_OWNERS {
             ensure!(
                 self.native_inventory_authority.is_none(),
@@ -490,6 +619,7 @@ impl PreparedNativeWorld {
 #[derive(Resource, Clone)]
 pub struct SnapshotMode {
     native: bool,
+    players: Option<crate::native_players::PlayerContext>,
     native_activation: Option<NativeWorldContext>,
     relationship_activation: Option<NativeRelationshipsContext>,
     lifecycle_activation: Option<NativeLifecycleContext>,
@@ -668,6 +798,10 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         })
         .insert_resource(SnapshotMode {
             native: snapshot.native_world.is_some(),
+            players: snapshot
+                .native_players
+                .as_ref()
+                .map(|p| p.context().clone()),
             native_activation: None,
             relationship_activation: None,
             lifecycle_activation: None,
@@ -690,6 +824,13 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     app.world_mut()
         .resource_mut::<Time<Virtual>>()
         .set_max_delta(config.tick_interval() * config.max_catch_up_ticks);
+    if let Some(players) = &snapshot.native_players {
+        app.insert_resource(crate::native_player_runtime::PlayerRegistry::new(
+            players.clone(),
+            players.context(),
+            64,
+        )?);
+    }
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
     }
@@ -780,6 +921,11 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
     let mode = world
         .get_resource::<SnapshotMode>()
         .context("world lacks required snapshot mode")?;
+    ensure!(
+        mode.players.is_some()
+            == world.contains_resource::<crate::native_player_runtime::PlayerRegistry>(),
+        "player checkpoint resource differs from activation"
+    );
     let preserved_prospect = world
         .get_resource::<PreservedProspectState>()
         .map(|state| Arc::clone(&state.0));
@@ -841,6 +987,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_inventories: None,
             native_inventory_owner_import: None,
             native_inventory_authority: None,
+            native_players: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -852,6 +999,22 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         !world.contains_resource::<crate::native_runtime::NativeWorldContext>(),
         "foundation world contains an unexpected native catalog context"
     );
+    let players = match (
+        &mode.players,
+        world.get_resource::<crate::native_player_runtime::PlayerRegistry>(),
+    ) {
+        (Some(expected), Some(registry)) => {
+            let players = registry.snapshot();
+            ensure!(
+                players.context() == expected,
+                "player checkpoint context differs from activation"
+            );
+            players.validate()?;
+            Some(players)
+        }
+        (None, None) => None,
+        _ => bail!("player checkpoint resource differs from activation"),
+    };
     // Domain identity opts an entity into the current native snapshot schema.
     // Missing required data is an incomplete world, not a despawn to persist.
     let mut entities = Vec::new();
@@ -868,7 +1031,9 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
     // Sharing the immutable section keeps capture cheap; the worker writes its
     // held encoding only when no verified sidecar already holds it.
     let snapshot = WorldSnapshot {
-        schema_version: if preserved_prospect.is_some() {
+        schema_version: if players.is_some() {
+            SNAPSHOT_SCHEMA_PLAYERS
+        } else if preserved_prospect.is_some() {
             SNAPSHOT_SCHEMA_REFERENCED
         } else {
             SNAPSHOT_SCHEMA_DOMAIN
@@ -888,6 +1053,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_inventories: None,
         native_inventory_owner_import: None,
         native_inventory_authority: None,
+        native_players: players,
     };
     snapshot.validate()?;
     Ok(snapshot)
