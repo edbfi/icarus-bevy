@@ -1399,7 +1399,7 @@ fn player_controller_channel_failure_closes_the_connection() {
     };
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let mut bound = PeerLab::bind(0, config).unwrap();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map_url = PeerLabAdmission::default().map_url;
     bound
         .enable_player_controller_open(
@@ -1519,7 +1519,7 @@ fn initial_manager_opens_resume_after_acknowledgements_release_capacity() {
 
     // The roomy run is a control for malformed plans or an invalid Join.
     for sent_capacity in [256, 8] {
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         let map = PeerLabAdmission::default().map_url;
         let mut config = PeerLabConfig {
             admission: Some(PeerLabAdmission::default()),
@@ -1652,7 +1652,7 @@ fn the_game_state_open_follows_the_controller_over_several_datagrams() {
     };
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let mut bound = PeerLab::bind(0, config).unwrap();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map_url = PeerLabAdmission::default().map_url;
     let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
     // A RichPresenceGUID long enough to need a second datagram.
@@ -1901,7 +1901,7 @@ fn the_pawn_opens_after_the_controller_with_its_roles_and_references() {
     };
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let mut bound = PeerLab::bind(0, config).unwrap();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map_url = PeerLabAdmission::default().map_url;
     let controller = profile
         .player_controller_open_plan(map_url, [10.0, 20.0, 30.0])
@@ -4208,7 +4208,7 @@ fn active_prospect_lab(
         session_open::ActorKey,
     };
     config.admission = Some(PeerLabAdmission::default());
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map = PeerLabAdmission::default().map_url;
     let plan = profile.game_state_open_plan(map).unwrap().unwrap();
     let layout = plan.layout.clone();
@@ -4576,7 +4576,7 @@ fn game_state_updates_advance_the_clocks_once_the_open_is_acked() {
     };
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let mut bound = PeerLab::bind(0, config).unwrap();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map_url = PeerLabAdmission::default().map_url;
     let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
     let layout = plan.layout.clone();
@@ -4720,7 +4720,7 @@ fn the_networking_status_lists_joined_players_in_join_order() {
     };
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let mut bound = PeerLab::bind(0, config).unwrap();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map_url = PeerLabAdmission::default().map_url;
     let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
     let layout = plan.layout.clone();
@@ -4869,7 +4869,7 @@ fn an_oversized_networking_status_reaches_every_connection_in_partial_bunches() 
     };
     let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
     let mut bound = PeerLab::bind(0, config).unwrap();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let map_url = PeerLabAdmission::default().map_url;
     let plan = profile.game_state_open_plan(map_url).unwrap().unwrap();
     let layout = plan.layout.clone();

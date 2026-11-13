@@ -126,7 +126,7 @@ fn main() -> Result<()> {
     let profile: BTreeMap<String, Supplied> =
         serde_json::from_str(&text).context("parse profile")?;
     let saved = read_saved_prospect(File::open(&options.save).context("open save")?)?;
-    let release = ReleaseProfile::release_3_0_31();
+    let release = ReleaseProfile::fixture("3.0.31");
     let base = |slot| {
         release
             .manager_open_plan(slot, "/Game/Maps/Terrain_016_OLY/Terrain_016")?

@@ -89,7 +89,7 @@ fn main() -> Result<()> {
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let plans = ReleaseProfile::release_3_0_31()
+    let plans = ReleaseProfile::fixture("3.0.31")
         .manager_open_plans("/Game/Maps/Terrain_016_OLY/Terrain_016")?;
     for (channel, supplied) in &profile {
         let Some(slot) = slot(channel) else {

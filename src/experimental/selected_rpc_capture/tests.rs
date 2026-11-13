@@ -347,7 +347,7 @@ fn writer_selected_absent_payload_replays_without_source_completion_claim() {
     assert_eq!(final_counts.incomplete, 0);
     file.seek(SeekFrom::Start(0)).unwrap();
     let profile = ReplayProfile::qualify(
-        &ReleaseProfile::release_3_0_34(),
+        &ReleaseProfile::fixture("3.0.34"),
         VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
         VisibilityRpc82Layout::NormalSingleCustomStruct,
     )

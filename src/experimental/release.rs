@@ -1888,20 +1888,22 @@ impl ReleaseProfile {
 pub const RELEASE_FIXTURE_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/releases");
 
-/// Path of the frozen release profile `name` (`"3.0.32"` names
-/// `tests/fixtures/releases/3.0.32.toml`).
-pub fn release_fixture_path(name: &str) -> std::path::PathBuf {
-    assert!(
-        !name.is_empty() && !name.contains(['/', '\\']) && name != "..",
-        "release fixture names are plain file stems"
-    );
-    Path::new(RELEASE_FIXTURE_DIR).join(format!("{name}.toml"))
-}
+impl ReleaseProfile {
+    /// Path of the frozen release profile `name` (`"3.0.32"` names
+    /// `tests/fixtures/releases/3.0.32.toml`).
+    pub fn fixture_path(name: &str) -> std::path::PathBuf {
+        assert!(
+            !name.is_empty() && !name.contains(['/', '\\']) && name != "..",
+            "release fixture names are plain file stems"
+        );
+        Path::new(RELEASE_FIXTURE_DIR).join(format!("{name}.toml"))
+    }
 
-/// Load the frozen release profile `name` for tests and examples; panics,
-/// naming the file, when it is missing or invalid.
-pub fn release_fixture(name: &str) -> ReleaseProfile {
-    let path = release_fixture_path(name);
-    ReleaseProfile::load(&path)
-        .unwrap_or_else(|error| panic!("release fixture {}: {error:#}", path.display()))
+    /// Load the frozen release profile `name` for tests and examples; panics,
+    /// naming the file, when it is missing or invalid.
+    pub fn fixture(name: &str) -> Self {
+        let path = Self::fixture_path(name);
+        Self::load(&path)
+            .unwrap_or_else(|error| panic!("release fixture {}: {error:#}", path.display()))
+    }
 }

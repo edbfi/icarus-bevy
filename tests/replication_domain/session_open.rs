@@ -719,8 +719,8 @@ fn controller_possession_update_names_the_pawn_as_handles_17_and_20() {
     )
     .unwrap();
     for profile in [
-        ReleaseProfile::release_3_0_32(),
-        ReleaseProfile::release_3_0_35(),
+        ReleaseProfile::fixture("3.0.32"),
+        ReleaseProfile::fixture("3.0.35"),
         pinned,
     ] {
         let plan = profile

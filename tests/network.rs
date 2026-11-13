@@ -4127,7 +4127,7 @@ fn production_records_follow_the_switch_and_the_release_chain() {
     let parsed: ServerConfig = toml::from_str("[network]\nenabled = true\n").unwrap();
     assert!(parsed.network.connected_player_records);
     let directory = tempfile::tempdir().unwrap();
-    let older = ReleaseProfile::release_3_0_32();
+    let older = ReleaseProfile::fixture("3.0.32");
     let path = directory.path().join("release-3032.toml");
     fs::write(
         &path,

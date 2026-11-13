@@ -126,7 +126,7 @@ fn main() -> Result<()> {
     let options = Options::parse();
     let text = std::fs::read_to_string(&options.profile).context("read profile")?;
     let file: ProfileFile = serde_json::from_str(&text).context("parse profile")?;
-    let release = ReleaseProfile::release_3_0_31();
+    let release = ReleaseProfile::fixture("3.0.31");
     let codec = ActorChannelCodec {
         engine_net_version: release.engine_network_version,
         exports_enabled: false,

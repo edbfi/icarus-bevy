@@ -302,7 +302,7 @@ fn release_toml_profile() -> ReleaseProfile {
 /// with level visibility actors on.
 pub(super) fn level_lab() -> PeerLab {
     let mut lab = possession_lab(true);
-    lab.enable_level_visibility_actors(&ReleaseProfile::release_3_0_35())
+    lab.enable_level_visibility_actors(&ReleaseProfile::fixture("3.0.35"))
         .unwrap();
     lab
 }
@@ -346,7 +346,7 @@ fn switch_off_level_reports_send_the_parent_commits_bunches() {
     // The probe's path: the production bind, then the lab API.
     let mut production_on = production_digest_lab(release_toml_config(false));
     production_on
-        .enable_level_visibility_actors(&ReleaseProfile::release_3_0_35())
+        .enable_level_visibility_actors(&ReleaseProfile::fixture("3.0.35"))
         .unwrap();
     assert!(production_on.has_level_visibility_actors());
     let on = level_report_session_digests(&mut production_on);
@@ -506,7 +506,7 @@ fn assert_level_open(open: &ReceivedLevelOpen, index: usize, package: &str) -> u
     use super::super::super::rep_layout::{
         MovementLevel, RotationLevel, parse_rep_properties, world_settings_rep_layout,
     };
-    let actors = super::super::super::release::ReleaseLevelActorsProfile::icarus_world_settings();
+    let actors = ReleaseProfile::fixture("3.0.35").level_actors.unwrap();
     let world = package.rsplit('/').next().unwrap();
     let [reference] = open.exports.as_slice() else {
         panic!("one exported reference");
@@ -561,10 +561,9 @@ fn composed_static_open_decodes_reencodes_and_matches_the_observed_lengths() {
         actor_channel::{encode_actor_bunch_body, read_actor_bunch_body, read_export_prefix},
         actor_open::{StaticActorOpen, compose_static_actor_open},
         archive::ByteOrder,
-        release::ReleaseLevelActorsProfile,
         session_open::{ConnectionExports, NetGuidCache, encode_exports},
     };
-    let actors = ReleaseLevelActorsProfile::icarus_world_settings();
+    let actors = ReleaseProfile::fixture("3.0.35").level_actors.unwrap();
     assert_eq!(actors.names[0].len(), 21);
     assert_eq!(actors.names[1].len(), 24);
     let codec = actor_codec(17, ByteOrder::Little);
@@ -837,7 +836,7 @@ fn refused_absent_and_malformed_reports_never_close_or_drop_their_bunch() {
     };
     assert!(config.admitted(&name(MAX_LEVEL_NAME_UNITS)).is_some());
     assert!(config.admitted(&name(MAX_LEVEL_NAME_UNITS + 1)).is_none());
-    let release = ReleaseProfile::release_3_0_35();
+    let release = ReleaseProfile::fixture("3.0.35");
     let archetype_package = release
         .player_controller
         .as_ref()
@@ -1562,7 +1561,7 @@ fn a_shared_identity_survives_the_reporters_departure() {
     let spec = replication_spec(&lab, LEVEL_A);
     assert!(lab.open_actor(2, 7, spec, first, 17).is_some());
     deliver_bunches(&mut lab, &socket_two, &mut client_two, |_| true);
-    let actor_chain = ReleaseProfile::release_3_0_35()
+    let actor_chain = ReleaseProfile::fixture("3.0.35")
         .level_actors
         .unwrap()
         .actor_chain(0, LEVEL_A)
@@ -2126,7 +2125,7 @@ fn production_refuses_the_gated_switch_and_only_the_lab_api_enables_it() {
     );
     // The release's own packages are reserved, in folded form.
     let reserved = &lab.level_visibility.as_ref().unwrap().reserved_packages;
-    let release = ReleaseProfile::release_3_0_35();
+    let release = ReleaseProfile::fixture("3.0.35");
     for package in release.server_package_paths() {
         assert!(
             reserved.contains(&package.to_ascii_lowercase()),
@@ -2138,18 +2137,18 @@ fn production_refuses_the_gated_switch_and_only_the_lab_api_enables_it() {
     let _peer = level_peer(&mut lab, 1, "AuthoredLate");
     assert!(lab.disable_level_visibility_actors().is_err());
     assert!(
-        lab.enable_level_visibility_actors(&ReleaseProfile::release_3_0_35())
+        lab.enable_level_visibility_actors(&ReleaseProfile::fixture("3.0.35"))
             .is_err()
     );
     // Without the controller open, or with a release without identities.
     let mut bare = PeerLab::bind(0, PeerLabConfig::default()).unwrap();
     assert!(
-        bare.enable_level_visibility_actors(&ReleaseProfile::release_3_0_35())
+        bare.enable_level_visibility_actors(&ReleaseProfile::fixture("3.0.35"))
             .is_err()
     );
     let mut lab = possession_lab(true);
     assert!(
-        lab.enable_level_visibility_actors(&ReleaseProfile::release_3_0_32())
+        lab.enable_level_visibility_actors(&ReleaseProfile::fixture("3.0.32"))
             .is_err()
     );
     assert!(!lab.has_level_visibility_actors());

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 fn profile() -> ReplayProfile {
     ReplayProfile::qualify(
-        &ReleaseProfile::release_3_0_34(),
+        &ReleaseProfile::fixture("3.0.34"),
         VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
         VisibilityRpc82Layout::NormalSingleCustomStruct,
     )
@@ -87,7 +87,7 @@ fn partial_initial_final_single_part_is_writer_valid() {
 fn explicit_profile_and_layout_are_required() {
     assert!(matches!(
         ReplayProfile::qualify(
-            &ReleaseProfile::release_3_0_34(),
+            &ReleaseProfile::fixture("3.0.34"),
             VisibilityArchiveProfile::Unqualified,
             VisibilityRpc82Layout::NormalSingleCustomStruct
         ),
@@ -95,13 +95,13 @@ fn explicit_profile_and_layout_are_required() {
     ));
     assert!(matches!(
         ReplayProfile::qualify(
-            &ReleaseProfile::release_3_0_34(),
+            &ReleaseProfile::fixture("3.0.34"),
             VisibilityArchiveProfile::NormalLittleEndianNullMapCustom,
             VisibilityRpc82Layout::Unqualified
         ),
         Err(ReplayError::Layout)
     ));
-    let mut release = ReleaseProfile::release_3_0_34();
+    let mut release = ReleaseProfile::fixture("3.0.34");
     release.pin.build_id += 1;
     assert!(matches!(
         ReplayProfile::qualify(
@@ -310,8 +310,8 @@ fn matched_release_reports_consumption_and_redacted_string_lengths() {
         .collect();
     let rows = encode(&[row(payload.bit_len(), &hex)]);
     for release in [
-        ReleaseProfile::release_3_0_34(),
-        ReleaseProfile::release_3_0_35(),
+        ReleaseProfile::fixture("3.0.34"),
+        ReleaseProfile::fixture("3.0.35"),
     ] {
         let profile = ReplayProfile::qualify(
             &release,

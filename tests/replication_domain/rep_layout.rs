@@ -1504,10 +1504,10 @@ fn survival_controller_left_prospect_session_is_a_three_bit_enum() {
     assert_eq!(layout[25], RepCommand::Enum { bits: 3 });
     assert_eq!(layout[26], RepCommand::Object);
     for profile in [
-        ReleaseProfile::release_3_0_31(),
-        ReleaseProfile::release_3_0_32(),
-        ReleaseProfile::release_3_0_34(),
-        ReleaseProfile::release_3_0_35(),
+        ReleaseProfile::fixture("3.0.31"),
+        ReleaseProfile::fixture("3.0.32"),
+        ReleaseProfile::fixture("3.0.34"),
+        ReleaseProfile::fixture("3.0.35"),
     ] {
         let plan = profile
             .player_controller_open_plan("/Game/Maps/Conifer_Terrain_004", [0.0; 3])

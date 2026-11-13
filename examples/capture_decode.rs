@@ -2765,7 +2765,9 @@ pub fn run(input: &Path, detail: &Path) -> Result<Value> {
 
 /// [`run`] with the detail confined to `work_root` instead.
 pub fn run_in(input: &Path, detail: &Path, work_root: &Path) -> Result<Value> {
-    run_in_with_profile(input, detail, work_root, &ReleaseProfile::release_3_0_32())
+    // Captures default to the frozen 3.0.32 profile they were recorded with.
+    let profile = ReleaseProfile::load(&ReleaseProfile::fixture_path("3.0.32"))?;
+    run_in_with_profile(input, detail, work_root, &profile)
 }
 
 /// [`run_in`] against an explicit [`ReleaseProfile`].
@@ -2866,12 +2868,10 @@ where
             && options.bestiary_guid.is_none(),
         "inbound options require --inbound-controller-metadata"
     );
-    let profile = options
-        .release_profile
-        .as_deref()
-        .map(ReleaseProfile::load)
-        .transpose()?
-        .unwrap_or_else(ReleaseProfile::release_3_0_32);
+    let profile = options.release_profile.as_deref().map_or_else(
+        || ReleaseProfile::load(&ReleaseProfile::fixture_path("3.0.32")),
+        ReleaseProfile::load,
+    )?;
     run_recording(
         &options.input,
         &options.detail,
@@ -3048,8 +3048,8 @@ impl InboundConfig {
         // 3.0.32 is qualified by F-954/F-955/F-1015; 3.0.34 by F-1016.
         // These are static framing bounds, not RPC parameter semantics.
         let qualified = match profile.pin.build_id {
-            25_956_137 => ReleaseProfile::release_3_0_32(),
-            26_313_077 => ReleaseProfile::release_3_0_34(),
+            25_956_137 => ReleaseProfile::fixture("3.0.32"),
+            26_313_077 => ReleaseProfile::fixture("3.0.34"),
             _ => bail!("inbound component bounds unavailable for this release"),
         };
         ensure!(
@@ -3669,7 +3669,7 @@ mod connected_player_schema_tests {
     /// layouts, which parse authored record and array streams whole.
     #[test]
     fn connected_player_record_and_array_blocks_are_recognised() -> Result<()> {
-        let profile = ReleaseProfile::release_3_0_35();
+        let profile = ReleaseProfile::fixture("3.0.35");
         let archetype = Some("Default__BP_IcarusGameState_C");
         let mut layouts = Vec::new();
         for (name, schema, handles) in [

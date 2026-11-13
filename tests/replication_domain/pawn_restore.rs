@@ -410,7 +410,7 @@ fn the_stomach_keeps_entries_with_known_food() {
 }
 
 fn plan() -> (ReleaseProfile, PawnOpenPlan, usize) {
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let plan = profile
         .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
         .unwrap()
@@ -585,9 +585,9 @@ fn canonical_restored_actor_values_map_once_to_each_releases_wire_handles() {
     let restored = restore_with_stomach(&record, &current_state(), 0);
     let canonical = restored.pawn.clone();
     for (profile, expected_handles) in [
-        (ReleaseProfile::release_3_0_31(), [58, 63, 64, 66]),
-        (ReleaseProfile::release_3_0_32(), [58, 63, 64, 66]),
-        (ReleaseProfile::release_3_0_34(), [58, 64, 65, 67]),
+        (ReleaseProfile::fixture("3.0.31"), [58, 63, 64, 66]),
+        (ReleaseProfile::fixture("3.0.32"), [58, 63, 64, 66]),
+        (ReleaseProfile::fixture("3.0.34"), [58, 64, 65, 67]),
     ] {
         let plan = profile
             .pawn_open_plan("/Game/Maps/Test/Test")

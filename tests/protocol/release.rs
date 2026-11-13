@@ -4,7 +4,7 @@ use icarus_bevy::experimental::{
     peer_lab::PeerLabConfig,
     release::{
         ReleaseClassNetCacheBounds, ReleasePin, ReleaseProfile, ReleaseRowHandleProfile,
-        ReleaseTagProfile, TAG_NET_INDEX_HASH_3_0_31, TAG_NET_INDEX_HASH_3_0_32, network_checksum,
+        ReleaseTagProfile, network_checksum,
     },
     rep_layout::{ICARUS_ROW_HANDLE_NONE, TagEncoding, icarus_row_handle_width_bytes},
 };
@@ -35,7 +35,7 @@ fn the_tracked_pin_is_consistent() {
     assert_eq!(pin.network_checksum, network_checksum(&pin.project_version));
 
     let profile = ReleaseProfile::load(&path).unwrap();
-    assert_eq!(profile, ReleaseProfile::release_3_0_36());
+    assert_eq!(profile, ReleaseProfile::fixture("3.0.36"));
 }
 
 /// Every frozen release file is complete and parses to exactly the built-in
@@ -43,7 +43,6 @@ fn the_tracked_pin_is_consistent() {
 /// shares every 3.0.31 value except its build id.
 #[test]
 fn release_profile_files_equal_the_constructors_they_replace() {
-    use icarus_bevy::experimental::release::{release_fixture, release_fixture_path};
     let mut alias = ReleaseProfile::release_3_0_31();
     alias.pin.build_id = 25_793_767;
     for (name, expected) in [
@@ -54,7 +53,7 @@ fn release_profile_files_equal_the_constructors_they_replace() {
         ("3.0.35", ReleaseProfile::release_3_0_35()),
         ("3.0.36", ReleaseProfile::release_3_0_36()),
     ] {
-        assert_eq!(release_fixture(name), expected, "{name}");
+        assert_eq!(ReleaseProfile::fixture(name), expected, "{name}");
         // The pin-only text the constructors used to back resolves to the same
         // value, so the file is exactly what the build id selected.
         let pin = &expected.pin;
@@ -67,7 +66,7 @@ fn release_profile_files_equal_the_constructors_they_replace() {
             expected,
             "{name}"
         );
-        let text = std::fs::read_to_string(release_fixture_path(name)).unwrap();
+        let text = std::fs::read_to_string(ReleaseProfile::fixture_path(name)).unwrap();
         for section in [
             "[release]",
             "[tags]",
@@ -87,7 +86,7 @@ fn release_profile_files_equal_the_constructors_they_replace() {
             "{name}"
         );
     }
-    let fixture = std::fs::read_to_string(release_fixture_path("3.0.36")).unwrap();
+    let fixture = std::fs::read_to_string(ReleaseProfile::fixture_path("3.0.36")).unwrap();
     let active =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
             .unwrap();
@@ -100,7 +99,7 @@ fn release_profile_files_equal_the_constructors_they_replace() {
 #[test]
 fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     use icarus_bevy::experimental::rep_layout::PawnLayoutVersion;
-    let profile = ReleaseProfile::release_3_0_34();
+    let profile = ReleaseProfile::fixture("3.0.34");
     profile.validate().unwrap();
     assert_eq!(profile.pin.build_id, 26_313_077);
     assert_eq!(profile.pin.network_checksum, 4_087_436_304);
@@ -119,7 +118,7 @@ fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     let pawn = profile.pawn.as_ref().unwrap();
     assert_eq!(pawn.layout_version, PawnLayoutVersion::ReworkedCharacter);
     assert_eq!(pawn.archetype[0].checksum, 537_502_963);
-    let previous = ReleaseProfile::release_3_0_32();
+    let previous = ReleaseProfile::fixture("3.0.32");
     assert_eq!(pawn.components, previous.pawn.as_ref().unwrap().components);
     assert_eq!(profile.player_controller, previous.player_controller);
     assert_eq!(profile.player_state, previous.player_state);
@@ -128,7 +127,11 @@ fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     assert_eq!(
         game_state.connected_player_record.take(),
         Some(
-            icarus_bevy::experimental::release::ReleaseGameStateProfile::connected_player_record_chain()
+            ReleaseProfile::fixture("3.0.35")
+                .game_state
+                .unwrap()
+                .connected_player_record
+                .unwrap()
         )
     );
     assert_eq!(Some(game_state), previous.game_state);
@@ -147,7 +150,7 @@ fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
 
 #[test]
 fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
-    let profile = ReleaseProfile::release_3_0_35();
+    let profile = ReleaseProfile::fixture("3.0.35");
     profile.validate().unwrap();
     assert_eq!(profile.pin.build_id, 26_425_113);
     assert_eq!(profile.pin.network_checksum, 1_299_872_271);
@@ -155,7 +158,7 @@ fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
     assert_eq!(profile.tags.ini_tag_count, 1_932);
     assert_eq!(profile.tags.unique_node_count, 2_346);
     assert_eq!(profile.tags.net_index_hash, 0xbf0f_c0d8);
-    let previous = ReleaseProfile::release_3_0_34();
+    let previous = ReleaseProfile::fixture("3.0.34");
     assert_eq!(profile.tags.total_bits, previous.tags.total_bits);
     assert_eq!(
         profile.tags.effective_first_segment,
@@ -194,7 +197,7 @@ fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
 
 #[test]
 fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
-    let profile = ReleaseProfile::release_3_0_36();
+    let profile = ReleaseProfile::fixture("3.0.36");
     profile.validate().unwrap();
     assert_eq!(profile.pin.build_id, 26_613_688);
     assert_eq!(
@@ -214,7 +217,7 @@ fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
         ),
         (12, 0, 6)
     );
-    let previous = ReleaseProfile::release_3_0_35();
+    let previous = ReleaseProfile::fixture("3.0.35");
     assert_ne!(profile.tags.net_index_hash, previous.tags.net_index_hash);
     assert_ne!(
         profile.tags.unique_node_count,
@@ -264,11 +267,14 @@ fn release_3_0_36_rejects_previous_hello_and_accepts_current_hello() {
         thread,
         time::{Duration, Instant},
     };
-    let profile = ReleaseProfile::release_3_0_36();
+    let profile = ReleaseProfile::fixture("3.0.36");
     let mut lab =
         PeerLab::bind(0, PeerLabConfig::default().with_release_profile(&profile)).unwrap();
     for (version, accepted) in [
-        (ReleaseProfile::release_3_0_35().pin.network_checksum, false),
+        (
+            ReleaseProfile::fixture("3.0.35").pin.network_checksum,
+            false,
+        ),
         (profile.pin.network_checksum, true),
     ] {
         let address = lab.local_addr().unwrap();
@@ -344,13 +350,13 @@ fn release_row_widths_bind_trait_layouts_and_can_be_rebound() {
             })
             .sum()
     }
-    let profile = ReleaseProfile::release_3_0_35();
+    let profile = ReleaseProfile::fixture("3.0.35");
     let original = icarus_bevy::experimental::rep_layout::trait_component_rep_layout();
     let mut layout = original.clone();
     profile.apply_row_handle_profile(&mut layout).unwrap();
     assert_eq!(count_rows(&layout, true), 1);
     let mut nested = vec![RepCommand::DynamicArray { element: layout }];
-    let previous = ReleaseProfile::release_3_0_34();
+    let previous = ReleaseProfile::fixture("3.0.34");
     previous.apply_row_handle_profile(&mut nested).unwrap();
     assert_eq!(nested, vec![RepCommand::DynamicArray { element: original }]);
     assert_eq!(count_rows(&nested, false), 1);
@@ -360,7 +366,7 @@ fn release_row_widths_bind_trait_layouts_and_can_be_rebound() {
 
 #[test]
 fn builtin_profiles_match_observed_3_0_31_and_3_0_32_metadata() {
-    let p31 = ReleaseProfile::release_3_0_31();
+    let p31 = ReleaseProfile::fixture("3.0.31");
     assert!(p31.validate().is_ok());
     assert_eq!(p31.pin.build_id, 25_793_607);
     assert_eq!(p31.pin.network_checksum, 2_406_501_229);
@@ -369,7 +375,7 @@ fn builtin_profiles_match_observed_3_0_31_and_3_0_32_metadata() {
     assert_eq!(p31.tags.unique_node_count, 2_299);
     assert_eq!(p31.tags.total_bits, 12);
     assert_eq!(p31.tags.container_bits, 6);
-    assert_eq!(p31.tags.net_index_hash, TAG_NET_INDEX_HASH_3_0_31);
+    assert_eq!(p31.tags.net_index_hash, 0xdc78_0a27);
     assert_eq!(
         p31.tags.tag_encoding(),
         TagEncoding::NetIndex {
@@ -378,14 +384,14 @@ fn builtin_profiles_match_observed_3_0_31_and_3_0_32_metadata() {
         }
     );
 
-    let p32 = ReleaseProfile::release_3_0_32();
+    let p32 = ReleaseProfile::fixture("3.0.32");
     assert!(p32.validate().is_ok());
     assert_eq!(p32.pin.build_id, 25_956_137);
     assert_eq!(p32.pin.network_checksum, 243_431_684);
     assert_eq!(p32.tags.data_table_tag_count, 130);
     assert_eq!(p32.tags.ini_tag_count, 1_889);
     assert_eq!(p32.tags.unique_node_count, 2_302);
-    assert_eq!(p32.tags.net_index_hash, TAG_NET_INDEX_HASH_3_0_32);
+    assert_eq!(p32.tags.net_index_hash, 0x6d0f_676f);
 
     assert_eq!(
         p32.class_net_cache.actor_bound("BP_IcarusPlayerState_C"),
@@ -461,14 +467,14 @@ zero_row_tables = [62, 164, 181]
 two_byte_row_tables = [0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 148, 152, 177, 178, 201, 207, 209, 215, 230, 234, 237, 248, 252, 254, 278]
 "#;
     let parsed = ReleaseProfile::parse(toml_text).unwrap();
-    assert_eq!(parsed, ReleaseProfile::release_3_0_32());
+    assert_eq!(parsed, ReleaseProfile::fixture("3.0.32"));
 }
 
 #[test]
 fn invalid_profile_bounds_and_tables_fail_closed() {
     let mut bad_tags = ReleaseTagProfile {
         total_bits: 11,
-        ..ReleaseProfile::release_3_0_32().tags
+        ..ReleaseProfile::fixture("3.0.32").tags
     };
     assert!(bad_tags.validate().is_err());
     bad_tags.total_bits = 13;
@@ -476,23 +482,23 @@ fn invalid_profile_bounds_and_tables_fail_closed() {
 
     let bad_bounds = ReleaseClassNetCacheBounds {
         stat_container: 0,
-        ..ReleaseClassNetCacheBounds::default()
+        ..ReleaseProfile::fixture("3.0.32").class_net_cache
     };
     assert!(bad_bounds.validate().is_err());
 
     let bad_rows = ReleaseRowHandleProfile {
         zero_row_tables: vec![164, 62],
-        ..ReleaseRowHandleProfile::default()
+        ..ReleaseProfile::fixture("3.0.32").row_handles
     };
     assert!(bad_rows.validate().is_err());
 
     let overlap_rows = ReleaseRowHandleProfile {
         zero_row_tables: vec![0, 62],
-        ..ReleaseRowHandleProfile::default()
+        ..ReleaseProfile::fixture("3.0.32").row_handles
     };
     assert!(overlap_rows.validate().is_err());
 
-    let mut out_of_range_rows = ReleaseRowHandleProfile::default();
+    let mut out_of_range_rows = ReleaseProfile::fixture("3.0.32").row_handles;
     out_of_range_rows.two_byte_row_tables.push(293);
     assert!(out_of_range_rows.validate().is_err());
 }
@@ -526,9 +532,9 @@ fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
         session_open::{ConnectionExports, NetGuidCache, PathSegment, encode_exports},
     };
     use sha2::{Digest, Sha256};
-    let p31 = ReleaseProfile::release_3_0_31().player_controller.unwrap();
+    let p31 = ReleaseProfile::fixture("3.0.31").player_controller.unwrap();
     assert_eq!(
-        ReleaseProfile::release_3_0_32().player_controller.as_ref(),
+        ReleaseProfile::fixture("3.0.32").player_controller.as_ref(),
         Some(&p31)
     );
     assert!(p31.validate().is_ok());
@@ -587,13 +593,13 @@ components = [
     assert_eq!(player_controller.components[0].rep_bools, vec![(2, true)]);
     assert_ne!(
         Some(player_controller),
-        ReleaseProfile::release_3_0_32().player_controller
+        ReleaseProfile::fixture("3.0.32").player_controller
     );
     // A known build without the section gets its built-in identifiers; an
     // unknown build gets none rather than an older build's.
     assert_eq!(
         ReleaseProfile::parse(release).unwrap().player_controller,
-        ReleaseProfile::release_3_0_32().player_controller
+        ReleaseProfile::fixture("3.0.32").player_controller
     );
     let unknown = release
         .replace("25956137", "1")
@@ -643,9 +649,9 @@ fn builtin_player_state_identifiers_compose_the_captured_export_prefix() {
         },
     };
     use sha2::{Digest, Sha256};
-    let p31 = ReleaseProfile::release_3_0_31();
+    let p31 = ReleaseProfile::fixture("3.0.31");
     assert_eq!(
-        ReleaseProfile::release_3_0_32().player_state,
+        ReleaseProfile::fixture("3.0.32").player_state,
         p31.player_state
     );
     let plan = p31
@@ -713,8 +719,8 @@ fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
         session_open::{ActorKey, ConnectionExports, NetGuidCache, PathSegment},
     };
     use sha2::{Digest, Sha256};
-    let p31 = ReleaseProfile::release_3_0_31();
-    assert_eq!(ReleaseProfile::release_3_0_32().game_state, p31.game_state);
+    let p31 = ReleaseProfile::fixture("3.0.31");
+    assert_eq!(ReleaseProfile::fixture("3.0.32").game_state, p31.game_state);
     let plan = p31
         .game_state_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
         .unwrap()
@@ -834,9 +840,9 @@ fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
         pawn_open::{PawnContent, PawnOpenState, compose_pawn_open},
         session_open::{ActorKey, ConnectionExports, NetGuidCache},
     };
-    let p31 = ReleaseProfile::release_3_0_31();
+    let p31 = ReleaseProfile::fixture("3.0.31");
     assert!(p31.pawn.is_some());
-    assert_eq!(ReleaseProfile::release_3_0_32().pawn, p31.pawn);
+    assert_eq!(ReleaseProfile::fixture("3.0.32").pawn, p31.pawn);
     let plan = p31
         .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
         .unwrap()
@@ -931,7 +937,7 @@ fn builtin_pawn_content_composes_every_block() {
         },
         session_open::{ActorKey, ConnectionExports, NetGuidCache},
     };
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let plan = profile
         .pawn_open_plan("/Game/Maps/Terrain_016_OLY/Terrain_016")
         .unwrap()
@@ -1222,7 +1228,7 @@ fn pawn_sections_parse_and_fail_closed() {
             .is_none()
     );
     let parsed = ReleaseProfile::parse(&format!("{base}{section}")).unwrap();
-    assert_ne!(parsed.pawn, ReleaseProfile::release_3_0_32().pawn);
+    assert_ne!(parsed.pawn, ReleaseProfile::fixture("3.0.32").pawn);
     // The section round-trips through the plan.
     let pawn = parsed.pawn.as_ref().unwrap();
     assert_eq!(
@@ -1308,7 +1314,7 @@ fn pawn_sections_parse_and_fail_closed() {
 #[test]
 fn manager_sections_parse_and_fail_closed() {
     use icarus_bevy::experimental::manager_open::ManagerSlot;
-    let builtin = ReleaseProfile::release_3_0_32();
+    let builtin = ReleaseProfile::fixture("3.0.32");
     let plans = builtin.manager_open_plans("/Game/Maps/Test/Test").unwrap();
     let slots: Vec<ManagerSlot> = plans.iter().map(|(slot, _)| *slot).collect();
     assert_eq!(
@@ -1401,11 +1407,11 @@ fn manager_sections_parse_and_fail_closed() {
 fn connected_player_record_chain_is_built_in_only_where_derived() {
     use icarus_bevy::experimental::release::network_checksum;
     let builtins = [
-        (ReleaseProfile::release_3_0_31(), false),
-        (ReleaseProfile::release_3_0_32(), false),
-        (ReleaseProfile::release_3_0_34(), true),
-        (ReleaseProfile::release_3_0_35(), true),
-        (ReleaseProfile::release_3_0_36(), true),
+        (ReleaseProfile::fixture("3.0.31"), false),
+        (ReleaseProfile::fixture("3.0.32"), false),
+        (ReleaseProfile::fixture("3.0.34"), true),
+        (ReleaseProfile::fixture("3.0.35"), true),
+        (ReleaseProfile::fixture("3.0.36"), true),
     ];
     for (profile, derived) in builtins {
         let pin = &profile.pin;
@@ -1443,7 +1449,7 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
         assert_eq!(parsed.game_state, profile.game_state, "{}", pin.build_id);
     }
     // The 3.0.31 client build shares the 3.0.31 built-ins.
-    let client = ReleaseProfile::release_3_0_31();
+    let client = ReleaseProfile::fixture("3.0.31");
     let parsed = ReleaseProfile::parse(&format!(
         "[release]\napp_id = {}\nbuild_id = 25793767\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
         client.pin.app_id,
@@ -1461,11 +1467,11 @@ fn connected_player_record_chain_is_built_in_only_where_derived() {
 fn level_actors_are_built_in_only_where_derived_and_overridable() {
     use icarus_bevy::experimental::release::{ReleaseLevelActorsProfile, network_checksum};
     let builtins = [
-        (ReleaseProfile::release_3_0_31(), false),
-        (ReleaseProfile::release_3_0_32(), false),
-        (ReleaseProfile::release_3_0_34(), true),
-        (ReleaseProfile::release_3_0_35(), true),
-        (ReleaseProfile::release_3_0_36(), false),
+        (ReleaseProfile::fixture("3.0.31"), false),
+        (ReleaseProfile::fixture("3.0.32"), false),
+        (ReleaseProfile::fixture("3.0.34"), true),
+        (ReleaseProfile::fixture("3.0.35"), true),
+        (ReleaseProfile::fixture("3.0.36"), false),
     ];
     let pin_toml = |pin: &icarus_bevy::experimental::release::ReleasePin, build: u64| {
         format!(
@@ -1479,7 +1485,10 @@ fn level_actors_are_built_in_only_where_derived_and_overridable() {
         let pin = &profile.pin;
         assert_eq!(profile.level_actors.is_some(), derived, "{}", pin.build_id);
         if let Some(actors) = &profile.level_actors {
-            assert_eq!(actors, &ReleaseLevelActorsProfile::icarus_world_settings());
+            assert_eq!(
+                Some(actors),
+                ReleaseProfile::fixture("3.0.35").level_actors.as_ref()
+            );
             assert_eq!(
                 actors.names,
                 ["IcarusWorldSettings_0", "BP_IcarusWorldSettings_C"]
@@ -1493,7 +1502,7 @@ fn level_actors_are_built_in_only_where_derived_and_overridable() {
             pin.build_id
         );
     }
-    let pin = ReleaseProfile::release_3_0_32().pin;
+    let pin = ReleaseProfile::fixture("3.0.32").pin;
     let base = pin_toml(&pin, pin.build_id);
     let explicit = ReleaseProfile::parse(&format!(
         "{base}[level_actors]\nnames = [\"AuthoredSettings_0\"]\nchecksum = 7\n"
@@ -1523,7 +1532,7 @@ fn level_actors_are_built_in_only_where_derived_and_overridable() {
         );
     }
     // The chain the opens export: actor, PersistentLevel, world, package.
-    let actors = ReleaseLevelActorsProfile::icarus_world_settings();
+    let actors = ReleaseProfile::fixture("3.0.35").level_actors.unwrap();
     let chain = actors
         .actor_chain(1, "/Game/Authored/Sublevels/Tile_x0_y0")
         .unwrap();

@@ -868,7 +868,7 @@ mod connected_player_records {
     }
 
     fn records_plan() -> ConnectedPlayersPlan {
-        ReleaseProfile::release_3_0_35()
+        ReleaseProfile::fixture("3.0.35")
             .connected_players_plan()
             .unwrap()
             .unwrap()

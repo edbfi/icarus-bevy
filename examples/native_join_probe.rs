@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn startup_flags_preserve_order_and_reject_invalid_plans_before_networking() {
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         let options = Options::try_parse_from([
             "probe",
             "--name",
@@ -1142,7 +1142,7 @@ mod tests {
 
     #[test]
     fn level_visibility_actors_default_off_and_fail_closed_before_networking() {
-        let profile = ReleaseProfile::release_3_0_35();
+        let profile = ReleaseProfile::fixture("3.0.35");
         let tracked = ReleaseProfile::load(std::path::Path::new("config/release.toml")).unwrap();
         let default = Options::try_parse_from(["probe", "--name", "Authored"]).unwrap();
         assert!(!default.level_visibility_actors);
@@ -1176,7 +1176,7 @@ mod tests {
         unnamed.level_actors = None;
         assert!(on.level_visibility_actors(&unnamed).is_err());
         assert!(!default.level_visibility_actors(&unnamed).unwrap());
-        let mut older = ReleaseProfile::release_3_0_32();
+        let mut older = ReleaseProfile::fixture("3.0.32");
         older.level_actors = profile.level_actors.clone();
         assert!(on.level_visibility_actors(&older).is_err());
         let mut no_controller = profile;

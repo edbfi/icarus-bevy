@@ -582,7 +582,7 @@ fn quest_actor_opens_match_m707_captured_export_digests_and_net_guids() {
     // Construction_C (`quests[6]`) excludes completed BPQ_Travel_C (`101`) from ActiveQuests.
     assert_eq!(stitched.quests[6].active_quests, vec![ActorKey::Saved(105)]);
 
-    let profile = ReleaseProfile::release_3_0_31();
+    let profile = ReleaseProfile::fixture("3.0.31");
     let map = "/Game/Maps/Terrain_016_OLY/Terrain_016";
     let base = profile.quest_open_base_plan(map).unwrap().unwrap();
     let codec = ActorChannelCodec {

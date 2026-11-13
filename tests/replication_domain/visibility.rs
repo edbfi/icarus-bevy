@@ -14,7 +14,7 @@ use icarus_bevy::experimental::visibility::{
 // presence bit and contain no captured names, traffic or original values.
 fn profile() -> VisibilityDecodeProfile {
     VisibilityDecodeProfile::qualify(
-        &ReleaseProfile::release_3_0_34(),
+        &ReleaseProfile::fixture("3.0.34"),
         VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
     )
     .unwrap()
@@ -331,7 +331,7 @@ fn malformed_values_never_replace_empty_or_existing_staging() {
 
 #[test]
 fn explicit_profiles_accept_qualified_routes_and_reject_unknown_or_wrong_metadata() {
-    let release = ReleaseProfile::release_3_0_34();
+    let release = ReleaseProfile::fixture("3.0.34");
     let payload = custom(true, false, |writer| hardcoded(writer, 0));
     for route in [
         VisibilityArchiveProfile::NormalLittleEndianNullMapCustom,
@@ -356,7 +356,7 @@ fn explicit_profiles_accept_qualified_routes_and_reject_unknown_or_wrong_metadat
         unknown_build,
         wrong_engine,
         wrong_game,
-        ReleaseProfile::release_3_0_32(),
+        ReleaseProfile::fixture("3.0.32"),
     ] {
         assert!(
             VisibilityDecodeProfile::qualify(
@@ -418,7 +418,8 @@ fn normal_rpc82_outer_vectors_preserve_presence_and_custom_bit_lengths() {
             VisibilityArchiveProfile::NormalLittleEndianPackageMapCustom,
         ] {
             let selected =
-                VisibilityDecodeProfile::qualify(&ReleaseProfile::release_3_0_34(), route).unwrap();
+                VisibilityDecodeProfile::qualify(&ReleaseProfile::fixture("3.0.34"), route)
+                    .unwrap();
             let value = parse_visibility_rpc82(
                 &payload,
                 &selected,
@@ -492,7 +493,7 @@ fn normal_rpc82_outer_rejects_truncation_trailing_bits_and_unqualified_layout() 
     }
     assert!(
         VisibilityDecodeProfile::qualify(
-            &ReleaseProfile::release_3_0_34(),
+            &ReleaseProfile::fixture("3.0.34"),
             VisibilityArchiveProfile::Unqualified,
         )
         .is_err()
