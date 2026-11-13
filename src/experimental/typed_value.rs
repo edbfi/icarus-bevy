@@ -312,7 +312,7 @@ pub struct TypingRequirement {
 
 /// Allowance for returned [`TypedSummary`] inline storage and Gap map nodes.
 /// The current finite set of ten [`Gap`] variants fits one BTreeMap leaf under
-/// the pinned Rust 1.99.1 implementation. 4096 bytes conservatively covers that
+/// the pinned Rust 1.100.0 implementation. 4096 bytes conservatively covers that
 /// bookkeeping and the inline summary even when no gaps occur. Revisit this
 /// allowance if the enum or pinned collection implementation changes; it is an
 /// implementation policy allowance, not an allocator or RSS measurement.
