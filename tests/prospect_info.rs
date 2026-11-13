@@ -1736,3 +1736,99 @@ fn mistyped_game_mode_fields_fail_closed() {
         assert!(typed(&[bad]).is_err());
     }
 }
+
+#[test]
+fn saved_projection_uses_effective_legacy_identity_and_rejects_reset() {
+    for version in [0, 1, 2] {
+        let original = payload(&prospect_info(), &[]);
+        let version_tag = int("Version", 2);
+        let inner = [
+            int("Version", version),
+            string("ProspectID", "legacy-id"),
+            string("ProspectDTKey", "Legacy_Key"),
+            original[version_tag.len()..].to_vec(),
+        ]
+        .concat();
+        let before = inner.clone();
+        let result = saved_prospect_from_payload(&inner);
+        if version == 0 {
+            assert!(result.is_err());
+        } else {
+            let info = result.unwrap().info;
+            assert_eq!(
+                String::from_utf16(&info.prospect_id).unwrap(),
+                if version == 1 {
+                    "legacy-id"
+                } else {
+                    "lab-prospect"
+                }
+            );
+            assert_eq!(
+                String::from_utf16(&info.prospect_dt_key).unwrap(),
+                if version == 1 {
+                    "Legacy_Key"
+                } else {
+                    "Lab_Key"
+                }
+            );
+        }
+        assert_eq!(inner, before);
+    }
+}
+
+#[test]
+fn saved_projection_rejects_unknown_enums_and_empty_identity() {
+    let info = prospect_info();
+    let known = enumerator("Difficulty", "EMissionDifficulty", "Hard");
+    let offset = info
+        .windows(known.len())
+        .position(|bytes| bytes == known)
+        .unwrap();
+    let unknown = [
+        info[..offset].to_vec(),
+        enumerator("Difficulty", "EMissionDifficulty", "Unsupported"),
+        info[offset + known.len()..].to_vec(),
+    ]
+    .concat();
+    assert!(saved_prospect_from_payload(&payload(&unknown, &[])).is_err());
+    let id = string("ProspectID", "lab-prospect");
+    let empty = [string("ProspectID", ""), info[id.len()..].to_vec()].concat();
+    assert!(saved_prospect_from_payload(&payload(&empty, &[])).is_err());
+}
+
+#[test]
+fn saved_projection_rejects_unpaired_utf16_identity_without_mutating_input() {
+    for (field, valid) in [("ProspectID", "lab-prospect"), ("ProspectDTKey", "Lab_Key")] {
+        for surrogate in [0xd800_u16, 0xdc00_u16] {
+            let info = prospect_info();
+            let original = string(field, valid);
+            let offset = info
+                .windows(original.len())
+                .position(|bytes| bytes == original)
+                .unwrap();
+            // A correctly framed wide FString: two units including its NUL,
+            // with an unpaired surrogate as the only content unit.
+            let wide = [
+                (-2_i32).to_le_bytes().as_slice(),
+                &surrogate.to_le_bytes(),
+                &0_u16.to_le_bytes(),
+            ]
+            .concat();
+            let malformed = [
+                info[..offset].to_vec(),
+                tag(field, "StrProperty", &[0], &wide),
+                info[offset + original.len()..].to_vec(),
+            ]
+            .concat();
+            let inner = payload(&malformed, &[]);
+            let before = inner.clone();
+            let error = saved_prospect_from_payload(&inner)
+                .err()
+                .expect("unpaired identity surrogate must be refused");
+            // This exact error follows successful root framing and staging;
+            // malformed fixture framing must not satisfy the regression.
+            assert_eq!(error.to_string(), "unavailable effective prospect identity");
+            assert_eq!(inner, before);
+        }
+    }
+}
