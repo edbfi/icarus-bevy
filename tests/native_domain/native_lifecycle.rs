@@ -451,7 +451,7 @@ fn request_with_names(names: impl IntoIterator<Item = Vec<u16>>) -> RestoreBatch
 }
 
 fn names_near_logical_limit(total: usize) -> impl Iterator<Item = Vec<u16>> {
-    // 513 units grows to 1024 when decoded, approaching the doubling bound.
+    // Exercise lengths just above a growth boundary without requiring a decoder strategy.
     (0..total.div_ceil(513)).map(move |rank| vec![0; 513.min(total - rank * 513)])
 }
 
@@ -491,7 +491,7 @@ fn definition_logical_name_boundary_is_stable_across_json_and_toml() {
                         .iter()
                         .map(|slot| slot.owner_name.capacity())
                         .sum::<usize>()
-                        > MAX_LIFECYCLE_NAME_TOTAL_UNITS
+                        <= MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS
                 );
             }
         }
@@ -531,16 +531,30 @@ fn request_logical_name_boundary_is_stable_across_json_and_toml() {
 }
 
 #[test]
-fn mixed_small_and_large_names_allow_decoded_minimum_vector_capacity() {
-    // Exactly the logical limit, but decoded minimum-four allocations for the
-    // tiny names push aggregate capacity above twice that limit.
+fn mixed_small_and_large_names_allow_decoded_and_reserved_capacity() {
+    // Decoders may reserve exact lengths. Exercise their actual output, then
+    // explicitly construct the supported doubling/minimum-four allocation.
     let names = || {
         std::iter::repeat_with(|| vec![0; 513])
             .take(2032)
             .chain(std::iter::repeat_with(|| vec![0]).take(6160))
     };
     let (catalog, definition) = definition_with_names(names());
-    let compiled = CompiledNativeLifecycle::compile(definition.clone(), &catalog).unwrap();
+    let mut reserved = definition.clone();
+    for slot in &mut reserved.slots {
+        let capacity = slot.owner_name.len().next_power_of_two().max(4);
+        slot.owner_name
+            .reserve_exact(capacity - slot.owner_name.len());
+    }
+    assert!(
+        reserved
+            .slots
+            .iter()
+            .map(|slot| slot.owner_name.capacity())
+            .sum::<usize>()
+            > 2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS
+    );
+    let compiled = CompiledNativeLifecycle::compile(reserved, &catalog).unwrap();
     let parsed =
         CompiledNativeLifecycle::parse(&serde_json::to_string(&definition).unwrap(), &catalog)
             .unwrap();
@@ -561,7 +575,7 @@ fn mixed_small_and_large_names_allow_decoded_minimum_vector_capacity() {
             .iter()
             .map(|slot| slot.owner_name.capacity())
             .sum::<usize>()
-            > 2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS
+            <= MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS
     );
     let relationships = CompiledNativeRelationships::compile(
         NativeRelationshipsDefinition {
@@ -609,9 +623,34 @@ fn mixed_small_and_large_names_allow_decoded_minimum_vector_capacity() {
                 .iter()
                 .map(|recorder| recorder.owner_name.capacity())
                 .sum::<usize>()
-                > 2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS
+                <= MAX_LIFECYCLE_NAME_TOTAL_CAPACITY_UNITS
         );
     }
+    // Request capacity validation precedes the initial-restore identity check.
+    let base = world();
+    let mut request = request_with_names(names());
+    request.lifecycle_id = "0".repeat(64);
+    for recorder in &mut request.recorders {
+        let capacity = recorder.owner_name.len().next_power_of_two().max(4);
+        recorder
+            .owner_name
+            .reserve_exact(capacity - recorder.owner_name.len());
+    }
+    assert!(
+        request
+            .recorders
+            .iter()
+            .map(|recorder| recorder.owner_name.capacity())
+            .sum::<usize>()
+            > 2 * MAX_LIFECYCLE_NAME_TOTAL_UNITS
+    );
+    assert!(
+        prepare_owner_restore(&base, &request)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("native initial restore identity or sequence invalid")
+    );
 }
 
 #[test]
