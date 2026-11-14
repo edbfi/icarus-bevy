@@ -272,6 +272,20 @@ fn validate_release(release: &ReleasePin) -> Result<(), PlayerError> {
     Ok(())
 }
 
+/// Stored provenance is informational: only what protects the decoder is
+/// checked (a bounded, control-free version string). It is never checked for
+/// internal consistency or against current constants, so a changed checksum
+/// formula or app id cannot make a store unreadable.
+fn validate_provenance(release: &ReleasePin) -> Result<(), PlayerError> {
+    if release.project_version.len() > 512 {
+        return Err(PlayerError::Limit);
+    }
+    if release.project_version.chars().any(char::is_control) {
+        return Err(PlayerError::InvalidContext);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub struct PlayerCheckpoint {
     pub location_cm: [f64; 3],
@@ -472,7 +486,7 @@ impl PlayerSnapshot {
     pub fn validate(&self) -> Result<(), PlayerError> {
         self.context.validate()?;
         if let Some(release) = &self.written_under {
-            validate_release(release)?;
+            validate_provenance(release)?;
         }
         Self::check_capacity(self.records.len())?;
         let retained = self

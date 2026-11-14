@@ -439,7 +439,7 @@ fn programmatic_context_rejects_spare_capacity_and_unbounded_rows_before_copying
 }
 
 #[test]
-fn release_is_validated_provenance_and_never_part_of_the_binding() {
+fn current_release_is_validated_provenance_and_never_part_of_the_binding() {
     let mut release = ReleasePin {
         app_id: 2089300,
         build_id: 7,
@@ -450,12 +450,59 @@ fn release_is_validated_provenance_and_never_part_of_the_binding() {
     assert_eq!(fresh.written_under(), Some(&release));
     // Same binding under any release: the registry accepts it unchanged.
     PlayerRegistry::new(fresh, &context(), 1).unwrap();
+    // The release being recorded now must be valid; stored provenance need not
+    // be (stored_provenance_never_makes_a_store_unreadable).
     release.project_version = "A".repeat(513);
     release.network_checksum = network_checksum(&release.project_version);
     assert_eq!(
         PlayerSnapshot::fresh(context(), &release).err(),
         Some(PlayerError::InvalidContext)
     );
+}
+
+#[test]
+fn stored_provenance_never_makes_a_store_unreadable() {
+    let release = ReleasePin {
+        app_id: 2089300,
+        build_id: 7,
+        project_version: "authored".into(),
+        network_checksum: network_checksum("authored"),
+    };
+    let mut players = PlayerRegistry::new(
+        PlayerSnapshot::fresh(context(), &release).unwrap(),
+        &context(),
+        64,
+    )
+    .unwrap();
+    let key = PlayerKey::new(1, 0).unwrap();
+    let mut edited = checkpoint();
+    edited.vitals.health = 37;
+    players.reserve(key, 1, edited).unwrap();
+    players.activate(1).unwrap();
+    let mut stored = serde_json::to_value(players.snapshot()).unwrap();
+    // Provenance inconsistent with today's formula and constants: a checksum
+    // that does not match its version, another app id and build zero.
+    stored["written_under"] = serde_json::json!({
+        "app_id": 1,
+        "build_id": 0,
+        "project_version": "9.9.999",
+        "network_checksum": network_checksum("authored"),
+    });
+    let mut snapshot = serde_json::from_value::<PlayerSnapshot>(stored).unwrap();
+    let previous = snapshot.open(&context(), &release).unwrap().unwrap();
+    assert_eq!(
+        (
+            previous.app_id,
+            previous.build_id,
+            previous.project_version.as_str()
+        ),
+        (1, 0, "9.9.999")
+    );
+    assert_eq!(snapshot.written_under(), Some(&release));
+    assert_eq!(snapshot, players.snapshot());
+    let projection = snapshot.projection(key).unwrap();
+    assert_eq!(projection.checkpoint, edited);
+    assert_eq!(projection, players.snapshot().projection(key).unwrap());
 }
 
 #[test]
