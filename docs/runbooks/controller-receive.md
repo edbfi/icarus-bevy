@@ -1,6 +1,6 @@
 # Controller receive diagnostics
 
-Source contract for qualified diagnostics builds; these counters establish no
+Authored lifetime metadata is qualified (F-1182); these counters establish no
 stock-client execution, geometry, world entry or compatibility (F-1045, U-038).
 
 ## Outputs and lifetime
