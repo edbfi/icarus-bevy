@@ -195,12 +195,13 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use bevy::{
     app::{RunFixedMainLoop, RunFixedMainLoopSystems},
-    prelude::{App, IntoScheduleConfigs, Plugin, ResMut, Resource, resource_exists},
+    prelude::{App, IntoScheduleConfigs, Plugin, Resource, resource_exists},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    authored_world_bootstrap::AuthoredClockPlan,
     native_player_runtime::PlayerRegistry,
     native_players::{PlayerCheckpoint, PlayerKey, PlayerProjection},
     spawn_placement::{Placement, PlacementSource, Resolution, SpawnConfig, SpawnResolver},
@@ -3254,6 +3255,8 @@ struct GameStateSession {
     locked_missions: Vec<LockedMission>,
     /// The world's time of day, advanced to the instant `clock_at`.
     clock: Option<TimeOfDayClock>,
+    /// Authored rational projection of the last completed simulation tick.
+    sampled_clock: Option<SampledDayClock>,
     clock_at: Instant,
     /// `ServerFPS` over the poll intervals, the last poll at `polled_at`
     /// (an instant, so intervals keep their resolution on long runs).
@@ -3264,6 +3267,12 @@ struct GameStateSession {
     /// `NetworkingStatus` as last gathered: the enabled base with the joined
     /// players listed at each update pass (F-810).
     networking: Option<NetworkingStatus>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SampledDayClock {
+    plan: AuthoredClockPlan,
+    minute: f32,
 }
 
 impl GameStateSession {
@@ -3300,6 +3309,15 @@ impl GameStateSession {
                     .values
                     .insert(handle::TIME_OF_DAY, RepValue::Float(time_of_day.to_bits()));
             }
+        }
+        if let Some(clock) = self.sampled_clock {
+            state
+                .values
+                .insert(handle::TIME_OF_DAY, RepValue::Float(clock.minute.to_bits()));
+            state.values.insert(
+                handle::SECONDS_PER_GAME_DAY,
+                RepValue::Int(clock.plan.seconds_per_day()),
+            );
         }
         state.values.insert(
             handle::WORLD_TIME_SECONDS,
@@ -3495,14 +3513,68 @@ impl PeerLab {
         Ok(())
     }
 
+    /// Establish this interval's eligibility from one bounded auth-event drain.
+    /// No reservation, activation, projection refresh or property publication.
+    pub(crate) fn reconcile_player_authority(
+        &mut self,
+        registry: &mut PlayerRegistry,
+    ) -> Result<()> {
+        if self.checkpoint_initial_vitals.is_none() {
+            return Ok(());
+        }
+        self.poll_authentication();
+        let backend_failed = self
+            .authenticator
+            .as_ref()
+            .is_some_and(|auth| !auth.is_available());
+        let stale: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(address, entry)| {
+                let epoch = entry.checkpoint_epoch?;
+                (!(entry.auth_accepted
+                    && entry.auth_request.is_some()
+                    && entry.admission.state == ClientLoginState::Joined)
+                    || registry.projection(epoch).is_none())
+                .then_some((*address, epoch))
+            })
+            .collect();
+        for (address, epoch) in stale {
+            registry.detach(epoch);
+            self.remove_peer(address);
+        }
+        let live: BTreeSet<_> = self
+            .peers
+            .values()
+            .filter(|entry| {
+                entry.auth_accepted
+                    && entry.auth_request.is_some()
+                    && entry.admission.state == ClientLoginState::Joined
+            })
+            .filter_map(|entry| entry.checkpoint_epoch)
+            .collect();
+        for epoch in registry.active_epochs() {
+            if !live.contains(&epoch) {
+                registry.detach(epoch);
+            }
+        }
+        ensure!(
+            !backend_failed,
+            "player authentication backend unavailable at eligibility cut"
+        );
+        Ok(())
+    }
+
     /// Bounded synchronous bridge, sequenced after packet/auth polling and
     /// before simulation/capture. Registry ownership outlives the lab.
     pub fn bridge_player_checkpoints(&mut self, registry: &mut PlayerRegistry) {
         let Some(initial_vitals) = self.checkpoint_initial_vitals else {
             return;
         };
-        // A revocation already queued by the backend wins over this pass.
-        self.poll_authentication();
+        // Share the narrow eligibility cut with fixed-step consumption.
+        if self.reconcile_player_authority(registry).is_err() {
+            return;
+        }
         self.refresh_checkpoint_projections(registry);
         let live: BTreeSet<u64> = self
             .peers
@@ -5612,6 +5684,7 @@ impl PeerLab {
             level_time: None,
             locked_missions: Vec::new(),
             clock: None,
+            sampled_clock: None,
             clock_at: Instant::now(),
             fps: None,
             polled_at: Instant::now(),
@@ -6241,9 +6314,56 @@ impl PeerLab {
         let Some(session) = &mut self.game_state_open else {
             bail!("no GameState open is enabled");
         };
+        ensure!(
+            session.sampled_clock.is_none(),
+            "authored and monotonic day clocks are exclusive"
+        );
         session.clock = Some(clock);
         session.clock_at = Instant::now();
         Ok(())
+    }
+
+    /// Use a validated authored clock sampled from completed simulation ticks.
+    /// The plan/sample is transient; SimulationClock remains the only authority.
+    pub fn enable_authored_time_of_day(
+        &mut self,
+        plan: AuthoredClockPlan,
+        tick: u64,
+    ) -> Result<()> {
+        let session = self
+            .game_state_open
+            .as_mut()
+            .context("no GameState open is enabled")?;
+        ensure!(
+            session.clock.is_none(),
+            "authored and monotonic day clocks are exclusive"
+        );
+        ensure!(
+            session.sampled_clock.is_none(),
+            "authored day clock already enabled"
+        );
+        session.sampled_clock = Some(SampledDayClock {
+            plan,
+            minute: plan.sample(tick),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn authored_clock_plan(&self) -> Option<AuthoredClockPlan> {
+        self.game_state_open
+            .as_ref()?
+            .sampled_clock
+            .map(|clock| clock.plan)
+    }
+
+    pub(crate) fn sample_authored_time_of_day(&mut self, tick: u64) {
+        if let Some(clock) = self
+            .game_state_open
+            .as_mut()
+            .and_then(|session| session.sampled_clock.as_mut())
+        {
+            clock.minute = clock.plan.sample(tick);
+        }
     }
 
     /// Measure `ServerFPS` with `meter` over the intervals between polls
@@ -10817,7 +10937,11 @@ impl PeerLab {
             world_time_at: world_seconds,
             ..GameStateReplica::default()
         };
-        for handle in update_handles() {
+        for handle in update_handles().chain(
+            session
+                .sampled_clock
+                .map(|_| super::game_state_open::handle::SECONDS_PER_GAME_DAY),
+        ) {
             // Absent from an open: the class default.
             if let Some(value) = state
                 .values
@@ -11327,7 +11451,12 @@ impl PeerLab {
                 session
                     .clock
                     .as_ref()
-                    .map(|clock| RepValue::Float(clock.time_of_day().to_bits())),
+                    .map(|clock| RepValue::Float(clock.time_of_day().to_bits()))
+                    .or_else(|| {
+                        session
+                            .sampled_clock
+                            .map(|clock| RepValue::Float(clock.minute.to_bits()))
+                    }),
             ),
             (
                 handle::SERVER_FPS,
@@ -11348,6 +11477,12 @@ impl PeerLab {
                     .and_then(|value| value.or_else(|| class_default(handle::LOCKED_MISSIONS))),
             ),
         ];
+        if let Some(clock) = session.sampled_clock {
+            changing.push((
+                handle::SECONDS_PER_GAME_DAY,
+                Some(RepValue::Int(clock.plan.seconds_per_day())),
+            ));
+        }
         match session.networking.as_ref().map(NetworkingStatus::values) {
             Some(Ok(values)) => changing.extend(values.into_iter().map(|(h, v)| (h, Some(v)))),
             Some(Err(_)) => bump(&mut self.stats.game_state_update_errors),
@@ -11374,7 +11509,17 @@ impl PeerLab {
             if !entry.peer.actor_channel_settled(channel) {
                 continue;
             }
-            let values = replica.due(world_seconds, &changing);
+            let mut values = replica.due(world_seconds, &changing);
+            if let Some(clock) = session.sampled_clock
+                && values.contains_key(&handle::TIME_OF_DAY)
+            {
+                // The authored sample carries its declared rate with it;
+                // ordinary latest-value notifications own both handles.
+                values.insert(
+                    handle::SECONDS_PER_GAME_DAY,
+                    RepValue::Int(clock.plan.seconds_per_day()),
+                );
+            }
             if values.is_empty() {
                 continue;
             }
@@ -11479,19 +11624,33 @@ impl Plugin for PeerLabPlugin {
     }
 }
 
-fn poll_peer_lab(mut lab: ResMut<PeerLab>, registry: Option<ResMut<PlayerRegistry>>) {
-    if let Some(registry) = registry.as_ref() {
-        lab.refresh_checkpoint_projections(registry);
-    }
-    lab.poll();
-    if lab.checkpoint_initial_vitals.is_some() {
-        if let Some(mut registry) = registry {
-            lab.bridge_player_checkpoints(&mut registry);
-        } else {
-            // Never publish a default pawn when the configured owner vanished.
-            lab.shutdown();
+fn poll_peer_lab(world: &mut bevy::prelude::World) {
+    if crate::network::reconcile_authored_clock(world).is_err()
+        || crate::native_player_runtime::consumption_runtime_health(world).is_err()
+    {
+        if let Some(mut lab) = world.get_resource_mut::<PeerLab>() {
+            lab.stop_admission();
         }
+        return;
     }
+    let consuming = world.contains_resource::<crate::native_player_runtime::ConsumptionRuntime>();
+    world.resource_scope(|world, mut lab: bevy::prelude::Mut<PeerLab>| {
+        if lab.checkpoint_initial_vitals.is_some() && !world.contains_resource::<PlayerRegistry>() {
+            // Preserve the checkpoint owner guard even without consumption.
+            lab.shutdown();
+            return;
+        }
+        if !consuming && let Some(registry) = world.get_resource::<PlayerRegistry>() {
+            lab.refresh_checkpoint_projections(registry);
+        }
+        lab.poll();
+        if !consuming
+            && lab.checkpoint_initial_vitals.is_some()
+            && let Some(mut registry) = world.get_resource_mut::<PlayerRegistry>()
+        {
+            lab.bridge_player_checkpoints(&mut registry);
+        }
+    });
 }
 
 /// A returning pawn's restored stats (F-988) from its opened inventories,
@@ -20824,6 +20983,578 @@ mod tests {
     mod player_checkpoints;
     mod record_ack_gating;
     mod spawn_placement;
+    mod authored_clock_integration {
+        //! Authored tick-derived wire time; no original daylight or client claim.
+        use super::super::super::{
+            actor_channel::read_actor_bunch_body,
+            archive::ByteOrder,
+            game_state_open::handle as h,
+            packet::{BitWriter, Bunch, Payload},
+            rep_layout::{RepLayoutCodec, append_bits, read_rep_properties},
+            sequencing::PacketSequencer,
+            time_of_day::RateCurve,
+        };
+        use super::*;
+        use crate::authored_world_bootstrap::AuthoredClockConfig;
+
+        fn plan() -> AuthoredClockPlan {
+            AuthoredClockConfig {
+                initial_minute: 480,
+                seconds_per_day: 3600,
+                tick_hz: 30,
+            }
+            .prepare()
+            .unwrap()
+        }
+
+        fn enabled(tick: u64) -> PeerLab {
+            let mut lab = prospect_refresh_lab();
+            lab.enable_authored_time_of_day(plan(), tick).unwrap();
+            lab
+        }
+
+        fn opened(
+            lab: &mut PeerLab,
+        ) -> (
+            UdpSocket,
+            SocketAddrV4,
+            PacketSequencer,
+            BTreeMap<u32, RepValue>,
+        ) {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.connect(lab.local_addr().unwrap()).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let (address, mut client) = handshake_peer_on(lab, &socket);
+            assert!(matches!(
+                lab.send_game_state_open(address),
+                InitialOpenOutcome::Committed(_)
+            ));
+            let bunches = deliver_bunches(lab, &socket, &mut client, |_| true);
+            let values = decode_open(lab, &bunches);
+            (socket, address, client, values)
+        }
+
+        fn decode_open(lab: &PeerLab, bunches: &[Bunch]) -> BTreeMap<u32, RepValue> {
+            decode_state(lab, bunches, true)
+        }
+
+        fn decode_state(lab: &PeerLab, bunches: &[Bunch], open: bool) -> BTreeMap<u32, RepValue> {
+            let session = lab.game_state_open.as_ref().unwrap();
+            let mut payload = BitWriter::new();
+            for bunch in bunches.iter().filter(|bunch| {
+                bunch.header.channel_index == session.channel_index
+                    && !bunch.header.has_package_map_exports
+            }) {
+                append_bits(&mut payload, &bunch.payload);
+                if !bunch.header.partial || bunch.header.partial_final {
+                    break;
+                }
+            }
+            let codec = RepLayoutCodec {
+                actor: actor_codec(session.plan.engine_net_version, ByteOrder::Little),
+                checksums: false,
+                limits: Default::default(),
+            };
+            let body = read_actor_bunch_body(
+                &mut Payload::from_writer(payload).reader(),
+                open,
+                &codec.actor,
+            )
+            .unwrap();
+            read_rep_properties(
+                &mut body.blocks[0].payload.reader(),
+                &session.plan.layout,
+                &codec,
+            )
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.handle, entry.value))
+            .collect()
+        }
+
+        fn assert_time(values: &BTreeMap<u32, RepValue>, tick: u64) {
+            assert_eq!(
+                values.get(&h::TIME_OF_DAY),
+                Some(&RepValue::Float(plan().sample(tick).to_bits()))
+            );
+            assert_eq!(
+                values.get(&h::SECONDS_PER_GAME_DAY),
+                Some(&RepValue::Int(3600))
+            );
+        }
+
+        #[test]
+        fn authored_clock_opens_at_sample_and_midnight_sends_explicit_zero() {
+            let mut lab = enabled(27_000);
+            let (socket, _address, mut client, values) = opened(&mut lab);
+            assert_time(&values, 27_000);
+            lab.sample_authored_time_of_day(72_000);
+            lab.game_state_open.as_mut().unwrap().updated_at = None;
+            lab.update_game_state();
+            let changed = receive_game_state_update(&socket, &lab, Some(&mut client));
+            assert_time(&changed, 72_000);
+            assert_eq!(
+                lab.game_state_open
+                    .as_ref()
+                    .unwrap()
+                    .sampled_clock
+                    .unwrap()
+                    .minute
+                    .to_bits(),
+                0
+            );
+        }
+
+        #[test]
+        fn declared_large_day_length_reaches_the_wire_without_float_rounding() {
+            let mut lab = prospect_refresh_lab();
+            let plan = AuthoredClockConfig {
+                initial_minute: 480,
+                seconds_per_day: i32::MAX,
+                tick_hz: 30,
+            }
+            .prepare()
+            .unwrap();
+            lab.enable_authored_time_of_day(plan, u64::MAX).unwrap();
+            let (_, _, _, values) = opened(&mut lab);
+            assert_eq!(values[&h::SECONDS_PER_GAME_DAY], RepValue::Int(i32::MAX));
+            assert_eq!(
+                values[&h::TIME_OF_DAY],
+                RepValue::Float(plan.sample(u64::MAX).to_bits())
+            );
+        }
+
+        #[test]
+        fn unchanged_completed_tick_does_not_advance_with_wall_time_polling() {
+            let mut lab = enabled(27_000);
+            let (socket, _address, mut client, values) = opened(&mut lab);
+            assert_time(&values, 27_000);
+            let session = lab.game_state_open.as_mut().unwrap();
+            session.clock_at = Instant::now() - Duration::from_secs(120);
+            session.updated_at = None;
+            lab.started = Instant::now() - Duration::from_secs(120);
+            lab.update_game_state();
+            let world = receive_game_state_update(&socket, &lab, Some(&mut client));
+            assert!(
+                world.contains_key(&h::WORLD_TIME_SECONDS),
+                "world-seconds ownership is unchanged"
+            );
+            assert!(!world.contains_key(&h::TIME_OF_DAY));
+            assert_eq!(
+                lab.game_state_open
+                    .as_ref()
+                    .unwrap()
+                    .sampled_clock
+                    .unwrap()
+                    .minute,
+                plan().sample(27_000)
+            );
+            for _ in 0..3 {
+                lab.sample_authored_time_of_day(27_000);
+                lab.game_state_open.as_mut().unwrap().updated_at = None;
+                lab.update_game_state();
+            }
+            assert_eq!(
+                lab.game_state_open
+                    .as_ref()
+                    .unwrap()
+                    .sampled_clock
+                    .unwrap()
+                    .minute,
+                plan().sample(27_000)
+            );
+        }
+
+        #[test]
+        fn ring_pressure_retries_latest_sample_and_nak_repairs_latest_value() {
+            let mut lab = enabled(0);
+            lab.config.packet.sent_capacity = 16;
+            let (socket, address, mut client, _) = opened(&mut lab);
+            let capacity = lab.peers[&address].peer.config().sent_capacity;
+            let pending = lab.peers[&address]
+                .peer
+                .sequencer()
+                .notify()
+                .sent_records()
+                .len();
+            for _ in pending..capacity {
+                let datagram = lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .peer
+                    .ack_packet()
+                    .unwrap();
+                assert!(lab.send(&datagram, address));
+            }
+            for tick in [9_000, 18_000, 27_000] {
+                lab.sample_authored_time_of_day(tick);
+                lab.game_state_open.as_mut().unwrap().updated_at = None;
+                lab.update_game_state();
+                assert_eq!(
+                    lab.peers[&address].game_state.as_ref().unwrap().sent[&h::TIME_OF_DAY],
+                    RepValue::Float(480f32.to_bits())
+                );
+            }
+            deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+            lab.game_state_open.as_mut().unwrap().updated_at = None;
+            lab.update_game_state();
+            let lost = deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+            let changed = decode_state(&lab, &lost, false);
+            assert_time(&changed, 27_000);
+            // A client NAK traversed packet notification and made the latest sample
+            // due. The retry may coalesce it to a newer completed tick.
+            assert!(
+                !lab.peers[&address]
+                    .game_state
+                    .as_ref()
+                    .unwrap()
+                    .sent
+                    .contains_key(&h::TIME_OF_DAY)
+            );
+            lab.sample_authored_time_of_day(36_000);
+            lab.game_state_open.as_mut().unwrap().updated_at = None;
+            lab.update_game_state();
+            let delivered = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+            let repaired = decode_state(&lab, &delivered, false);
+            assert_time(&repaired, 36_000);
+        }
+
+        #[test]
+        fn sampled_and_monotonic_modes_are_exclusive_and_clockless_wire_stays_ordinary() {
+            let legacy = || TimeOfDayClock::new(RateCurve::constant(60.0).unwrap(), 600.0);
+            let mut sampled = enabled(0);
+            assert!(sampled.enable_time_of_day(legacy()).is_err());
+            let mut ordinary = prospect_refresh_lab();
+            ordinary.enable_time_of_day(legacy()).unwrap();
+            assert!(ordinary.enable_authored_time_of_day(plan(), 0).is_err());
+            let mut clockless = prospect_refresh_lab();
+            let (_, _, _, values) = opened(&mut clockless);
+            assert!(!values.contains_key(&h::TIME_OF_DAY));
+            assert!(!values.contains_key(&h::SECONDS_PER_GAME_DAY));
+        }
+
+        #[test]
+        fn restored_owner_is_sampled_before_the_first_wire_open() {
+            use crate::{
+                config::ServerConfig,
+                simulation::{SimulationClock, WorldSnapshot, build_app},
+            };
+            let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+            let config = AuthoredClockConfig {
+                initial_minute: 480,
+                seconds_per_day: 3600,
+                tick_hz: 30,
+            };
+            crate::network::install_authored_clock_runtime(&mut app, Some(&config), 30).unwrap();
+            app.world_mut().resource_mut::<SimulationClock>().tick = 27_000;
+            app.insert_resource(enabled(0));
+            crate::network::reconcile_authored_clock(app.world_mut()).unwrap();
+            app.world_mut()
+                .resource_scope(|_world, mut lab: bevy::prelude::Mut<PeerLab>| {
+                    let (_, _, _, values) = opened(&mut lab);
+                    assert_time(&values, 27_000);
+                });
+        }
+
+        #[test]
+        fn absent_phase_owner_or_wrong_fixed_time_stops_before_open_and_latches() {
+            use crate::{
+                config::ServerConfig,
+                simulation::{SimulationClock, WorldSnapshot, build_app, capture},
+            };
+            use bevy::prelude::{Fixed, Time};
+            for missing_clock in [true, false] {
+                let mut app =
+                    build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+                let config = AuthoredClockConfig {
+                    initial_minute: 480,
+                    seconds_per_day: 3600,
+                    tick_hz: 30,
+                };
+                crate::network::install_authored_clock_runtime(&mut app, Some(&config), 30)
+                    .unwrap();
+                app.insert_resource(enabled(0));
+                let owner = if missing_clock {
+                    app.world_mut().remove_resource::<SimulationClock>()
+                } else {
+                    app.insert_resource(Time::<Fixed>::from_hz(7.0));
+                    None
+                };
+                // The real pre-poll entry point must fail before receiving/accepting or
+                // composing any Join/open; this also leaves no peer for publication.
+                poll_peer_lab(app.world_mut());
+                assert!(!app.world().resource::<PeerLab>().is_admitting());
+                assert_eq!(app.world().resource::<PeerLab>().peer_count(), 0);
+                if let Some(owner) = owner {
+                    app.insert_resource(owner);
+                }
+                app.insert_resource(Time::<Fixed>::from_hz(30.0));
+                assert!(crate::network::authored_clock_runtime_health(app.world()).is_err());
+                assert!(capture(app.world_mut()).is_err());
+                app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
+                assert_eq!(app.world().resource::<SimulationClock>().tick, 0);
+            }
+        }
+    }
+
+    mod authored_survival_authority_tests {
+        use super::*;
+        use crate::{
+            config::ServerConfig,
+            native_player_runtime::{ConsumptionConfig, PlayerRegistry},
+            native_players::{
+                PlayerCheckpoint, PlayerContext, PlayerInputs, PlayerKey, PlayerSnapshot,
+            },
+            simulation::{
+                SNAPSHOT_SCHEMA_PLAYERS, SimulationClock, WorldSnapshot, build_app, capture,
+            },
+        };
+        use bevy::prelude::FixedUpdate;
+
+        const ACCOUNT: u64 = 76_561_197_960_265_770;
+
+        fn context() -> PlayerContext {
+            PlayerContext::new(
+                vec![65],
+                "/Authored/Map".into(),
+                PlayerInputs {
+                    authored_gameplay: [7; 32],
+                    spawn: [7; 32],
+                    authored_world: [7; 32],
+                    declaration: [7; 32],
+                    initial_values: [7; 32],
+                },
+                vec!["Player".into()],
+            )
+            .unwrap()
+        }
+
+        fn checkpoint() -> PlayerCheckpoint {
+            PlayerCheckpoint {
+                location_cm: [10.0, 20.0, 30.0],
+                vitals: super::super::super::pawn_open::CharacterVitals {
+                    health: 90,
+                    max_health: 100,
+                    stamina: 80,
+                    max_stamina: 100,
+                    oxygen: 70,
+                    max_oxygen: 100,
+                    water: 60,
+                    max_water: 100,
+                    food: 50,
+                    max_food: 100,
+                    biome_row: 0,
+                    growth_row: 0,
+                },
+            }
+        }
+
+        /// Begin at the synthetic post-ticket boundary, using real packet/ring
+        /// machinery. Installation/authentication themselves have separate tests.
+        fn attached() -> (
+            App,
+            UdpSocket,
+            SocketAddrV4,
+            super::super::super::sequencing::PacketSequencer,
+            crate::steam_service::TestBackend,
+        ) {
+            let mut lab = record_lab(false);
+            lab.config.packet.sent_capacity = 16;
+            let (socket, address, client) = record_peer(&mut lab, 1, "AUTHORED-SURVIVAL");
+            let (auth, backend) = AuthClient::test_bridge(32);
+            lab.authenticator = Some(auth);
+            lab.checkpoint_initial_vitals = Some(checkpoint().vitals);
+            let context = context();
+            let mut registry =
+                PlayerRegistry::new(PlayerSnapshot::empty(context.clone()), &context, 8).unwrap();
+            registry
+                .reserve(PlayerKey::new(ACCOUNT, 3).unwrap(), 1, checkpoint())
+                .unwrap();
+            let projection = registry.activate(1).unwrap();
+            let peer = lab.peers.get_mut(&address).unwrap();
+            peer.auth_accepted = true;
+            peer.auth_request = Some(1);
+            peer.auth_identity = Some(ACCOUNT);
+            peer.admission.state = ClientLoginState::Joined;
+            peer.character_slot = Some(3);
+            peer.profiles.character_slot = Some(3);
+            peer.profiles.completed = true;
+            peer.profiles.friend_ids_ready = true;
+            peer.checkpoint_epoch = Some(1);
+            peer.checkpoint_projection = Some(projection);
+            peer.checkpoint_active = true;
+            peer.checkpoint_enqueued_revision = Some(projection.revision);
+            let snapshot = WorldSnapshot {
+                schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+                native_players: Some(registry.snapshot()),
+                ..Default::default()
+            };
+            let mut app = build_app(
+                &ServerConfig {
+                    tick_hz: 1,
+                    ..Default::default()
+                },
+                &snapshot,
+            )
+            .unwrap();
+            app.insert_resource(registry).insert_resource(lab);
+            crate::native_player_runtime::install_consumption(
+                &mut app,
+                ConsumptionConfig {
+                    oxygen: 1,
+                    water: 2,
+                    food: 3,
+                },
+                1,
+            )
+            .unwrap();
+            (app, socket, address, client, backend)
+        }
+
+        #[test]
+        fn queued_revocation_after_poll_wins_before_fixed_debit_without_projection() {
+            let (mut app, _socket, address, _client, backend) = attached();
+            app.world_mut().resource_mut::<PeerLab>().poll();
+            let before = app.world().resource::<PlayerRegistry>().snapshot();
+            let queued_revision =
+                app.world().resource::<PeerLab>().peers[&address].checkpoint_enqueued_revision;
+            backend
+                .event(crate::steam_auth::AuthEvent {
+                    request_id: 1,
+                    outcome: AuthOutcome::Revoked,
+                })
+                .unwrap();
+            app.world_mut().run_schedule(FixedUpdate);
+            assert_eq!(app.world().resource::<PlayerRegistry>().snapshot(), before);
+            assert!(
+                app.world()
+                    .resource::<PlayerRegistry>()
+                    .active_epochs()
+                    .is_empty()
+            );
+            assert!(!app.world().resource::<PeerLab>().has_peer(address));
+            assert_eq!(queued_revision, Some(1));
+            assert_eq!(app.world().resource::<SimulationClock>().tick, 1);
+            assert!(crate::native_player_runtime::consumption_runtime_health(app.world()).is_ok());
+        }
+
+        #[test]
+        fn event_after_explicit_cut_applies_at_next_cut_and_backend_failure_latches() {
+            let (mut app, _socket, address, _client, backend) = attached();
+            crate::network::reconcile_player_authority(app.world_mut()).unwrap();
+            let before = app.world().resource::<PlayerRegistry>().snapshot();
+            backend
+                .event(crate::steam_auth::AuthEvent {
+                    request_id: 1,
+                    outcome: AuthOutcome::Revoked,
+                })
+                .unwrap();
+            // This models delivery after the cut: no projection/publication is
+            // performed by the eligibility operation, and the queued event stays.
+            assert_eq!(app.world().resource::<PlayerRegistry>().snapshot(), before);
+            assert!(app.world().resource::<PeerLab>().has_peer(address));
+            app.world_mut()
+                .resource_mut::<PlayerRegistry>()
+                .consume_activated(
+                    crate::native_player_runtime::ConsumptionRates::new(1, 2, 3).unwrap(),
+                )
+                .unwrap();
+            let after_cut = app.world().resource::<PlayerRegistry>().snapshot();
+            assert_eq!(
+                after_cut
+                    .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+                    .unwrap()
+                    .checkpoint
+                    .vitals
+                    .oxygen,
+                69
+            );
+            crate::network::reconcile_player_authority(app.world_mut()).unwrap();
+            assert!(
+                app.world()
+                    .resource::<PlayerRegistry>()
+                    .active_epochs()
+                    .is_empty()
+            );
+            assert!(!app.world().resource::<PeerLab>().has_peer(address));
+            assert_eq!(
+                app.world().resource::<PlayerRegistry>().snapshot(),
+                after_cut
+            );
+            drop(backend);
+            app.world_mut().run_schedule(FixedUpdate);
+            assert!(crate::native_player_runtime::consumption_runtime_health(app.world()).is_err());
+            assert!(!app.world().resource::<PeerLab>().is_admitting());
+            assert!(capture(app.world_mut()).is_err());
+        }
+
+        #[test]
+        fn pressure_and_nak_retries_publish_without_repeating_a_debit() {
+            let (mut app, socket, address, mut client, _backend) = attached();
+            {
+                let mut lab = app.world_mut().resource_mut::<PeerLab>();
+                let capacity = lab.peers[&address].peer.config().sent_capacity;
+                let pending = lab.peers[&address]
+                    .peer
+                    .sequencer()
+                    .notify()
+                    .sent_records()
+                    .len();
+                for _ in pending..capacity {
+                    let datagram = lab
+                        .peers
+                        .get_mut(&address)
+                        .unwrap()
+                        .peer
+                        .ack_packet()
+                        .unwrap();
+                    assert!(lab.send(&datagram, address));
+                }
+                assert!(lab.peers[&address].peer.full_ring_probe().is_some());
+            }
+            app.world_mut().run_schedule(FixedUpdate);
+            let charged = app.world().resource::<PlayerRegistry>().snapshot();
+            let projection = charged
+                .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+                .unwrap();
+            assert_eq!(projection.checkpoint.vitals.oxygen, 69);
+            assert_eq!(projection.revision, 2);
+            assert_eq!(
+                app.world().resource::<PeerLab>().peers[&address].checkpoint_enqueued_revision,
+                Some(1)
+            );
+            for _ in 0..3 {
+                crate::network::drain_player_bridge(app.world_mut());
+            }
+            assert_eq!(app.world().resource::<PlayerRegistry>().snapshot(), charged);
+            app.world_mut()
+                .resource_scope(|_world, mut lab: bevy::prelude::Mut<PeerLab>| {
+                    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+                });
+            crate::network::drain_player_bridge(app.world_mut());
+            assert_eq!(
+                app.world().resource::<PeerLab>().peers[&address].checkpoint_enqueued_revision,
+                Some(2)
+            );
+            // NAK the admitted update using the real sequence/ring path; retry
+            // publication is transport work, with no second fixed interval.
+            app.world_mut()
+                .resource_scope(|_world, mut lab: bevy::prelude::Mut<PeerLab>| {
+                    deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+                });
+            crate::network::drain_player_bridge(app.world_mut());
+            app.world_mut()
+                .resource_scope(|_world, mut lab: bevy::prelude::Mut<PeerLab>| {
+                    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+                });
+            assert_eq!(app.world().resource::<PlayerRegistry>().snapshot(), charged);
+            assert_eq!(app.world().resource::<SimulationClock>().tick, 1);
+        }
+    }
 }
 
 #[cfg(test)]

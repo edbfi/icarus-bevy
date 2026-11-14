@@ -1170,8 +1170,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         "hosting requires real-time simulation"
     );
     // Prepare owned inputs and every pure lab plan before world storage or listeners.
-    let (mut prepared, players) =
-        network::prepare_run(&config.network, network::peer_lab_config(&config.network))?;
+    let (mut prepared, players) = network::prepare_run_with_tick_hz(
+        &config.network,
+        network::peer_lab_config(&config.network),
+        config.tick_hz,
+    )?;
     if let Some(prepared) = &mut prepared {
         prepared.prepare_runtime(config.autosave_seconds)?;
     }
@@ -1478,6 +1481,8 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             // Manual runner still executes Bevy's complete app schedules and clocks.
             app.update();
             icarus_bevy::native_lifecycle_runtime::modifier_runtime_health(app.world())?;
+            icarus_bevy::native_player_runtime::consumption_runtime_health(app.world())?;
+            network::authored_clock_runtime_health(app.world())?;
             let tick = app.world().resource::<SimulationClock>().tick;
             let now = clock.elapsed(tick);
             autosave.observe(writer.poll(), now)?;
