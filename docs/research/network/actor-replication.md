@@ -9,8 +9,8 @@ Actor opens, codecs, relevancy and readiness after admission.
 ## Current answer
 
 Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034.
-Controller lifetime receive metadata is authored-qualified (F-1182); a stock-client
-run must still distinguish parsed Begin from accepted slots (U-038).
+Controller lifetime metadata is authored-qualified (F-1182). Protected production
+entry accepts Begin/profiles and finalises (F-1185); normal leave fails (F-1186).
 [Visibility](../../specs/network/visibility-state.md): F-1020 wire, F-1021 staging,
 F-1022 capture, F-1023 conditional install/registration/logging/consumer;
 F-1024 inert models; F-1034 replay; payloads/bit1 F-1090, receiver/Gather
@@ -43,12 +43,15 @@ corrections (F-1129, F-1130, F-1132); unanswered moves do not fault a client
 (F-1131). S2 moved its new joiner's pawn about 2.5 km before the unfreeze
 (F-1134); the native origin spawn (F-1138) lands on terrain on this map
 (F-1149, F-1152). After entry the stock client looks and jumps but cannot
-walk and shows stats 0 (F-1143, F-1147, F-1150): input reaches movement at
+walk and showed stats 0 in earlier runs (F-1143, F-1147, F-1150): input reached movement at
 speed 0 (F-1151); speed comes from stats (F-1153 to F-1155) that S2 sends in
 the pawn open (F-1156) and the probe never sent (F-1157; U-080); the client
 takes them verbatim as final cm/s (F-1164 to F-1166). The original picks a rocket
 spawn (F-1136), keeps kill-Z server-side (F-1137) and saves the client's last
-position (F-1135).
+position (F-1135). With authored speed stats, the owner now reports walk/sprint/jump
+after leaving a mountain spawn (F-1185); authoritative physics, collision and
+audio remain unqualified. Leave reaches a pending-save screen, then title-screen
+selection returns to gameplay; Alt+F4 ends the session (F-1186).
 
 Current pin/tags F-1176; selected class semantics F-1177; ordered row widths
 F-1178. Static comparison retains the selected protocol metadata; runtime
@@ -64,11 +67,12 @@ UID/membership: F-1061, F-945, F-946, F-949 to F-951; loadout/backend: F-1062, F
 
 - User-struct array checksums (U-067), runtime relevancy/priority (U-038),
   played-character values (U-069).
-- Fresh stats for walking after native entry (U-080); listing L_s only with
+- Stat UI and movement fidelity (U-080), spawn placement and normal leave (U-038);
+  listing L_s only with
   a join password, enforced as the original does (F-1161 to F-1163).
 - Quest exclusions (U-076) and saved-container gaps/unreferenced-container
   nulling: [world-manager open questions](../../specs/network/world-managers.md#open-questions).
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407; M-1415.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407; M-1415; M-1421 to M-1423.
