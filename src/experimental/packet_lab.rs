@@ -294,6 +294,37 @@ impl DeliveredSummary {
     }
 }
 
+/// Disjoint reasons for drops on already open, nonclosing actor channels.
+/// Unknown/closing channels remain ignored, reliable duplicates remain separate,
+/// and queued reliable bunches acquire a reason only when released or refused.
+/// These cover all actor channels, not just the controller, and say nothing
+/// about a payload's RPC identity. Saturation applies independently per reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ActorBunchDropReasons {
+    pub unreliable: u64,
+    pub reliable_queue_refusal: u64,
+    /// One drop even when multiple unsupported header flags are present.
+    pub unsupported_header: u64,
+    pub partial_policy: u64,
+    pub partial_reassembly: u64,
+}
+
+impl ActorBunchDropReasons {
+    pub(crate) fn merge(&mut self, other: &Self) {
+        self.unreliable = self.unreliable.saturating_add(other.unreliable);
+        self.reliable_queue_refusal = self
+            .reliable_queue_refusal
+            .saturating_add(other.reliable_queue_refusal);
+        self.unsupported_header = self
+            .unsupported_header
+            .saturating_add(other.unsupported_header);
+        self.partial_policy = self.partial_policy.saturating_add(other.partial_policy);
+        self.partial_reassembly = self
+            .partial_reassembly
+            .saturating_add(other.partial_reassembly);
+    }
+}
+
 /// Reportable result of one datagram; no contents.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReceiveSummary {
@@ -315,8 +346,9 @@ pub struct ReceiveSummary {
     /// Bunches on unknown or closing actor channels, acknowledged and ignored.
     pub ignored_bunches: usize,
     pub actor_bunches: usize,
-    /// Unsupported forms, reliable queue overflow, or refused partial parts.
+    /// Unreliable traffic, unsupported forms, reliable queue refusal or partial refusal.
     pub actor_bunches_dropped: usize,
+    pub actor_bunch_drop_reasons: ActorBunchDropReasons,
     /// Reliable partial parts released in order, excluding duplicate arrivals.
     pub actor_partial_parts: usize,
     /// Complete bodies constructed, before domain validation or application.
@@ -752,6 +784,7 @@ impl LabPeer {
             ignored_bunches: bunches.len() - control_bunches,
             actor_bunches: 0,
             actor_bunches_dropped: 0,
+            actor_bunch_drop_reasons: ActorBunchDropReasons::default(),
             actor_partial_parts: 0,
             actor_partial_completed: 0,
             actor_partial_rejected: 0,
@@ -887,6 +920,10 @@ impl LabPeer {
                     );
                 }
                 summary.actor_bunches_dropped += 1;
+                summary.actor_bunch_drop_reasons.unreliable = summary
+                    .actor_bunch_drop_reasons
+                    .unreliable
+                    .saturating_add(1);
                 unreliable.push(bunch);
                 continue;
             };
@@ -923,6 +960,10 @@ impl LabPeer {
                 Ok(ReliableReceive::Duplicate) => summary.actor_duplicate_reliable += 1,
                 Err(_) => {
                     summary.actor_bunches_dropped += 1;
+                    summary.actor_bunch_drop_reasons.reliable_queue_refusal = summary
+                        .actor_bunch_drop_reasons
+                        .reliable_queue_refusal
+                        .saturating_add(1);
                     accepted = false;
                 }
             }
@@ -953,6 +994,10 @@ impl LabPeer {
             let interrupted = self.actor_partials.remove(&index).is_some();
             summary.actor_partial_rejected += usize::from(h.partial || interrupted);
             summary.actor_bunches_dropped += 1;
+            summary.actor_bunch_drop_reasons.unsupported_header = summary
+                .actor_bunch_drop_reasons
+                .unsupported_header
+                .saturating_add(1);
             return None;
         }
         if !h.partial {
@@ -978,6 +1023,10 @@ impl LabPeer {
             self.actor_partials.remove(&index);
             summary.actor_partial_rejected += 1;
             summary.actor_bunches_dropped += 1;
+            summary.actor_bunch_drop_reasons.partial_policy = summary
+                .actor_bunch_drop_reasons
+                .partial_policy
+                .saturating_add(1);
             return None;
         }
         let partial = self
@@ -1006,6 +1055,10 @@ impl LabPeer {
                 self.actor_partials.remove(&index);
                 summary.actor_partial_rejected += 1;
                 summary.actor_bunches_dropped += 1;
+                summary.actor_bunch_drop_reasons.partial_reassembly = summary
+                    .actor_bunch_drop_reasons
+                    .partial_reassembly
+                    .saturating_add(1);
                 None
             }
         }
@@ -1999,6 +2052,136 @@ mod actor_partial_budget_tests {
             },
             payload: Payload::from_writer(writer),
         }
+    }
+
+    fn reason_total(reasons: &ActorBunchDropReasons) -> u64 {
+        reasons.unreliable
+            + reasons.reliable_queue_refusal
+            + reasons.unsupported_header
+            + reasons.partial_policy
+            + reasons.partial_reassembly
+    }
+
+    #[test]
+    fn actor_drop_reasons_preserve_unreliable_queue_and_duplicate_outcomes() {
+        let (mut peer, mut summary) = fixture();
+        peer.actors.insert(1, ReliableChannel::new(0, 0));
+        let mut unreliable = part(1, false, false, 1);
+        unreliable.header.partial = false;
+        unreliable.header.reliable = false;
+        unreliable.header.reliable_sequence_raw = None;
+        summary.ignored_bunches = 1;
+        let (delivered, dropped, accepted) =
+            peer.deliver_actors(vec![unreliable], &mut summary, None, None, 0);
+        assert!(accepted && delivered.is_empty());
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(summary.actor_bunch_drop_reasons.unreliable, 1);
+        assert_eq!(
+            summary.actor_bunches_dropped as u64,
+            reason_total(&summary.actor_bunch_drop_reasons)
+        );
+
+        let queued: Vec<_> = (2..=257)
+            .map(|sequence| {
+                let mut bunch = part(1, false, false, 1);
+                bunch.header.partial = false;
+                bunch.header.reliable_sequence_raw = Some(sequence);
+                bunch
+            })
+            .collect();
+        summary.ignored_bunches = queued.len();
+        let (delivered, dropped, accepted) =
+            peer.deliver_actors(queued, &mut summary, None, None, 0);
+        assert!(!accepted);
+        assert!(delivered.is_empty() && dropped.is_empty());
+        assert_eq!(summary.actor_queued_reliable, 255);
+        assert_eq!(summary.actor_bunch_drop_reasons.reliable_queue_refusal, 1);
+        assert_eq!(
+            summary.actor_bunches_dropped as u64,
+            reason_total(&summary.actor_bunch_drop_reasons)
+        );
+
+        let mut first = part(1, false, false, 1);
+        first.header.partial = false;
+        summary.ignored_bunches = 1;
+        let (delivered, dropped, accepted) =
+            peer.deliver_actors(vec![first.clone()], &mut summary, None, None, 0);
+        assert!(accepted && dropped.is_empty());
+        assert_eq!(delivered.len(), 256);
+        assert_eq!(summary.actor_queued_reliable, 0);
+        summary.ignored_bunches = 1;
+        let (delivered, dropped, accepted) =
+            peer.deliver_actors(vec![first], &mut summary, None, None, 0);
+        assert!(accepted && delivered.is_empty() && dropped.is_empty());
+        assert_eq!(summary.actor_duplicate_reliable, 1);
+        assert_eq!(summary.actor_bunches_dropped, 2);
+        assert_eq!(
+            summary.actor_bunches_dropped as u64,
+            reason_total(&summary.actor_bunch_drop_reasons)
+        );
+    }
+
+    #[test]
+    fn actor_drop_reasons_partition_headers_policy_and_reassembly_without_replay() {
+        let (mut peer, mut summary) = fixture();
+        let mut unsupported = part(1, true, false, 1);
+        unsupported.header.open = true;
+        unsupported.header.paused = true;
+        unsupported.header.has_package_map_exports = true;
+        assert!(
+            peer.complete_actor_bunch(unsupported, 1, &mut summary)
+                .is_none()
+        );
+        assert_eq!(summary.actor_bunch_drop_reasons.unsupported_header, 1);
+        assert_eq!(summary.actor_bunches_dropped, 1);
+        assert!(
+            peer.complete_actor_bunch(part(1, false, true, 1), 2, &mut summary)
+                .is_none()
+        );
+        assert_eq!(summary.actor_bunch_drop_reasons.partial_policy, 1);
+        // Empty nonfinal initial parts fail the existing reassembler's
+        // byte-alignment/nonempty contract, after policy preflight succeeds.
+        assert!(
+            peer.complete_actor_bunch(part(1, true, false, 0), 3, &mut summary)
+                .is_none()
+        );
+        assert_eq!(summary.actor_bunch_drop_reasons.partial_reassembly, 1);
+        assert!(peer.actor_partials.is_empty());
+        let complete = peer
+            .complete_actor_bunch(part(1, true, true, 1), 4, &mut summary)
+            .unwrap();
+        assert_eq!(complete.payload.bit_len(), 8);
+        assert_eq!(summary.actor_partial_completed, 1);
+        assert_eq!(summary.actor_bunches_dropped, 3);
+        assert_eq!(
+            summary.actor_bunches_dropped as u64,
+            reason_total(&summary.actor_bunch_drop_reasons)
+        );
+    }
+
+    #[test]
+    fn actor_drop_reason_aggregation_saturates_independently() {
+        let one = ActorBunchDropReasons {
+            unreliable: 1,
+            reliable_queue_refusal: 1,
+            unsupported_header: 1,
+            partial_policy: 1,
+            partial_reassembly: 1,
+        };
+        let mut saturated = ActorBunchDropReasons {
+            unreliable: u64::MAX,
+            reliable_queue_refusal: u64::MAX,
+            unsupported_header: u64::MAX,
+            partial_policy: u64::MAX,
+            partial_reassembly: u64::MAX,
+        };
+        let expected = saturated;
+        saturated.merge(&one);
+        assert_eq!(saturated, expected);
+        let mut total = ActorBunchDropReasons::default();
+        total.merge(&one);
+        total.merge(&one);
+        assert_eq!(reason_total(&total), 10);
     }
 
     #[test]
