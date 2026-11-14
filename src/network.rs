@@ -1968,7 +1968,7 @@ pub fn prepare_session(
     let tables = data_tables(network)?;
     ensure!(
         network.player_persistence.is_none(),
-        "player persistence requires prepare_run and a schema-13 registry"
+        "player persistence requires prepare_run, which prepares the player store"
     );
     prepare_session_inputs(network, config, profile, tables)
 }

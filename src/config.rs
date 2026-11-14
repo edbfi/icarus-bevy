@@ -194,8 +194,8 @@ impl Default for NetworkConfig {
     }
 }
 
-/// Explicit context for the authored schema-13 player experiment. Kept
-/// independently of hosting so an offline reopen validates the same recipe.
+/// Explicit context for the authored player-store experiment. Kept
+/// independently of hosting so an offline reopen validates the same inputs.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PlayerPersistenceConfig {
