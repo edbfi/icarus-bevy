@@ -8,14 +8,16 @@
 //! change between weekly builds too (F-686, F-700, F-702), so per-release
 //! protocol metadata is data, not code: a [`ReleaseProfile`] is read from one
 //! complete release file whose build id is only a label. `config/release.toml`
-//! is the active release; the frozen historical releases live under
-//! `tests/fixtures/releases/` ([`ReleaseProfile::fixture`]), and
+//! is the active release; frozen profiles of selected historical releases
+//! live under `tests/fixtures/releases/` ([`ReleaseProfile::fixture`]), and
 //! `tools/release_watch.py` checks, diffs and repins when Steam's public
-//! branch moves. Nothing here claims compatibility with the pinned build.
+//! branch moves; a re-pinned file is refused until its sections are
+//! qualified ([`SECTIONS_QUALIFIED_FOR_BUILD_ID`]). Nothing here claims
+//! compatibility with the pinned build.
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 
 use super::{
@@ -742,12 +744,14 @@ impl ReleasePlayerControllerProfile {
 /// complete release file (`docs/architecture.md#release-tracking`); the
 /// library holds no per-release values.
 ///
-/// `pin`, `engine_network_version`, `tags.tag_encoding()`, and `class_net_cache`
-/// drive [`super::peer_lab::PeerLabConfig::with_release_profile`] and
-/// `examples/capture_decode.rs`; `row_handles` binds the row-handle widths of
-/// every layout this profile plans ([`Self::apply_row_handle_profile`]).
-/// `game_network_version` and the remaining `tags` fields record descriptive
-/// release-qualification metadata. `player_controller` feeds
+/// `pin.network_checksum` is the Hello version
+/// [`super::peer_lab::PeerLabConfig::with_release_profile`] sets.
+/// `tags.tag_encoding()` and `class_net_cache` feed the layouts and field
+/// bounds of the opens this profile plans and of `examples/capture_decode.rs`,
+/// which also checks `engine_network_version`; `row_handles` binds the
+/// row-handle widths of every layout this profile plans
+/// ([`Self::apply_row_handle_profile`]). `game_network_version` and the
+/// remaining `tags` fields record descriptive release-qualification metadata. `player_controller` feeds
 /// [`super::session_open`]; `player_state`, `game_state`, `pawn` and
 /// `managers` feed their open plans; `level_actors` names the actors a level
 /// visibility report opens. Each is `None` exactly when the file omits its
@@ -772,11 +776,56 @@ pub struct ReleaseProfile {
     pub level_actors: Option<ReleaseLevelActorsProfile>,
 }
 
+/// Key `tools/release_watch.py pin` writes into `[release]` when it re-pins a
+/// file to a new build: the build the other sections were last qualified
+/// for. While it is present the file is no profile ([`ReleaseProfile::parse`]
+/// refuses it); [`ReleasePin::parse`] still reads its identity.
+pub const SECTIONS_QUALIFIED_FOR_BUILD_ID: &str = "sections_qualified_for_build_id";
+
+/// The `[release]` table as written: the pin plus the carry-over key.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseTable {
+    app_id: u32,
+    build_id: u64,
+    project_version: String,
+    network_checksum: u32,
+    #[serde(default)]
+    sections_qualified_for_build_id: Option<u64>,
+}
+
+impl ReleaseTable {
+    /// The pin, refusing a table whose other sections belong to another build.
+    fn qualified_pin(self) -> Result<ReleasePin> {
+        if let Some(qualified) = self.sections_qualified_for_build_id {
+            bail!(
+                "release file pins build {} ({}) but its other sections were last \
+                 qualified for build {qualified} ({SECTIONS_QUALIFIED_FOR_BUILD_ID}); \
+                 qualify every remaining section for build {}, then remove \
+                 {SECTIONS_QUALIFIED_FOR_BUILD_ID} from [release]",
+                self.build_id,
+                self.project_version,
+                self.build_id
+            );
+        }
+        Ok(self.pin())
+    }
+
+    fn pin(self) -> ReleasePin {
+        ReleasePin {
+            app_id: self.app_id,
+            build_id: self.build_id,
+            project_version: self.project_version,
+            network_checksum: self.network_checksum,
+        }
+    }
+}
+
 /// The `[release]` table of a release file; the other sections are the
 /// profile's and are ignored here.
 #[derive(Deserialize)]
 struct ReleasePinFile {
-    release: ReleasePin,
+    release: ReleaseTable,
 }
 
 /// A release file as written. Required sections are `Option` here only so
@@ -784,7 +833,7 @@ struct ReleasePinFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReleaseFile {
-    release: ReleasePin,
+    release: ReleaseTable,
     #[serde(default)]
     tags: Option<ReleaseTagProfile>,
     #[serde(default)]
@@ -807,11 +856,14 @@ struct ReleaseFile {
 
 impl ReleasePin {
     /// Parse the `[release]` table of a release file and check its stored
-    /// checksum.
+    /// checksum. A re-pinned file whose other sections are still marked with
+    /// [`SECTIONS_QUALIFIED_FOR_BUILD_ID`] is read too: this is its identity,
+    /// not a profile.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleasePinFile>(text).context("release pin")?;
-        parsed.release.validate()?;
-        Ok(parsed.release)
+        let pin = parsed.release.pin();
+        pin.validate()?;
+        Ok(pin)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -916,23 +968,35 @@ impl ReleaseProfile {
     ///
     /// The build id is only a label: no value is looked up by it, and an
     /// absent section never takes another release's values. `[release]`,
-    /// `[tags]`, `[class_net_cache]` and `[row_handles]` are required because
-    /// the wire uses them unconditionally (the Hello version, every tag
-    /// encoding, the `FClassNetCache` field bounds, the row-handle widths of
-    /// every planned layout); a file without one fails with an error naming
-    /// it. `[player_controller]`, `[player_state]`, `[game_state]`, `[pawn]`,
+    /// `[tags]`, `[class_net_cache]` and `[row_handles]` are required: the
+    /// Hello version derives from `[release]`, and every open the profile
+    /// enables takes its tag encoding, `FClassNetCache` field bounds and
+    /// row-handle widths from the other three; a file without one fails with
+    /// an error naming it (pin-only files are no longer accepted).
+    /// `[player_controller]`, `[player_state]`, `[game_state]`, `[pawn]`,
     /// `[managers]` and `[level_actors]` are optional: absent means the
     /// release does not carry that open, which stays off.
+    ///
+    /// A `[release]` table carrying [`SECTIONS_QUALIFIED_FOR_BUILD_ID`] was
+    /// re-pinned to a new build while its other sections remain the earlier
+    /// build's; it is refused with an error naming both builds, never served.
     pub fn parse(text: &str) -> Result<Self> {
         let parsed = toml::from_str::<ReleaseFile>(text).context("release profile")?;
         fn required<T>(section: &str, value: Option<T>) -> Result<T> {
-            value.with_context(|| format!("release profile lacks required section [{section}]"))
+            value.with_context(|| {
+                format!(
+                    "release profile lacks required section [{section}]; pin-only release \
+                     files are no longer accepted: use a complete profile (examples: \
+                     tests/fixtures/releases/)"
+                )
+            })
         }
+        let pin = parsed.release.qualified_pin()?;
         let profile = Self {
             tags: required("tags", parsed.tags)?,
             class_net_cache: required("class_net_cache", parsed.class_net_cache)?,
             row_handles: required("row_handles", parsed.row_handles)?,
-            pin: parsed.release,
+            pin,
             engine_network_version: ENGINE_NETWORK_VERSION,
             game_network_version: GAME_NETWORK_VERSION,
             player_controller: parsed.player_controller,
@@ -1334,9 +1398,10 @@ impl ReleaseProfile {
     }
 }
 
-/// Directory of the frozen release profiles of the historical builds, one
-/// complete file per release named by its project version prefix (for
-/// example `3.0.32.toml`). They are test and research inputs, not server
+/// Directory of frozen release profiles: complete files of selected
+/// historical builds, kept for tests that need that release's layout and
+/// named by project version prefix (for example `3.0.32.toml`). Not every
+/// release gets one. They are test and research inputs, not server
 /// configuration: the server loads only the file its configuration names.
 pub const RELEASE_FIXTURE_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/releases");

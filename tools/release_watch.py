@@ -5,8 +5,10 @@
 dedicated server's public build and compares it with the pin; exit status 3
 means the pin is behind. `pin --install DIR` rewrites only the `[release]`
 table of the complete profile from a fetched install's app manifest and
-Icarus/Config/version.json; every other section is carried over, marked in the
-file and in the output as unqualified for the new build. `diff --older DIR
+Icarus/Config/version.json. Every other section is kept but is unqualified for
+a new build: `[release]` then records `sections_qualified_for_build_id`, which
+the server refuses to load until the sections are qualified for the pinned
+build and the key is removed; the output names them too. `diff --older DIR
 --newer DIR` compares two fetched server installs (manifest build ID,
 project_version, network_checksum, PE section sizes and DefaultGameplayTags.ini
 tag counts) so weekly updates start with a mechanical intake and diff report.
@@ -221,66 +223,132 @@ def diff_installs(older: Path, newer: Path) -> JsonObject:
     }
 
 
-CARRIED_OVER_PREFIX = "# CARRIED OVER from build "
+# Key in `[release]` naming the build the other sections were last qualified
+# for. While present the server refuses the file (ReleaseProfile::parse);
+# remove it once every section is qualified for the pinned build.
+QUALIFIED_KEY = "sections_qualified_for_build_id"
+# Sections the server refuses to load a profile without, besides [release].
+REQUIRED_SECTIONS = ("tags", "class_net_cache", "row_handles")
+RELEASE_KEYS = ("app_id", "build_id", "project_version", "network_checksum", QUALIFIED_KEY)
+TABLE_HEADER = re.compile(r"\s*\[")
+KEY_LINE = re.compile(r"\s*([A-Za-z0-9_-]+)\s*=")
 
 
-def render_release(build_id: int, version: str) -> str:
-    """The `[release]` table for one build; the checksum is derived."""
-    return (f"[release]\napp_id = {APP_ID}\nbuild_id = {build_id}\n"
-            + f'project_version = "{version}"\nnetwork_checksum = {network_checksum(version)}\n')
+def parse_toml(text: str) -> JsonObject:
+    try:
+        return json_object(parse_json(json.dumps(tomllib.loads(text))))
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"release profile is not valid TOML: {error}") from error
+
+
+def release_values(build_id: int, version: str, qualified: int | None = None) -> JsonObject:
+    """The `[release]` keys for one build, in file order; the checksum is derived."""
+    values: JsonObject = {"app_id": APP_ID, "build_id": build_id, "project_version": version,
+                          "network_checksum": network_checksum(version)}
+    if qualified is not None:
+        values[QUALIFIED_KEY] = qualified
+    return values
+
+
+def render_value(value: JsonValue) -> str:
+    return json.dumps(value) if isinstance(value, str) else str(value)
+
+
+def render_release(build_id: int, version: str, qualified: int | None = None) -> str:
+    """The `[release]` table for one build."""
+    return "[release]\n" + "".join(f"{key} = {render_value(value)}\n"
+                                   for key, value in release_values(build_id, version, qualified).items())
 
 
 def release_table(text: str) -> tuple[int, int]:
-    """Line span `[start, end)` of the `[release]` header and its key lines."""
+    """Line span `[start, end)` of `[release]`: its header up to the next table header."""
     lines = text.splitlines(keepends=True)
     headers = [index for index, line in enumerate(lines) if line.strip() == "[release]"]
     if len(headers) != 1:
         raise ValueError("release profile needs exactly one [release] table")
     end = headers[0] + 1
-    while end < len(lines) and lines[end].strip() and not lines[end].lstrip().startswith(("#", "[")):
+    while end < len(lines) and TABLE_HEADER.match(lines[end]) is None:
         end += 1
     return headers[0], end
 
 
-def carried_over_marker(build_id: int, version: str) -> str:
-    return (f"{CARRIED_OVER_PREFIX}{build_id} ({version}): every section below\n"
-            + "# was qualified for that build and is UNQUALIFIED for this [release].\n"
-            + "# Qualify each section for this build, then delete this comment.\n")
+def rewrite_release(text: str, values: JsonObject) -> str:
+    """Set `[release]` to exactly `values`, keeping its comments and blank lines.
+
+    Each existing key line is rewritten in place; a key not in `values` is
+    dropped and a missing one follows the last key line.
+    """
+    lines = text.splitlines(keepends=True)
+    start, end = release_table(text)
+    body = lines[start + 1 : end]
+    rendered = {key: f"{key} = {render_value(value)}\n" for key, value in values.items()}
+    keyed = [index for index, line in enumerate(body) if KEY_LINE.match(line) is not None]
+    insert_at = keyed[-1] + 1 if keyed else 0
+    out: list[str] = []
+    for index, line in enumerate(body):
+        match = KEY_LINE.match(line)
+        if match is None:
+            out.append(line)
+        elif match[1] in rendered:
+            out.append(rendered.pop(match[1]))
+        if index + 1 == insert_at:
+            out.extend(rendered.values())
+            rendered.clear()
+    out = list(rendered.values()) + out
+    return "".join(lines[: start + 1] + out + lines[end:])
 
 
-def carried_over_from(text: str) -> int | None:
-    """The last qualified build a carried-over marker names, if any."""
-    match = re.search(r"^" + re.escape(CARRIED_OVER_PREFIX) + r"([0-9]+) ", text, re.MULTILINE)
-    return int(match[1]) if match is not None else None
+def verify_rewrite(before: JsonObject, text: str, release: JsonObject) -> None:
+    """Refuse a rewrite unless it parses, `[release]` is exactly `release`,
+    every other table is unchanged and the required sections are present."""
+    after = parse_toml(text)
+    if after.get("release") != release:
+        raise ValueError("rewritten [release] does not hold exactly the intended keys")
+    others = {name: value for name, value in before.items() if name != "release"}
+    if {name: value for name, value in after.items() if name != "release"} != others:
+        raise ValueError("rewrite would change a table other than [release]")
+    missing = [name for name in REQUIRED_SECTIONS if name not in after]
+    if missing:
+        raise ValueError(f"release profile lacks {', '.join(missing)}; the server cannot load it")
 
 
 def repin(text: str, build_id: int, version: str) -> tuple[str, list[str], int | None]:
     """Replace the `[release]` table of a complete profile in place.
 
-    Returns the new text, the carried-over section names and the build they
-    were last qualified for (`None` when the build is unchanged). Sections are
-    never dropped, so the server can still load the file; a marker comment
-    after `[release]` names the build they came from. An existing marker keeps
-    naming the last qualified build across repeated unqualified bumps.
+    Returns the new text, the section names that are unqualified for the
+    pinned build and the build they were last qualified for (`[]` and `None`
+    when every section is qualified). A bump to a new build records the old
+    one under `sections_qualified_for_build_id`, which the server refuses to
+    load until the sections are qualified and the key removed; repeated
+    bumps keep naming the last qualified build, and re-pinning that build
+    clears the key. Nothing is returned for a result that fails
+    `verify_rewrite`.
     """
-    parsed = json_object(parse_json(json.dumps(tomllib.loads(text))))
+    parsed = parse_toml(text)
     previous = json_object(parsed.get("release", None))
-    sections = [name for name in parsed if name != "release"]
-    if not sections:
-        raise ValueError("release profile has only [release]; the server cannot load it")
+    missing = [name for name in REQUIRED_SECTIONS if name not in parsed]
+    if missing:
+        raise ValueError(f"release profile lacks {', '.join(missing)}; the server cannot load it")
+    unknown = sorted(set(previous) - set(RELEASE_KEYS))
+    if unknown:
+        raise ValueError(f"[release] has unknown keys {', '.join(unknown)}")
     old_build, old_version = previous.get("build_id"), previous.get("project_version")
+    qualified = previous.get(QUALIFIED_KEY)
     if not isinstance(old_build, int) or isinstance(old_build, bool) or not isinstance(old_version, str):
         raise ValueError("pinned [release] needs build_id and project_version")
-    lines = text.splitlines(keepends=True)
-    start, end = release_table(text)
-    head, rest = "".join(lines[:start]), "".join(lines[end:])
-    if old_build == build_id and old_version == version:
-        return text, [], None
-    qualified = carried_over_from(text)
-    if qualified is None:
-        rest = "\n" + carried_over_marker(old_build, old_version) + rest
+    if qualified is not None and (not isinstance(qualified, int) or isinstance(qualified, bool)):
+        raise ValueError(f"{QUALIFIED_KEY} must be a build id")
+    if old_build == build_id and old_version != version:
+        raise ValueError(f"build {build_id} is pinned as {old_version}, not {version}")
+    if qualified is None and old_build != build_id:
         qualified = old_build
-    return head + render_release(build_id, version) + rest, sections, qualified
+    if qualified == build_id:
+        qualified = None
+    sections = [name for name in parsed if name != "release"] if qualified is not None else []
+    values = release_values(build_id, version, qualified)
+    new_text = text if previous == values else rewrite_release(text, values)
+    verify_rewrite(parsed, new_text, values)
+    return new_text, sections, qualified
 
 
 def pinned_build(pin_path: Path) -> int:
@@ -305,15 +373,18 @@ def pin(args: Arguments) -> int:
     build = manifest_build((install / f"steamapps/appmanifest_{APP_ID}.acf").read_text())
     version = project_version((install / "Icarus/Config/version.json").read_text())
     path = Path(args.pin)
-    text, carried, qualified = repin(path.read_text(), build, version)
-    _ = path.write_text(text)
+    before = path.read_text()
+    text, carried, qualified = repin(before, build, version)
+    if text != before:
+        _ = path.write_text(text)
     report: JsonObject = {"build_id": build, "project_version": version, "network_checksum": network_checksum(version),
                           "carried_over_sections": list[JsonValue](carried), "qualified_for_build": qualified}
     print(json.dumps(report))
     if carried:
         print(f"release_watch: only [release] now names build {build}; sections {', '.join(carried)} are carried "
-              + f"over from build {qualified} and are UNQUALIFIED for build {build}. Qualify them before relying "
-              + "on this pin.", file=sys.stderr)
+              + f"over from build {qualified} and are UNQUALIFIED for build {build}. The server refuses this file "
+              + f"until they are qualified for build {build} and {QUALIFIED_KEY} is removed from [release].",
+              file=sys.stderr)
     return 0
 
 

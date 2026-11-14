@@ -4,8 +4,10 @@
 # release, and an absent optional section turns its feature off. A bump is a
 # qualified edit of this file (docs/architecture.md, "Release tracking").
 # `python3 tools/release_watch.py pin --install <fetched install>` rewrites
-# only the release table and marks the remaining sections as carried over and
-# unqualified for the new build. The checksum is derived and checked.
+# only the release table and records the build the remaining sections were
+# last qualified for as `sections_qualified_for_build_id`; the server refuses
+# the file until they are qualified and that key is removed. The checksum is
+# derived and checked.
 
 [release]
 app_id = 2089300

@@ -4,7 +4,7 @@ use icarus_bevy::experimental::{
     peer_lab::PeerLabConfig,
     release::{
         ReleaseClassNetCacheBounds, ReleasePin, ReleaseProfile, ReleaseRowHandleProfile,
-        ReleaseTagProfile, network_checksum,
+        ReleaseTagProfile, SECTIONS_QUALIFIED_FOR_BUILD_ID, network_checksum,
     },
     rep_layout::{ICARUS_ROW_HANDLE_NONE, TagEncoding, icarus_row_handle_width_bytes},
 };
@@ -43,6 +43,91 @@ fn release_table(text: &str) -> toml::Table {
     text.parse().unwrap()
 }
 
+/// The error a release file without required `section` fails with.
+fn missing_section(section: &str) -> String {
+    format!(
+        "release profile lacks required section [{section}]; pin-only release files are no \
+         longer accepted: use a complete profile (examples: tests/fixtures/releases/)"
+    )
+}
+
+/// Frozen profile `name` re-pinned to `build_id`/`project_version` the way
+/// `tools/release_watch.py pin` writes it: only `[release]` changes, and it
+/// records the build the other sections were last qualified for.
+fn repinned(name: &str, build_id: u64, project_version: &str) -> String {
+    let mut table =
+        release_table(&std::fs::read_to_string(ReleaseProfile::fixture_path(name)).unwrap());
+    let release = table["release"].as_table_mut().unwrap();
+    let qualified = release["build_id"].clone();
+    release.insert("build_id".into(), i64::try_from(build_id).unwrap().into());
+    release.insert("project_version".into(), project_version.into());
+    release.insert(
+        "network_checksum".into(),
+        i64::from(network_checksum(project_version)).into(),
+    );
+    release.insert(SECTIONS_QUALIFIED_FOR_BUILD_ID.into(), qualified);
+    toml::to_string(&table).unwrap()
+}
+
+/// A re-pinned file whose other sections are still the earlier build's is
+/// refused as a profile, with an error naming both builds and the remedy,
+/// whichever build it names and wherever it is loaded from; its identity
+/// stays readable as a pin.
+#[test]
+fn a_repinned_file_with_unqualified_sections_is_refused() {
+    let version = "3.0.36.159996-rel-DangerousHorizons";
+    let text = repinned("3.0.35", 26_613_688, version);
+    let expected = format!(
+        "release file pins build 26613688 ({version}) but its other sections were last \
+         qualified for build 26425113 (sections_qualified_for_build_id); qualify every \
+         remaining section for build 26613688, then remove sections_qualified_for_build_id \
+         from [release]"
+    );
+    assert_eq!(
+        ReleaseProfile::parse(&text).unwrap_err().to_string(),
+        expected
+    );
+    let directory = std::env::temp_dir().join(format!("release-repin-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("release.toml");
+    std::fs::write(&path, &text).unwrap();
+    let loaded = ReleaseProfile::load(&path);
+    let pin = ReleasePin::load(&path);
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(loaded.unwrap_err().to_string(), expected);
+    let pin = pin.unwrap();
+    assert_eq!(
+        (pin.build_id, pin.project_version.as_str()),
+        (26_613_688, version)
+    );
+    assert_eq!(pin.network_checksum, network_checksum(version));
+    assert_eq!(ReleasePin::parse(&text).unwrap(), pin);
+
+    // The key refuses the file even when it names the pinned build itself:
+    // only removing it, after qualification, makes the file a profile.
+    let with_key = |value: Option<toml::Value>| {
+        let mut table = release_table(&text);
+        let release = table["release"].as_table_mut().unwrap();
+        match value {
+            Some(value) => release.insert(SECTIONS_QUALIFIED_FOR_BUILD_ID.into(), value),
+            None => release.remove(SECTIONS_QUALIFIED_FOR_BUILD_ID),
+        };
+        toml::to_string(&table).unwrap()
+    };
+    assert!(
+        ReleaseProfile::parse(&with_key(Some(toml::Value::Integer(26_613_688))))
+            .unwrap_err()
+            .to_string()
+            .contains("last qualified for build 26613688")
+    );
+    ReleaseProfile::parse(&with_key(None)).unwrap();
+
+    // The key's value is a build id; anything else is no release file.
+    let malformed = with_key(Some("26425113".into()));
+    assert!(ReleaseProfile::parse(&malformed).is_err());
+    assert!(ReleasePin::parse(&malformed).is_err());
+}
+
 /// `release` (a `[release]` table) plus the required sections of the frozen
 /// 3.0.32 profile and no optional section.
 fn required_only(release: &str) -> String {
@@ -76,11 +161,14 @@ fn the_tracked_pin_is_consistent() {
         Some(network_checksum(&pin.project_version))
     );
     let text = std::fs::read_to_string(&path).unwrap();
+    let table = release_table(&text);
     assert!(
-        !text.contains("CARRIED OVER"),
+        !table["release"]
+            .as_table()
+            .unwrap()
+            .contains_key(SECTIONS_QUALIFIED_FOR_BUILD_ID),
         "unqualified carried-over sections"
     );
-    let table = release_table(&text);
     for name in REQUIRED_SECTIONS {
         assert!(table.contains_key(name), "{name}");
     }
@@ -136,11 +224,7 @@ fn release_profile_files_are_complete() {
             let mut without = table.clone();
             without.remove(*section);
             let error = ReleaseProfile::parse(&toml::to_string(&without).unwrap()).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                format!("release profile lacks required section [{section}]"),
-                "{name}"
-            );
+            assert_eq!(error.to_string(), missing_section(section), "{name}");
         }
         for section in OPTIONAL_SECTIONS {
             let mut without = table.clone();
@@ -611,10 +695,10 @@ fn invalid_profile_bounds_and_tables_fail_closed() {
 fn a_stale_checksum_or_unknown_field_is_rejected() {
     let good = "[release]\napp_id = 2089300\nbuild_id = 1\nproject_version = \"1.0.0\"\nnetwork_checksum = 1447163286\n";
     assert!(ReleasePin::parse(good).is_ok());
-    // A pin alone is no profile, whatever its build id.
+    // A pin alone is no profile, whatever its build id; the error says so.
     assert_eq!(
         ReleaseProfile::parse(good).unwrap_err().to_string(),
-        "release profile lacks required section [tags]"
+        missing_section("tags")
     );
     let stale = good.replace("1447163286", "1447163287");
     assert!(
@@ -663,7 +747,7 @@ fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
     };
     // F-778/F-779: the captured first part's export prefix is these 3,793
     // bits (SHA-256 of its 475 bytes in the M-707 capture, pinned by M-819),
-    // so any wrong path, flag or checksum in the built-in identifiers fails.
+    // so any wrong path, flag or checksum in the profile identifiers fails.
     let payload = encode_exports(&references, &codec).unwrap();
     assert_eq!(payload.bit_len(), 3_793);
     let digest: String = Sha256::digest(payload.bytes())
