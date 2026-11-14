@@ -75,8 +75,8 @@ metadata F-1182 observed a further Geometry stall (F-1184): no accepted Begin
 slots/profile requests despite settled opens/possession. One skipped subobject
 block makes Begin absence inconclusive; its owner and fields remain unknown.
 The later restart-only run reaches entry/locomotion (F-1185), while normal
-leave fails (F-1186). Player checkpoints remain unqualified. Skipped-block/drop metadata is authored-tested (F-1182); next: scope a
-fresh-world restart-only comparison.
+leave fails (F-1186). Player checkpoints remain unqualified. Skipped-block/drop
+metadata is authored-tested (F-1182); next: bind leave RPCs and save completion.
 
 Toolchain/headless/CI: F-879, F-497; client identity: F-878/F-731 (U-034
 resolved). Original fixity/entry-map/exchange: F-265/F-268/F-253; unrun
