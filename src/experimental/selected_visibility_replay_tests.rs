@@ -103,14 +103,18 @@ fn explicit_profile_and_layout_are_required() {
     ));
     let mut release = ReleaseProfile::fixture("3.0.34");
     release.pin.build_id += 1;
-    assert!(matches!(
-        ReplayProfile::qualify(
-            &release,
-            VisibilityArchiveProfile::NormalLittleEndianNullMapCustom,
-            VisibilityRpc82Layout::NormalSingleCustomStruct
-        ),
-        Err(ReplayError::Profile)
-    ));
+    let mut missing = ReleaseProfile::fixture("3.0.35");
+    missing.qualifications.as_mut().unwrap().visibility_decode = None;
+    for release in [release, missing, ReleaseProfile::fixture("3.0.36")] {
+        assert!(matches!(
+            ReplayProfile::qualify(
+                &release,
+                VisibilityArchiveProfile::NormalLittleEndianNullMapCustom,
+                VisibilityRpc82Layout::NormalSingleCustomStruct
+            ),
+            Err(ReplayError::Profile)
+        ));
+    }
 }
 
 #[test]

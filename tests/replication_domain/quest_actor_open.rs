@@ -1421,3 +1421,39 @@ fn channel_exhaustion_skips_quests_and_quest_manager_atomically_without_dropping
         assert_eq!(bound.lab.manager_open_count(), 4, "{total_quests}");
     }
 }
+
+#[test]
+fn quest_catalog_declaration_controls_only_reviewed_historical_opens() {
+    let map = "/Game/Maps/Test/Test";
+    for (name, eligible) in [
+        ("3.0.31", true),
+        ("3.0.31-client-25793767", true),
+        ("3.0.32", true),
+        ("3.0.34", false),
+        ("3.0.35", false),
+        ("3.0.36", false),
+    ] {
+        let profile = ReleaseProfile::fixture(name);
+        assert_eq!(
+            profile.quest_open_base_plan(map).unwrap().is_some(),
+            eligible,
+            "{name}"
+        );
+        let mut without = profile.clone();
+        if let Some(q) = without.qualifications.as_mut() {
+            q.quest_catalog = None;
+        }
+        assert!(without.quest_open_base_plan(map).unwrap().is_none());
+        if eligible {
+            let mut tampered = profile.clone();
+            tampered.pin.build_id += 1;
+            assert!(tampered.quest_open_base_plan(map).is_err());
+            let mut tampered = profile.clone();
+            tampered.engine_network_version += 1;
+            assert!(tampered.quest_open_base_plan(map).is_err());
+            let mut tampered = profile;
+            tampered.class_net_cache.stat_container += 1;
+            assert!(tampered.quest_open_base_plan(map).is_err());
+        }
+    }
+}

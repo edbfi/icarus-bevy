@@ -20,7 +20,7 @@ use super::archive::{ByteOrder, MAX_STRING_UNITS, StringEncoding, read_string_fr
 use super::control::TokenEncoding;
 use super::control_messages::ArchiveText;
 use super::packet::{BitReader, MAX_HARDCODED_NAME_INDEX, Payload};
-use super::release::{DEDICATED_SERVER_APP_ID, ReleaseProfile};
+use super::release::{ReleaseProfile, VisibilityDecodeRevision};
 use super::rep_layout::{NetworkName, read_field, read_u32};
 
 /// Caller assertions about the archive and custom dispatch, never detected
@@ -46,11 +46,15 @@ impl VisibilityDecodeProfile {
     /// an explicit assertion of the archive/dispatch predicates above. This
     /// validates metadata, not the original runtime's installation or state.
     pub fn qualify(release: &ReleaseProfile, archive: VisibilityArchiveProfile) -> Result<Self> {
+        release.validate()?;
         ensure!(
-            release.pin.app_id == DEDICATED_SERVER_APP_ID
-                && matches!(release.pin.build_id, 26_313_077 | 26_425_113)
-                && release.engine_network_version == 17
-                && release.game_network_version == 0,
+            matches!(
+                release
+                    .qualifications
+                    .as_ref()
+                    .and_then(|q| q.visibility_decode),
+                Some(VisibilityDecodeRevision::NormalCustomV1)
+            ),
             "unsupported visibility release/version profile"
         );
         ensure!(
