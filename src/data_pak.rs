@@ -31,12 +31,48 @@ pub const MAX_MEMBERS: usize = 100_000;
 pub const MAX_TABLE_ROWS: usize = 65_536;
 /// Largest independently authored gameplay profile.
 pub const MAX_GAMEPLAY_BYTES: u64 = 8 * 1024 * 1024;
+/// Aggregate catalog rows a sparse schema-2 recipe may expand into objects.
+/// This bounds per-row allocations independently of the recipe's byte size.
+pub const MAX_NORMALIZED_GAMEPLAY_ROWS: usize = 262_144;
+/// Aggregate UTF-8 catalog row-name bytes copied by schema-2 normalization.
+pub const MAX_NORMALIZED_GAMEPLAY_NAME_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+struct NormalizedGameplayBudget {
+    rows: usize,
+    name_bytes: usize,
+}
+
+impl NormalizedGameplayBudget {
+    fn charge(&mut self, rows: usize, name_bytes: usize) -> Result<()> {
+        let rows = self
+            .rows
+            .checked_add(rows)
+            .context("authored gameplay normalized row limit")?;
+        let name_bytes = self
+            .name_bytes
+            .checked_add(name_bytes)
+            .context("authored gameplay normalized name byte limit")?;
+        ensure!(
+            rows <= MAX_NORMALIZED_GAMEPLAY_ROWS,
+            "authored gameplay normalized row limit"
+        );
+        ensure!(
+            name_bytes <= MAX_NORMALIZED_GAMEPLAY_NAME_BYTES,
+            "authored gameplay normalized name byte limit"
+        );
+        self.rows = rows;
+        self.name_bytes = name_bytes;
+        Ok(())
+    }
+}
 
 type TableObjects = Vec<serde_json::Map<String, serde_json::Value>>;
 
 /// Gameplay definitions authored separately from the official identity catalog.
-/// Each supplied table covers every catalog row in the same order. Omitted
-/// object fields retain the native parser's defaults; omitted tables do not.
+/// Schema 1 supplies every catalog row in order. Schema 2 supplies overrides
+/// by exact row name; unlisted catalog rows have only their name, so native
+/// parser defaults apply. Neither schema fills omitted tables from the pak.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoredGameplay {
@@ -549,24 +585,75 @@ impl DataTables {
         let profile: AuthoredGameplay = serde_json::from_slice(bytes)
             .map_err(|error| crate::json_parse_error("authored gameplay JSON", error))?;
         ensure!(
-            profile.schema_version == 1,
+            matches!(profile.schema_version, 1 | 2),
             "unsupported authored gameplay schema"
         );
         let mut tables = Self::open(pak_path)?;
         tables.authored_only = true;
+        let mut normalized = NormalizedGameplayBudget::default();
         for (name, objects) in profile.tables {
             ensure!(
                 objects.len() <= MAX_TABLE_ROWS,
                 "authored gameplay row limit"
             );
             let rows = tables.rows(&name)?;
-            ensure!(
-                rows.len() == objects.len()
-                    && rows.iter().zip(&objects).all(|(name, row)| {
-                        row.get("Name").and_then(serde_json::Value::as_str) == Some(name)
-                    }),
-                "authored gameplay rows must match catalog count, names and order"
-            );
+            let objects = if profile.schema_version == 1 {
+                ensure!(
+                    rows.len() == objects.len()
+                        && rows.iter().zip(&objects).all(|(name, row)| {
+                            row.get("Name").and_then(serde_json::Value::as_str) == Some(name)
+                        }),
+                    "authored gameplay rows must match catalog count, names and order"
+                );
+                objects
+            } else {
+                let name_bytes = rows
+                    .iter()
+                    .try_fold(0_usize, |sum, row| sum.checked_add(row.len()))
+                    .context("authored gameplay normalized name byte limit")?;
+                normalized.charge(rows.len(), name_bytes)?;
+                let mut indices = BTreeMap::new();
+                for (index, row) in rows.iter().enumerate() {
+                    ensure!(
+                        !row.is_empty(),
+                        "catalog table {name} has an empty row name"
+                    );
+                    ensure!(
+                        indices.insert(row.as_str(), index).is_none(),
+                        "catalog table {name} has duplicate row names"
+                    );
+                }
+                let mut aligned: TableObjects = rows
+                    .iter()
+                    .map(|row| {
+                        serde_json::Map::from_iter([(
+                            "Name".to_owned(),
+                            serde_json::Value::String(row.clone()),
+                        )])
+                    })
+                    .collect();
+                let mut supplied = std::collections::BTreeSet::new();
+                for object in objects {
+                    let row = object
+                        .get("Name")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|row| !row.is_empty())
+                        .with_context(|| {
+                            format!(
+                                "authored gameplay table {name} requires a non-empty string Name"
+                            )
+                        })?;
+                    ensure!(
+                        supplied.insert(row.to_owned()),
+                        "authored gameplay table {name} has duplicate row names"
+                    );
+                    let index = indices.get(row).with_context(|| {
+                        format!("authored gameplay table {name} row {row:?} is missing from the installed catalog")
+                    })?;
+                    aligned[*index] = object;
+                }
+                aligned
+            };
             tables.objects.insert(name, objects);
         }
         Ok(tables)
@@ -637,5 +724,43 @@ impl DataTables {
             self.bools.insert(key.clone(), column);
         }
         Ok(self.bools[&key].get(index).copied().flatten())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_normalization_bounds_aggregate_rows_and_name_bytes_without_overflow() {
+        let mut budget = NormalizedGameplayBudget::default();
+        budget
+            .charge(
+                MAX_NORMALIZED_GAMEPLAY_ROWS / 2,
+                MAX_NORMALIZED_GAMEPLAY_NAME_BYTES / 2,
+            )
+            .unwrap();
+        budget
+            .charge(
+                MAX_NORMALIZED_GAMEPLAY_ROWS / 2,
+                MAX_NORMALIZED_GAMEPLAY_NAME_BYTES / 2,
+            )
+            .unwrap();
+        for (rows, bytes, message) in [
+            (1, 0, "normalized row limit"),
+            (0, 1, "normalized name byte limit"),
+            (usize::MAX, 0, "normalized row limit"),
+            (0, usize::MAX, "normalized name byte limit"),
+        ] {
+            assert!(
+                budget
+                    .charge(rows, bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message)
+            );
+            assert_eq!(budget.rows, MAX_NORMALIZED_GAMEPLAY_ROWS);
+            assert_eq!(budget.name_bytes, MAX_NORMALIZED_GAMEPLAY_NAME_BYTES);
+        }
     }
 }

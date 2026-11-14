@@ -1373,7 +1373,10 @@ mod tests {
             &FreshPlayerValues::default(),
         )
         .unwrap();
-        authored["tables"]["D_FactionMissions"][0]["Note"] = MARKER.into();
+        authored["tables"]["D_FactionMissions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Name": "Mission_Z", "Note": MARKER}));
         let write = |name: &str, value: &serde_json::Value| {
             let path = directory.path().join(name);
             std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();

@@ -193,7 +193,7 @@ fn authored_gameplay_rejects_misaligned_rows_and_invalid_inputs() {
         );
     }
     for value in [
-        serde_json::json!({"schema_version":2,"tables":{}}),
+        serde_json::json!({"schema_version":3,"tables":{}}),
         serde_json::json!({"schema_version":1,"tables":{},"unknown":1}),
         serde_json::json!({"schema_version":1,"tables":{"D_Missing":[]}}),
     ] {
@@ -219,6 +219,93 @@ fn authored_gameplay_rejects_misaligned_rows_and_invalid_inputs() {
     )
     .unwrap();
     assert!(DataTables::runtime(&path, &fifo).is_err());
+}
+
+#[test]
+fn sparse_gameplay_aligns_named_overrides_and_defaults_without_packaged_values() {
+    let root = TempDir::new().unwrap();
+    let packaged = serde_json::to_vec(&serde_json::json!({"Rows": [
+        {"Name":"A", "Flag":true, "Secret":123},
+        {"Name":"B", "Flag":true}, {"Name":"C", "Flag":false}
+    ]}))
+    .unwrap();
+    let path = pak_file(&root, &write_pak(&[("D_Test.json", &packaged, true)]));
+    let recipe = serde_json::to_vec(&serde_json::json!({"schema_version":2,"tables":{
+        "D_Test":[{"Name":"C", "Flag":true}, {"Name":"A", "Flag":false}]
+    }}))
+    .unwrap();
+    let mut tables = DataTables::runtime_bytes(&path, &recipe).unwrap();
+    assert_eq!(tables.rows("D_Test").unwrap(), ["A", "B", "C"]);
+    let objects = tables.objects("D_Test").unwrap();
+    assert_eq!(objects[0].get("Secret"), None);
+    assert_eq!(
+        objects[1],
+        serde_json::Map::from_iter([("Name".into(), "B".into())])
+    );
+    for _ in 0..2 {
+        assert_eq!(tables.row_bool("D_Test", "Flag", 0).unwrap(), Some(false));
+        assert_eq!(tables.row_bool("D_Test", "Flag", 1).unwrap(), None);
+        assert_eq!(tables.row_bool("D_Test", "Flag", 2).unwrap(), Some(true));
+        assert_eq!(tables.row_bool("D_Test", "Flag", 3).unwrap(), None);
+        assert!(tables.row("D_Test", "Missing").unwrap().is_none());
+    }
+    let recipe = br#"{"schema_version":2,"tables":{"D_Test":[]}}"#;
+    let mut defaults = DataTables::runtime_bytes(&path, recipe).unwrap();
+    assert_eq!(defaults.objects("D_Test").unwrap().len(), 3);
+    assert_eq!(defaults.row_bool("D_Test", "Flag", 0).unwrap(), None);
+    let mut absent =
+        DataTables::runtime_bytes(&path, br#"{"schema_version":2,"tables":{}}"#).unwrap();
+    assert_eq!(absent.rows("D_Test").unwrap().len(), 3);
+    assert!(
+        absent
+            .objects("D_Test")
+            .unwrap_err()
+            .to_string()
+            .contains("missing authored gameplay table")
+    );
+    assert!(absent.row_bool("D_Test", "Flag", 0).is_err());
+}
+
+#[test]
+fn sparse_gameplay_refuses_invalid_or_ambiguous_row_names() {
+    let root = TempDir::new().unwrap();
+    let path = pak_file(
+        &root,
+        &write_pak(&[("D_Test.json", &table_json(&["A", "B"]), false)]),
+    );
+    for (rows, reason) in [
+        (serde_json::json!([{}]), "non-empty string Name"),
+        (serde_json::json!([{"Name": 1}]), "non-empty string Name"),
+        (serde_json::json!([{"Name": ""}]), "non-empty string Name"),
+        (
+            serde_json::json!([{"Name":"A"},{"Name":"A"}]),
+            "duplicate row names",
+        ),
+        (
+            serde_json::json!([{"Name":"Unknown"}]),
+            "missing from the installed catalog",
+        ),
+    ] {
+        let recipe =
+            serde_json::to_vec(&serde_json::json!({"schema_version":2,"tables":{"D_Test":rows}}))
+                .unwrap();
+        let error = DataTables::runtime_bytes(&path, &recipe).unwrap_err();
+        assert!(format!("{error:#}").contains(reason), "{error:#}");
+    }
+    for (names, reason) in [
+        (&["A", "A"][..], "duplicate row names"),
+        (&["A", ""][..], "empty row name"),
+    ] {
+        fs::write(
+            &path,
+            write_pak(&[("D_Test.json", &table_json(names), false)]),
+        )
+        .unwrap();
+        let error =
+            DataTables::runtime_bytes(&path, br#"{"schema_version":2,"tables":{"D_Test":[]}}"#)
+                .unwrap_err();
+        assert!(format!("{error:#}").contains(reason), "{error:#}");
+    }
 }
 
 #[test]
@@ -583,8 +670,8 @@ fn table_presence_follows_the_member_paths() {
     assert!(!tables.has_table("SessionFlags"));
 }
 
-/// A fresh-player profile over a pak's catalog (F-993): the catalog's row
-/// names in order, only the values authored here, and a fresh pawn's stats
+/// A sparse fresh-player profile over a pak's catalog (F-993): stable named
+/// overrides, only the values authored here, and a fresh pawn's stats
 /// exactly the five speeds at their stat IDs (F-838, F-1164) and values:
 /// never the maxima at stats 0 and 3, which the client divides by the
 /// character state's (F-1166), though the vitals still carry them.
@@ -606,31 +693,31 @@ fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
             "D_Stats"
         ]
     );
-    let mut pak = DataPak::open(&path).unwrap();
-    for (table, rows) in tables {
-        let names: Vec<&str> = rows
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|row| row["Name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, pak.table_rows(table).unwrap(), "{table}");
-    }
-    // The packaged filler's bIsReplicated is not copied.
-    assert!(tables["D_Stats"][20].get("bIsReplicated").is_none());
-    assert_eq!(tables["D_Stats"][58]["bIsReplicated"], true);
-    // Only the five speeds replicate: not the maxima at 0 and 3, no base.
-    let replicated: Vec<usize> = tables["D_Stats"]
+    assert_eq!(profile["schema_version"], 2);
+    assert_eq!(tables["D_FactionMissions"], serde_json::json!([]));
+    // The recipe names only the five authored speed flags, in grant order;
+    // the catalog's other rows and packaged flags never enter the recipe.
+    let replicated: Vec<&str> = tables["D_Stats"]
         .as_array()
         .unwrap()
         .iter()
-        .enumerate()
-        .filter(|(_, row)| row.get("bIsReplicated").is_some())
-        .map(|(id, _)| id)
+        .map(|row| {
+            assert_eq!(row["bIsReplicated"], true);
+            row["Name"].as_str().unwrap()
+        })
         .collect();
-    assert_eq!(replicated, [58, 61, 65, 69, 73]);
     assert_eq!(
-        tables["D_Inventory"][1]["Inventories"],
+        replicated,
+        [
+            "MovementSpeed_+",
+            "SprintSpeed_+",
+            "CrouchSpeed_+",
+            "SwimSpeed_+",
+            "SwimSprintSpeed_+"
+        ]
+    );
+    assert_eq!(
+        tables["D_Inventory"][0]["Inventories"],
         serde_json::json!([])
     );
     let authored = root.path().join("fresh.json");
@@ -643,6 +730,10 @@ fn a_fresh_player_profile_authors_every_value_over_the_catalog_names() {
     let mut loaded = icarus_bevy::network::data_tables(&network)
         .unwrap()
         .unwrap();
+    assert_eq!(
+        loaded.row_bool("D_Stats", "bIsReplicated", 20).unwrap(),
+        None
+    );
     // Vitals at the authored maxima, not the pak's 250 and more.
     let vitals = icarus_bevy::network::fresh_player_vitals(&mut loaded).unwrap();
     assert_eq!(

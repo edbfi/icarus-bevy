@@ -5,7 +5,7 @@ Checkpoint: [findings](ledgers/findings/), [unknowns](ledgers/unknowns.md),
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-11-13
+Last reconciled: 2026-11-14
 
 ## Summary
 
@@ -19,7 +19,7 @@ acknowledgements change nothing (F-1150). `run` unfreezes each pawn
 after its record ACK by default (F-1099), untested with a stock client.
 Compatibility remains unproven.
 
-Standing research authorization F-1175, renewed 2026-11-13 for offline and
+Standing research authorization F-1175, renewed 2026-11-14 for offline and
 online work, still requires scoped cases.
 Input parity F-828 forbids client dependencies. The user reports the supplied
 client/save pair compatible (F-421).
