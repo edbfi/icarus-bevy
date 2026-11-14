@@ -646,8 +646,15 @@ fn stopped_admission_refuses_new_sessions_and_teardown_is_idempotent() {
     let live = counts(&app);
     assert_eq!((live.active_peers, live.joined), (1, 1));
     assert_eq!(live.refused_draining, 3);
+    let before = network::controller_receive_diagnostics(app.world()).unwrap();
     let first = network::teardown(app.world_mut()).unwrap();
+    let after = network::controller_receive_diagnostics(app.world()).unwrap();
+    assert_eq!(after, before);
     let second = network::teardown(app.world_mut()).unwrap();
+    assert_eq!(
+        network::controller_receive_diagnostics(app.world()).unwrap(),
+        after
+    );
     assert_eq!(first, second);
     assert_eq!((first.active_peers, first.closed_by_shutdown), (0, 1));
     assert!(app.world().get_resource::<PeerLab>().is_none());
@@ -9072,6 +9079,62 @@ fn controller_startup_production_reports_periodic_and_pre_shutdown_readiness() {
         status["readiness"]["actor_channels_open"]
     );
     drop(client);
+}
+
+#[test]
+fn controller_receive_production_retains_metadata_after_disconnect_and_shutdown() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let (mut client, _) = join_pinned_open(address, profile.pin.network_checksum, 32);
+    let _ = send_character_slot_with(&mut client, profile.engine_network_version, 7, false);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let observed = loop {
+        let event = server.event("status");
+        if event["controller_receive"]["fields"]["entries"]
+            .as_array()
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry["index"] == 124 && entry["disposition"] == "Recognized")
+            })
+        {
+            break event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Begin diagnostics never appeared"
+        );
+    };
+    assert_eq!(observed["sessions"]["initialisation_slots_recorded"], 1);
+    client.close().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let departed = loop {
+        let event = server.event("status");
+        if event["sessions"]["closed_by_client"] == 1 {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "client departure never appeared");
+    };
+    assert_eq!(
+        departed["controller_receive"]["fields"],
+        observed["controller_receive"]["fields"]
+    );
+    assert!(
+        serde_json::to_vec(&departed["controller_receive"])
+            .unwrap()
+            .len()
+            <= 16 * 1024
+    );
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    let stopped = server.event("stopped");
+    assert_eq!(
+        stopped["controller_receive"],
+        departed["controller_receive"]
+    );
 }
 
 #[test]

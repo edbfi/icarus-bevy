@@ -2442,7 +2442,7 @@ pub struct ControllerFieldSummary {
 }
 
 /// At most 64 distinct observations per live peer; no payloads or identities.
-#[derive(Clone, Debug, Default, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ControllerFieldDiagnostics {
     pub entries: Vec<ControllerFieldSummary>,
     pub overflow: u64,
@@ -2461,6 +2461,38 @@ pub struct ControllerFieldDiagnostics {
 }
 
 impl ControllerFieldDiagnostics {
+    /// Bounded aggregate; discarded row occurrences charge overflow.
+    fn merge(&mut self, other: &Self) {
+        self.overflow = self.overflow.saturating_add(other.overflow);
+        self.unknown_subobject_blocks = self
+            .unknown_subobject_blocks
+            .saturating_add(other.unknown_subobject_blocks);
+        self.malformed_bunches = self
+            .malformed_bunches
+            .saturating_add(other.malformed_bunches);
+        self.body_parse_failures = self
+            .body_parse_failures
+            .saturating_add(other.body_parse_failures);
+        self.block_payload_limit_rejections = self
+            .block_payload_limit_rejections
+            .saturating_add(other.block_payload_limit_rejections);
+        self.block_payload_length_rejections = self
+            .block_payload_length_rejections
+            .saturating_add(other.block_payload_length_rejections);
+        self.max_rejected_block_payload_bits = self
+            .max_rejected_block_payload_bits
+            .max(other.max_rejected_block_payload_bits);
+        for entry in &other.entries {
+            self.record_count(
+                entry.target,
+                entry.index,
+                entry.payload_bits,
+                entry.disposition,
+                entry.count,
+            );
+        }
+    }
+
     fn record(
         &mut self,
         target: ControllerFieldTarget,
@@ -2498,6 +2530,24 @@ impl ControllerFieldDiagnostics {
             self.overflow = self.overflow.saturating_add(count);
         }
     }
+}
+
+/// Explicit public allowlist of bounded receive metadata since bind. No
+/// packet/RPC payloads, addresses, GUIDs, names or profile values are retained.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ControllerReceiveDiagnostics {
+    pub data_accepted: u64,
+    pub data_rejected: u64,
+    pub data_malformed: u64,
+    pub actor_bunches_ignored: u64,
+    pub actor_bunches_dropped: u64,
+    pub actor_partial_parts: u64,
+    pub actor_partial_completed: u64,
+    pub actor_partial_rejected: u64,
+    pub actor_bunches_malformed: u64,
+    pub actor_duplicate_reliable: u64,
+    pub controller_fields_ignored: u64,
+    pub fields: ControllerFieldDiagnostics,
 }
 
 struct PeerEntry {
@@ -2967,7 +3017,7 @@ fn controller_initialisation_calls(
         order,
         components,
         None,
-        diagnostics,
+        &mut [diagnostics],
     )
     .map(|staged| (staged.calls, staged.ignored))
 }
@@ -2994,42 +3044,44 @@ fn controller_calls(
     order: super::archive::ByteOrder,
     components: [Option<u32>; 3],
     level_visibility: Option<&VisibilityDecodeProfile>,
-    diagnostics: &mut ControllerFieldDiagnostics,
+    diagnostics: &mut [&mut ControllerFieldDiagnostics],
 ) -> Result<StagedControllerCalls> {
     let actor = actor_codec(engine_net_version, order);
     let body = match read_client_actor_bunch_body(&mut payload.reader(), &actor) {
         Ok(body) => body,
         Err(error) => {
-            diagnostics.body_parse_failures = diagnostics.body_parse_failures.saturating_add(1);
-            if let Some(rejection) =
-                error.downcast_ref::<super::actor_channel::ContentBlockPayloadReadError>()
-            {
-                match *rejection {
-                    super::actor_channel::ContentBlockPayloadReadError::Limit {
-                        declared_bits,
-                        available_bits,
-                        limit_bits,
-                    } if declared_bits <= available_bits => {
-                        debug_assert!(declared_bits > limit_bits);
-                        diagnostics.block_payload_limit_rejections =
-                            diagnostics.block_payload_limit_rejections.saturating_add(1);
-                        diagnostics.max_rejected_block_payload_bits = diagnostics
-                            .max_rejected_block_payload_bits
-                            .max(declared_bits as u64);
-                    }
-                    super::actor_channel::ContentBlockPayloadReadError::Limit {
-                        declared_bits,
-                        available_bits,
-                        ..
-                    }
-                    | super::actor_channel::ContentBlockPayloadReadError::Truncated {
-                        declared_bits,
-                        available_bits,
-                    } => {
-                        debug_assert!(declared_bits > available_bits);
-                        diagnostics.block_payload_length_rejections = diagnostics
-                            .block_payload_length_rejections
-                            .saturating_add(1);
+            for diagnostics in diagnostics.iter_mut() {
+                diagnostics.body_parse_failures = diagnostics.body_parse_failures.saturating_add(1);
+                if let Some(rejection) =
+                    error.downcast_ref::<super::actor_channel::ContentBlockPayloadReadError>()
+                {
+                    match *rejection {
+                        super::actor_channel::ContentBlockPayloadReadError::Limit {
+                            declared_bits,
+                            available_bits,
+                            limit_bits,
+                        } if declared_bits <= available_bits => {
+                            debug_assert!(declared_bits > limit_bits);
+                            diagnostics.block_payload_limit_rejections =
+                                diagnostics.block_payload_limit_rejections.saturating_add(1);
+                            diagnostics.max_rejected_block_payload_bits = diagnostics
+                                .max_rejected_block_payload_bits
+                                .max(declared_bits as u64);
+                        }
+                        super::actor_channel::ContentBlockPayloadReadError::Limit {
+                            declared_bits,
+                            available_bits,
+                            ..
+                        }
+                        | super::actor_channel::ContentBlockPayloadReadError::Truncated {
+                            declared_bits,
+                            available_bits,
+                        } => {
+                            debug_assert!(declared_bits > available_bits);
+                            diagnostics.block_payload_length_rejections = diagnostics
+                                .block_payload_length_rejections
+                                .saturating_add(1);
+                        }
                     }
                 }
             }
@@ -3052,8 +3104,10 @@ fn controller_calls(
                     .iter()
                     .position(|guid| *guid == Some(object.guid))
                 else {
-                    diagnostics.unknown_subobject_blocks =
-                        diagnostics.unknown_subobject_blocks.saturating_add(1);
+                    for diagnostics in diagnostics.iter_mut() {
+                        diagnostics.unknown_subobject_blocks =
+                            diagnostics.unknown_subobject_blocks.saturating_add(1);
+                    }
                     continue;
                 };
                 (
@@ -3099,7 +3153,9 @@ fn controller_calls(
                         ControllerFieldDisposition::Malformed
                     }
                 };
-                diagnostics.record(target, field.index, field.payload.bit_len(), disposition);
+                for diagnostics in diagnostics.iter_mut() {
+                    diagnostics.record(target, field.index, field.payload.bit_len(), disposition);
+                }
                 continue;
             }
             let parsed = (|| -> Result<()> {
@@ -3165,7 +3221,9 @@ fn controller_calls(
             } else {
                 ControllerFieldDisposition::Ignored
             };
-            diagnostics.record(target, field.index, field.payload.bit_len(), disposition);
+            for diagnostics in diagnostics.iter_mut() {
+                diagnostics.record(target, field.index, field.payload.bit_len(), disposition);
+            }
             parsed?;
         }
     }
@@ -3371,6 +3429,8 @@ pub struct PeerLab {
     /// Header-only counts of dropped client unreliable actor bunches, kept
     /// only while `count_unreliable_actor_bunches` is set.
     unreliable_actor_bunches: UnreliableActorBunchCounts,
+    /// First-seen metadata since bind, capped at 64 rows independently of peers.
+    lifetime_controller_fields: ControllerFieldDiagnostics,
     /// Opt-in ([`PeerLab::enable_unreliable_actor_bunch_counts`]): off by
     /// default, so the receive path parses no dropped bunch for diagnostics.
     count_unreliable_actor_bunches: bool,
@@ -3831,6 +3891,7 @@ impl PeerLab {
             level_visibility: None,
             level_actor_holders: BTreeMap::new(),
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
+            lifetime_controller_fields: ControllerFieldDiagnostics::default(),
             count_unreliable_actor_bunches: false,
             manager_opens: Vec::new(),
             quest_open_base: None,
@@ -6929,37 +6990,29 @@ impl PeerLab {
     pub fn controller_field_totals(&self) -> ControllerFieldDiagnostics {
         let mut totals = ControllerFieldDiagnostics::default();
         for peer in self.peers.values() {
-            let diagnostics = &peer.controller_field_diagnostics;
-            totals.overflow = totals.overflow.saturating_add(diagnostics.overflow);
-            totals.unknown_subobject_blocks = totals
-                .unknown_subobject_blocks
-                .saturating_add(diagnostics.unknown_subobject_blocks);
-            totals.malformed_bunches = totals
-                .malformed_bunches
-                .saturating_add(diagnostics.malformed_bunches);
-            totals.body_parse_failures = totals
-                .body_parse_failures
-                .saturating_add(diagnostics.body_parse_failures);
-            totals.block_payload_limit_rejections = totals
-                .block_payload_limit_rejections
-                .saturating_add(diagnostics.block_payload_limit_rejections);
-            totals.block_payload_length_rejections = totals
-                .block_payload_length_rejections
-                .saturating_add(diagnostics.block_payload_length_rejections);
-            totals.max_rejected_block_payload_bits = totals
-                .max_rejected_block_payload_bits
-                .max(diagnostics.max_rejected_block_payload_bits);
-            for entry in &diagnostics.entries {
-                totals.record_count(
-                    entry.target,
-                    entry.index,
-                    entry.payload_bits,
-                    entry.disposition,
-                    entry.count,
-                );
-            }
+            totals.merge(&peer.controller_field_diagnostics);
         }
         totals
+    }
+
+    /// Since-bind metadata, including departed peers. Recognition never proves
+    /// whole-bunch application. With field overflow, absence of a row (including
+    /// Begin) is inconclusive: a new key may have been discarded.
+    pub fn controller_receive_diagnostics(&self) -> ControllerReceiveDiagnostics {
+        ControllerReceiveDiagnostics {
+            data_accepted: self.stats.data_accepted,
+            data_rejected: self.stats.data_rejected,
+            data_malformed: self.stats.data_malformed,
+            actor_bunches_ignored: self.stats.actor_bunches_ignored,
+            actor_bunches_dropped: self.stats.actor_bunches_dropped,
+            actor_partial_parts: self.stats.actor_partial_parts,
+            actor_partial_completed: self.stats.actor_partial_completed,
+            actor_partial_rejected: self.stats.actor_partial_rejected,
+            actor_bunches_malformed: self.stats.actor_bunches_malformed,
+            actor_duplicate_reliable: self.stats.actor_duplicate_reliable,
+            controller_fields_ignored: self.stats.controller_fields_ignored,
+            fields: self.lifetime_controller_fields.clone(),
+        }
     }
 
     /// Count current transport queues and primary joined-player phases without
@@ -7918,7 +7971,10 @@ impl PeerLab {
                                 order,
                                 [entry.backend_proxy, entry.player_data, entry.bestiary],
                                 level_visibility,
-                                &mut entry.controller_field_diagnostics,
+                                &mut [
+                                    &mut entry.controller_field_diagnostics,
+                                    &mut self.lifetime_controller_fields,
+                                ],
                             );
                             let StagedControllerCalls {
                                 calls,
@@ -7936,6 +7992,7 @@ impl PeerLab {
                                         .controller_field_diagnostics
                                         .malformed_bunches
                                         .saturating_add(1);
+                                    bump(&mut self.lifetime_controller_fields.malformed_bunches);
                                     bump(&mut self.stats.actor_bunches_malformed);
                                     continue;
                                 }
@@ -19258,6 +19315,10 @@ mod tests {
             assert_eq!(lab.stats.actor_bunches_dropped, 0);
             assert_eq!(lab.stats.actor_partial_completed, 1);
             assert_eq!(lab.stats.controller_fields_ignored, 1);
+            let lifetime = lab.controller_receive_diagnostics();
+            assert_eq!(lifetime.actor_partial_completed, 1);
+            assert_eq!(lifetime.actor_duplicate_reliable, 1);
+            assert_eq!(lifetime.fields, lab.controller_field_totals());
             assert_eq!(
                 lab.controller_field_diagnostics(address)
                     .unwrap()
@@ -19911,6 +19972,270 @@ mod tests {
         }
 
         #[test]
+        fn lifetime_begin_diagnostics_preserve_recognition_atomicity_and_duplicate_policy() {
+            use super::super::super::probe_initialise::{
+                begin_player_initialisation_field, initialise_codec,
+            };
+            for malformed in [false, true] {
+                let mut lab = record_lab(false);
+                let (socket, address, mut client) =
+                    record_peer(&mut lab, 1, "PRIVATE-DIAGNOSTIC-NAME");
+                let codec = initialise_codec(
+                    lab.player_controller_open
+                        .as_ref()
+                        .unwrap()
+                        .engine_net_version,
+                );
+                let begin = begin_player_initialisation_field(3, &codec).unwrap();
+                let mut fields = vec![(begin.index, begin.payload)];
+                if malformed {
+                    let mut invalid = BitWriter::new();
+                    invalid.write_bit(true);
+                    fields.push((
+                        SERVER_SHORT_TIMEOUT_FIELD_INDEX,
+                        Payload::from_writer(invalid),
+                    ));
+                }
+                let payload = client_actor_body(
+                    &lab,
+                    vec![field_block(
+                        BlockTarget::Actor,
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &fields,
+                    )],
+                );
+                let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload.clone());
+                let diagnostics = lab.controller_receive_diagnostics();
+                assert!(diagnostics.fields.entries.iter().any(|field| field.index
+                    == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
+                    && field.disposition == ControllerFieldDisposition::Recognized
+                    && field.count == 1));
+                assert_eq!(lab.character_slot(address), (!malformed).then_some(3));
+                assert_eq!(
+                    lab.stats.initialisation_slots_recorded,
+                    u64::from(!malformed)
+                );
+                assert_eq!(diagnostics.actor_bunches_malformed, u64::from(malformed));
+                // A fresh packet carrying the same reliable sequence applies and
+                // classifies nothing twice, even when the original was malformed.
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+                let duplicate = lab.controller_receive_diagnostics();
+                assert_eq!(duplicate.fields, diagnostics.fields);
+                assert_eq!(
+                    duplicate.actor_duplicate_reliable,
+                    diagnostics.actor_duplicate_reliable + 1
+                );
+                assert_eq!(
+                    lab.stats.initialisation_slots_recorded,
+                    u64::from(!malformed)
+                );
+                let before = duplicate.fields;
+                lab.remove_peer(address).unwrap();
+                assert_eq!(lab.controller_receive_diagnostics().fields, before);
+                assert!(lab.controller_field_totals().entries.is_empty());
+                assert!(lab.remove_peer(address).is_none());
+                assert_eq!(lab.controller_receive_diagnostics().fields, before);
+            }
+        }
+
+        #[test]
+        fn cookie_replacement_retires_controller_metadata_once() {
+            let mut lab = record_lab(false);
+            let (socket, address, mut client) = record_peer(&mut lab, 1, "PRIVATE-OLD-PLAYER");
+            let fields = vec![
+                (
+                    SERVER_SHORT_TIMEOUT_FIELD_INDEX,
+                    Payload::from_writer(BitWriter::new())
+                );
+                7
+            ];
+            let payload = client_actor_body(
+                &lab,
+                vec![field_block(
+                    BlockTarget::Actor,
+                    BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                    &fields,
+                )],
+            );
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            let before = lab.controller_receive_diagnostics();
+            assert_eq!(before.fields.entries[0].count, 7);
+            let (replacement, _client) = record_peer_on(&mut lab, &socket, 2, "PRIVATE-NEW-PLAYER");
+            assert_eq!(replacement, address);
+            assert_eq!(lab.stats.peers_replaced, 1);
+            assert!(lab.controller_field_totals().entries.is_empty());
+            assert_eq!(lab.controller_receive_diagnostics().fields, before.fields);
+            lab.shutdown();
+            assert_eq!(lab.controller_receive_diagnostics().fields, before.fields);
+            lab.shutdown();
+            assert_eq!(lab.controller_receive_diagnostics().fields, before.fields);
+        }
+
+        #[test]
+        fn lifetime_table_overflow_is_stable_across_live_peer_removal_and_shutdown() {
+            for remove_later_contributor in [false, true] {
+                let mut lab = prospect_refresh_lab();
+                let (first_socket, first, mut first_client) = controller_peer(&mut lab);
+                let (second_socket, second, mut second_client) = controller_peer(&mut lab);
+                let first_fields: Vec<_> = (0..64)
+                    .map(|bits| {
+                        let mut writer = BitWriter::new();
+                        for _ in 0..bits {
+                            writer.write_bit(false);
+                        }
+                        (0, Payload::from_writer(writer))
+                    })
+                    .collect();
+                let second_fields = vec![(1, Payload::from_writer(BitWriter::new())); 100];
+                for (socket, client, fields) in [
+                    (&first_socket, &mut first_client, first_fields),
+                    (&second_socket, &mut second_client, second_fields),
+                ] {
+                    let payload = client_actor_body(
+                        &lab,
+                        vec![field_block(
+                            BlockTarget::Actor,
+                            BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                            &fields,
+                        )],
+                    );
+                    let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+                    receive_controller_payload(&mut lab, socket, client, raw, payload);
+                }
+                let capped = lab.controller_receive_diagnostics();
+                assert_eq!(capped.fields.entries.len(), 64);
+                assert_eq!(capped.fields.overflow, 100);
+                assert!(
+                    capped
+                        .fields
+                        .entries
+                        .iter()
+                        .all(|entry| entry.index == 0 && entry.count == 1)
+                );
+                assert_eq!(
+                    lab.controller_field_diagnostics(second).unwrap().entries[0].count,
+                    100
+                );
+                // Both peers are live when the shared cap is exceeded. Departure
+                // cannot reorder retained keys or reclassify prior overflow.
+                lab.remove_peer(if remove_later_contributor {
+                    second
+                } else {
+                    first
+                })
+                .unwrap();
+                assert_eq!(lab.controller_receive_diagnostics().fields, capped.fields);
+                assert_eq!(lab.shutdown(), 1);
+                assert_eq!(lab.controller_receive_diagnostics().fields, capped.fields);
+                assert_eq!(lab.shutdown(), 0);
+                assert_eq!(lab.controller_receive_diagnostics().fields, capped.fields);
+            }
+        }
+
+        #[test]
+        fn lifetime_receive_metadata_has_fixed_allowlist_and_serialized_bound() {
+            let mut lab = prospect_refresh_lab();
+            for index in 0..65_u32 {
+                lab.lifetime_controller_fields.record_count(
+                    ControllerFieldTarget::PermittedSubobject,
+                    u32::MAX - index,
+                    usize::MAX - index as usize,
+                    ControllerFieldDisposition::Malformed,
+                    u64::MAX,
+                );
+            }
+            lab.lifetime_controller_fields.malformed_bunches = u64::MAX;
+            lab.lifetime_controller_fields.body_parse_failures = u64::MAX;
+            lab.lifetime_controller_fields
+                .block_payload_limit_rejections = u64::MAX;
+            lab.lifetime_controller_fields
+                .block_payload_length_rejections = u64::MAX;
+            lab.lifetime_controller_fields
+                .max_rejected_block_payload_bits = u64::MAX;
+            lab.lifetime_controller_fields.unknown_subobject_blocks = u64::MAX;
+            lab.stats = PeerLabStats {
+                data_accepted: u64::MAX,
+                data_rejected: u64::MAX,
+                data_malformed: u64::MAX,
+                actor_bunches_ignored: u64::MAX,
+                actor_bunches_dropped: u64::MAX,
+                actor_partial_parts: u64::MAX,
+                actor_partial_completed: u64::MAX,
+                actor_partial_rejected: u64::MAX,
+                actor_bunches_malformed: u64::MAX,
+                actor_duplicate_reliable: u64::MAX,
+                controller_fields_ignored: u64::MAX,
+                ..Default::default()
+            };
+            let diagnostics = lab.controller_receive_diagnostics();
+            assert_eq!(diagnostics.fields.entries.len(), 64);
+            assert_eq!(diagnostics.fields.overflow, u64::MAX);
+            let value = serde_json::to_value(&diagnostics).unwrap();
+            let keys: std::collections::BTreeSet<_> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "data_accepted",
+                    "data_rejected",
+                    "data_malformed",
+                    "actor_bunches_ignored",
+                    "actor_bunches_dropped",
+                    "actor_partial_parts",
+                    "actor_partial_completed",
+                    "actor_partial_rejected",
+                    "actor_bunches_malformed",
+                    "actor_duplicate_reliable",
+                    "controller_fields_ignored",
+                    "fields",
+                ]
+                .into_iter()
+                .collect()
+            );
+            let field_keys: std::collections::BTreeSet<_> = value["fields"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                field_keys,
+                [
+                    "entries",
+                    "overflow",
+                    "malformed_bunches",
+                    "body_parse_failures",
+                    "block_payload_limit_rejections",
+                    "block_payload_length_rejections",
+                    "max_rejected_block_payload_bits",
+                    "unknown_subobject_blocks",
+                ]
+                .into_iter()
+                .collect()
+            );
+            for entry in value["fields"]["entries"].as_array().unwrap() {
+                assert_eq!(
+                    entry
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    ["target", "index", "payload_bits", "disposition", "count"]
+                        .into_iter()
+                        .collect()
+                );
+            }
+            assert!(serde_json::to_vec(&diagnostics).unwrap().len() <= 16 * 1024);
+        }
+
+        #[test]
         fn peer_removal_and_shutdown_drop_only_live_controller_diagnostics() {
             let mut lab = prospect_refresh_lab();
             let (first_socket, first, mut first_client) = controller_peer(&mut lab);
@@ -19940,6 +20265,7 @@ mod tests {
                     .all(|entry| entry.count == 1)
             );
             let totals = lab.controller_field_totals();
+            assert_eq!(lab.controller_receive_diagnostics().fields, totals);
             assert_eq!(totals.entries.len(), 2);
             assert!(totals.entries.iter().all(|entry| entry.count == 2));
             assert_eq!(totals.malformed_bunches, 1);
@@ -19960,7 +20286,9 @@ mod tests {
                 &ControllerFieldDiagnostics::default(),
             );
             assert_eq!(lab.peer_count(), 0);
+            assert_eq!(lab.controller_receive_diagnostics().fields, totals);
             assert_eq!(lab.shutdown(), 0);
+            assert_eq!(lab.controller_receive_diagnostics().fields, totals);
         }
 
         #[test]

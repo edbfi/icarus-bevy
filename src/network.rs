@@ -97,7 +97,10 @@ use crate::{
             CharacterVitals, FastArrayContent, InventorySlot, PAWN_CHANNEL_INDEX, PawnContent,
             PawnInventory, PawnOpenPlan, SlotItem,
         },
-        peer_lab::{PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin, SessionCounts},
+        peer_lab::{
+            ControllerReceiveDiagnostics, PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin,
+            SessionCounts,
+        },
         prospect_info::{
             MissionHistoryRecord, PlayerHistoryEntry, SavedContainerManager, SavedItem,
             SavedQuestManager,
@@ -1621,7 +1624,10 @@ pub fn apply_saved_game_state(
 /// Session counts kept after [`teardown`] so a repeated call and the final
 /// record report the same values.
 #[derive(Resource, Clone, Debug)]
-struct ClosedSessions(SessionCounts);
+struct ClosedSessions {
+    sessions: SessionCounts,
+    controller_receive: ControllerReceiveDiagnostics,
+}
 
 /// Peer-lab parameters for `network`: admission enabled with `max_players`
 /// as the occupancy limit. The peer table holds twice the admitted slots so
@@ -2542,7 +2548,20 @@ pub fn session_counts(world: &World) -> Option<SessionCounts> {
         .or_else(|| {
             world
                 .get_resource::<ClosedSessions>()
-                .map(|closed| closed.0.clone())
+                .map(|closed| closed.sessions.clone())
+        })
+}
+
+/// Since-bind allowlisted controller metadata, retained through teardown.
+/// None means the network layer was never installed, not zero received traffic.
+pub fn controller_receive_diagnostics(world: &World) -> Option<ControllerReceiveDiagnostics> {
+    world
+        .get_resource::<PeerLab>()
+        .map(PeerLab::controller_receive_diagnostics)
+        .or_else(|| {
+            world
+                .get_resource::<ClosedSessions>()
+                .map(|closed| closed.controller_receive.clone())
         })
 }
 
@@ -2559,8 +2578,12 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
     if let Some(mut lab) = world.remove_resource::<PeerLab>() {
         lab.shutdown();
         let counts = lab.session_counts();
+        let controller_receive = lab.controller_receive_diagnostics();
         drop(lab);
-        world.insert_resource(ClosedSessions(counts));
+        world.insert_resource(ClosedSessions {
+            sessions: counts,
+            controller_receive,
+        });
     }
     if let Some(mut registry) =
         world.get_resource_mut::<crate::native_player_runtime::PlayerRegistry>()
@@ -2573,5 +2596,5 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
     crate::session_replication::clear_viewers(world);
     world
         .get_resource::<ClosedSessions>()
-        .map(|closed| closed.0.clone())
+        .map(|closed| closed.sessions.clone())
 }
