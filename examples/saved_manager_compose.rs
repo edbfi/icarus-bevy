@@ -9,7 +9,7 @@
 //! supplied open (`exports_hex`, `exports_bits`, `body_hex`, `body_bits`)
 //! and its GUIDs (`actor`, `archetype`, `outer`, `components` or the first
 //! runtime subobject's, and `class`, a runtime subobject class exported
-//! earlier). The plans are the built-in 3.0.31 release profile's; the
+//! earlier). The plans are the frozen 3.0.31 release profile's; the
 //! faction mission's row and the inventories' rows come from the official
 //! server's data.pak. The referenced actors' GUIDs are read from the
 //! supplied body so the composed open names the same ones. Prints counts

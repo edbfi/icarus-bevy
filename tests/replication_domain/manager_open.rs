@@ -1,4 +1,4 @@
-//! World manager opens (F-859) from the built-in release plans, pinned to
+//! World manager opens (F-859) from the frozen release profiles' plans, pinned to
 //! the bit lengths and SHA-256 digests of the opens M-707 captured (taken
 //! from the capture, not from the composer), composed in the capture's GUID
 //! state.

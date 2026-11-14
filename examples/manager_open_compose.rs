@@ -2,7 +2,7 @@
 //! and compare them with supplied opens (one JSON line per manager). The
 //! profile file maps channel indices to a supplied open (`exports_hex`,
 //! `exports_bits`, `body_hex`, `body_bits`) and its GUIDs (`actor`,
-//! `archetype`, `outer`, `components`); the plans are the built-in 3.0.31
+//! `archetype`, `outer`, `components`); the plans are the frozen 3.0.31
 //! release profile's (`manager_open_plans`), and the supplied actor state's
 //! values are compared with the plan's. Never reads original files.
 use std::{collections::BTreeMap, path::PathBuf};

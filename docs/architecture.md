@@ -54,32 +54,40 @@ no per-release values.
 - `config/release.toml` is the active release, validated by
   `experimental::release::ReleaseProfile`. `[release]` (app, build, project
   version, checked network checksum), `[tags]`, `[class_net_cache]` and
-  `[row_handles]` are required, since the wire uses them unconditionally; a
-  missing one fails with an error naming it. `[player_controller]`,
+  `[row_handles]` are required, since every enabled open takes its tag
+  encoding, field bounds and row widths from them; a missing one fails with
+  an error naming it, so pin-only files no longer load. `[player_controller]`,
   `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and
   `[level_actors]` are optional: absent turns that open off, never another
   release's values.
-- Historical releases are frozen profiles under `tests/fixtures/releases/`,
-  one file per release (`3.0.32.toml`); tests and examples load them with
-  `ReleaseProfile::fixture("3.0.32")` or `fixture_path`. The remaining gates
-  keyed on build-id lists (quest class opens, visibility decoding, inbound
-  controller bounds) are the next piece of this design.
+- Frozen profiles of selected historical releases live under
+  `tests/fixtures/releases/` (`3.0.32.toml`) for tests that need that
+  layout; tests and examples load them with `ReleaseProfile::fixture("3.0.32")`
+  or `fixture_path`. A release gets no fixture by default; where one exists
+  for the active release, a test requires the active profile to equal it.
+  The remaining gates keyed on build-id lists (quest class opens, visibility
+  decoding, inbound controller bounds) are the next piece of this design.
 - `tools/release_watch.py check` compares the pin with Steam's public branch
   (anonymous app info); the daily `Release watch` workflow opens an issue when
   the pin falls behind and closes resolved or superseded release issues.
   `diff --older DIR --newer DIR` compares build IDs, versions, checksums, PE
   section sizes and tag/node counts.
-- `pin --install DIR` rewrites only `[release]` in place. The other sections
-  stay, so the server still loads the file, but a `CARRIED OVER` comment in
-  the file and the command's output name them as unqualified for the new
-  build; a committed pin carries no such marker.
+- `pin --install DIR` rewrites only `[release]` in place and verifies the
+  result. The other sections stay but are unqualified for a new build, so
+  `[release]` records `sections_qualified_for_build_id`, the build they were
+  last qualified for, and the server refuses the file, naming both builds,
+  until the key is removed. Re-pinning that build clears the key; tests keep
+  it out of a committed pin.
 - A weekly bump, until a qualifier tool generates profiles, is a qualified
-  edit of the data file: fetch the public server, run `diff`, re-derive each
-  section for the new build (tags, class checksums, row registry, layouts),
-  write the values, remove the marker and re-run the compatibility scenarios.
-  No Rust change is needed unless a wire structure changed. Compatibility
-  claims name the build they were made against; the native server answers
-  only the pinned version by default.
+  edit of the data file: fetch the public server, run `diff` and `pin`,
+  re-derive each section for the new build (tags, class checksums, row
+  registry, layouts), write the values, remove the key and re-run the
+  compatibility scenarios. A frozen fixture is added only when a test needs
+  that release. The player store binds the release file's bytes, so any edit
+  makes an existing schema-13 store refuse to reopen (`player context
+  mismatch`). No Rust change is needed unless a wire structure changed.
+  Compatibility claims name the build they were made against; the native
+  server answers only the pinned version by default.
 
 ## Persistence
 

@@ -108,9 +108,10 @@ reconnects never raise it or `incomplete`. `connection_seen` and `shape_seen` sh
 
 ### Offline selected RPC82 replay
 
-Checkout root; existing parents, new report. Bind a case-local release profile
-matching the capture's qualified 3.0.34 or 3.0.35 release. The tracked 3.0.36
-profile is not accepted for this replay.
+Checkout root; existing parents, new report. Copy the complete frozen profile
+of the capture's release (`tests/fixtures/releases/3.0.34.toml` or
+`3.0.35.toml`) to `work/<case>/release.toml`; pin-only files are refused. The
+tracked 3.0.36 profile is not accepted for this replay.
 
 ```bash
 python3 tools/cargo_guard.py build --locked --example capture_decode
