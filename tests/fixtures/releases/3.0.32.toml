@@ -153,3 +153,28 @@ actor_state_checksum = 455559420
 
 # [level_actors] is absent: not derived for this build, so level visibility
 # actors are off.
+
+# Reviewed historical capabilities only; identity/framing snapshot, not activation.
+[qualifications]
+engine_network_version = 17
+game_network_version = 0
+# F-935 / M-1030: selects the existing QUEST_CLASSES catalog.
+quest_catalog = "quest_classes_v1"
+# F-1015 / F-1016 / M-1197: metadata-only fixed component framing.
+inbound_controller = "fixed_component_bounds_v1"
+
+[qualifications.pin]
+app_id = 2089300
+build_id = 25956137
+project_version = "3.0.32.158743-rel-DangerousHorizons"
+network_checksum = 243431684
+
+[qualifications.class_net_cache]
+stat_container = 5
+inventory = 11
+ui_projection_mount_status = 7
+bp_icarus_player_state = 38
+bp_mount_base = 84
+bp_mount_horse = 85
+bp_tame_base = 86
+bp_icarus_player_controller_survival = 183
