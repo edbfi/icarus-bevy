@@ -42,8 +42,8 @@ After entry S2 answers field-39 moves only with field-30 acks and rare
 corrections (F-1129, F-1130, F-1132); unanswered moves do not fault a client
 (F-1131). S2 moved its new joiner's pawn about 2.5 km before the unfreeze
 (F-1134); the native origin spawn (F-1138) lands on terrain on this map
-(F-1149, F-1152). After entry the stock client looks and jumps but cannot
-walk and showed stats 0 in earlier runs (F-1143, F-1147, F-1150): input reached movement at
+(F-1149, F-1152). In earlier runs the stock client looked and jumped but could not
+walk and showed stats 0 (F-1143, F-1147, F-1150): input reached movement at
 speed 0 (F-1151); speed comes from stats (F-1153 to F-1155) that S2 sends in
 the pawn open (F-1156) and the probe never sent (F-1157; U-080); the client
 takes them verbatim as final cm/s (F-1164 to F-1166). The original picks a rocket
