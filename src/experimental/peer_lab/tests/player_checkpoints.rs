@@ -681,3 +681,304 @@ fn revoked_new_reservation_consumes_one_point_without_refund_or_retry_consumptio
     lab.bridge_player_checkpoints(&mut registry);
     assert_eq!(lab.stats.pawn_spawns_configured, 2);
 }
+
+#[test]
+fn authored_leave_quiesces_across_bridge_retries_and_revocation_retains_obligation() {
+    let (mut lab, mut registry) = (lab(), registry());
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+    let revision = registry.projection(epoch).unwrap().revision;
+    let cutoff = lab
+        .request_authored_checkpoint_leave(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 1,
+                epoch,
+            },
+            revision,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let before = registry.snapshot();
+    for _ in 0..3 {
+        lab.bridge_player_checkpoints(&mut registry);
+        assert!(registry.activated_epochs().is_empty());
+        assert_eq!(registry.snapshot(), before);
+        assert_eq!(
+            lab.authored_checkpoint_leave_status(
+                &mut registry,
+                CheckpointConnection {
+                    address,
+                    connection_id: 1,
+                    epoch
+                }
+            ),
+            Some(cutoff)
+        );
+    }
+    assert_eq!(
+        lab.request_authored_checkpoint_leave(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 1,
+                epoch
+            },
+            revision,
+            Duration::from_secs(60),
+        )
+        .unwrap(),
+        cutoff
+    );
+    let (auth, backend) = AuthClient::test_bridge(8);
+    lab.authenticator = Some(auth);
+    backend
+        .event(crate::steam_auth::AuthEvent {
+            request_id: 1,
+            outcome: AuthOutcome::Revoked,
+        })
+        .unwrap();
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(registry.projection(epoch).is_none());
+    assert_eq!(
+        registry.leave_status(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch),
+        Some(cutoff)
+    );
+    assert_eq!(
+        lab.authored_checkpoint_leave_status(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 1,
+                epoch
+            }
+        ),
+        None
+    );
+    assert_eq!(registry.snapshot(), before);
+    assert!(
+        registry
+            .reserve(
+                PlayerKey::new(ACCOUNT, 3).unwrap(),
+                epoch + 1,
+                before
+                    .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+                    .unwrap()
+                    .checkpoint
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn authored_leave_address_reuse_cannot_receive_or_create_old_session_completion() {
+    let (mut lab, mut registry) = (lab(), registry());
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+    let revision = registry.projection(epoch).unwrap().revision;
+    assert!(
+        lab.request_authored_checkpoint_leave(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 2,
+                epoch
+            },
+            revision,
+            Duration::from_secs(60)
+        )
+        .is_err()
+    );
+    assert_eq!(registry.activated_epochs(), vec![epoch]);
+    lab.request_authored_checkpoint_leave(
+        &mut registry,
+        CheckpointConnection {
+            address,
+            connection_id: 1,
+            epoch,
+        },
+        revision,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let (_other_socket, other, _other_client, _) = peer(&mut lab, 2, ACCOUNT + 1, true);
+    // Move a genuinely different connection to the original address. No packet
+    // or protocol inference: exercise the existing peer table reuse boundary.
+    lab.remove_peer(address);
+    lab.bridge_player_checkpoints(&mut registry);
+    let replacement = lab.peers.remove(&other).unwrap();
+    lab.peers.insert(address, replacement);
+    assert_eq!(
+        lab.authored_checkpoint_leave_status(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 1,
+                epoch
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        lab.authored_checkpoint_leave_status(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 2,
+                epoch
+            }
+        ),
+        None
+    );
+    assert!(
+        lab.request_authored_checkpoint_leave(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 2,
+                epoch
+            },
+            revision,
+            Duration::from_secs(60)
+        )
+        .is_err()
+    );
+    assert!(
+        registry
+            .leave_status(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch)
+            .is_some()
+    );
+}
+
+#[test]
+fn persistence_disabled_refuses_authored_leave_control_api() {
+    // Prepared only: this refusal requires neither a bound socket nor peers.
+    let (mut lab, mut registry) = (
+        PeerLab::prepare(PeerLabConfig::default()).unwrap(),
+        registry(),
+    );
+    let address = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1);
+    let error = lab
+        .request_authored_checkpoint_leave(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 1,
+                epoch: 1,
+            },
+            1,
+            Duration::from_secs(60),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("player persistence disabled"));
+    assert!(registry.snapshot().is_empty());
+    assert!(registry.active_epochs().is_empty());
+}
+
+#[test]
+fn durable_authored_leave_backpressure_never_repeats_cutoff_and_detach_still_invalidates_delivery()
+{
+    use crate::{
+        config::ServerConfig,
+        native_player_runtime::{CheckpointWriter, LeavePhase},
+        simulation::build_app,
+    };
+    let (mut lab, mut registry) = (lab(), registry());
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+    let revision = registry.projection(epoch).unwrap().revision;
+    lab.request_authored_checkpoint_leave(
+        &mut registry,
+        CheckpointConnection {
+            address,
+            connection_id: 1,
+            epoch,
+        },
+        revision,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+        native_players: Some(registry.snapshot()),
+        ..Default::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+    app.insert_resource(registry);
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer =
+        CheckpointWriter::spawn(SnapshotStore::open(directory.path()).unwrap()).unwrap();
+    writer.submit(app.world_mut()).unwrap();
+    let receipt = writer
+        .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    let mut registry = app.world_mut().remove_resource::<PlayerRegistry>().unwrap();
+    let expected = registry
+        .leave_status(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch)
+        .unwrap();
+    assert_eq!(
+        expected.phase,
+        LeavePhase::Durable {
+            generation: receipt.generation,
+            tick: receipt.tick
+        }
+    );
+    for _ in 0..8 {
+        assert_eq!(
+            lab.authored_checkpoint_leave_status(
+                &mut registry,
+                CheckpointConnection {
+                    address,
+                    connection_id: 1,
+                    epoch
+                }
+            ),
+            Some(expected)
+        );
+        lab.bridge_player_checkpoints(&mut registry);
+        assert!(!registry.checkpoint_save_needed(Instant::now()));
+        assert!(registry.activated_epochs().is_empty());
+        assert_eq!(
+            registry.snapshot(),
+            snapshot.native_players.clone().unwrap()
+        );
+    }
+    assert!(
+        registry
+            .settle_leave(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch)
+            .is_err()
+    );
+    lab.remove_peer(address);
+    assert_eq!(
+        lab.authored_checkpoint_leave_status(
+            &mut registry,
+            CheckpointConnection {
+                address,
+                connection_id: 1,
+                epoch
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        registry.leave_status(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch),
+        Some(expected)
+    );
+    registry
+        .settle_leave(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch)
+        .unwrap();
+}
