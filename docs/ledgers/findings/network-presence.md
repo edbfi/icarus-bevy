@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-13
+Last reconciled: 2026-11-14
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -134,3 +134,5 @@ Last reconciled: 2026-11-13
 | F-1168 | With --data-pak and a fresh_player_gameplay profile, a fresh pawn open sends only stats 58/61/65/69/73 as authored cm/s, never 0 or 3 (F-1166); vitals keep the authored maxima; the probe preflight builds all tables bind reads before sockets/Steam | measured | authored-test, run; M-1385, M-1386; a39e37b | high; fixture and pinned 26425113 pak; no client run | U-080 | active |
 | F-1170 | Opt-in run hosts an empty session: A2S decodes, deadline saves, teardown completes; copied store reopens offline | measured | source/authored/live; M-1390, M-1392, M-1394, M-1395, M-1393/ev_40e3a837e82c, M-1393/ev_8f987ea25534; eb72f99d | high; one 60 s run, 0 players; no populated persistence, master-browser or stock-client proof; preserved hosting refuses | U-038 | active |
 | F-1171 | Hosting derives bounded deduplicated CM membership from accepted joined Steam IDs; removal/revocation clears it, changes refresh adverts; A2S/logs/Debug omit player IDs | measured | authored-test; M-1390; 1d50034 | high; synthetic identities/serialization; live CM membership/browser occupancy unqualified | U-038 | active |
+| F-1180 | Protected hosting hit a CM decode deadline before Welcome/password rejection; completed frames now get a separate 100 ms decode budget and retain FIFO | measured | live; M-1411/ev_7206823e3509; M-1413; authored-test; M-1412; a93179bf | high; 13 tests; malformed/logoff fatal; triggering packet and universal race resolution unproven | U-038 | active |
+| F-1181 | Stock client sees wrong-password denial; correct password reaches Welcome/Join and possession ACK, then stalls before Begin/profile calls; native saves/exits 0 | measured | live; M-1411/ev_cb6bdd83598f, M-1414; a93179bf | high; one protected 3.0.36 run; no world entry/movement/checkpoints; wrapper exits 1 after unit unload | U-038, U-080 | active |
