@@ -189,7 +189,7 @@ impl PlayerContext {
             return Err(PlayerError::Limit);
         }
         retained_context_bytes(prospect_id.capacity(), map_url.capacity())?;
-        check_growth_rows(&growth_rows)?;
+        check_growth_rows(&growth_rows).map_err(|defect| defect.error())?;
         let value = Self {
             prospect_id,
             map_url,
@@ -239,20 +239,100 @@ impl std::fmt::Debug for PlayerContext {
     }
 }
 
-fn check_growth_rows(rows: &[String]) -> Result<(), PlayerError> {
+/// Why a table's rows cannot back stored row names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowsDefect {
+    /// More rows than a context retains.
+    TooMany(usize),
+    /// The row names together exceed the retained-bytes bound.
+    TooLarge,
+    /// The row at this index has a name over the per-name size limit.
+    LongName(usize),
+    /// The row at this index has an empty name.
+    EmptyName(usize),
+    /// This name appears more than once, so it could not be resolved back to one row.
+    Duplicate(String),
+}
+impl RowsDefect {
+    fn error(&self) -> PlayerError {
+        match self {
+            Self::TooMany(_) | Self::TooLarge | Self::LongName(_) => PlayerError::Limit,
+            Self::EmptyName(_) | Self::Duplicate(_) => PlayerError::InvalidContext,
+        }
+    }
+}
+
+/// The installed rows of `table` cannot back player checkpoints, which store
+/// rows by name. Player persistence refuses to start, whether or not a store
+/// exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledRowsRefusal {
+    pub table: &'static str,
+    pub defect: RowsDefect,
+}
+impl std::fmt::Display for InstalledRowsRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let table = self.table;
+        write!(
+            f,
+            "installed game data table {table} cannot back player checkpoints: "
+        )?;
+        match &self.defect {
+            RowsDefect::TooMany(count) => {
+                write!(
+                    f,
+                    "it has {count} rows, over the {MAX_GROWTH_ROWS}-row limit"
+                )?;
+            }
+            RowsDefect::TooLarge => {
+                write!(
+                    f,
+                    "its row names exceed {MAX_GROWTH_ROW_BYTES} bytes in total"
+                )?;
+            }
+            RowsDefect::LongName(index) => write!(
+                f,
+                "the name of row {index} exceeds {MAX_ROW_NAME_BYTES} bytes"
+            )?,
+            RowsDefect::EmptyName(index) => write!(f, "row {index} has an empty name")?,
+            RowsDefect::Duplicate(row) => write!(f, "row name {row:?} appears more than once")?,
+        }
+        f.write_str(
+            "; checkpoints store rows by name, so names must be non-empty, unique and bounded",
+        )
+    }
+}
+impl std::error::Error for InstalledRowsRefusal {}
+
+/// Check the installed [`GROWTH_TABLE`] rows before building a
+/// [`PlayerContext`] from them, so a refusal names the table and the defect.
+pub fn check_installed_growth_rows(rows: &[String]) -> Result<(), InstalledRowsRefusal> {
+    check_growth_rows(rows).map_err(|defect| InstalledRowsRefusal {
+        table: GROWTH_TABLE,
+        defect,
+    })
+}
+
+fn check_growth_rows(rows: &[String]) -> Result<(), RowsDefect> {
     let mut bytes = 0usize;
     let mut seen = BTreeSet::new();
     if rows.len() > MAX_GROWTH_ROWS {
-        return Err(PlayerError::Limit);
+        return Err(RowsDefect::TooMany(rows.len()));
     }
-    for row in rows {
-        bytes = bytes.checked_add(row.len()).ok_or(PlayerError::Limit)?;
-        if row.len() > MAX_ROW_NAME_BYTES || bytes > MAX_GROWTH_ROW_BYTES {
-            return Err(PlayerError::Limit);
+    for (index, row) in rows.iter().enumerate() {
+        if row.len() > MAX_ROW_NAME_BYTES {
+            return Err(RowsDefect::LongName(index));
+        }
+        bytes = bytes.checked_add(row.len()).ok_or(RowsDefect::TooLarge)?;
+        if bytes > MAX_GROWTH_ROW_BYTES {
+            return Err(RowsDefect::TooLarge);
+        }
+        if row.is_empty() {
+            return Err(RowsDefect::EmptyName(index));
         }
         // A duplicate name could not be resolved back to the same row.
-        if row.is_empty() || !seen.insert(row.as_str()) {
-            return Err(PlayerError::InvalidContext);
+        if !seen.insert(row.as_str()) {
+            return Err(RowsDefect::Duplicate(row.clone()));
         }
     }
     Ok(())

@@ -348,6 +348,19 @@ fn removed_growth_row_refuses_naming_table_and_row_without_changes() {
 }
 
 #[test]
+fn ambiguous_installed_growth_rows_refuse_startup_naming_table_and_reason() {
+    let (directory, config) = inputs();
+    let changed = with_growth_rows(&config, directory.path(), &["Creature", "Player", "Player"]);
+    let error = network::prepare_run(&changed, network::peer_lab_config(&changed))
+        .err()
+        .unwrap();
+    assert_eq!(
+        format!("{error:#}"),
+        "installed game data table D_CharacterGrowth cannot back player checkpoints: row name \"Player\" appears more than once; checkpoints store rows by name, so names must be non-empty, unique and bounded"
+    );
+}
+
+#[test]
 fn offline_reopen_and_network_teardown_retain_committed_vital_checkpoint() {
     let (directory, network_config) = inputs();
     let (_, prepared) =

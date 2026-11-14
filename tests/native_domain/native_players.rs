@@ -7,8 +7,9 @@ use icarus_bevy::{
     },
     native_player_runtime::{PlayerRegistry, install},
     native_players::{
-        MAX_PLAYERS_PER_ACCOUNT, PlayerCheckpoint, PlayerContext, PlayerError, PlayerInputs,
-        PlayerKey, PlayerSnapshot, StoreRefusal,
+        InstalledRowsRefusal, MAX_PLAYERS_PER_ACCOUNT, PlayerCheckpoint, PlayerContext,
+        PlayerError, PlayerInputs, PlayerKey, PlayerSnapshot, RowsDefect, StoreRefusal,
+        check_installed_growth_rows,
     },
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
@@ -436,6 +437,49 @@ fn programmatic_context_rejects_spare_capacity_and_unbounded_rows_before_copying
     for invalid in [vec!["Player".into(), "Player".into()], vec![String::new()]] {
         assert!(matches!(new(invalid), Err(PlayerError::InvalidContext)));
     }
+}
+
+#[test]
+fn installed_row_refusal_names_the_table_and_the_defect() {
+    let refusal = |rows: Vec<String>| check_installed_growth_rows(&rows).unwrap_err();
+    for (rows, defect, reason) in [
+        (
+            vec!["Player".into(), "Player".into()],
+            RowsDefect::Duplicate("Player".into()),
+            "row name \"Player\" appears more than once",
+        ),
+        (
+            vec!["Player".into(), String::new()],
+            RowsDefect::EmptyName(1),
+            "row 1 has an empty name",
+        ),
+        (
+            vec!["Player".into(), "A".repeat(1025)],
+            RowsDefect::LongName(1),
+            "the name of row 1 exceeds 1024 bytes",
+        ),
+        (
+            (0..65_537).map(|row| row.to_string()).collect(),
+            RowsDefect::TooMany(65_537),
+            "it has 65537 rows, over the 65536-row limit",
+        ),
+    ] {
+        let refused = refusal(rows);
+        assert_eq!(
+            refused,
+            InstalledRowsRefusal {
+                table: "D_CharacterGrowth",
+                defect,
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "installed game data table D_CharacterGrowth cannot back player checkpoints: {reason}; checkpoints store rows by name, so names must be non-empty, unique and bounded"
+            )
+        );
+    }
+    check_installed_growth_rows(&rows()).unwrap();
 }
 
 #[test]

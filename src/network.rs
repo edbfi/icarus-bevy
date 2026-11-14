@@ -2112,6 +2112,7 @@ pub fn prepare_run(
     // Stored checkpoints name their growth row; its installed index may move
     // between game releases. Authored JSON may omit the growth catalog.
     let growth_rows = tables.rows(CHARACTER_GROWTH_TABLE)?.to_vec();
+    crate::native_players::check_installed_growth_rows(&growth_rows)?;
     let growth_row = growth_rows
         .get(usize::from(initial_vitals.growth_row))
         .context("the growth row is not installed")?;
