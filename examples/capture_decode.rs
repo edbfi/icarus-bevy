@@ -3048,10 +3048,11 @@ impl InboundConfig {
         // 3.0.32 is qualified by F-954/F-955/F-1015; 3.0.34 by F-1016.
         // These are static framing bounds, not RPC parameter semantics.
         let qualified = match profile.pin.build_id {
-            25_956_137 => ReleaseProfile::fixture("3.0.32"),
-            26_313_077 => ReleaseProfile::fixture("3.0.34"),
+            25_956_137 => "3.0.32",
+            26_313_077 => "3.0.34",
             _ => bail!("inbound component bounds unavailable for this release"),
         };
+        let qualified = ReleaseProfile::load(&ReleaseProfile::fixture_path(qualified))?;
         ensure!(
             profile.pin == qualified.pin
                 && profile.engine_network_version == qualified.engine_network_version
