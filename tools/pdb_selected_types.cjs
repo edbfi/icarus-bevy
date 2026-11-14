@@ -798,3 +798,245 @@ function inspectImpl(reader, options, enums = false) {
 
 module.exports = {PARAMETER_PROFILE, inspectSelectedTypes, PROFILE, CAPS, inspectSelectedEnums, ENUM_PROFILE, ENUM_CAPS,
     DECLARATION_PROFILE, DECLARATION_CAPS};
+
+// Separate pure metadata APIs: legacy decoding and its generic errors above are
+// deliberately unchanged. Sources (grammar, not implementation):
+// https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/TypeRecordMapping.cpp
+// https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/llvm/include/llvm/DebugInfo/CodeView/CodeView.h
+// https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/CodeViewRecordIO.cpp
+// https://raw.githubusercontent.com/microsoft/microsoft-pdb/master/include/cvinfo.h
+// https://llvm.org/docs/PDB/TpiStream.html
+const UDT_HEADER_PROFILE = 'tpi_v80_exact_udt_headers_v1';
+const MFUNCTION_PROFILE = 'tpi_v80_exact_mfunction_signatures_v1';
+const UDT_HEADER_CAPS = Object.freeze({
+    stream_bytes: 512 * 1024 * 1024, records: 6000000,
+    record_bytes: 65536, read_bytes: 65536,
+    logical_read_bytes: 1024 * 1024 * 1024, read_calls: 12000001,
+    selectors: 8, candidates: 16, name_bytes: 256, unique_name_bytes: 4096,
+    retained_bytes: 1024 * 1024, output_bytes: 65536,
+});
+const MFUNCTION_CAPS = Object.freeze({
+    stream_bytes: 512 * 1024 * 1024, records: 6000000,
+    record_bytes: 65536, read_bytes: 65536,
+    logical_read_bytes: 32 * 1024 * 1024, read_calls: 6000009,
+    selectors: 8, candidates: 8, retained_bytes: 256 * 1024, output_bytes: 65536,
+});
+
+// Names and type_indices are mutually exclusive; MFUNCTION accepts indices
+// only. Both modes frame EVERY outer record in one pass, without hash tables,
+// retained offset lookup or a second pass. Numeric selection returns exactly that record,
+// including a forward UDT; it neither follows nor associates it with a complete
+// definition. Name mode requires one complete definition and at most one
+// forward, matching leaf AND unique_name (including null). This is header
+// identity metadata only; no member/storage/hierarchy or native owner inference.
+// Error codes describe bounded reader phases, never a target-specific diagnosis.
+function inspectSelectedUdtHeaders(reader, options) {
+    return inspectMetadata(reader, options, false);
+}
+function inspectSelectedMemberFunctions(reader, options) {
+    return inspectMetadata(reader, options, true);
+}
+function inspectMetadata(reader, options, signatures) {
+    const state = {phase: 'OPTIONS'};
+    try { return metadataImpl(reader, options, signatures, state); }
+    catch {
+        const error = Error('invalid or unsupported TPI metadata');
+        error.code = 'TPI_METADATA_' + state.phase;
+        throw error;
+    }
+}
+function metadataImpl(reader, options, signatures, state) {
+    const {createHash} = require('node:crypto');
+    const {isProxy} = require('node:util').types;
+    // Snapshot descriptor values only. This pure API admits ordinary bounded
+    // data, not executable options, proxies, sparse arrays or custom iterators.
+    function data(value, array = false) {
+        need(value && typeof value === 'object' && !isProxy(value));
+        need(array ? Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype : plain(value));
+        const keys = Reflect.ownKeys(value);
+        need(keys.length <= 32 && keys.every(key => typeof key === 'string'));
+        const copy = Object.create(null);
+        for (const key of keys) {
+            const d = Object.getOwnPropertyDescriptor(value, key);
+            need(Object.hasOwn(d, 'value') && (d.enumerable || (array && key === 'length')));
+            copy[key] = d.value;
+        }
+        return copy;
+    }
+    options = data(options);
+    need(Object.keys(options).every(key => ['profile', 'names', 'type_indices', 'limits'].includes(key)));
+    const profile = signatures ? MFUNCTION_PROFILE : UDT_HEADER_PROFILE;
+    need(options.profile === profile);
+    const caps = signatures ? MFUNCTION_CAPS : UDT_HEADER_CAPS, limits = {...caps};
+    if (Object.hasOwn(options, 'limits')) {
+        const values = data(options.limits);
+        for (const key of Object.keys(values)) {
+            need(Object.hasOwn(caps, key) && Number.isSafeInteger(values[key])
+                && values[key] >= 0 && values[key] <= caps[key]);
+            limits[key] = values[key];
+        }
+    }
+    const byName = Object.hasOwn(options, 'names');
+    need(byName !== Object.hasOwn(options, 'type_indices') && (!signatures || !byName));
+    const selectors = data(byName ? options.names : options.type_indices, true);
+    need(Number.isSafeInteger(selectors.length) && selectors.length > 0 && selectors.length <= limits.selectors
+        && Object.keys(selectors).length === selectors.length + 1);
+    const selections = [], seen = new Set();
+    for (let i = 0; i < selectors.length; i++) {
+        need(Object.hasOwn(selectors, String(i)));
+        const value = selectors[i];
+        need(!seen.has(value)); seen.add(value);
+        if (byName) need(typeof value === 'string' && /^[\x20-\x7e]+$/.test(value) && value.length <= limits.name_bytes);
+        else need(Number.isSafeInteger(value) && value >= 0x1000 && value < 0x80000000);
+        selections.push({selector: value, records: []});
+    }
+    state.phase = 'HEADER';
+    const streamSize = reader?.size;
+    need(Number.isSafeInteger(streamSize) && streamSize >= 56 && streamSize <= limits.stream_bytes
+        && typeof reader.read === 'function' && limits.read_bytes >= 56);
+    let charged = 0, readCalls = 0, logicalReadBytes = 0;
+    function charge(bytes) {
+        need(Number.isSafeInteger(bytes) && bytes >= 0 && charged + bytes <= limits.retained_bytes);
+        charged += bytes;
+    }
+    // Logical accounting, not RSS: reserve two transient read buffers, charge
+    // retained selector/record hex/text plus fixed object allowances. No offsets
+    // array, cache, referent objects or recursive serialization graph is retained.
+    charge(limits.read_bytes * 2);
+    for (const selection of selections) charge(128 + (byName ? selection.selector.length : 4));
+    function exact(offset, length) {
+        need(Number.isSafeInteger(offset) && Number.isSafeInteger(length) && offset >= 0 && length >= 0
+            && length <= limits.read_bytes && offset + length <= streamSize
+            && readCalls + 1 <= limits.read_calls && logicalReadBytes + length <= limits.logical_read_bytes);
+        readCalls++; logicalReadBytes += length;
+        const bytes = reader.read(offset, length);
+        need(Buffer.isBuffer(bytes) && bytes.length === length && !isSharedArrayBuffer(bytes.buffer));
+        return Buffer.from(bytes); // snapshot borrowed/reused buffers before the next callback
+    }
+    const h = exact(0, 56), begin = h.readUInt32LE(8), end = h.readUInt32LE(12);
+    const recordBytes = h.readUInt32LE(16), count = end - begin;
+    need(h.readUInt32LE(0) === 20040203 && h.readUInt32LE(4) === 56
+        && begin === 0x1000 && end >= begin && end < 0x80000000 && count <= limits.records
+        && count * 4 <= recordBytes && 56 + recordBytes === streamSize);
+    need(h.readUInt32LE(24) === 4 && h.readUInt32LE(28) >= 0x1000 && h.readUInt32LE(28) <= 0x40000
+        && h.readUInt16LE(22) === 0xffff);
+    const hashBytes = h.readUInt32LE(36), indexBytes = h.readUInt32LE(44);
+    need((hashBytes === 0 || hashBytes === count * 4) && indexBytes % 8 === 0 && h.readUInt32LE(52) === 0);
+    for (const offset of [32, 40, 48]) need(h.readInt32LE(offset) >= 0);
+    if (h.readUInt16LE(20) === 0xffff) need(hashBytes === 0 && indexBytes === 0);
+    state.phase = 'SELECTOR_RANGE';
+    if (!byName) for (const selection of selections) need(selection.selector >= begin && selection.selector < end);
+    function tpi(index, allowNone = false) { need((allowNone && index === 0) || (index >= begin && index < end)); }
+    function opaqueReturn(index) {
+        if (index >= begin) tpi(index);
+        else need(index > 0 && index < 0x800 && OPAQUE_SIMPLE.has(index & 0xff));
+    }
+    function name(bytes, cap) {
+        need(bytes.length > 0 && bytes.length <= cap && bytes.every(byte => byte >= 0x20 && byte <= 0x7e));
+        return bytes.toString('ascii');
+    }
+    let at = 56, candidates = 0;
+    for (let ordinal = 0; ordinal < count; ordinal++) {
+        state.phase = 'FRAMING';
+        const prefix = exact(at, 4), length = prefix.readUInt16LE() + 2, leaf = prefix.readUInt16LE(2);
+        need(length >= 4 && length <= limits.record_bytes && length <= limits.read_bytes
+            && length % 4 === 0 && at + length <= streamSize);
+        const index = begin + ordinal;
+        let selection = byName ? null : selections.find(value => value.selector === index), bytes;
+        if (byName && [LEAF.CLASS, LEAF.STRUCTURE, LEAF.INTERFACE].includes(leaf)) {
+            // Full name lookup needs every candidate's minimal name framing;
+            // malformed discovery can refuse even when its name is unselected.
+            bytes = exact(at, length);
+            need(bytes.subarray(0, 4).equals(prefix));
+            const probe = candidateName(bytes);
+            selection = selections.find(value => probe.equals(Buffer.from(value.selector, 'ascii')));
+        }
+        if (selection) {
+            state.phase = 'SELECTED_RECORD';
+            need(++candidates <= limits.candidates);
+            bytes ??= exact(at, length);
+            need(bytes.subarray(0, 4).equals(prefix));
+            const c = new Cursor(bytes);
+            let value;
+            if (signatures) {
+                need(leaf === LEAF.MFUNCTION);
+                const returns = c.u32(), owner = c.u32(), thisType = c.u32();
+                const cc = c.u8(), attributes = c.u8(), parameterCount = c.u16();
+                const args = c.u32(), adjustment = c.take(4).readInt32LE();
+                // Conservative admitted signature subset matches legacy NearC
+                // and options 0/1/2, but permits all signed 32-bit adjustments.
+                // No argument count/list equality, this-pointer interpretation,
+                // referent leaf validation, class association or IPI lookup.
+                need(cc === 0 && [0, 1, 2].includes(attributes));
+                opaqueReturn(returns); tpi(owner); tpi(thisType, true); tpi(args);
+                c.finish(); // exactly 28 bytes; extra "padding" is not admitted
+                value = {return_type_index: returns, class_type_index: owner, this_type_index: thisType,
+                    calling_convention: cc, attributes, declared_argument_count: parameterCount,
+                    argument_list_type_index: args, this_adjustment: adjustment};
+            } else {
+                need(leaf === LEAF.CLASS || leaf === LEAF.STRUCTURE);
+                const parsed = tag(bytes);
+                // LLVM ClassOptions named bits only; HFA/MOCOM encodings are
+                // explicitly unsupported. Integer size uses Cursor's admitted
+                // immediate/CHAR/SHORT/USHORT/LONG/ULONG/QUAD/UQUAD forms,
+                // nonnegative and <= MAX_SAFE_INTEGER. No storage-size policy.
+                need((parsed.flags & ~0x27ff) === 0);
+                tpi(parsed.fieldList, true); tpi(parsed.derived, true); tpi(parsed.vshape, true);
+                const forward = (parsed.flags & 0x80) !== 0;
+                if (forward) need(parsed.count === 0 && parsed.fieldList === 0 && parsed.size === 0);
+                const exactName = name(parsed.name, limits.name_bytes);
+                const uniqueName = parsed.unique === null ? null : name(parsed.unique, limits.unique_name_bytes);
+                charge(exactName.length + (uniqueName?.length ?? 0));
+                value = {flags: parsed.flags, name: exactName, unique_name: uniqueName,
+                    forward_reference: forward, declared_size_bytes: parsed.size, declared_member_count: parsed.count,
+                    field_list_type_index: parsed.fieldList, derived_type_index: parsed.derived,
+                    vshape_type_index: parsed.vshape};
+            }
+            charge(length * 2 + 768);
+            selection.records.push({type_index: index, record_offset: at, record_bytes: length,
+                record_sha256: createHash('sha256').update(bytes).digest('hex'), record_hex: bytes.toString('hex'), leaf, ...value});
+        }
+        at += length;
+    }
+    state.phase = 'FRAMING'; need(at === streamSize);
+    state.phase = 'SELECTION';
+    const selected = selections.map(selection => {
+        if (!byName) { need(selection.records.length === 1); return selection.records[0]; }
+        const definitions = selection.records.filter(value => !value.forward_reference);
+        const forwards = selection.records.filter(value => value.forward_reference);
+        need(definitions.length === 1 && forwards.length <= 1);
+        const definition = definitions[0];
+        for (const forward of forwards) need(forward.leaf === definition.leaf && forward.unique_name === definition.unique_name);
+        return {...definition, forward_declarations: forwards};
+    });
+    const result = {profile, selection_mode: byName ? 'exact_names' : 'exact_type_indices',
+        version: 20040203, header_bytes: 56, type_index_begin: begin, type_index_end: end,
+        records_framed: count, record_bytes: recordBytes, selected,
+        complete_outer_record_framing: true, hash_tables_validated: false, unselected_payloads_validated: false,
+        references_resolved: false, storage_layout_complete: false, native_owner_qualified: false,
+        caller_provenance_verified: false, original_layout_qualified: false,
+        release_qualified: false, runtime_behavior_proven: false,
+        logical_read_bytes: logicalReadBytes, read_calls: readCalls, charged_retained_bytes: charged,
+        limitations: [
+            'Caller must bind immutable TPI logical reads, container identity, hashes, authorization and provenance.',
+            'All outer records are framed even for numeric selection; unselected payloads and hash tables are not validated.',
+            'Selected references are opaque numeric TPI words; no referent, member, argument list or IPI record is read.',
+            byName ? 'Exact name identity requires one definition and at most one matching forward declaration.'
+                : 'Numeric selection returns exactly the requested record, without following or associating forward declarations.',
+            'Header and signature metadata establish no storage layout, hierarchy, native owner/consumer or compatibility.',
+        ]};
+    state.phase = 'OUTPUT';
+    // Flat, bounded objects and <=16 candidates bound traversal. Stop before
+    // serializing an oversized string; exact serialized bytes are checked too.
+    let outputUnits = 0;
+    const serialized = JSON.stringify(result, (key, value) => {
+        outputUnits += 1 + Buffer.byteLength(key)
+            + (typeof value === 'string' ? Buffer.byteLength(value) : 0);
+        need(outputUnits <= limits.output_bytes);
+        return value;
+    });
+    need(Buffer.byteLength(serialized) <= limits.output_bytes);
+    return result;
+}
+Object.assign(module.exports, {UDT_HEADER_PROFILE, UDT_HEADER_CAPS, MFUNCTION_PROFILE, MFUNCTION_CAPS,
+    inspectSelectedUdtHeaders, inspectSelectedMemberFunctions});

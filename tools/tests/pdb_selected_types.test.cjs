@@ -711,3 +711,342 @@ test('memoized direct signatures preserve depth admission across single and over
     assert.equal(declarationInspect(bytes, {depth: 2}).selected.length, 2);
     fails(() => declarationInspect(bytes, {depth: 1}));
 });
+
+const {createHash} = require('node:crypto');
+const {inspectSelectedUdtHeaders, inspectSelectedMemberFunctions, UDT_HEADER_PROFILE,
+    UDT_HEADER_CAPS, MFUNCTION_PROFILE, MFUNCTION_CAPS} = require('../pdb_selected_types.cjs');
+const sha256 = value => createHash('sha256').update(value).digest('hex');
+const headers = (bytes, selectors = {names: [TARGET]}, limits = {}) =>
+    inspectSelectedUdtHeaders(reader(bytes), {profile: UDT_HEADER_PROFILE, ...selectors, limits});
+const signatures = (bytes, indices = [0x1000], limits = {}) =>
+    inspectSelectedMemberFunctions(reader(bytes), {profile: MFUNCTION_PROFILE, type_indices: indices, limits});
+function metadataFails(fn, code) {
+    assert.throws(fn, error => error.message === 'invalid or unsupported TPI metadata'
+        && /^TPI_METADATA_(OPTIONS|HEADER|SELECTOR_RANGE|FRAMING|SELECTED_RECORD|SELECTION|OUTPUT)$/.test(error.code)
+        && (code === undefined || error.code === 'TPI_METADATA_' + code));
+}
+function headerRecord(values = {}, derived = 0, vshape = 0) {
+    const r = udt(values); r.writeUInt32LE(derived, 12); r.writeUInt32LE(vshape, 16); return r;
+}
+const identityFixture = () => stream([
+    list(u16(0x7777)), // intentionally unsupported member payload
+    headerRecord({fields: 0, count: 0, size: 0, flags: 0x80, unique: 'AuthoredIdentity'}, 0x1000, 0x1002),
+    headerRecord({unique: 'AuthoredIdentity'}, 0x1000, 0x1001),
+]);
+const signatureFixture = (values = {}) => stream([
+    methodSignature({returns: 0x1001, owner: 0x1001, thisType: 0x1001, args: 0x1001, adjustment: -17, ...values}),
+    record(0x7777, u32(0xdeadbeef)), // all referents deliberately unsupported
+]);
+
+test('header identity exact name pairing preserves bytes, offsets, counts and opaque derivation metadata', () => {
+    const bytes = identityFixture(), r = headers(bytes), h = r.selected[0];
+    assert.equal(r.profile, UDT_HEADER_PROFILE); assert.equal(r.selection_mode, 'exact_names');
+    assert.equal(r.records_framed, 3); assert.equal(r.record_bytes, bytes.length - 56);
+    assert.equal(h.type_index, 0x1002); assert.equal(h.leaf, 0x1505); assert.equal(h.flags, 0x200);
+    assert.equal(h.name, TARGET); assert.equal(h.unique_name, 'AuthoredIdentity');
+    assert.equal(h.declared_size_bytes, 4); assert.equal(h.declared_member_count, 1);
+    assert.equal(h.field_list_type_index, 0x1000); assert.equal(h.derived_type_index, 0x1000);
+    assert.equal(h.vshape_type_index, 0x1001); assert.equal(h.forward_reference, false);
+    assert.equal(h.forward_declarations.length, 1); assert.equal(h.forward_declarations[0].forward_reference, true);
+    let offset = 56;
+    for (const entry of [h.forward_declarations[0], h]) {
+        if (entry.type_index === 0x1001) offset += bytes.readUInt16LE(offset) + 2;
+        assert.equal(entry.record_offset, offset);
+        const raw = bytes.subarray(offset, offset + entry.record_bytes);
+        assert.equal(entry.record_sha256, sha256(raw)); assert.equal(entry.record_hex, raw.toString('hex'));
+        offset += entry.record_bytes;
+    }
+    for (const key of ['references_resolved', 'storage_layout_complete', 'native_owner_qualified',
+        'caller_provenance_verified', 'original_layout_qualified', 'release_qualified', 'runtime_behavior_proven',
+        'hash_tables_validated', 'unselected_payloads_validated']) assert.equal(r[key], false);
+    for (const profile of [PROFILE, PARAMETER_PROFILE, DECLARATION_PROFILE]) {
+        fails(() => inspectSelectedTypes(reader(bytes), {profile, names: [TARGET]}));
+        // Header profile alone ignores unsupported members, even without derived/vshape.
+        fails(() => inspectSelectedTypes(reader(stream([list(u16(0x7777)), udt()])), {profile, names: [TARGET]}));
+    }
+    assert.equal(headers(stream([list(u16(0x7777)), udt()])).selected.length, 1);
+});
+
+test('numeric headers return exactly forward or complete record and never infer associations', () => {
+    const bytes = identityFixture(), r = headers(bytes, {type_indices: [0x1002, 0x1001]});
+    assert.equal(r.selection_mode, 'exact_type_indices');
+    assert.deepEqual(r.selected.map(x => [x.type_index, x.forward_reference]), [[0x1002, false], [0x1001, true]]);
+    for (const x of r.selected) assert.equal(Object.hasOwn(x, 'forward_declarations'), false);
+    const forward = udt({fields: 0, count: 0, size: 0, flags: 0x80});
+    assert.equal(headers(stream([forward]), {type_indices: [0x1000]}).selected[0].forward_reference, true);
+    // Duplicates elsewhere do not confer association or invalidate numeric identity.
+    assert.equal(headers(stream([udt(), udt()]), {type_indices: [0x1000]}).selected[0].type_index, 0x1000);
+    metadataFails(() => headers(bytes, {type_indices: [0x1000]}), 'SELECTED_RECORD');
+});
+
+test('name identity refuses missing, duplicate, mismatched leaf/unique name and multiple forward declarations', () => {
+    const forward = values => udt({fields: 0, count: 0, size: 0, flags: 0x80, ...values});
+    for (const records of [
+        [udt({name: TARGET + 'Extra'})], [forward()], [udt(), udt()], [forward(), forward(), udt()],
+        [forward({leaf: 0x1504}), udt()], [forward({unique: 'Wrong'}), udt({unique: 'Right'})],
+        [forward({unique: 'Wrong'}), udt()], [forward(), udt({unique: 'Right'})],
+        [forward({count: 1}), udt()], [forward({fields: 0x1001}), udt()], [forward({size: 1}), udt()],
+        [udt({leaf: 0x1519})],
+    ]) metadataFails(() => headers(stream(records)));
+    assert.equal(headers(stream([forward(), udt()])).selected[0].unique_name, null);
+    const r = headers(stream([udt({name: 'Second Name'}), udt()]), {names: [TARGET, 'Second Name']});
+    assert.deepEqual(r.selected.map(x => x.name), [TARGET, 'Second Name']);
+});
+
+test('header grammar explicitly admits named property bits, integer size forms and exact ASCII names/padding', () => {
+    for (const bit of [1, 2, 4, 8, 0x10, 0x20, 0x40, 0x100, 0x400, 0x2000]) {
+        assert.equal(headers(stream([udt({flags: bit})])).selected[0].flags, bit);
+    }
+    for (const bit of [0x800, 0x1000, 0x4000, 0x8000]) metadataFails(() => headers(stream([udt({flags: bit})])));
+    for (const [encoding, expected] of [[u16(0), 0], [u16(0x7fff), 0x7fff],
+        [Buffer.concat([u16(0x8000), u8(127)]), 127], [Buffer.concat([u16(0x8001), u16(4)]), 4],
+        [Buffer.concat([u16(0x8002), u16(65535)]), 65535], [Buffer.concat([u16(0x8003), u32(4)]), 4],
+        [Buffer.concat([u16(0x8004), u32(0xffffffff)]), 0xffffffff],
+        [enumNumber(9007199254740991n, 0x8009), Number.MAX_SAFE_INTEGER],
+        [enumNumber(9007199254740991n, 0x800a), Number.MAX_SAFE_INTEGER]]) {
+        assert.equal(headers(stream([udt({sizeEncoding: encoding})])).selected[0].declared_size_bytes, expected);
+    }
+    for (const encoding of [enumNumber(-1, 0x8000), enumNumber(9007199254740992n, 0x800a), u16(0x8005)]) {
+        metadataFails(() => headers(stream([udt({sizeEncoding: encoding})])));
+    }
+    for (const bad of [udt({name: ''}), udt({name: 'Bad\x1f'}), udt({unique: ''}), udt({unique: 'Bad\x7f'})]) {
+        metadataFails(() => headers(stream([bad]), {type_indices: [0x1000]}));
+    }
+    const good = udt({name: 'A B'});
+    assert.equal(headers(stream([good]), {names: ['A B']}).selected[0].name, 'A B');
+    const badPadding = Buffer.from(good); badPadding[badPadding.length - 1] = 0;
+    metadataFails(() => headers(stream([badPadding]), {names: ['A B']}));
+    const missingNul = udt({name: 'A'}); missingNul.fill(0x41, 22);
+    metadataFails(() => headers(stream([missingNul]), {type_indices: [0x1000]}));
+    const extra = Buffer.concat([good, Buffer.from([0xf4, 0xf3, 0xf2, 0xf1])]); extra.writeUInt16LE(extra.length - 2);
+    metadataFails(() => headers(stream([extra]), {names: ['A B']}));
+    for (const offset of [8, 12, 16]) {
+        const r = udt(); r.writeUInt32LE(0x2000, offset);
+        metadataFails(() => headers(stream([r])));
+    }
+});
+
+test('fixed MFUNCTION signature preserves provenance, raw references/count and signed adjustment without referent reads', () => {
+    const bytes = signatureFixture(), reads = [];
+    const r = inspectSelectedMemberFunctions({size: bytes.length, read(offset, length) {
+        reads.push([offset, length]); return bytes.subarray(offset, offset + length);
+    }}, {profile: MFUNCTION_PROFILE, type_indices: [0x1000]});
+    const s = r.selected[0];
+    assert.equal(r.records_framed, 2); assert.equal(s.record_offset, 56); assert.equal(s.record_bytes, 28);
+    assert.equal(s.record_sha256, sha256(bytes.subarray(56, 84)));
+    assert.equal(s.record_hex, bytes.subarray(56, 84).toString('hex')); assert.equal(s.leaf, 0x1009);
+    assert.deepEqual(reads, [[0, 56], [56, 4], [56, 28], [84, 4]]);
+    assert.deepEqual([s.return_type_index, s.class_type_index, s.this_type_index, s.argument_list_type_index],
+        [0x1001, 0x1001, 0x1001, 0x1001]);
+    assert.equal(s.this_adjustment, -17); assert.equal(s.declared_argument_count, 0);
+    assert.equal(s.calling_convention, 0); assert.equal(s.attributes, 0);
+    for (const adjustment of [-2147483648, -1, 0, 1, 2147483647]) {
+        assert.equal(signatures(signatureFixture({adjustment})).selected[0].this_adjustment, adjustment);
+    }
+    for (const options of [0, 1, 2]) {
+        const v = signatures(signatureFixture({returns: 0x603, thisType: 0, options, count: 65535})).selected[0];
+        assert.equal(v.attributes, options); assert.equal(v.declared_argument_count, 65535);
+    }
+    const signature = methodSignature({owner: 0x1000, thisType: 0, args: 0x1000});
+    assert.equal(signatures(stream([signature, signature]), [0x1001, 0x1000]).selected[0].type_index, 0x1001);
+});
+
+test('header numeric reads only selected payloads; name discovery is one full outer pass', () => {
+    const bytes = identityFixture(), reads = [];
+    const r = inspectSelectedUdtHeaders({size: bytes.length, read(offset, length) {
+        reads.push([offset, length]); return bytes.subarray(offset, offset + length);
+    }}, {profile: UDT_HEADER_PROFILE, type_indices: [0x1002]});
+    assert.equal(reads.length, 5); assert.deepEqual(reads.slice(0, 2), [[0, 56], [56, 4]]);
+    assert.equal(reads.filter(([, n]) => n > 4).length, 2); // header and selected body
+    assert.equal(r.records_framed, 3);
+    const unrelated = udt({name: 'Other'}); unrelated.writeUInt16LE(0x8005, 20);
+    metadataFails(() => headers(stream([udt(), unrelated]))); // minimal discovery can still refuse
+    assert.equal(headers(stream([udt(), unrelated]), {type_indices: [0x1000]}).selected.length, 1);
+});
+
+test('signature selected forms refuse wrong leaves, truncation, trailing padding, invalid flags and reference domains', () => {
+    for (const change of [{cc: 1}, {cc: 255}, {options: 3}, {options: 4}, {options: 8}, {options: 0x80},
+        {returns: 0}, {returns: 0x999}, {returns: 0x80000000}, {owner: 3}, {owner: 0x2000},
+        {thisType: 0x603}, {args: 0}, {args: 0x2000}, {args: 0x80001000}]) {
+        metadataFails(() => signatures(signatureFixture(change)), 'SELECTED_RECORD');
+    }
+    const original = methodSignature({owner: 0x1000, args: 0x1000});
+    for (let length = 4; length < original.length; length += 4) {
+        const cut = Buffer.from(original.subarray(0, length)); cut.writeUInt16LE(length - 2);
+        metadataFails(() => signatures(stream([cut])), 'SELECTED_RECORD');
+    }
+    for (const tail of [Buffer.alloc(4), Buffer.from([0xf4, 0xf3, 0xf2, 0xf1])]) {
+        const extra = Buffer.concat([original, tail]); extra.writeUInt16LE(extra.length - 2);
+        metadataFails(() => signatures(stream([extra])), 'SELECTED_RECORD');
+    }
+    for (const leaf of [0x1008, 0x1602, 0x7777]) {
+        const r = Buffer.from(original); r.writeUInt16LE(leaf, 2);
+        metadataFails(() => signatures(stream([r])), 'SELECTED_RECORD');
+    }
+    metadataFails(() => signatures(signatureFixture(), [0x1000, 0x1001])); // no partial first result
+});
+
+test('metadata selectors and lower-only option shapes fail before any reader callback', () => {
+    for (const [api, profile] of [[inspectSelectedUdtHeaders, UDT_HEADER_PROFILE], [inspectSelectedMemberFunctions, MFUNCTION_PROFILE]]) {
+        for (const selector of [{}, {type_indices: []}, {type_indices: [0x1000, 0x1000]},
+            {type_indices: [0xfff]}, {type_indices: [0x80000000]}, {type_indices: [1.5]},
+            {type_indices: new Array(1)}, {type_indices: Array.from({length: 9}, (_, i) => 0x1000 + i)},
+            {type_indices: [0x1000], names: [TARGET]}, {names: [TARGET, TARGET]}, {names: ['']},
+            {names: ['Private\nName']}, {type_indices: [0x1000], limits: {selectors: 9}},
+            {type_indices: [0x1000], limits: {unknown: 1}}, {type_indices: [0x1000], extra: true},
+            {type_indices: [0x1000], limits: {read_bytes: -1}}]) {
+            let reads = 0;
+            metadataFails(() => api({size: 100, read() { reads++; throw Error('private'); }}, {profile, ...selector}), 'OPTIONS');
+            assert.equal(reads, 0);
+        }
+        let invoked = false;
+        const getter = {profile}; Object.defineProperty(getter, 'type_indices', {enumerable: true, get() { invoked = true; return [0x1000]; }});
+        metadataFails(() => api(null, getter), 'OPTIONS'); assert.equal(invoked, false);
+        metadataFails(() => api(null, new Proxy({}, {ownKeys() { invoked = true; return []; }})), 'OPTIONS');
+        assert.equal(invoked, false);
+        let reads = [];
+        const bytes = signatureFixture();
+        metadataFails(() => api({size: bytes.length, read(o, n) { reads.push([o, n]); return bytes.subarray(o, o+n); }},
+            {profile, type_indices: [0x1002]}), 'SELECTOR_RANGE');
+        assert.deepEqual(reads, [[0, 56]]);
+    }
+    metadataFails(() => inspectSelectedMemberFunctions(reader(signatureFixture()), {profile: MFUNCTION_PROFILE, names: [TARGET]}), 'OPTIONS');
+    const selectors = [0x1000]; selectors[Symbol.iterator] = () => { throw Error('must not iterate'); };
+    metadataFails(() => signatures(signatureFixture(), selectors), 'OPTIONS');
+});
+
+test('eight numeric and name selections work; no numeric selector offset is trusted without the header', () => {
+    const records = Array.from({length: 8}, (_, i) => udt({name: 'Type' + i, fields: 0})), bytes = stream(records);
+    assert.equal(headers(bytes, {names: records.map((_, i) => 'Type' + i)}).selected.length, 8);
+    assert.equal(headers(bytes, {type_indices: records.map((_, i) => 0x1000 + i)}).selected.length, 8);
+    const sig = methodSignature({owner: 0x1000, thisType: 0, args: 0x1000});
+    assert.equal(signatures(stream(Array(8).fill(sig)), records.map((_, i) => 0x1000 + i)).selected.length, 8);
+    for (const [api, profile] of [[inspectSelectedUdtHeaders, UDT_HEADER_PROFILE], [inspectSelectedMemberFunctions, MFUNCTION_PROFILE]]) {
+        const bad = Buffer.from(bytes); bad.writeUInt32LE(0x1001, 8);
+        const reads = [];
+        metadataFails(() => api({size: bad.length, read(o,n) {reads.push([o,n]); return bad.subarray(o,o+n);}},
+            {profile, type_indices: [0x1000]}), 'HEADER');
+        assert.deepEqual(reads, [[0,56]]);
+    }
+});
+
+test('metadata immutable snapshots survive borrowed buffer reuse and reject shared/short reads', () => {
+    for (const [api, profile, bytes, selection] of [
+        [inspectSelectedUdtHeaders, UDT_HEADER_PROFILE, identityFixture(), {names: [TARGET]}],
+        [inspectSelectedMemberFunctions, MFUNCTION_PROFILE, signatureFixture(), {type_indices: [0x1000]}],
+    ]) {
+        const expected = api(reader(bytes), {profile, ...selection}), borrowed = Buffer.alloc(65536);
+        const actual = api({size: bytes.length, read(o,n) {borrowed.fill(0xff); bytes.copy(borrowed,0,o,o+n); return borrowed.subarray(0,n);}}, {profile,...selection});
+        borrowed.fill(0); assert.deepEqual(actual, expected);
+        for (const backing of [new SharedArrayBuffer(bytes.length), vm.runInNewContext(`new SharedArrayBuffer(${bytes.length})`)]) {
+            const shared = Buffer.from(backing); bytes.copy(shared);
+            metadataFails(() => api(reader(shared), {profile, ...selection}));
+        }
+        metadataFails(() => api({size:bytes.length,read:()=>Buffer.alloc(1)}, {profile,...selection}));
+        metadataFails(() => api({size:bytes.length,read:()=>{throw Error('Private path and target string');}}, {profile,...selection}));
+    }
+});
+
+test('full outer framing late errors, unsupported hash adjustments and header domains fail atomically for both APIs', () => {
+    for (const [api, profile, bytes] of [[inspectSelectedUdtHeaders, UDT_HEADER_PROFILE, stream([udt({fields:0}), record(0x7777)])],
+        [inspectSelectedMemberFunctions, MFUNCTION_PROFILE, signatureFixture()]]) {
+        const invoke = b => api(reader(b), {profile, type_indices:[0x1000]});
+        for (const [offset, value] of [[0,19990903],[4,52],[8,4095],[12,0x80000000],[12,0x1001],
+            [16,4],[24,8],[28,4095],[28,0x40001],[32,0x80000000],[36,4],[40,0x80000000],
+            [44,1],[44,8],[48,0x80000000],[52,8]]) {
+            const b=Buffer.from(bytes);b.writeUInt32LE(value,offset);metadataFails(()=>invoke(b));
+        }
+        const auxiliary=Buffer.from(bytes);auxiliary.writeUInt16LE(0,22);metadataFails(()=>invoke(auxiliary));
+        for (const length of [0,3,0xffff]) {
+            const b=Buffer.from(bytes), at=56+b.readUInt16LE(56)+2; b.writeUInt16LE(length,at);
+            metadataFails(()=>invoke(b),'FRAMING');
+        }
+        metadataFails(()=>invoke(Buffer.concat([bytes,Buffer.alloc(4)])));
+        metadataFails(()=>invoke(bytes.subarray(0,bytes.length-1)));
+        const trailing=Buffer.concat([bytes,Buffer.alloc(4)]);trailing.writeUInt32LE(trailing.length-56,16);
+        metadataFails(()=>invoke(trailing),'FRAMING');
+        // Hash descriptors can be framed, but neither table bytes nor offsets are used.
+        const h=Buffer.from(bytes);h.writeUInt16LE(7,20);h.writeUInt32LE(8,36);h.writeUInt32LE(8,44);
+        assert.equal(invoke(h).hash_tables_validated,false);
+    }
+});
+
+test('metadata independent caps admit exact boundaries and reject one below without partial results', () => {
+    assert.notEqual(UDT_HEADER_CAPS, MFUNCTION_CAPS); assert.ok(Object.isFrozen(UDT_HEADER_CAPS));
+    assert.ok(Object.isFrozen(MFUNCTION_CAPS));
+    for (const [invoke, bytes, selectors, nameBytes, uniqueBytes] of [
+        [(b,s,l)=>headers(b,s,l), identityFixture(), {names:[TARGET]}, TARGET.length, 'AuthoredIdentity'.length],
+        [(b,s,l)=>signatures(b,s,l), signatureFixture(), [0x1000], null, null],
+    ]) {
+        const r=invoke(bytes,selectors,{});
+        const recordCap=Math.max(...r.selected.flatMap(x=>[x.record_bytes,...(x.forward_declarations??[]).map(y=>y.record_bytes)]));
+        const boundaries={stream_bytes:bytes.length,records:r.records_framed,record_bytes:recordCap,
+            read_bytes:Math.max(56,recordCap),logical_read_bytes:r.logical_read_bytes,read_calls:r.read_calls,
+            selectors:1,candidates:nameBytes===null?1:2,retained_bytes:r.charged_retained_bytes,
+            output_bytes:Buffer.byteLength(JSON.stringify(r))};
+        if(nameBytes!==null)Object.assign(boundaries,{name_bytes:nameBytes,unique_name_bytes:uniqueBytes});
+        for(const [key,value]of Object.entries(boundaries)){
+            const admitted=invoke(bytes,selectors,{[key]:value});assert.equal(admitted.selected.length,1,key);
+            metadataFails(()=>invoke(bytes,selectors,{[key]:value-1}));
+        }
+        const limitCaps=nameBytes===null?MFUNCTION_CAPS:UDT_HEADER_CAPS;
+        for(const [key,value]of Object.entries(limitCaps))metadataFails(()=>invoke(bytes,selectors,{[key]:value+1}),'OPTIONS');
+    }
+});
+
+test('metadata serialized output cap refuses an oversized selected record atomically', () => {
+    const huge=udt({unique:'U'.repeat(4096)}), records=Array.from({length:8},()=>Buffer.from(huge));
+    // Each selected record is within its byte/name caps, aggregate hex output exceeds 64 KiB.
+    metadataFails(()=>headers(stream(records),{type_indices:records.map((_,i)=>0x1000+i)}),'OUTPUT');
+});
+
+test('frozen legacy serialized outputs and read traces remain byte-for-byte compatible', () => {
+    const cases = [
+        [fixture(),r=>inspectSelectedTypes(r,options({read_bytes:128})),
+            '79ca1c67926f0e407d438a9a5c37d9549acd911ad0fd9c58b1f1b3e7b3039749','c132ed50199fdad625539947e773031cf0f08d73115195d31f7568f1c0c2991a'],
+        [fixture(),r=>inspectSelectedTypes(r,{profile:PARAMETER_PROFILE,names:[TARGET],limits:{read_bytes:128}}),
+            '2b8e9b94d2e3b61fed1bf813fba9bd419f1c2e8731fa96f3df148724dbd3c354','c132ed50199fdad625539947e773031cf0f08d73115195d31f7568f1c0c2991a'],
+        [enumFixture(),r=>inspectSelectedEnums(r,{profile:ENUM_PROFILE,names:[ENUM_NAME],limits:{read_bytes:128}}),
+            '045b31ecf3baa31113ac4eb4b40ab7f976a607a94d50fe8d16457e2c9e69296a','f4518f65ef2c59544d5987a43aa91dfb64317a484ebb32f8d7dfd982dd901287'],
+        [stream(declarationRecords()),r=>inspectSelectedTypes(r,{profile:DECLARATION_PROFILE,names:[DECL_BASE,DECL_ROW],limits:{read_bytes:128}}),
+            '1a8213772779989ed45836d9b04360afa5aa4285598d2819b3ee7291173ff77e','906663ef4d9f83faf16ac95bf054c81a21a1943a90805bee367aedb8f959312b'],
+    ];
+    for(const [bytes,invoke,expectedOutput,expectedReads]of cases){
+        const reads=[],r=invoke({size:bytes.length,read(o,n){reads.push([o,n]);return bytes.subarray(o,o+n);}});
+        assert.equal(sha256(JSON.stringify(r)),expectedOutput);assert.equal(sha256(JSON.stringify(reads)),expectedReads);
+    }
+});
+
+test('selected header truncation, inconsistent prefix rereads and late name framing refuse atomically', () => {
+    const original = udt({unique: 'ExactAuthoredIdentity'});
+    for (let length = 4; length < original.length; length += 4) {
+        const cut = Buffer.from(original.subarray(0, length)); cut.writeUInt16LE(length - 2);
+        metadataFails(() => headers(stream([cut]), {type_indices: [0x1000]}));
+    }
+    for (const [api, profile, bytes, selection] of [
+        [inspectSelectedUdtHeaders, UDT_HEADER_PROFILE, stream([udt()]), {names: [TARGET]}],
+        [inspectSelectedUdtHeaders, UDT_HEADER_PROFILE, stream([udt()]), {type_indices: [0x1000]}],
+        [inspectSelectedMemberFunctions, MFUNCTION_PROFILE, signatureFixture(), {type_indices: [0x1000]}],
+    ]) {
+        metadataFails(() => api({size: bytes.length, read(o,n) {
+            const result = Buffer.from(bytes.subarray(o,o+n));
+            if (o === 56 && n > 4) result.writeUInt16LE(0x7777,2);
+            return result;
+        }}, {profile, ...selection}));
+    }
+    const late = record(0x7777); late.writeUInt16LE(0);
+    metadataFails(() => headers(stream([udt(), late])), 'FRAMING');
+    const validFirst = udt(), invalidSecond = udt({name: 'Other', flags: 0x800});
+    metadataFails(() => headers(stream([validFirst, invalidSecond]), {names: [TARGET, 'Other']}), 'SELECTED_RECORD');
+});
+
+test('modern LF_CLASS headers support exact name and numeric selection independently', () => {
+    const forward = udt({leaf: 0x1504, fields: 0, count: 0, size: 0, flags: 0x80, unique: 'AuthoredClass'});
+    const complete = udt({leaf: 0x1504, unique: 'AuthoredClass'}), bytes = stream([forward, complete]);
+    assert.equal(headers(bytes).selected[0].leaf, 0x1504);
+    assert.equal(headers(bytes).selected[0].forward_declarations[0].type_index, 0x1000);
+    assert.equal(headers(bytes, {type_indices: [0x1000]}).selected[0].forward_reference, true);
+    // Legacy generic API and its error contract do not opt into the new profiles.
+    fails(() => inspectSelectedTypes(reader(bytes), {profile: UDT_HEADER_PROFILE, names: [TARGET]}));
+    fails(() => inspectSelectedTypes(reader(signatureFixture()), {profile: MFUNCTION_PROFILE, names: [TARGET]}));
+});
