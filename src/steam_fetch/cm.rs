@@ -186,6 +186,7 @@ type Stream = StreamOwned<ClientConnection, DeadlineTcp>;
 
 const MAX_WORKER_DECODE_BYTES: usize = 256 * 1024;
 const MAX_WORKER_FRAME_PACKETS: usize = 1024;
+const WORKER_FRAME_DECODE_WINDOW: Duration = Duration::from_millis(100);
 
 /// The service needs small control messages. Bound aggregate nested expansion,
 /// rather than allowing every nested gzip to spend the full frame budget.
@@ -438,12 +439,7 @@ impl CmSession {
             self.heartbeat_if_due()?;
             match self.ws.read() {
                 Ok(Message::Binary(bytes)) => {
-                    let packets = if bounded {
-                        decode_worker_frame(&bytes, self.limits.max_unzipped, deadline)?
-                    } else {
-                        frame::decode_expanded(&bytes, self.limits.max_unzipped)?
-                    };
-                    self.pending.extend(packets);
+                    self.queue_received_binary(&bytes, bounded)?;
                 }
                 Ok(Message::Close(frame)) => bail!("CM closed the connection: {frame:?}"),
                 Ok(_) => {}
@@ -467,6 +463,25 @@ impl CmSession {
                 Err(error) => return Err(error).context("read CM socket"),
             }
         }
+    }
+
+    /// A complete frame may arrive as the socket poll window expires. Decode
+    /// it under a separate finite allowance, then retain every packet in order
+    /// even if the caller must wait until its next poll to consume them.
+    fn queue_received_binary(&mut self, bytes: &[u8], bounded: bool) -> Result<()> {
+        let packets = if bounded {
+            decode_worker_frame(
+                bytes,
+                self.limits.max_unzipped,
+                Instant::now() + WORKER_FRAME_DECODE_WINDOW,
+            )?
+        } else {
+            frame::decode_expanded(bytes, self.limits.max_unzipped)?
+        };
+        // Decoding is transactional: a malformed or over-budget Multi never
+        // publishes only its successfully decoded prefix.
+        self.pending.extend(packets);
+        Ok(())
     }
 
     /// Hello, anonymous logon and heartbeat setup.
@@ -586,7 +601,8 @@ impl CmSession {
 
     /// Drain at most `max_packets` with a bounded read window, retaining later
     /// packets for the next call. The existing WebSocket and Multi byte limits
-    /// bound each decoded frame. No unmatched message is discarded.
+    /// bound each decoded frame. A frame completed at the read deadline gets
+    /// up to 100 ms of additional decoding time. No unmatched message is discarded.
     pub fn poll_bounded(&mut self, wait: Duration, max_packets: usize) -> Result<Vec<Packet>> {
         ensure!(
             !wait.is_zero() && wait <= Duration::from_secs(1),
@@ -716,6 +732,88 @@ mod tests {
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         (client, server)
+    }
+
+    /// No handshake or transport reads: tests below inject completed frames at
+    /// the same queueing boundary as the production WebSocket receive arm.
+    fn session_for_received_frames() -> (CmSession, TcpStream) {
+        let (client, peer) = socket_pair();
+        let tls = super::super::net::Tls::from_roots(Vec::new()).unwrap();
+        let connection = ClientConnection::new(
+            tls.client,
+            ServerName::try_from("localhost".to_owned()).unwrap(),
+        )
+        .unwrap();
+        let stream = StreamOwned::new(connection, DeadlineTcp::new(client).unwrap());
+        (
+            CmSession {
+                ws: WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),
+                pending: VecDeque::new(),
+                steam_id: ANONYMOUS_STEAM_ID,
+                session_id: 0,
+                next_job: 1,
+                heartbeat: None,
+                last_send: Instant::now(),
+                timeouts: CmTimeouts::default(),
+                limits: CmLimits::default(),
+            },
+            peer,
+        )
+    }
+
+    #[test]
+    fn completed_frame_survives_expired_poll_and_preserves_pending_order() {
+        let (mut session, _peer) = session_for_received_frames();
+        let encoded = [1, 2, 3]
+            .map(|value| frame::encode(emsg::GS_STATUS_REPLY, &ProtoHeader::default(), &[value]));
+        session.queue_received_binary(&encoded[0], true).unwrap();
+        let expired_poll = Instant::now() - Duration::from_secs(1);
+        // The read completed after its poll budget. The production receive arm
+        // must still decode and retain the entire Multi using its own window.
+        let multi = frame::encode_multi(&encoded[1..], true);
+        session.queue_received_binary(&multi, true).unwrap();
+        assert!(
+            session
+                .recv_matching_until_inner(|_| true, expired_poll, true)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(session.pending.len(), 3);
+        // Exactly three pending packets avoids any TLS/socket read in this test.
+        let packets = session.poll_bounded(Duration::from_secs(1), 3).unwrap();
+        assert_eq!(
+            packets
+                .iter()
+                .map(|packet| packet.body.clone())
+                .collect::<Vec<_>>(),
+            [vec![1], vec![2], vec![3]]
+        );
+        assert!(session.pending.is_empty());
+    }
+
+    #[test]
+    fn received_frame_malformed_prefix_is_atomic_and_logoff_stays_fatal() {
+        let (mut session, _peer) = session_for_received_frames();
+        let valid = frame::encode(emsg::GS_STATUS_REPLY, &ProtoHeader::default(), &[8, 0]);
+        session.queue_received_binary(&valid, true).unwrap();
+        let pending = session.pending.clone();
+        let malformed = frame::encode_multi(&[valid, vec![0]], false);
+        assert!(session.queue_received_binary(&malformed, true).is_err());
+        assert_eq!(session.pending, pending);
+        session.pending.clear();
+        let logoff = frame::encode(
+            emsg::CLIENT_LOGGED_OFF,
+            &ProtoHeader::default(),
+            &ClientLoggedOff::default().encode_to_vec(),
+        );
+        session.queue_received_binary(&logoff, true).unwrap();
+        assert!(
+            session
+                .poll_bounded(Duration::from_secs(1), 1)
+                .unwrap_err()
+                .to_string()
+                .contains("CM logged the session off")
+        );
     }
 
     #[test]
