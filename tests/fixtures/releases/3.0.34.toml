@@ -1,0 +1,167 @@
+# Frozen release profile: ICARUS 3.0.34, qualified dedicated server 26313077.
+# The pawn adds `bIsReworkedCharacter`; other retained identities are
+# unchanged. This profile does not qualify stock-client gameplay or quest
+# class opens.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.34")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
+
+[release]
+app_id = 2089300
+build_id = 26313077
+project_version = "3.0.34.159385-rel-DangerousHorizons"
+network_checksum = 4087436304
+
+# `UGameplayTagsManager` net-index metadata (F-702).
+[tags]
+data_table_tag_count = 130
+ini_tag_count = 1921
+unique_node_count = 2335
+total_bits = 12
+configured_first_segment = 16
+effective_first_segment = 0
+container_bits = 6
+net_index_hash = 0x28cb0f35
+
+# `FClassNetCache` field-index bounds (F-644, F-705, F-708).
+[class_net_cache]
+stat_container = 5
+inventory = 11
+ui_projection_mount_status = 7
+bp_icarus_player_state = 38
+bp_mount_base = 84
+bp_mount_horse = 85
+bp_tame_base = 86
+bp_icarus_player_controller_survival = 183
+
+# `FRowHandle` registry: the 293-table registry the static codec reads,
+# kept as this profile has always carried it (F-1033 records 295 tables for
+# this build; the value is preserved, not corrected, here).
+[row_handles]
+table_count = 293
+zero_row_tables = [62, 164, 181]
+two_byte_row_tables = [
+    0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 148, 152, 177, 178, 201,
+    207, 209, 215, 230, 234, 237, 248, 252, 254, 278,
+]
+
+# `BP_IcarusPlayerControllerSurvival_C` (F-778, F-779, F-780).
+[player_controller]
+archetype = [
+    { path = "Default__BP_IcarusPlayerControllerSurvival_C", checksum = 3911321073, no_load = false },
+    { path = "/Game/BP/Player/BP_IcarusPlayerControllerSurvival", checksum = 0, no_load = false },
+]
+components = [
+    { name = "BackendProxyComponent", checksum = 4100406609, block = "rep_bools", rep_bools = [[2, true]] },
+    { name = "PlayerDataComponent", checksum = 3400199742, block = "none", rep_bools = [] },
+    { name = "BestiaryManagerComponent", checksum = 2451266650, block = "create", rep_bools = [] },
+    { name = "ResourceNetworkDataRequesterComponent", checksum = 3500113941, block = "create", rep_bools = [] },
+    { name = "BP_CriticalHitComponent", checksum = 1900637040, block = "create", rep_bools = [] },
+    { name = "BP_HuntingManager", checksum = 2334391351, block = "create", rep_bools = [] },
+    { name = "BP_NetworkProxyComponent", checksum = 997381320, block = "rep_bools", rep_bools = [[2, true]] },
+]
+
+# `BP_IcarusPlayerState_C` (F-780, F-784).
+[player_state]
+archetype = [
+    { path = "Default__BP_IcarusPlayerState_C", checksum = 628225127, no_load = false },
+    { path = "/Game/BP/Systems/BP_IcarusPlayerState", checksum = 0, no_load = false },
+]
+
+# `BP_IcarusGameState_C` (F-794); the connected-player record class is
+# derived for 3.0.34 onward (F-1072).
+[game_state]
+archetype = [
+    { path = "Default__BP_IcarusGameState_C", checksum = 2614124130, no_load = false },
+    { path = "/Game/BP/Systems/BP_IcarusGameState", checksum = 0, no_load = false },
+]
+game_mode_class = [
+    { path = "BP_IcarusGameMode_C", checksum = 2281024597, no_load = false },
+    { path = "/Game/BP/Systems/BP_IcarusGameMode", checksum = 0, no_load = false },
+]
+spectator_class = [
+    { path = "SpectatorPawn", checksum = 3712879475, no_load = false },
+    { path = "/Script/Engine", checksum = 0, no_load = false },
+]
+connected_players = { name = "ConnectedPlayers", checksum = 3014652130 }
+dialogue_system = { name = "DialogueSystem", checksum = 3400199742 }
+weather = { name = "WeatherComp", checksum = 3554357950 }
+connected_player_record = [
+    { path = "ReplicatedConnectedPlayer", checksum = 3049816867, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+
+# `BP_IcarusPlayerCharacterSurvival_C` (F-797); the pawn adds
+# `bIsReworkedCharacter` from 3.0.34.
+[pawn]
+layout_version = "reworked_character"
+archetype = [
+    { path = "Default__BP_IcarusPlayerCharacterSurvival_C", checksum = 537502963, no_load = false },
+    { path = "/Game/BP/Player/BP_IcarusPlayerCharacterSurvival", checksum = 0, no_load = false },
+]
+components = [
+    { name = "Stat Container", checksum = 4037894903, rep_bools = [] },
+    { name = "InventoryComponent", checksum = 46421488, rep_bools = [[2, true]] },
+    { name = "AudioContext", checksum = 4273702982, rep_bools = [] },
+    { name = "FeedbackAudioComponent", checksum = 3400199742, rep_bools = [] },
+    { name = "ActorState", checksum = 692782745, rep_bools = [] },
+    { name = "Stomach", checksum = 3911258249, rep_bools = [[2, true]] },
+    { name = "Processing", checksum = 1023342657, rep_bools = [[2, true]] },
+    { name = "BP_Weight", checksum = 46421488, rep_bools = [[2, true]] },
+    { name = "BP_SwimmingComponent", checksum = 165351633, rep_bools = [[2, true]] },
+    { name = "BP_ShelteredComponent", checksum = 2435860737, rep_bools = [[2, true]] },
+    { name = "BP_PlayerBuildingPlacement", checksum = 1301726856, rep_bools = [] },
+    { name = "Experience", checksum = 46421488, rep_bools = [[2, true]] },
+    { name = "BP_PlayerMovementAudioComponent", checksum = 1588614535, rep_bools = [] },
+    { name = "BP_PlayerMusicComponent", checksum = 681416933, rep_bools = [] },
+    { name = "BP_Flammable_Player", checksum = 3465019412, rep_bools = [[2, true]] },
+    { name = "BP_UIProjectionComponent_Player", checksum = 1863489512, rep_bools = [] },
+]
+stat_container = "Stat Container"
+actor_state = "ActorState"
+inventory_component = "InventoryComponent"
+inventory_class = [
+    { path = "Inventory", checksum = 1798236809, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+
+# World managers (F-859, F-861, F-862, F-866, F-914).
+[managers]
+quest_manager = [
+    { path = "Default__QuestManager", checksum = 3539440926, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+inventory_container_manager = [
+    { path = "Default__InventoryContainerManager", checksum = 3504939521, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+player_history_tracker = [
+    { path = "Default__PlayerHistoryTracker", checksum = 243959002, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+flod = [
+    { path = "Default__BP_IcarusFLOD_Default_C", checksum = 519276901, no_load = false },
+    { path = "/Game/BP/FLOD/BP_IcarusFLOD_Default", checksum = 0, no_load = false },
+]
+radiation_manager = [
+    { path = "Default__RadiationManager", checksum = 2158376861, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+world_talent_manager = [
+    { path = "Default__WorldTalentManager", checksum = 3510503235, no_load = false },
+    { path = "/Script/Icarus", checksum = 0, no_load = false },
+]
+disaster_controller = [
+    { path = "Default__BP_DisasterController_C", checksum = 2281024597, no_load = false },
+    { path = "/Game/BP/Systems/Disaster/BP_DisasterController", checksum = 0, no_load = false },
+]
+stat_container_checksum = 4037894903
+actor_state_checksum = 455559420
+
+# Level visibility actor identities: `ClassChecksum(AWorldSettings)` computed
+# with the retained checksum algorithm from public server 26425113 (3.0.35)
+# and equal to every world-settings actor export of the retained 3.0.34
+# session (M-1350).
+[level_actors]
+names = ["IcarusWorldSettings_0", "BP_IcarusWorldSettings_C"]
+checksum = 3401274505

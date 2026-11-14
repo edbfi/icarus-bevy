@@ -582,7 +582,7 @@ fn quest_actor_opens_match_m707_captured_export_digests_and_net_guids() {
     // Construction_C (`quests[6]`) excludes completed BPQ_Travel_C (`101`) from ActiveQuests.
     assert_eq!(stitched.quests[6].active_quests, vec![ActorKey::Saved(105)]);
 
-    let profile = ReleaseProfile::release_3_0_31();
+    let profile = ReleaseProfile::fixture("3.0.31");
     let map = "/Game/Maps/Terrain_016_OLY/Terrain_016";
     let base = profile.quest_open_base_plan(map).unwrap().unwrap();
     let codec = ActorChannelCodec {
@@ -1135,11 +1135,7 @@ fn synthetic_quest_pak(dir: &std::path::Path, quest_rows_json: &str) -> std::pat
 /// independently of the repository's moving release pin.
 fn qualified_quest_release(dir: &std::path::Path) -> std::path::PathBuf {
     let path = dir.join("quest_release.toml");
-    std::fs::write(
-        &path,
-        "[release]\napp_id = 2089300\nbuild_id = 25956137\nproject_version = \"3.0.32.158743-rel-DangerousHorizons\"\nnetwork_checksum = 243431684\n",
-    )
-    .unwrap();
+    std::fs::copy(ReleaseProfile::fixture_path("3.0.32"), &path).unwrap();
     path
 }
 

@@ -12080,7 +12080,7 @@ mod tests {
     fn manager_configuration_rejects_duplicates_and_replacement_atomically() {
         use super::super::release::ReleaseProfile;
         let mut lab = prospect_refresh_lab();
-        let plans = ReleaseProfile::release_3_0_32()
+        let plans = ReleaseProfile::fixture("3.0.32")
             .manager_open_plans(PeerLabAdmission::default().map_url)
             .unwrap();
         let before = lab.game_state_open.as_ref().unwrap().state.managers.clone();
@@ -12130,7 +12130,7 @@ mod tests {
             },
         )
         .unwrap();
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         let map = PeerLabAdmission::default().map_url;
         lab.enable_player_controller_open(
             profile
@@ -12781,7 +12781,7 @@ mod tests {
     ) {
         use super::super::control_messages::{NetIdType, NetIdValue, UniqueNetId};
         let mut lab = prospect_refresh_lab();
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         let map = PeerLabAdmission::default().map_url;
         lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
             .unwrap();
@@ -13179,7 +13179,7 @@ mod tests {
     /// records configured before any peer exists.
     fn record_lab(enabled: bool) -> PeerLab {
         let mut lab = prospect_refresh_lab();
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         let map = PeerLabAdmission::default().map_url;
         lab.enable_player_state_open(profile.player_state_open_plan(map).unwrap().unwrap())
             .unwrap();
@@ -13191,7 +13191,7 @@ mod tests {
         .unwrap();
         if enabled {
             lab.enable_connected_player_records(
-                ReleaseProfile::release_3_0_35()
+                ReleaseProfile::fixture("3.0.35")
                     .connected_players_plan()
                     .unwrap()
                     .unwrap(),
@@ -14514,7 +14514,7 @@ mod tests {
         assert!(lab.disable_connected_player_records().is_err());
         assert!(
             lab.enable_connected_player_records(
-                ReleaseProfile::release_3_0_35()
+                ReleaseProfile::fixture("3.0.35")
                     .connected_players_plan()
                     .unwrap()
                     .unwrap()
@@ -14527,7 +14527,7 @@ mod tests {
 
     #[test]
     fn connected_player_records_require_the_referenced_opens_and_a_valid_plan() {
-        let plan = ReleaseProfile::release_3_0_35()
+        let plan = ReleaseProfile::fixture("3.0.35")
             .connected_players_plan()
             .unwrap()
             .unwrap();
@@ -16401,16 +16401,19 @@ mod tests {
         assert!(lab.controller_startup.is_none());
         for actions in [vec![], vec![FlushLevelStreaming; 33], vec![RestartPawn]] {
             assert!(
-                lab.enable_controller_startup(&ReleaseProfile::release_3_0_32(), actions)
+                lab.enable_controller_startup(&ReleaseProfile::fixture("3.0.32"), actions)
                     .is_err()
             );
             assert!(lab.controller_startup.is_none());
         }
-        lab.enable_controller_startup(&ReleaseProfile::release_3_0_32(), vec![FlushLevelStreaming])
-            .unwrap();
+        lab.enable_controller_startup(
+            &ReleaseProfile::fixture("3.0.32"),
+            vec![FlushLevelStreaming],
+        )
+        .unwrap();
         assert!(
             lab.enable_controller_startup(
-                &ReleaseProfile::release_3_0_32(),
+                &ReleaseProfile::fixture("3.0.32"),
                 vec![FlushLevelStreaming]
             )
             .is_err()
@@ -16419,7 +16422,7 @@ mod tests {
         let (_socket, _, _) = acked_game_state_peer(&mut lab);
         assert!(
             lab.enable_controller_startup(
-                &ReleaseProfile::release_3_0_32(),
+                &ReleaseProfile::fixture("3.0.32"),
                 vec![FlushLevelStreaming]
             )
             .is_err()
@@ -16495,7 +16498,7 @@ mod tests {
         let mut lab = prospect_refresh_lab();
         lab.config.packet.sent_capacity = 8;
         lab.enable_controller_startup(
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             vec![FlushLevelStreaming, FlushLevelStreaming],
         )
         .unwrap();
@@ -16671,7 +16674,7 @@ mod tests {
         for mixed in [false, true] {
             let mut lab = prospect_refresh_lab();
             lab.enable_controller_startup(
-                &ReleaseProfile::release_3_0_32(),
+                &ReleaseProfile::fixture("3.0.32"),
                 vec![ControllerStartupAction::FlushLevelStreaming],
             )
             .unwrap();
@@ -16726,7 +16729,7 @@ mod tests {
     fn controller_startup_close_ack_is_not_an_open_channel_settlement_receipt() {
         let mut lab = prospect_refresh_lab();
         lab.enable_controller_startup(
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             vec![ControllerStartupAction::FlushLevelStreaming],
         )
         .unwrap();
@@ -16758,7 +16761,7 @@ mod tests {
     fn controller_startup_aborts_after_failed_initial_open_without_publishing() {
         let mut lab = prospect_refresh_lab();
         lab.enable_controller_startup(
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             vec![ControllerStartupAction::FlushLevelStreaming],
         )
         .unwrap();
@@ -16792,7 +16795,7 @@ mod tests {
             pawn_open::PAWN_CHANNEL_INDEX,
             rep_rpc::parse_rpc_payload,
         };
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         let mut lab = prospect_refresh_lab();
         lab.enable_pawn_open(
             profile
@@ -16963,7 +16966,7 @@ mod tests {
         for terminal in ["commit", "disconnect", "permanent_failure"] {
             let mut lab = prospect_refresh_lab();
             lab.enable_pawn_open(
-                ReleaseProfile::release_3_0_32()
+                ReleaseProfile::fixture("3.0.32")
                     .pawn_open_plan(PeerLabAdmission::default().map_url)
                     .unwrap()
                     .unwrap(),
@@ -17217,7 +17220,7 @@ mod tests {
         // multi-datagram path on behalf of the component export.
         for export_state in ["pending", "lost", "acked"] {
             let mut lab = prospect_refresh_lab();
-            let plan = ReleaseProfile::release_3_0_32()
+            let plan = ReleaseProfile::fixture("3.0.32")
                 .pawn_open_plan(PeerLabAdmission::default().map_url)
                 .unwrap()
                 .unwrap();
@@ -17358,7 +17361,7 @@ mod tests {
         lab.config.packet.sent_capacity = 8;
         let (socket, address, mut client) = acked_game_state_peer(&mut lab);
         let state_channel = lab.game_state_open.as_ref().unwrap().channel_index;
-        let profile = ReleaseProfile::release_3_0_32();
+        let profile = ReleaseProfile::fixture("3.0.32");
         lab.enable_player_state_open(
             profile
                 .player_state_open_plan(PeerLabAdmission::default().map_url)

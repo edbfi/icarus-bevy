@@ -4126,20 +4126,8 @@ fn production_records_follow_the_switch_and_the_release_chain() {
     assert!(parsed.validate().is_ok());
     let parsed: ServerConfig = toml::from_str("[network]\nenabled = true\n").unwrap();
     assert!(parsed.network.connected_player_records);
-    let directory = tempfile::tempdir().unwrap();
-    let older = ReleaseProfile::release_3_0_32();
-    let path = directory.path().join("release-3032.toml");
-    fs::write(
-        &path,
-        format!(
-            "[release]\napp_id = {}\nbuild_id = {}\nproject_version = \"{}\"\nnetwork_checksum = {}\n",
-            older.pin.app_id,
-            older.pin.build_id,
-            older.pin.project_version,
-            older.pin.network_checksum
-        ),
-    )
-    .unwrap();
+    // The frozen 3.0.32 profile carries no connected-player record chain.
+    let path = ReleaseProfile::fixture_path("3.0.32");
     for (release, records, expected) in [
         (release_toml(), true, true),
         (release_toml(), false, false),
@@ -5311,17 +5299,22 @@ fn returning_pawns_send_supported_saved_content_after_the_uid() {
         .unwrap();
         let profile_path = if case == Case::MissingStomach {
             let path = directory.path().join("release.toml");
-            let mut text = fs::read_to_string(release_toml()).unwrap();
-            text.push_str(r#"
-[pawn]
+            // The tracked profile with an authored pawn that has no stomach.
+            let mut profile: toml::Table =
+                fs::read_to_string(release_toml()).unwrap().parse().unwrap();
+            let pawn: toml::Table = r#"
+layout_version = "legacy"
 archetype = [{ path = "Default__P_C", checksum = 1 }, { path = "/Game/P", checksum = 0 }]
 components = [{ name = "S", checksum = 2 }, { name = "I", checksum = 3 }, { name = "A", checksum = 4 }]
 stat_container = "S"
 inventory_component = "I"
 actor_state = "A"
 inventory_class = [{ path = "Bag", checksum = 9 }, { path = "/Script/P", checksum = 0 }]
-"#);
-            fs::write(&path, text).unwrap();
+"#
+            .parse()
+            .unwrap();
+            profile.insert("pawn".to_owned(), toml::Value::Table(pawn));
+            fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
             path
         } else {
             release_toml()

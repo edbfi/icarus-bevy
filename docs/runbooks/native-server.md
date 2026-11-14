@@ -60,9 +60,9 @@ Delayed-pawn stock-client continuation remains unqualified.
 [stats](network-readiness.md#fresh-player-stats),
 [passwords](network-readiness.md#join-password); observed entry F-1148.
 Visibility actors remain [gated](../gates.md): `run` refuses the switch.
-The probe's `--level-visibility-actors true` needs an explicit
-`--release-profile` for qualified 3.0.34/3.0.35 inputs; the tracked 3.0.36
-pin has no actor identities and refuses decoding.
+The probe's `--level-visibility-actors true` needs a 3.0.34/3.0.35
+`--release-profile` from `tests/fixtures/releases/`; the 3.0.36 pin lacks
+actor identities, so it is refused.
 Possession (`controller_possession_properties`, F-1088), connected records
 (`connected_player_records`, F-1077) and the player's record-ACK-gated pawn
 unfreeze (`server_frozen_movement_release`, F-1099/F-1100) default on.
@@ -103,7 +103,7 @@ All actions must settle without failure under the
 | `port` | `17777`; `0`: ephemeral lab only; CLI `--network-port` |
 | `max_players` | `8`; admission occupancy, 1..=64 |
 | `session_timeout_seconds` | `30`; idle/delivery/friends query, 1..=600 s |
-| `release_profile` | `"config/release.toml"`; optional Hello pin |
+| `release_profile` | `"config/release.toml"`; complete qualified [profile](../architecture.md#release-tracking) |
 | `data_pak` | `"/path/to/data.pak"`; protocol row identities |
 | `authored_gameplay` | `"/path/to/gameplay.json"`; required with either pak |
 | `join_password` | unset; never printed ([rules](network-readiness.md#join-password)) |

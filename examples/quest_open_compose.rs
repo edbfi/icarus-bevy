@@ -147,7 +147,7 @@ fn main() -> Result<()> {
         profile.quests.len()
     );
 
-    let release = ReleaseProfile::release_3_0_31();
+    let release = ReleaseProfile::fixture("3.0.31");
     let map = "/Game/Maps/Terrain_016_OLY/Terrain_016";
     let base = release
         .quest_open_base_plan(map)?

@@ -2,7 +2,7 @@
 //! and compare them with supplied opens (one JSON line per manager). The
 //! profile file maps channel indices to a supplied open (`exports_hex`,
 //! `exports_bits`, `body_hex`, `body_bits`) and its GUIDs (`actor`,
-//! `archetype`, `outer`, `components`); the plans are the built-in 3.0.31
+//! `archetype`, `outer`, `components`); the plans are the frozen 3.0.31
 //! release profile's (`manager_open_plans`), and the supplied actor state's
 //! values are compared with the plan's. Never reads original files.
 use std::{collections::BTreeMap, path::PathBuf};
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
         checksums: false,
         limits: RepLayoutLimits::default(),
     };
-    let plans = ReleaseProfile::release_3_0_31()
+    let plans = ReleaseProfile::fixture("3.0.31")
         .manager_open_plans("/Game/Maps/Terrain_016_OLY/Terrain_016")?;
     for (channel, supplied) in &profile {
         let Some(slot) = slot(channel) else {

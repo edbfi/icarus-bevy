@@ -13,11 +13,11 @@ use icarus_bevy::experimental::{
 #[test]
 fn reworked_pawn_layout_inserts_one_boolean_after_is_male() {
     let map = "/Game/Maps/Test/Test";
-    let legacy = ReleaseProfile::release_3_0_32()
+    let legacy = ReleaseProfile::fixture("3.0.32")
         .pawn_open_plan(map)
         .unwrap()
         .unwrap();
-    let updated = ReleaseProfile::release_3_0_34()
+    let updated = ReleaseProfile::fixture("3.0.34")
         .pawn_open_plan(map)
         .unwrap()
         .unwrap();
@@ -54,9 +54,9 @@ fn reworked_pawn_layout_inserts_one_boolean_after_is_male() {
 #[test]
 fn pawn_open_writes_frozen_movement_at_the_selected_releases_wire_handle() {
     for (profile, frozen_handle) in [
-        (ReleaseProfile::release_3_0_31(), 67),
-        (ReleaseProfile::release_3_0_32(), 67),
-        (ReleaseProfile::release_3_0_34(), 68),
+        (ReleaseProfile::fixture("3.0.31"), 67),
+        (ReleaseProfile::fixture("3.0.32"), 67),
+        (ReleaseProfile::fixture("3.0.34"), 68),
     ] {
         let plan = profile
             .pawn_open_plan("/Game/Maps/Test/Test")
@@ -126,10 +126,10 @@ fn pawn_open_writes_frozen_movement_at_the_selected_releases_wire_handle() {
 fn frozen_movement_update_writes_only_the_flag_at_the_selected_releases_wire_handle() {
     use icarus_bevy::experimental::pawn_open::compose_pawn_frozen_movement_update;
     for (profile, frozen_handle) in [
-        (ReleaseProfile::release_3_0_31(), 67),
-        (ReleaseProfile::release_3_0_32(), 67),
-        (ReleaseProfile::release_3_0_34(), 68),
-        (ReleaseProfile::release_3_0_35(), 68),
+        (ReleaseProfile::fixture("3.0.31"), 67),
+        (ReleaseProfile::fixture("3.0.32"), 67),
+        (ReleaseProfile::fixture("3.0.34"), 68),
+        (ReleaseProfile::fixture("3.0.35"), 68),
     ] {
         let plan = profile
             .pawn_open_plan("/Game/Maps/Test/Test")

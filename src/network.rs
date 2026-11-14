@@ -12,8 +12,8 @@
 //! validated before the socket binds and its network checksum becomes the
 //! lab's local Hello version: a differing Hello gets Upgrade and the peer is
 //! removed (`upgrades_sent`, `closed_by_reply`). Unset, any version is accepted.
-//! When the profile carries `[player_controller]` identifiers (built in for
-//! the qualified builds, F-780), every successful Join is answered with the
+//! When the profile carries `[player_controller]` identifiers (written in
+//! the release file, F-780), every successful Join is answered with the
 //! PlayerController open on actor channel 2 (F-778, F-779): exports, spawn at
 //! [`SPAWN_LOCATION`], roles, references and component blocks; with `[pawn]`
 //! identifiers the player's pawn follows on channel 3 (F-797: captured roles

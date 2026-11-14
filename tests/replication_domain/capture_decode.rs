@@ -555,7 +555,7 @@ fn private_values_follow_same_class_subobjects_across_reordered_updates() -> Res
         &input,
         &detail,
         &work,
-        &ReleaseProfile::release_3_0_32(),
+        &ReleaseProfile::fixture("3.0.32"),
         Some(3),
     )?;
     assert_eq!(report["passes"], ordinary_report["passes"]);
@@ -713,7 +713,7 @@ fn run_inbound_rows(
         &input,
         &output,
         &work,
-        &ReleaseProfile::release_3_0_32(),
+        &ReleaseProfile::fixture("3.0.32"),
         config,
     )?;
     let rows = fs::read_to_string(output)?
@@ -1169,7 +1169,7 @@ fn inbound_enforces_file_line_datagram_and_output_bounds() -> Result<()> {
                 &input,
                 &output,
                 &work,
-                &ReleaseProfile::release_3_0_32(),
+                &ReleaseProfile::fixture("3.0.32"),
                 &config
             )
             .is_err(),
@@ -1267,17 +1267,7 @@ fn inbound_cli_validates_all_bindings_before_exclusive_output_creation() -> Resu
     let input = work.join("authored.jsonl");
     let output = work.join("metadata.jsonl");
     let profile_path = work.join("release.toml");
-    let profile = ReleaseProfile::release_3_0_32();
-    fs::write(
-        &profile_path,
-        format!(
-            "[release]\napp_id={}\nbuild_id={}\nproject_version={:?}\nnetwork_checksum={}\n",
-            profile.pin.app_id,
-            profile.pin.build_id,
-            profile.pin.project_version,
-            profile.pin.network_checksum
-        ),
-    )?;
+    fs::copy(ReleaseProfile::fixture_path("3.0.32"), &profile_path)?;
     fs::write(
         &input,
         json_lines(&[inbound_row(1, 10, vec![inbound_actor(None)?])?]),
@@ -1342,7 +1332,7 @@ fn inbound_unknown_release_and_invalid_limits_fail_before_output() -> Result<()>
     let input = work.join("empty.jsonl");
     let output = work.join("metadata.jsonl");
     fs::write(&input, "")?;
-    let mut profile = ReleaseProfile::release_3_0_32();
+    let mut profile = ReleaseProfile::fixture("3.0.32");
     profile.pin.build_id += 1;
     assert!(
         decoder::run_inbound_metadata(&input, &output, &work, &profile, &inbound_config()).is_err()
@@ -1355,7 +1345,7 @@ fn inbound_unknown_release_and_invalid_limits_fail_before_output() -> Result<()>
             &input,
             &output,
             &work,
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             &config
         )
         .is_err()
@@ -1368,7 +1358,7 @@ fn inbound_unknown_release_and_invalid_limits_fail_before_output() -> Result<()>
             &input,
             &output,
             &work,
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             &config
         )
         .is_err()
@@ -1423,7 +1413,7 @@ fn inbound_stream_rejects_truncated_json_and_duplicate_contract_keys() -> Result
                 &input,
                 &output,
                 &work,
-                &ReleaseProfile::release_3_0_32(),
+                &ReleaseProfile::fixture("3.0.32"),
                 &inbound_config()
             )
             .is_err()
@@ -1448,7 +1438,7 @@ fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() ->
             &input,
             &outside,
             &work,
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             &inbound_config()
         )
         .is_err()
@@ -1459,7 +1449,7 @@ fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() ->
             &input,
             &input,
             &work,
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             &inbound_config()
         )
         .is_err()
@@ -1472,7 +1462,7 @@ fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() ->
             &input,
             &output,
             &work,
-            &ReleaseProfile::release_3_0_32(),
+            &ReleaseProfile::fixture("3.0.32"),
             &inbound_config()
         )
         .is_err()
@@ -1486,8 +1476,8 @@ fn inbound_output_confines_paths_and_preserves_existing_inputs_and_symlinks() ->
 fn inbound_qualified_profiles_and_explicit_byte_orders_share_only_framing() -> Result<()> {
     use icarus_bevy::experimental::release::ReleaseProfile;
     for profile in [
-        ReleaseProfile::release_3_0_32(),
-        ReleaseProfile::release_3_0_34(),
+        ReleaseProfile::fixture("3.0.32"),
+        ReleaseProfile::fixture("3.0.34"),
     ] {
         for order in [
             decoder::InboundByteOrder::Little,
@@ -1674,11 +1664,11 @@ fn inbound_rejects_tampered_3_0_34_before_creating_output() -> Result<()> {
     let input = root.path().join("input.jsonl");
     let output = root.path().join("output.jsonl");
     fs::write(&input, "")?;
-    let mut tampered_pin = ReleaseProfile::release_3_0_34();
+    let mut tampered_pin = ReleaseProfile::fixture("3.0.34");
     tampered_pin.pin.project_version.push_str("-altered");
     tampered_pin.pin.network_checksum =
         icarus_bevy::experimental::release::network_checksum(&tampered_pin.pin.project_version);
-    let mut tampered_bound = ReleaseProfile::release_3_0_34();
+    let mut tampered_bound = ReleaseProfile::fixture("3.0.34");
     tampered_bound
         .class_net_cache
         .bp_icarus_player_controller_survival += 1;

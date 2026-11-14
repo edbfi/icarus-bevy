@@ -1,4 +1,4 @@
-//! World manager opens (F-859) from the built-in release plans, pinned to
+//! World manager opens (F-859) from the frozen release profiles' plans, pinned to
 //! the bit lengths and SHA-256 digests of the opens M-707 captured (taken
 //! from the capture, not from the composer), composed in the capture's GUID
 //! state.
@@ -80,7 +80,7 @@ fn history_add_player_preserves_duplicates_and_refuses_codec_and_array_bounds() 
         prospect_info::PlayerHistoryEntry,
         rep_layout::{RepArray, RepLayoutLimits, RepValue},
     };
-    let plan = ReleaseProfile::release_3_0_31()
+    let plan = ReleaseProfile::fixture("3.0.31")
         .manager_open_plan(ManagerSlot::PlayerHistory, "/Game/Maps/Test/Test")
         .unwrap()
         .unwrap();
@@ -162,7 +162,7 @@ fn burn_static_to(cache: &mut NetGuidCache, next: u32) {
 
 #[test]
 fn manager_opens_match_the_captured_bit_lengths_and_digests() {
-    let plans = ReleaseProfile::release_3_0_31()
+    let plans = ReleaseProfile::fixture("3.0.31")
         .manager_open_plans("/Game/Maps/Terrain_016_OLY/Terrain_016")
         .unwrap();
     for captured in &CAPTURED {
@@ -230,7 +230,7 @@ fn saved_quest_state_composes_into_the_quest_manager_open() {
     };
     use std::collections::BTreeMap;
     let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let saved = SavedQuestManager {
         faction_mission: units("Mission_C"),
         initial_quest: Some(9_001),
@@ -348,7 +348,7 @@ fn container_inventories_compose_as_listed_subobjects() {
         },
     };
     let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let item = SlotItem {
         row: 42,
         dynamic: vec![(7, 15)],
@@ -521,7 +521,7 @@ fn inventory_weight_is_optional_and_decodes_alongside_slots() {
             },
         })
         .collect();
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let plan = profile
         .manager_open_plan(ManagerSlot::InventoryContainer, "/Game/Maps/Test/Test")
         .unwrap()
@@ -612,7 +612,7 @@ fn flod_tiles_compose_as_keyed_tile_references() {
         manager_open::FLOD_TILES_HANDLE,
         rep_layout::{RepLayoutCodec, RepLayoutLimits, RepValue, read_rep_properties},
     };
-    let profile = ReleaseProfile::release_3_0_32();
+    let profile = ReleaseProfile::fixture("3.0.32");
     let base = profile
         .manager_open_plan(ManagerSlot::Flod, "/Game/Maps/Test/Test")
         .unwrap()

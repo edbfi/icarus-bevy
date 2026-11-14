@@ -5,7 +5,7 @@
 //! actor block's other values and every component and subobject block's
 //! content are decoded from that body; GUIDs, references, exports and
 //! framing come from the composer. With `--native`, the open is composed by
-//! `pawn_open::compose_pawn_open` from the built-in 3.0.31 pawn identifiers
+//! `pawn_open::compose_pawn_open` from the frozen 3.0.31 profile's pawn identifiers
 //! instead, and only the session's values (`IcarusUID`, tags, character
 //! state, stats, inventory rows and slots) are decoded from the body; with
 //! `--data-pak` the character state, inventories and stats come from the
@@ -53,7 +53,7 @@ use serde_json::json;
 struct Options {
     /// Profile JSON (see `ProfileFile`).
     profile: PathBuf,
-    /// Compose with `compose_pawn_open` and the built-in identifiers.
+    /// Compose with `compose_pawn_open` and the frozen 3.0.31 identifiers.
     #[arg(long)]
     native: bool,
     /// With `--native`: take the character state, inventories and stats
@@ -126,7 +126,7 @@ fn main() -> Result<()> {
     let options = Options::parse();
     let text = std::fs::read_to_string(&options.profile).context("read profile")?;
     let file: ProfileFile = serde_json::from_str(&text).context("parse profile")?;
-    let release = ReleaseProfile::release_3_0_31();
+    let release = ReleaseProfile::fixture("3.0.31");
     let codec = ActorChannelCodec {
         engine_net_version: release.engine_network_version,
         exports_enabled: false,
@@ -376,7 +376,7 @@ fn handle_value(stream: &PropertyStream, handle: u32) -> Option<&RepValue> {
         .map(|entry| &entry.value)
 }
 
-/// Compose with `compose_pawn_open` and the built-in 3.0.31 identifiers,
+/// Compose with `compose_pawn_open` and the frozen 3.0.31 identifiers,
 /// decoding only the session's values from the supplied body.
 #[allow(clippy::too_many_arguments)]
 fn native(

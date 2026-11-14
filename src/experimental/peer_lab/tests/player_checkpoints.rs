@@ -43,7 +43,7 @@ fn context() -> PlayerContext {
     PlayerContext::new(
         "authored-checkpoint".encode_utf16().collect(),
         PeerLabAdmission::default().map_url.to_owned(),
-        &ReleaseProfile::release_3_0_32().pin,
+        &ReleaseProfile::fixture("3.0.32").pin,
         [7; 32],
     )
     .unwrap()

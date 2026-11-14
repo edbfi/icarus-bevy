@@ -964,8 +964,8 @@ mod move_ack_tests {
     fn move_ack_is_one_67_bit_block_with_field_30_alone() {
         let map = PeerLabAdmission::default().map_url;
         for profile in [
-            ReleaseProfile::release_3_0_32(),
-            ReleaseProfile::release_3_0_35(),
+            ReleaseProfile::fixture("3.0.32"),
+            ReleaseProfile::fixture("3.0.35"),
         ] {
             let plan = profile.pawn_open_plan(map).unwrap().unwrap();
             for order in [ByteOrder::Little, ByteOrder::Big] {

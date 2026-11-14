@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -21,8 +22,30 @@ from tools.release_watch import (
     pinned_build,
     project_version,
     public_build,
-    render_pin,
+    QUALIFIED_KEY,
+    release_table,
+    release_values,
+    render_release,
+    repin,
+    rewrite_release,
+    verify_rewrite,
 )
+
+from tools.runtime_types import JsonObject, integer_field, json_object, parse_json, string_field
+
+TRACKED = Path(__file__).resolve().parents[2] / "config/release.toml"
+
+
+def _toml(text: str) -> JsonObject:
+    return json_object(parse_json(json.dumps(tomllib.loads(text))))
+
+
+def _without_table(text: str, name: str) -> str:
+    """`text` without the top-level table `name` (header to the next header)."""
+    start = text.index(f"\n[{name}]\n")
+    following = text.find("\n[", start + 1)
+    return text[:start] + (text[following:] if following >= 0 else "\n")
+
 
 APP_INFO = '''"2089300"
 {
@@ -52,6 +75,7 @@ FIELDS: dict[str, int | str] = {
     "FeatureLevel": "DangerousHorizons",
 }
 VERSION: dict[str, object] = {"Name": "Icarus", "Version": FIELDS}
+VERSION_31 = "3.0.31.158478-rel-DangerousHorizons"
 
 
 def _synthetic_pe_header(sections: list[tuple[bytes, int]]) -> bytes:
@@ -145,20 +169,134 @@ class ReleaseWatchTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 _ = project_version(json.dumps(bad))
 
-    def test_pin_rewrites_the_file_from_a_fetched_install(self) -> None:
+    def test_pin_rewrites_only_the_release_table_and_records_the_qualified_build(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "steamapps").mkdir()
             _ = (root / "steamapps/appmanifest_2089300.acf").write_text('"AppState"\n{\n\t"buildid"\t\t"25793607"\n}\n')
             (root / "Icarus/Config").mkdir(parents=True)
             _ = (root / "Icarus/Config/version.json").write_text(json.dumps(VERSION))
+            profile = root / "release.toml"
+            before = TRACKED.read_text()
+            _ = profile.write_text(before)
             args = Arguments()
-            args.install, args.pin = str(root), str(root / "release.toml")
-            self.assertEqual(pin(args), 0)
-            text = (root / "release.toml").read_text()
-            self.assertEqual(text, render_pin(25793607, "3.0.31.158478-rel-DangerousHorizons"))
-            self.assertEqual(pinned_build(root / "release.toml"), 25793607)
+            args.install, args.pin = str(root), str(profile)
+            with patch("sys.stdout"), patch("sys.stderr"):
+                self.assertEqual(pin(args), 0)
+            text = profile.read_text()
+            old, new = _toml(before), _toml(text)
+            old_build = integer_field(json_object(old["release"]), "build_id")
+            old_version = string_field(json_object(old["release"]), "project_version")
+            self.assertEqual(pinned_build(profile), 25793607)
+            self.assertEqual(json_object(new["release"]), release_values(25793607, VERSION_31, old_build))
+            self.assertIn(f"{QUALIFIED_KEY} = {old_build}\n", text)
+            self.assertEqual(sorted(new), sorted(old))
+            for section in old:
+                if section != "release":
+                    self.assertEqual(new[section], old[section], section)
+            # Only the [release] key lines changed; comments and spacing stay.
+            start, end = release_table(before)
+            lines = before.splitlines(keepends=True)
+            self.assertEqual(text, "".join(lines[:start]) + render_release(25793607, VERSION_31, old_build)
+                             + "".join(lines[start + 5 : end]) + "".join(lines[end:]))
+
+            # A second unqualified bump keeps naming the last qualified build.
+            again, carried, qualified = repin(text, 7, "9.9.9.1-rel-Test")
+            self.assertEqual(qualified, old_build)
+            self.assertEqual(carried, [name for name in old if name != "release"])
+            self.assertEqual(again.count(f"\n{QUALIFIED_KEY} = "), 1)
+            self.assertEqual(json_object(_toml(again)["release"]), release_values(7, "9.9.9.1-rel-Test", old_build))
+            # Re-pinning the same unqualified build changes nothing and still reports the sections.
+            self.assertEqual(repin(text, 25793607, VERSION_31), (text, carried, old_build))
+            # Re-pinning the build the sections are qualified for clears the key: the
+            # file is byte-identical to the qualified original again.
+            self.assertEqual(repin(again, old_build, old_version), (before, [], None))
+            # Re-pinning a qualified build changes nothing.
+            self.assertEqual(repin(before, old_build, old_version), (before, [], None))
+            # One build cannot be pinned under another project version.
+            with self.assertRaises(ValueError):
+                _ = repin(before, old_build, "9.9.9.1-rel-Test")
             self.assertEqual(manifest_build('"buildid" "7"'), 7)
+
+    def test_pin_keeps_comments_inside_the_release_table(self) -> None:
+        tracked = TRACKED.read_text()
+        start, _ = release_table(tracked)
+        lines = tracked.splitlines(keepends=True)
+        commented = "".join(lines[: start + 2] + ["# a note about the build\n", "\n"] + lines[start + 2 :])
+        text, _, qualified = repin(commented, 7, "9.9.9.1-rel-Test")
+        self.assertEqual(json_object(_toml(text)["release"]), release_values(7, "9.9.9.1-rel-Test", qualified))
+        self.assertEqual(text.count("\nbuild_id = "), 1)
+        self.assertEqual(text.count("\nproject_version = "), 1)
+        self.assertIn("# a note about the build\n", text)
+        # The table ends at the next header, not at the first comment or blank line.
+        self.assertLess(text.index(f"\n{QUALIFIED_KEY} = "), text.index("\n[tags]\n"))
+        back, carried, cleared = repin(text, pinned_build(TRACKED), string_field(
+            json_object(_toml(tracked)["release"]), "project_version"))
+        self.assertEqual((back, carried, cleared), (commented, [], None))
+
+    def test_pin_refuses_a_file_the_server_could_not_load(self) -> None:
+        bare = render_release(25793607, VERSION_31)
+        tracked = TRACKED.read_text()
+        cases: dict[str, tuple[str, str]] = {
+            "pin only": (bare, "lacks tags, class_net_cache, row_handles"),
+            "one other section": (bare + "[pawn]\nx = 1\n", "lacks tags, class_net_cache, row_handles"),
+            "one required section": (bare + "[tags]\nx = 1\n", "lacks class_net_cache, row_handles"),
+            "two release tables": (bare + "[tags]\nx = 1\n" + bare, "not valid TOML"),
+            "unknown release key": (tracked.replace("[release]\n", "[release]\nextra = 1\n"), "unknown keys extra"),
+            "malformed qualified key": (tracked.replace("[release]\n", f'[release]\n{QUALIFIED_KEY} = "1"\n'),
+                                        "must be a build id"),
+            "invalid TOML": (tracked + "[tags]\n", "not valid TOML"),
+        }
+        for name in ("tags", "class_net_cache", "row_handles"):
+            cases[f"no {name}"] = (_without_table(tracked, name), f"lacks {name};")
+        for label, (text, reason) in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(ValueError, reason):
+                _ = repin(text, 7, "9.9.9.1-rel-Test")
+
+    def test_pin_refuses_a_rewrite_it_cannot_verify(self) -> None:
+        tracked = TRACKED.read_text()
+        before = _toml(tracked)
+        values = release_values(7, "9.9.9.1-rel-Test", 26613688)
+        verify_rewrite(before, rewrite_release(tracked, values), values)
+        changed = tracked.replace("ini_tag_count = 1929", "ini_tag_count = 1930")
+        partial = _without_table(tracked, "row_handles")
+        cases: dict[str, tuple[JsonObject, str, JsonObject, str]] = {
+            "other table changed": (before, rewrite_release(changed, values), values, "other than"),
+            "release not as intended": (before, rewrite_release(tracked, values),
+                                        release_values(7, "9.9.9.1-rel-Test"), "intended keys"),
+            "required section absent": (_toml(partial), rewrite_release(partial, values), values,
+                                        "lacks row_handles;"),
+            "invalid result": (before, rewrite_release(tracked, values) + "[tags]\n", values, "not valid TOML"),
+        }
+        for label, (old, text, intended, reason) in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(ValueError, reason):
+                verify_rewrite(old, text, intended)
+        # A key line the rewrite does not recognise yields a duplicate key: refused,
+        # and the file is left untouched.
+        quoted = tracked.replace("build_id = ", '"build_id" = ', 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "steamapps").mkdir()
+            _ = (root / "steamapps/appmanifest_2089300.acf").write_text('"buildid" "7"')
+            (root / "Icarus/Config").mkdir(parents=True)
+            _ = (root / "Icarus/Config/version.json").write_text(json.dumps(VERSION))
+            profile = root / "release.toml"
+            _ = profile.write_text(quoted)
+            args = Arguments()
+            args.install, args.pin = str(root), str(profile)
+            with patch("sys.stdout"), patch("sys.stderr"), self.assertRaises(ValueError):
+                _ = pin(args)
+            self.assertEqual(profile.read_text(), quoted)
+
+    def test_pin_requires_an_existing_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(FileNotFoundError):
+            args = Arguments()
+            args.install, args.pin = directory, str(Path(directory) / "missing.toml")
+            (Path(directory) / "steamapps").mkdir()
+            _ = (Path(directory) / "steamapps/appmanifest_2089300.acf").write_text('"buildid" "7"')
+            (Path(directory) / "Icarus/Config").mkdir(parents=True)
+            _ = (Path(directory) / "Icarus/Config/version.json").write_text(json.dumps(VERSION))
+            _ = pin(args)
 
     def test_pe_section_and_ini_tag_diff_between_installs(self) -> None:
         pe_old = _synthetic_pe_header([(b".text", 100_000), (b".pdata", 10_000)])
@@ -206,9 +344,18 @@ class ReleaseWatchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 _ = diff_installs(older, newer)
 
-    def test_tracked_pin_matches_the_renderer(self) -> None:
-        tracked = Path(__file__).resolve().parents[2] / "config/release.toml"
-        self.assertEqual(tracked.read_text(), render_pin(pinned_build(tracked), "3.0.36.159996-rel-DangerousHorizons"))
+    def test_tracked_pin_matches_the_renderer_and_is_qualified(self) -> None:
+        text = TRACKED.read_text()
+        release = json_object(_toml(text)["release"])
+        version = string_field(release, "project_version")
+        self.assertEqual(release["network_checksum"], network_checksum(version))
+        start, end = release_table(text)
+        self.assertEqual(release, release_values(pinned_build(TRACKED), version))
+        self.assertTrue("".join(text.splitlines(keepends=True)[start:end])
+                        .startswith(render_release(pinned_build(TRACKED), version)))
+        # The committed pin is qualified: no section is carried over.
+        self.assertNotIn(QUALIFIED_KEY, release)
+        self.assertNotRegex(text, rf"(?m)^\s*{QUALIFIED_KEY}\s*=")
 
 
 if __name__ == "__main__":
