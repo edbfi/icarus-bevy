@@ -294,7 +294,8 @@ fn future_discriminators_override_malformed_state_and_missing_source() {
         store.save(&current).unwrap();
         let mut wire = read_json(&root.join("snapshot-2.json"));
         *wire.pointer_mut(path).expect(path) = if path == "/schema_version" {
-            14.into()
+            // One past the current (player) schema.
+            (icarus_bevy::simulation::SNAPSHOT_SCHEMA_PLAYERS + 1).into()
         } else if path.ends_with("format") || path.ends_with("encoding") {
             json!(u64::MAX)
         } else {
@@ -351,7 +352,8 @@ fn duplicate_members_cannot_conceal_future_inventory_discriminators() {
                 );
                 let extra = match duplicate {
                     "header" => "\"schema_version\":9",
-                    "future_header" => "\"schema_version\":14",
+                    // The player schema is current; one past it is the future one.
+                    "future_header" => "\"schema_version\":15",
                     _ => "\"native_inventory_owner_import\":null",
                 };
                 if future_first {

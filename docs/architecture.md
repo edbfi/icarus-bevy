@@ -85,9 +85,10 @@ no per-release values.
   re-derive each section for the new build (tags, class checksums, row
   registry, layouts), write the values, remove the key and re-run the
   compatibility scenarios. That re-derivation is the guard; the only other is
-  a frozen fixture for the active release, added only when a test needs it. The player store binds the release file's bytes, so any edit
-  makes an existing schema-13 store refuse to reopen (`player context
-  mismatch`). No Rust change is needed unless a wire structure changed.
+  a frozen fixture for the active release, added only when a test needs it.
+  The release is only provenance to the player store, so neither a new
+  release nor any edit of this file refuses it ([persistence](#persistence)).
+  No Rust change is needed unless a wire structure changed.
   Compatibility claims name the build they were made against; the native
   server answers only the pinned version by default.
 
@@ -105,13 +106,15 @@ activation, reject incomplete state and never promote implicitly; bounds imply
 neither physics nor navigation. Contracts: the
 [authored-worlds runbook](runbooks/authored-worlds.md).
 
-Opt-in schema 13 combines foundation entities/clock with authored player checkpoints
+Opt-in schema 14 combines foundation entities/clock with authored player checkpoints
 in one save generation. `native_players` defines private records;
 `native_player_runtime::PlayerRegistry` owns live reservations and committed state
 independently of `PeerLab`. Only fresh, non-preserved foundation worlds are supported.
 Existing schemas 1–12, preserved/imported worlds and native actor/lifecycle/inventory
 composition refuse before Steam or sockets. Disabling the feature cannot load or
-downgrade schema 13.
+downgrade schema 14. Schema 13, the retired release-bound format, is never
+migrated: it refuses with a message to move the state directory aside, and its
+files stay untouched.
 
 Configure release/catalog, independently authored gameplay and
 `[network.authored_world]`, then add context matching hosting:
@@ -126,11 +129,26 @@ difficulty = 2
 
 Online use requires authenticated hosting. Offline reopen sets `network.enabled = false`
 and omits `[network.hosting]`, retaining the player feature/context and all prepared
-inputs. Reopen pins prospect/map/row/difficulty, release, exact owned gameplay/release
-bytes, resolved initial vitals, authored bootstrap and spawn configuration.
-Formatting changes to either input file change recipe identity. Mismatch refuses
-instead of refilling/resetting players. Passwords, tickets and names are excluded
-from recipe identity.
+inputs.
+
+A store binds its world (prospect id, map URL) and one digest per authored input:
+the exact `network.authored_gameplay` bytes (formatting counts), `network.spawn`,
+`network.authored_world`, `[network.player_persistence]` and the resolved initial
+values (starting maxima, growth row by name). A change refuses, naming the input,
+instead of refilling or resetting players. Passwords, tickets and names are excluded.
+The release is not bound: its build, version and checksum are recorded as
+provenance at every open (event `player_store_reopened`) and never compared.
+
+Stored state names game-data rows and never stores their index: a checkpoint's
+`D_CharacterGrowth` row is stored as table and row name and resolved to the
+installed index at open, so rows inserted, removed or reordered around it change
+nothing; a missing row, or one moved past index 255, refuses naming table and
+row. `CurrentBiome` is not stored: no biome table is loaded, every pawn opens
+with row 0 and a checkpoint with another value refuses. No wire handle is stored.
+A release can still refuse a store indirectly: authored tables must match the
+installed rows, so a patch that adds, removes or reorders rows of a table that
+`network.authored_gameplay` mirrors forces an edit of that file, after which the
+store refuses (`network.authored_gameplay differs`).
 
 Keys require an accepted live ticket request, Joined admission and matching
 nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP

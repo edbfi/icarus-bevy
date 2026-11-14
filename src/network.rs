@@ -1918,7 +1918,7 @@ impl PreparedSession {
     ) -> Result<BoundNetwork> {
         ensure!(
             self.player_context.is_none() || self.player_context_prepared,
-            "player context must be prepared against schema 13 before authenticated binding"
+            "player context must be prepared against the player schema before authenticated binding"
         );
         ensure!(
             self.network.hosting.is_none()
@@ -1968,17 +1968,19 @@ pub fn prepare_session(
     let tables = data_tables(network)?;
     ensure!(
         network.player_persistence.is_none(),
-        "player persistence requires prepare_run and a schema-13 registry"
+        "player persistence requires prepare_run, which prepares the player store"
     );
     prepare_session_inputs(network, config, profile, tables)
 }
 
 /// Immutable startup result prepared from the same owned bytes used to parse
-/// gameplay. It remains available for offline schema-13 reopen validation.
+/// gameplay. It remains available for offline player-store reopen validation.
 #[derive(Clone)]
 pub struct PreparedPlayers {
     pub context: crate::native_players::PlayerContext,
     pub initial_vitals: CharacterVitals,
+    /// The active release, recorded in the store as provenance only.
+    pub release: crate::experimental::release::ReleasePin,
 }
 
 pub fn fresh_player_snapshot(
@@ -1987,40 +1989,56 @@ pub fn fresh_player_snapshot(
     match players {
         Some(players) => crate::simulation::WorldSnapshot {
             schema_version: crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
-            native_players: Some(crate::native_players::PlayerSnapshot::empty(
+            // prepare_run validated this release; were it invalid, the missing
+            // checkpoints would fail snapshot validation before any state opens.
+            native_players: crate::native_players::PlayerSnapshot::fresh(
                 players.context.clone(),
-            )),
+                &players.release,
+            )
+            .ok(),
             ..Default::default()
         },
         None => crate::simulation::WorldSnapshot::default(),
     }
 }
 
-/// Explicit feature/context match, before any listener or Steam operation.
-/// Existing foundation stores are deliberately not promoted to schema 13.
+/// Explicit feature/context match, before any listener or Steam operation:
+/// [`crate::native_players::PlayerSnapshot::open`] checks the world and
+/// authored inputs, resolves stored rows by name and records the current
+/// release as provenance. Returns the release the store was last written
+/// under. Existing foundation stores are deliberately not promoted.
+pub fn open_player_snapshot(
+    snapshot: &mut crate::simulation::WorldSnapshot,
+    players: Option<&PreparedPlayers>,
+) -> Result<Option<crate::experimental::release::ReleasePin>> {
+    let schema = crate::simulation::SNAPSHOT_SCHEMA_PLAYERS;
+    match (players, snapshot.native_players.as_mut()) {
+        (Some(prepared), Some(stored)) => {
+            ensure!(
+                snapshot.schema_version == schema,
+                "player persistence requires schema {schema}"
+            );
+            Ok(stored.open(&prepared.context, &prepared.release)?)
+        }
+        (None, None) => {
+            ensure!(
+                snapshot.schema_version != schema,
+                "schema {schema} requires configured player persistence context"
+            );
+            Ok(None)
+        }
+        _ => {
+            bail!("player persistence requires a fresh schema-{schema} store and matching context")
+        }
+    }
+}
+
+/// [`open_player_snapshot`] on a copy, leaving `snapshot` unchanged.
 pub fn validate_player_snapshot(
     snapshot: &crate::simulation::WorldSnapshot,
     players: Option<&PreparedPlayers>,
 ) -> Result<()> {
-    match (players, snapshot.native_players.as_ref()) {
-        (Some(prepared), Some(stored)) => {
-            ensure!(
-                snapshot.schema_version == crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
-                "player persistence requires schema 13"
-            );
-            ensure!(
-                stored.context() == &prepared.context,
-                "player context mismatch"
-            );
-            stored.validate()?;
-        }
-        (None, None) => ensure!(
-            snapshot.schema_version != crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
-            "schema 13 requires configured player persistence context"
-        ),
-        _ => bail!("player persistence requires a fresh schema-13 store and matching context"),
-    }
-    Ok(())
+    open_player_snapshot(&mut snapshot.clone(), players).map(drop)
 }
 
 pub fn install_player_registry(
@@ -2091,44 +2109,52 @@ pub fn prepare_run(
         .player_persistence
         .as_ref()
         .context("player context missing")?;
-    // Bind the resolved protocol row identities too: authored JSON may omit
-    // the growth catalog, whose row order still determines the initial state.
-    let resolved_vitals = [
-        initial_vitals.health,
-        initial_vitals.max_health,
-        initial_vitals.stamina,
-        initial_vitals.max_stamina,
-        initial_vitals.oxygen,
-        initial_vitals.max_oxygen,
-        initial_vitals.water,
-        initial_vitals.max_water,
-        initial_vitals.food,
-        initial_vitals.max_food,
-        i32::from(initial_vitals.biome_row),
-        i32::from(initial_vitals.growth_row),
-    ];
-    // Length-prefix each independently prepared input, including resolved
-    // initial vitals, so reopening cannot silently change the initial recipe.
-    let mut digest = Sha256::new();
-    for part in [
-        bytes,
-        release_text.into_bytes(),
-        serde_json::to_vec(&network.spawn)?,
-        serde_json::to_vec(&network.authored_world)?,
-        serde_json::to_vec(declaration)?,
-        serde_json::to_vec(&resolved_vitals)?,
-    ] {
-        digest.update((part.len() as u64).to_le_bytes());
-        digest.update(part);
-    }
+    // Stored checkpoints name their growth row; its installed index may move
+    // between game releases. Authored JSON may omit the growth catalog.
+    let growth_rows = tables.rows(CHARACTER_GROWTH_TABLE)?.to_vec();
+    crate::native_players::check_installed_growth_rows(&growth_rows)?;
+    let growth_row = growth_rows
+        .get(usize::from(initial_vitals.growth_row))
+        .context("the growth row is not installed")?;
+    // Bind the resolved initial values by row name, not index.
+    let resolved_values = (
+        [
+            initial_vitals.health,
+            initial_vitals.max_health,
+            initial_vitals.stamina,
+            initial_vitals.max_stamina,
+            initial_vitals.oxygen,
+            initial_vitals.max_oxygen,
+            initial_vitals.water,
+            initial_vitals.max_water,
+            initial_vitals.food,
+            initial_vitals.max_food,
+        ],
+        CHARACTER_GROWTH_TABLE,
+        growth_row,
+    );
+    // One digest per authored input, so a reopen refusal names the input that
+    // changed. The release file is provenance, not an input: a store reopens
+    // under a new game release.
+    let digest = |part: Vec<u8>| -> [u8; 32] { Sha256::digest(part).into() };
+    let inputs = crate::native_players::PlayerInputs {
+        authored_gameplay: digest(bytes),
+        spawn: digest(serde_json::to_vec(&network.spawn)?),
+        authored_world: digest(serde_json::to_vec(&network.authored_world)?),
+        declaration: digest(serde_json::to_vec(declaration)?),
+        initial_values: digest(serde_json::to_vec(&resolved_values)?),
+    };
+    let context = crate::native_players::PlayerContext::new(
+        declaration.prospect_id.encode_utf16().collect(),
+        declaration.map_url.clone(),
+        inputs,
+        growth_rows,
+    )?;
+    crate::native_players::PlayerSnapshot::fresh(context.clone(), &profile.pin)?;
     let players = PreparedPlayers {
-        context: crate::native_players::PlayerContext::new(
-            declaration.prospect_id.encode_utf16().collect(),
-            declaration.map_url.clone(),
-            &profile.pin,
-            digest.finalize().into(),
-        )?,
+        context,
         initial_vitals,
+        release: profile.pin.clone(),
     };
     let session = if network.enabled {
         let mut session = prepare_session_inputs(network, config, Some(profile), Some(tables))?

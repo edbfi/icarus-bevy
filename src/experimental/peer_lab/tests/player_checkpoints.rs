@@ -43,8 +43,14 @@ fn context() -> PlayerContext {
     PlayerContext::new(
         "authored-checkpoint".encode_utf16().collect(),
         PeerLabAdmission::default().map_url.to_owned(),
-        &ReleaseProfile::fixture("3.0.32").pin,
-        [7; 32],
+        crate::native_players::PlayerInputs {
+            authored_gameplay: [7; 32],
+            spawn: [7; 32],
+            authored_world: [7; 32],
+            declaration: [7; 32],
+            initial_values: [7; 32],
+        },
+        vec!["Player".into()],
     )
     .unwrap()
 }

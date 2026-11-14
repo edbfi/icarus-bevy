@@ -37,7 +37,8 @@ use crate::simulation::{
     SNAPSHOT_SCHEMA_C001_OWNERS, SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS, SNAPSHOT_SCHEMA_DOMAIN,
     SNAPSHOT_SCHEMA_INVENTORY_OWNERS, SNAPSHOT_SCHEMA_LIFECYCLE, SNAPSHOT_SCHEMA_MODIFIER_OWNERS,
     SNAPSHOT_SCHEMA_NATIVE, SNAPSHOT_SCHEMA_PLAYERS, SNAPSHOT_SCHEMA_PRESERVED,
-    SNAPSHOT_SCHEMA_REFERENCED, SNAPSHOT_SCHEMA_RELATIONSHIPS, WorldSnapshot,
+    SNAPSHOT_SCHEMA_REFERENCED, SNAPSHOT_SCHEMA_RELATIONSHIPS,
+    SNAPSHOT_SCHEMA_RELEASE_BOUND_PLAYERS, WorldSnapshot,
 };
 
 /// Schema 1 bound, unchanged: domain records and the clock only.
@@ -65,6 +66,24 @@ impl std::fmt::Display for UnsupportedSchema {
 }
 
 impl std::error::Error for UnsupportedSchema {}
+
+/// A retired release-bound player store. Its digest covered the release
+/// file's bytes, so it cannot be verified under the current binding. It is
+/// never migrated, and, like an unsupported schema, never falls back to an
+/// older generation: the operator moves it aside.
+#[derive(Debug)]
+pub struct ReleaseBoundPlayerStore;
+
+impl std::fmt::Display for ReleaseBoundPlayerStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "player store schema {SNAPSHOT_SCHEMA_RELEASE_BOUND_PLAYERS} predates the release-independent player store format (schema {SNAPSHOT_SCHEMA_PLAYERS}) and cannot be verified, because its binding covered the release file's bytes; it is not migrated. Move the state directory aside to start a fresh store; its files were left untouched"
+        )
+    }
+}
+
+impl std::error::Error for ReleaseBoundPlayerStore {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1257,10 +1276,13 @@ impl SnapshotStore {
             .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?
             .0;
         match header.schema_version.as_u64() {
+            Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_RELEASE_BOUND_PLAYERS) => {
+                return Err(ReleaseBoundPlayerStore.into());
+            }
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_PLAYERS) => {
                 ensure!(
                     bytes.len() as u64 <= MAX_DOMAIN_SNAPSHOT_BYTES,
-                    "schema 13 snapshot exceeds size limit"
+                    "player snapshot exceeds size limit"
                 );
                 let dto = serde_json::from_slice::<JsonObject<PlayersIn>>(bytes)
                     .map_err(|_| anyhow::anyhow!("invalid private player snapshot"))?
@@ -2051,6 +2073,7 @@ impl SnapshotStore {
             Ok(snapshot) => Ok((snapshot, manifest.current.clone(), false)),
             Err(error)
                 if error.is::<UnsupportedSchema>()
+                    || error.is::<ReleaseBoundPlayerStore>()
                     || error
                         .downcast_ref::<std::io::Error>()
                         .is_some_and(|error| error.kind() != std::io::ErrorKind::NotFound) =>
@@ -6142,24 +6165,24 @@ mod crash_consistency_tests {
 mod player_publication_tests {
     use super::*;
     use crate::{
-        experimental::{
-            pawn_open::CharacterVitals,
-            release::{ReleasePin, network_checksum},
-        },
+        experimental::pawn_open::CharacterVitals,
         native_player_runtime::PlayerRegistry,
-        native_players::{PlayerCheckpoint, PlayerContext, PlayerKey, PlayerSnapshot},
+        native_players::{
+            PlayerCheckpoint, PlayerContext, PlayerInputs, PlayerKey, PlayerSnapshot,
+        },
     };
     fn states() -> (WorldSnapshot, WorldSnapshot) {
         let context = PlayerContext::new(
             vec![65],
             "/Authored/Map".into(),
-            &ReleasePin {
-                app_id: 2089300,
-                build_id: 7,
-                project_version: "authored".into(),
-                network_checksum: network_checksum("authored"),
+            PlayerInputs {
+                authored_gameplay: [1; 32],
+                spawn: [1; 32],
+                authored_world: [1; 32],
+                declaration: [1; 32],
+                initial_values: [1; 32],
             },
-            [1; 32],
+            vec!["Player".into()],
         )
         .unwrap();
         let key = PlayerKey::new(7, 0).unwrap();
@@ -6231,6 +6254,59 @@ mod player_publication_tests {
                     }
                 );
             }
+        }
+    }
+    /// A complete store in the retired release-bound player format.
+    fn release_bound_store(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let generation = |tick: u64| {
+            format!(
+                concat!(
+                    r#"{{"schema_version":13,"tick":{tick},"entities":[],"native_players":{{"#,
+                    r#""context":{{"prospect_id":[65],"map_url":"/Authored/Map","app_id":2089300,"#,
+                    r#""build_id":7,"project_version":"authored","network_checksum":{checksum},"#,
+                    r#""recipe_sha256":{recipe:?}}},"high_water":1,"records":[{{"account":7,"slot":0,"#,
+                    r#""id":1,"revision":1,"location_cm":[0.0,0.0,0.0],"#,
+                    r#""vitals":[37,100,100,100,100,100,100,100,100,100],"biome_row":0,"growth_row":1}}]}}}}"#
+                ),
+                tick = tick,
+                checksum = crate::experimental::release::network_checksum("authored"),
+                recipe = [1_u8; 32],
+            )
+            .into_bytes()
+        };
+        let (first, second) = (generation(10), generation(20));
+        let manifest = format!(
+            r#"{{"schema_version":1,"current":{{"number":2,"sha256":"{}"}},"previous":{{"number":1,"sha256":"{}"}}}}"#,
+            checksum(&second),
+            checksum(&first)
+        );
+        let files = vec![
+            (root.join("snapshot-1.json"), first),
+            (root.join("snapshot-2.json"), second),
+            (root.join("manifest.json"), manifest.into_bytes()),
+        ];
+        for (path, bytes) in &files {
+            fs::write(path, bytes).unwrap();
+        }
+        files
+    }
+    #[test]
+    fn release_bound_player_store_refuses_with_dedicated_message_and_stays_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let files = release_bound_store(directory.path());
+        let store = SnapshotStore::open(directory.path()).unwrap();
+        let error = store.load().unwrap_err();
+        // Both generations are schema 13: no fallback, no generic decode error.
+        assert!(error.is::<ReleaseBoundPlayerStore>(), "{error:#}");
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with("player store schema 13 predates the release-independent player store format (schema 14) and cannot be verified"),
+            "{message}"
+        );
+        assert!(message.contains("Move the state directory aside to start a fresh store"));
+        drop(store);
+        for (path, bytes) in files {
+            assert_eq!(fs::read(&path).unwrap(), bytes, "{}", path.display());
         }
     }
     #[test]

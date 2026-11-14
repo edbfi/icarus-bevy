@@ -53,7 +53,7 @@ F-1170 qualifies empty-session deadline save, teardown and copied-store reopen.
 Nonempty CM remains synthetic (F-1171); browser/client and populated persistence
 remain unqualified (U-038). F-1004 covers a no-player listing.
 
-Opt-in checkpoints: [schema-13 setup and boundaries](../architecture.md#persistence).
+Opt-in checkpoints, not release-bound: [setup and limits](../architecture.md#persistence).
 Delayed-pawn stock-client continuation remains unqualified.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
@@ -224,7 +224,7 @@ of authored records/clock; no ICARUS gameplay. Domain-ID entities need positions
 Schema 1: records/clock, 64 MiB; schema 3: plus write-once, digest-verified
 `preserved-<sha256>.bin` sidecar; schema 2 loads (F-567).
 Schemas 4–12: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
-F-931, F-1029); 64 MiB + 4 KiB per generation including sections/sidecar reference.
+F-931, F-1029); 64 MiB + 4 KiB per generation with sections/sidecar reference.
 Preservation grants no import acceptance.
 
 Checksum/sync before atomic manifest publication; retain two generations.
