@@ -14,25 +14,8 @@ N-021); the ACK history clamps at eight words (N-020).
 stderr progress JSON; stdout final `*_before_shutdown` counts plus
 `sessions_after_shutdown` (shutdown failures/closes).
 
-`controller_fields` (final: `controller_fields_before_shutdown`): ≤64 target/
-index/bit-count/disposition/count rows per peer/aggregate, plus overflow/malformed
-counts and `unknown_subobject_blocks`; no payloads/identities. Removal drops
-rows. Recognition is not application; malformed tails apply nothing; overflow
-prevents absence claims. Body failures: `body_parse_failures`; above cap with
-bits present: `block_payload_limit_rejections`, largest in
-`max_rejected_block_payload_bits`; past available bits:
-`block_payload_length_rejections` (F-1045).
-
-`sessions.profile_{user,character}_responses_recognized` counts parsed profile
-calls dispatched after whole-bunch validation, including failure/wrong-phase
-calls.
-Wrong phase also increments `profile_responses_ignored`; malformed bunches apply
-no calls. `profile_{user,character}_publications_deferred` counts publication
-attempts retained behind drainable transport pressure; retries add no ingress.
-Existing `profile_{user,character}_responses_received` counts successful
-PlayerState publication admission, not RPC ingress. A zero count alone cannot
-prove no response. Unknown-subobject blocks are unattributed skipped blocks,
-not identified profile traffic (F-1045).
+[Controller receive diagnostics](controller-receive.md) explains production
+`controller_receive` snapshots, live probe rows, parser limits and domain counters.
 
 ### Private selected RPC82 capture
 

@@ -1534,6 +1534,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 "tick_p50_micros": metrics.tick_micros.quantile_micros(50),
                 "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
                 "sessions": network::session_counts(app.world()),
+                "controller_receive": network::controller_receive_diagnostics(app.world()),
                 "readiness": app.world().get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>().map(|lab| lab.readiness_counts())}),
                     app.world(),
                 ))?;
@@ -1583,7 +1584,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             .transpose();
         let stopped_output = write_run_record(with_native_replication_counts(
             json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
-        "gameplay_ready": false, "sessions": sessions, "readiness_before_shutdown": readiness}),
+        "gameplay_ready": false, "sessions": sessions,
+        "controller_receive": network::controller_receive_diagnostics(app.world()),
+        "readiness_before_shutdown": readiness}),
             app.world(),
         ));
         shutdown_output?;
