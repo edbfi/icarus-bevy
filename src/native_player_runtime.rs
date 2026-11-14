@@ -6,6 +6,9 @@ use crate::native_players::{
 use bevy::prelude::{Res, Resource, World};
 use std::collections::BTreeMap;
 
+mod leave;
+pub use leave::{CheckpointWriter, LeaveFailure, LeavePhase, LeaveStatus};
+
 #[derive(Clone)]
 struct Attachment {
     key: PlayerKey,
@@ -19,6 +22,8 @@ pub struct PlayerRegistry {
     attachments: BTreeMap<u64, Attachment>,
     max_live: usize,
     epoch_high_water: u64,
+    leaves: BTreeMap<PlayerKey, leave::LeaveOperation>,
+    writer_failed: bool,
 }
 impl std::fmt::Debug for PlayerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,6 +52,8 @@ impl PlayerRegistry {
             attachments: BTreeMap::new(),
             max_live,
             epoch_high_water: 0,
+            leaves: BTreeMap::new(),
+            writer_failed: false,
         })
     }
     pub fn snapshot(&self) -> PlayerSnapshot {
@@ -60,6 +67,9 @@ impl PlayerRegistry {
     ) -> Result<PlayerProjection, PlayerError> {
         if epoch == 0 {
             return Err(PlayerError::InvalidIdentity);
+        }
+        if self.leaves.contains_key(&key) {
+            return Err(PlayerError::Conflict);
         }
         if let Some(held) = self.attachments.get(&epoch) {
             if held.key != key {
@@ -135,6 +145,9 @@ impl PlayerRegistry {
         self.projection(epoch).ok_or(PlayerError::Missing)
     }
     pub fn activate(&mut self, epoch: u64) -> Result<PlayerProjection, PlayerError> {
+        if self.is_leaving(epoch) {
+            return Err(PlayerError::Conflict);
+        }
         if self
             .attachments
             .get(&epoch)
@@ -184,6 +197,9 @@ impl PlayerRegistry {
         expected_revision: u64,
         checkpoint: PlayerCheckpoint,
     ) -> Result<PlayerProjection, PlayerError> {
+        if self.leaves.contains_key(&key) {
+            return Err(PlayerError::Conflict);
+        }
         checkpoint.validate()?;
         let r = self
             .snapshot

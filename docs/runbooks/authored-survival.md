@@ -25,19 +25,17 @@ health, stamina, maxima, placement, biome and growth stay unchanged.
 The clock takes minute 0..=1439 and positive i32 seconds/day. Its `tick_hz`
 must equal server `tick_hz` (1..=240).
 
-Clock settings bind the authored-world
-input; rates and actual frequency bind the declaration input
-([exact contract](../architecture.md#persistence)). Enabling, disabling or changing
-a bound rule refuses reopen; retain the recipe. No schema change, reset or
-migration; release-only changes remain provenance.
+Clock settings bind the authored-world input; rates/frequency bind the declaration
+([contract](../architecture.md#persistence)). Changing, enabling or disabling a
+bound rule refuses reopen; retain the recipe. No schema change, reset or migration;
+release-only changes remain provenance.
 
 ## Activation and time
 
-Only authenticated, activated attachments consume. Returning reservation is not
-activation; pending, revoked and detached players incur nothing. Before debit,
-a bounded drain of queued authentication outcomes detaches stale/ineligible
-epochs: this is the eligibility cut. Later events apply at the next cut;
-the cut neither activates nor publishes players.
+Only authenticated, activated attachments consume. Pending reservations, revoked
+and detached players incur nothing. Before debit, a bounded authentication-outcome
+drain detaches stale/ineligible epochs: the eligibility cut. Later events wait for
+the next cut; it neither activates nor publishes players.
 
 For completed tick `t`, rate `r` debits
 `floor((t+1)*r/hz) - floor(t*r/hz)`. The batch is atomic after Gameplay/before
@@ -59,3 +57,20 @@ clear failure; preserve the store and diagnose before restarting.
 
 Authentication backend loss closes peers and detaches their epochs before debit;
 committed player state remains capturable for shutdown.
+
+## Checkpoint leave
+
+Control-only `request_leave` validates an active key/epoch/revision, pins authored
+location/vitals and immediately blocks consumption, edits and reattachment.
+Duplicates reuse the cutoff/deadline. The 64 unresolved-operation cap includes
+disconnected, failed and durable but unsettled operations; refusal changes nothing.
+
+Attempts last at most 60 monotonic seconds. Capture/storage failure or timeout
+needs explicit `retry_leave`; the dirty cutoff/barrier survives disconnect.
+Retries reject prior-attempt receipts. Timeout cannot cancel I/O or imply rollback;
+worker loss is terminal. Poll `leave_status`; `settle_leave` clears only durable
+operations after the original attachment detaches.
+
+PeerLab's authored leave/status APIs also check the original authorized
+address/connection/epoch. Lost destinations suppress delivery, not persistence.
+No wire response, full player save or stock-client menu qualification follows.
