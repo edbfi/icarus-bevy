@@ -287,6 +287,8 @@ lower `CAPS`. Output stays `ready: false`.
 `tools/pdb_selected_types.cjs`: exported `PARAMETER_PROFILE` reads bounded
 parameter/base/embedded declarations. No runtime ancestry/consumers, net order,
 checksums, activation or compatibility qualification.
+`DECLARATION_PROFILE` reports UDT identity/size, declarations, counts and direct
+references; no layout.
 
 `node tools/pdb_selected_metadata.cjs --request request.json`: JSON binds
 PDB path/size/SHA-256, GUID/age, profile/names and output path.
