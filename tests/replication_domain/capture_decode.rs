@@ -1338,6 +1338,52 @@ fn inbound_unknown_release_and_invalid_limits_fail_before_output() -> Result<()>
         decoder::run_inbound_metadata(&input, &output, &work, &profile, &inbound_config()).is_err()
     );
     assert!(!output.exists());
+    let qualified = ReleaseProfile::fixture("3.0.32");
+    let mut absent = qualified.clone();
+    absent.qualifications = None;
+    let mut missing = qualified.clone();
+    missing.qualifications.as_mut().unwrap().inbound_controller = None;
+    let mut engine = qualified.clone();
+    engine.engine_network_version += 1;
+    let mut game = qualified;
+    game.game_network_version += 1;
+    for profile in [
+        absent,
+        missing,
+        engine,
+        game,
+        ReleaseProfile::fixture("3.0.31"),
+        ReleaseProfile::fixture("3.0.35"),
+        ReleaseProfile::fixture("3.0.36"),
+        ReleaseProfile::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+        )?,
+    ] {
+        assert!(
+            decoder::run_inbound_metadata(&input, &output, &work, &profile, &inbound_config())
+                .is_err()
+        );
+        assert!(!output.exists());
+    }
+    // Invalid serialized revisions are refused by the CLI before it creates
+    // output, as are incomplete identity/framing bindings.
+    let text = fs::read_to_string(ReleaseProfile::fixture_path("3.0.32"))?;
+    let profile_path = work.join("release.toml");
+    for bad in [
+        text.replace("fixed_component_bounds_v1", "future_v2"),
+        text.replace(
+            "inbound_controller = \"fixed_component_bounds_v1\"",
+            "inbound_controller = true",
+        ),
+        text.replace("engine_network_version = 17", "engine_network_version = 6"),
+        text.replace("[qualifications.pin]", "[qualifications.unknown]"),
+    ] {
+        fs::write(&profile_path, bad)?;
+        assert!(
+            decoder::run_cli_in(inbound_cli_args(&input, &output, &profile_path), &work).is_err()
+        );
+        assert!(!output.exists());
+    }
     let mut config = inbound_config();
     config.limits.max_partial_bytes += 1;
     assert!(
@@ -1497,6 +1543,39 @@ fn inbound_qualified_profiles_and_explicit_byte_orders_share_only_framing() -> R
             let report = decoder::run_inbound_metadata(&input, &output, &work, &profile, &config)?;
             assert_eq!(report["stats"]["output_rows"], 1);
         }
+    }
+    Ok(())
+}
+
+/// The inbound path needs only the supplied profile and capture at runtime.
+/// Embedding these test inputs lets this test also run under a file-open trace
+/// without loading any repository fixture file.
+#[test]
+fn inbound_explicit_profile_is_self_contained() -> Result<()> {
+    use icarus_bevy::experimental::release::ReleaseProfile;
+    for text in [
+        include_str!("../fixtures/releases/3.0.32.toml"),
+        include_str!("../fixtures/releases/3.0.34.toml"),
+    ] {
+        let profile = ReleaseProfile::parse(text)?;
+        let root = tempfile::tempdir()?;
+        let input = root.path().join("input.jsonl");
+        let output = root.path().join("metadata.jsonl");
+        fs::write(
+            &input,
+            json_lines(&[inbound_row(1, 10, vec![inbound_actor(None)?])?]),
+        )?;
+        let report = decoder::run_inbound_metadata(
+            &input,
+            &output,
+            root.path(),
+            &profile,
+            &inbound_config(),
+        )?;
+        assert_eq!(report["stats"]["output_rows"], 1);
+        let row: Value = serde_json::from_str(fs::read_to_string(output)?.trim())?;
+        assert_eq!(row["field_index"], 124);
+        assert_eq!(row["framing_disposition"], "framed");
     }
     Ok(())
 }
@@ -1673,7 +1752,7 @@ fn inbound_rejects_tampered_3_0_34_before_creating_output() -> Result<()> {
         .class_net_cache
         .bp_icarus_player_controller_survival += 1;
     for profile in [tampered_pin, tampered_bound] {
-        profile.validate()?;
+        assert!(profile.validate().is_err());
         let error = decoder::run_inbound_metadata(
             &input,
             &output,
@@ -1685,7 +1764,7 @@ fn inbound_rejects_tampered_3_0_34_before_creating_output() -> Result<()> {
         assert!(
             error
                 .to_string()
-                .contains("qualified controller release profile")
+                .contains("capability qualification requires")
         );
         assert!(!output.exists());
     }
