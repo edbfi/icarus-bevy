@@ -17,7 +17,7 @@ npm ci --prefix .agents/rea --cache .agents/rea/.npm-cache
 ```
 
 Restart the client after configuration changes and accept project/MCP trust
-prompts. Avoid global setup; preserve locks, skill provenance and licenses.
+prompts. Do not run global setup; preserve locks, skill provenance and licenses.
 
 Doctor checks readiness; MCP `binary_session` checks the connection. User-wide
 registrations are unnecessary. Follow "Ghidra drift" in `.agents/rules/project.md`
