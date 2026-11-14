@@ -48,10 +48,9 @@ Exit/deadline attempts teardown/final save.
 [Connected-run gates](../gates.md#before-any-original-server-or-client-run) apply,
 including the owner's word before public passwordless listing.
 
-A2S shows counts; CM gets accepted joined IDs, omitted from logs/Debug/A2S
-(F-1171). Listing: F-1004; empty save/reopen: F-1170. Password admission stalls
-before Begin (F-1181); populated persistence remains unqualified (U-038).
-[CM deadlines](network-readiness.md#steam-cm-deadlines): F-1180.
+Presence/listing/empty saves: F-1171/F-1004/F-1170. CM IDs omitted from logs/Debug/A2S.
+[Stall limits](controller-receive.md): F-1181/F-1184; populated saves unqualified (U-038).
+CM deadlines: F-1180.
 
 Checkpoints: [setup](../architecture.md#persistence);
 [authored survival options](authored-survival.md). Stock-client continuation is unqualified.
