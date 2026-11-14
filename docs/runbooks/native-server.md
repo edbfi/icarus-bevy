@@ -48,10 +48,10 @@ Exit/deadline attempts teardown/final save.
 [Connected-run gates](../gates.md#before-any-original-server-or-client-run) apply,
 including the owner's word before public passwordless listing.
 
-A2S shows counts; CM receives accepted joined IDs, omitted from logs/Debug/A2S.
-F-1170 qualifies empty-session deadline save, teardown and copied-store reopen.
-Nonempty CM remains synthetic (F-1171); browser/client and populated persistence
-remain unqualified (U-038). F-1004 covers a no-player listing.
+A2S shows counts; CM gets accepted joined IDs, omitted from logs/Debug/A2S
+(F-1171). Listing: F-1004; empty save/reopen: F-1170. Password admission stalls
+before Begin (F-1181); populated persistence remains unqualified (U-038).
+[CM deadlines](network-readiness.md#steam-cm-deadlines): F-1180.
 
 Opt-in checkpoints, not release-bound: [setup and limits](../architecture.md#persistence).
 Delayed-pawn stock-client continuation remains unqualified.

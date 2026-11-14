@@ -11,6 +11,7 @@ Lint: `python3 tools/docs_lint.py`. Startup reads stop at this map and
 | [gates.md](gates.md) | preconditions that block actions (only home) | 16 KB |
 | [architecture.md](architecture.md) | design constraints, repository boundaries, toolchain | 16 KB |
 | [runbooks/](runbooks/) | operating procedures | 16 KB each |
+| [runbooks/join-password.md](runbooks/join-password.md) | password configuration, listing behavior and privacy | 16 KB |
 | [specs/](specs/) | durable format and protocol facts (`save-format/`, `network/`) | 16 KB each, fixed headings |
 | [research/](research/) | one digest per question cluster (`save-format/`, `network/`, `foundation/`) | 8 KB each, fixed headings |
 | [ledgers/findings/](ledgers/findings/) | active findings by area; `retired/` keeps retired rows in full | 48 KB per active file, 192 KB active total, 64 KB per retired file |

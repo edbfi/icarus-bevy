@@ -6,7 +6,7 @@ Experimental: static observations; the framing and Hello exchange are
 wire-validated offline, and a synthetic Login and Join are welcomed (F-688,
 F-689, F-712 to F-714, F-858). Scope: dedicated-server build 25621760 (M-168)
 unless a current-client (build 25793767) comparison is named.
-Last reconciled: 2026-11-12.
+Last reconciled: 2026-11-14.
 Full text: d5b0ae6:docs/specs/network/control-negotiation.md.
 
 ## Scope
@@ -110,6 +110,10 @@ Steam-handler exchange. Excludes compression and complete runtime initialization
 
 ## Candidate
 
+- Native CM hosting separates the default 100 ms socket poll from completed-frame
+  decoding, retaining FIFO and fatal malformed/logoff checks (F-1180). A protected
+  stock client observed password rejection and correct-password Welcome/Join,
+  then stalled before Begin/profile calls (F-1181); no world-entry qualification.
 - The `experimental` modules model the confirmed headers, fallback table and
   disconnected loopback negotiation (F-874, F-689, F-712 to F-714, F-858).
 - `UWorld::NotifyControlMessage` (F-563, F-713, F-740) and `WelcomePlayer`
@@ -132,6 +136,7 @@ Steam-handler exchange. Excludes compression and complete runtime initialization
 
 ## Evidence
 
+- Protected native failure, CM repair and partial retry: M-1411 to M-1414 (F-1180, F-1181).
 - S2 handler/Login: M-1164, M-1173 (F-1007); native Join: M-1171 to M-1174.
 - Static: M-170 (`icarus-server-baseline`; M-170/E-011, M-170/E-013,
   M-170/E-021, M-170/E-022, M-170/E-024), M-146,

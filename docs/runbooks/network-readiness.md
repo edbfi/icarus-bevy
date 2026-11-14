@@ -153,8 +153,9 @@ Closed unsettled channels await even after reuse.
 `initial_open_outcomes`: configured, committed (queued), settled, awaiting_ack,
 failed, skipped, pending, deferred per controller/pawn/GameState/PlayerState/
 managers/quests. `sequences_succeeded`: no failures; else `sequences_failed`.
-Settlement also needs a reliable-empty channel; unrelated traffic may delay it.
-`sequences_settled`: successful sequences with all opens settled.
+Settlement needs reliable-empty channels. Settled opens do not prove client startup:
+F-1181 kept `players_awaiting_begin=1`, slots/profile calls 0 despite settled
+opens and possession.
 
 `initialisation_blockers`: incomplete players' `requests_pending_queue` and,
 after admission, `awaiting_loadout_response`/`awaiting_bestiary_response`.
@@ -256,18 +257,14 @@ naming the table, quoting nothing of the file. Ready and summary
 `data_tables`: `loaded`, `fresh_pawn_stats`; no path or value. Counter
 `pawn_open_stats_sent`.
 
+## Steam CM deadlines
+
+F-1180: completed frames get a separate 100 ms decode budget after socket polling.
+A poll may overrun its read window by one frame's decode allowance. FIFO is
+retained; malformed/over-budget frames and logoff stay fatal. F-1181 completed
+one retry without a CM fatal; universal race resolution is unproven.
+
 ## Join password
 
-F-1161 to F-1163, F-1167. `[network] join_password` (unset or empty: none) or
-probe `--join-password-file work/<case>/join-password`: a regular file under
-checkout `work/` (no symlinks or traversal), mode 0600, at most 1 KiB of
-UTF-8, one trailing newline trimmed, not empty. Either way at most 64 UTF-16
-units, no control characters or `?`. Only a protected probe listing carries
-`L_s`, which makes a stock browser prompt; without a password nothing
-prompts. Login compares the URL `password` option ignoring ASCII case
-(missing is empty) before the capacity checks and refuses a mismatch with
-`Invalid Password`. The password is never logged, serialised or echoed:
-`check-config` omits it, records and probe lines show only `join_password`
-true or false, and configuration errors give the rule and position, not the
-text. `run` binds loopback only and lists nothing. Untried with a stock
-client (U-081).
+[Password configuration and privacy](join-password.md) covers hosted/probe
+listings, input limits, redaction and the F-1181 client observations.
