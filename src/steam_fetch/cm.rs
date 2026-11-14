@@ -768,8 +768,8 @@ mod tests {
             .map(|value| frame::encode(emsg::GS_STATUS_REPLY, &ProtoHeader::default(), &[value]));
         session.queue_received_binary(&encoded[0], true).unwrap();
         let expired_poll = Instant::now() - Duration::from_secs(1);
-        // The read completed after its poll budget. The production receive arm
-        // must still decode and retain the entire Multi using its own window.
+        // Inject a completed frame at the receive arm's queueing boundary, with
+        // the poll window already expired. This does not exercise ws.read().
         let multi = frame::encode_multi(&encoded[1..], true);
         session.queue_received_binary(&multi, true).unwrap();
         assert!(
