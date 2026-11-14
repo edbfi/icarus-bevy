@@ -146,7 +146,9 @@ nothing; a missing row, or one moved past index 255, refuses naming table and
 row. `CurrentBiome` is not stored: no biome table is loaded, every pawn opens
 with row 0 and a checkpoint with another value refuses. No wire handle is stored.
 A release can still refuse a store indirectly: authored tables must match the
-installed rows, and the edit that restores the match changes the gameplay digest.
+installed rows, so a patch that adds, removes or reorders rows of a table that
+`network.authored_gameplay` mirrors forces an edit of that file, after which the
+store refuses (`network.authored_gameplay differs`).
 
 Keys require an accepted live ticket request, Joined admission and matching
 nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP
