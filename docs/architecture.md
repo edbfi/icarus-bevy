@@ -136,6 +136,11 @@ the exact `network.authored_gameplay` bytes (formatting counts), `network.spawn`
 `network.authored_world`, `[network.player_persistence]` and the resolved initial
 values (starting maxima, growth row by name). A change refuses, naming the input,
 instead of refilling or resetting players. Passwords, tickets and names are excluded.
+[Authored survival](runbooks/authored-survival.md): omission preserves
+exact JSON/hash bytes and schema 14. Enabled rates hash `serde_json::to_vec` of
+`("authored_player_rules_v1", declaration, rates, actual_tick_hz)` with SHA-256
+into the declaration digest; clock settings bind the authored-world digest.
+Authored tests qualify this contract (F-1183); stock-client behavior is unqualified.
 The release is not bound: its build, version and checksum are recorded as
 provenance at every open (event `player_store_reopened`) and never compared.
 

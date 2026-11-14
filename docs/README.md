@@ -11,6 +11,7 @@ Lint: `python3 tools/docs_lint.py`. Startup reads stop at this map and
 | [gates.md](gates.md) | preconditions that block actions (only home) | 16 KB |
 | [architecture.md](architecture.md) | design constraints, repository boundaries, toolchain | 16 KB |
 | [runbooks/](runbooks/) | operating procedures | 16 KB each |
+| [runbooks/authored-survival.md](runbooks/authored-survival.md) | schema-14 authored consumption and day clock | 16 KB |
 | [runbooks/controller-receive.md](runbooks/controller-receive.md) | controller receive metadata and interpretation | 16 KB |
 | [runbooks/join-password.md](runbooks/join-password.md) | password configuration, listing behavior and privacy | 16 KB |
 | [specs/](specs/) | durable format and protocol facts (`save-format/`, `network/`) | 16 KB each, fixed headings |

@@ -1862,6 +1862,7 @@ pub struct PreparedSession {
     bound: BoundNetwork,
     player_context: Option<crate::native_players::PlayerContext>,
     player_context_prepared: bool,
+    clock_prepared: bool,
 }
 
 impl PreparedSession {
@@ -1886,6 +1887,8 @@ impl PreparedSession {
     /// Validate and install world-dependent authored replication while the
     /// session still owns no listener. The declaration was read at preflight.
     pub fn prepare_app(&mut self, app: &mut App) -> Result<()> {
+        self.player_context_prepared = false;
+        self.clock_prepared = false;
         ensure!(
             !app.world().contains_resource::<PeerLab>() && !app.is_plugin_added::<PeerLabPlugin>(),
             "network lab or plugin already installed"
@@ -1896,9 +1899,11 @@ impl PreparedSession {
                 context,
                 self.network.max_players as usize,
             )?;
-            self.player_context_prepared = true;
         }
-        prepare_installation(app, &mut self.bound, &self.network)
+        prepare_installation(app, &mut self.bound, &self.network)?;
+        self.player_context_prepared = self.player_context.is_some();
+        self.clock_prepared = self.bound.lab.authored_clock_plan().is_some();
+        Ok(())
     }
 
     pub fn session_mut(&mut self) -> &mut BoundNetwork {
@@ -1906,6 +1911,10 @@ impl PreparedSession {
     }
 
     pub fn bind(mut self) -> Result<BoundNetwork> {
+        ensure!(
+            self.bound.lab.authored_clock_plan().is_none() || self.clock_prepared,
+            "authored clock must be prepared against the restored player world before binding"
+        );
         ensure!(
             self.network.hosting.is_none(),
             "hosting requires authenticated binding"
@@ -1922,6 +1931,10 @@ impl PreparedSession {
         address: SocketAddrV4,
         client: crate::steam_service::AuthClient,
     ) -> Result<BoundNetwork> {
+        ensure!(
+            self.bound.lab.authored_clock_plan().is_none() || self.clock_prepared,
+            "authored clock must be prepared against the restored player world before binding"
+        );
         ensure!(
             self.player_context.is_none() || self.player_context_prepared,
             "player context must be prepared against the player schema before authenticated binding"
@@ -2062,9 +2075,153 @@ pub fn install_player_registry(
     Ok(())
 }
 
+/// Transient guard; the durable phase is exclusively SimulationClock.tick.
+#[derive(Resource)]
+pub(crate) struct AuthoredClockRuntime {
+    plan: crate::authored_world_bootstrap::AuthoredClockPlan,
+    failed: bool,
+}
+
+pub(crate) fn authored_clock_can_finish(
+    state: Option<bevy::prelude::Res<AuthoredClockRuntime>>,
+) -> bool {
+    state.is_none_or(|state| !state.failed)
+}
+
+pub fn authored_clock_runtime_health(world: &World) -> Result<()> {
+    let Some(runtime) = world.get_resource::<AuthoredClockRuntime>() else {
+        ensure!(
+            world
+                .get_resource::<PeerLab>()
+                .is_none_or(|lab| lab.authored_clock_plan().is_none()),
+            "authored clock runtime owner missing"
+        );
+        return Ok(());
+    };
+    ensure!(!runtime.failed, "authored clock runtime failed");
+    ensure!(
+        world.contains_resource::<crate::simulation::SimulationClock>(),
+        "authored clock requires SimulationClock"
+    );
+    let expected = std::time::Duration::from_secs_f64(1.0 / f64::from(runtime.plan.tick_hz()));
+    ensure!(
+        world
+            .get_resource::<bevy::prelude::Time<bevy::prelude::Fixed>>()
+            .is_some_and(|fixed| fixed.timestep() == expected),
+        "authored clock fixed timestep mismatch or missing"
+    );
+    Ok(())
+}
+
+pub(crate) fn install_authored_clock_runtime(
+    app: &mut App,
+    config: Option<&crate::authored_world_bootstrap::AuthoredClockConfig>,
+    actual_tick_hz: u32,
+) -> Result<()> {
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let plan = config.prepare()?;
+    ensure!(
+        !app.world().contains_resource::<AuthoredClockRuntime>(),
+        "authored clock already installed"
+    );
+    app.insert_resource(AuthoredClockRuntime {
+        plan,
+        failed: false,
+    });
+    crate::simulation::install_authored_preloop_guard(app);
+    if plan.tick_hz() != actual_tick_hz {
+        app.world_mut()
+            .resource_mut::<AuthoredClockRuntime>()
+            .failed = true;
+        stop_admission(app.world_mut());
+        bail!("authored clock tick_hz differs from actual simulation rate");
+    }
+    reconcile_authored_clock(app.world_mut())?;
+    use bevy::prelude::{FixedUpdate, IntoScheduleConfigs};
+    app.add_systems(
+        FixedUpdate,
+        (|world: &mut World| {
+            let _ = reconcile_authored_clock(world);
+        })
+        .after(crate::simulation::SimulationSet::Gameplay)
+        .before(crate::simulation::SimulationSet::Finish),
+    );
+    Ok(())
+}
+
+/// Validate/latch before any debit or network publication; sampling is idempotent.
+pub(crate) fn reconcile_authored_clock(world: &mut World) -> Result<()> {
+    if !world.contains_resource::<AuthoredClockRuntime>()
+        && let Some(plan) = world
+            .get_resource::<PeerLab>()
+            .and_then(PeerLab::authored_clock_plan)
+    {
+        world.insert_resource(AuthoredClockRuntime { plan, failed: true });
+    }
+    if let Err(error) = authored_clock_runtime_health(world) {
+        if let Some(mut runtime) = world.get_resource_mut::<AuthoredClockRuntime>() {
+            runtime.failed = true;
+        }
+        if let Some(mut lab) = world.get_resource_mut::<PeerLab>() {
+            lab.shutdown();
+        }
+        return Err(error);
+    }
+    let Some(plan) = world
+        .get_resource::<AuthoredClockRuntime>()
+        .map(|runtime| runtime.plan)
+    else {
+        return Ok(());
+    };
+    let tick = world.resource::<crate::simulation::SimulationClock>().tick;
+    let owner_differs = if let Some(mut lab) = world.get_resource_mut::<PeerLab>() {
+        let installed = lab.authored_clock_plan();
+        if !installed.is_some_and(|bound| {
+            bound.tick_hz() == plan.tick_hz()
+                && bound.seconds_per_day() == plan.seconds_per_day()
+                && bound.sample(0).to_bits() == plan.sample(0).to_bits()
+        }) {
+            lab.shutdown();
+            true
+        } else {
+            lab.sample_authored_time_of_day(tick);
+            false
+        }
+    } else {
+        false
+    };
+    if owner_differs {
+        world.resource_mut::<AuthoredClockRuntime>().failed = true;
+        bail!("authored clock owner differs from network plan");
+    }
+    Ok(())
+}
+
+/// Drain already queued authentication outcomes and detach stale authority only.
+/// This eligibility cut never refreshes projections, activates or publishes players.
+pub fn reconcile_player_authority(world: &mut World) -> Result<()> {
+    if !world.contains_resource::<PeerLab>() {
+        return Ok(());
+    }
+    world.resource_scope(|world, mut lab: bevy::prelude::Mut<PeerLab>| {
+        let mut registry = world
+            .get_resource_mut::<crate::native_player_runtime::PlayerRegistry>()
+            .context("player authority registry missing")?;
+        lab.reconcile_player_authority(&mut registry);
+        Ok(())
+    })
+}
+
 /// Finish the bounded authored bridge before removing the network owner.
 /// Committed state lives in PlayerRegistry and survives lab destruction.
 pub fn drain_player_bridge(world: &mut World) {
+    if authored_clock_runtime_health(world).is_err()
+        || crate::native_player_runtime::consumption_runtime_health(world).is_err()
+    {
+        return;
+    }
     if world.contains_resource::<PeerLab>()
         && world.contains_resource::<crate::native_player_runtime::PlayerRegistry>()
     {
@@ -2080,10 +2237,45 @@ pub fn prepare_run(
     network: &NetworkConfig,
     config: PeerLabConfig,
 ) -> Result<(Option<PreparedSession>, Option<PreparedPlayers>)> {
+    ensure!(
+        network.player_consumption.is_none()
+            && network
+                .authored_world
+                .as_ref()
+                .and_then(|world| world.clock.as_ref())
+                .is_none(),
+        "authored clock or consumption requires explicit simulation rate preparation"
+    );
     if network.player_persistence.is_none() {
         return Ok((prepare_session(network, config)?, None));
     }
+    prepare_run_with_tick_hz(network, config, 30)
+}
+
+/// Pure preparation uses the actual configured fixed rate before storage or services.
+pub fn prepare_run_with_tick_hz(
+    network: &NetworkConfig,
+    config: PeerLabConfig,
+    tick_hz: u32,
+) -> Result<(Option<PreparedSession>, Option<PreparedPlayers>)> {
+    ensure!(
+        (1..=240).contains(&tick_hz),
+        "invalid authored simulation rate"
+    );
     network.validate()?;
+    if let Some(clock) = network
+        .authored_world
+        .as_ref()
+        .and_then(|world| world.clock.as_ref())
+    {
+        ensure!(
+            clock.prepare()?.tick_hz() == tick_hz,
+            "authored clock tick_hz differs from actual simulation rate"
+        );
+    }
+    if network.player_persistence.is_none() {
+        return Ok((prepare_session(network, config)?, None));
+    }
     let release_path = network
         .release_profile
         .as_deref()
@@ -2147,7 +2339,11 @@ pub fn prepare_run(
         authored_gameplay: digest(bytes),
         spawn: digest(serde_json::to_vec(&network.spawn)?),
         authored_world: digest(serde_json::to_vec(&network.authored_world)?),
-        declaration: digest(serde_json::to_vec(declaration)?),
+        declaration: crate::native_player_runtime::player_declaration_digest(
+            declaration,
+            network.player_consumption,
+            tick_hz,
+        )?,
         initial_values: digest(serde_json::to_vec(&resolved_values)?),
     };
     let context = crate::native_players::PlayerContext::new(
@@ -2375,6 +2571,13 @@ fn prepare_session_inputs(
         lab.extend_game_state_values(values)?;
         lab.add_manager_open(ManagerSlot::Flod, flod)?;
     }
+    if let Some(clock) = network
+        .authored_world
+        .as_ref()
+        .and_then(|world| world.clock.as_ref())
+    {
+        lab.enable_authored_time_of_day(clock.prepare()?, 0)?;
+    }
     if !network.controller_startup.is_empty() {
         lab.enable_controller_startup(
             profile
@@ -2406,6 +2609,7 @@ fn prepare_session_inputs(
         network: network.clone(),
         player_context: None,
         player_context_prepared: false,
+        clock_prepared: false,
         bound: BoundNetwork {
             declaration,
             lab,
@@ -2447,6 +2651,25 @@ fn prepare_installation(
     network: &NetworkConfig,
 ) -> Result<()> {
     validate_static_installation(bound, network)?;
+    reconcile_authored_clock(app.world_mut())?;
+    if let Some(plan) = bound.lab.authored_clock_plan() {
+        let runtime = app
+            .world()
+            .get_resource::<AuthoredClockRuntime>()
+            .context("authored clock owner missing from app")?;
+        ensure!(
+            runtime.plan.tick_hz() == plan.tick_hz()
+                && runtime.plan.seconds_per_day() == plan.seconds_per_day()
+                && runtime.plan.sample(0).to_bits() == plan.sample(0).to_bits(),
+            "authored clock owner plan mismatch"
+        );
+        let tick = app
+            .world()
+            .get_resource::<crate::simulation::SimulationClock>()
+            .context("authored clock requires SimulationClock")?
+            .tick;
+        bound.lab.sample_authored_time_of_day(tick);
+    }
     if let Some(declaration) = bound.declaration.take() {
         let session = bound
             .authored_session
@@ -2597,4 +2820,64 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
     world
         .get_resource::<ClosedSessions>()
         .map(|closed| closed.sessions.clone())
+}
+
+#[cfg(test)]
+mod authored_preparation_tests {
+    use super::*;
+    use crate::{
+        authored_world_bootstrap::AuthoredClockConfig,
+        config::ServerConfig,
+        simulation::{SimulationClock, WorldSnapshot, build_app},
+    };
+
+    fn prepared() -> PreparedSession {
+        let network = NetworkConfig {
+            enabled: true,
+            port: 0,
+            release_profile: Some(ReleaseProfile::fixture_path("3.0.35")),
+            ..Default::default()
+        };
+        let mut prepared = prepare_session(&network, peer_lab_config(&network))
+            .unwrap()
+            .unwrap();
+        prepared
+            .bound
+            .lab
+            .enable_authored_time_of_day(clock().prepare().unwrap(), 0)
+            .unwrap();
+        prepared
+    }
+    fn clock() -> AuthoredClockConfig {
+        AuthoredClockConfig {
+            initial_minute: 480,
+            seconds_per_day: 3600,
+            tick_hz: 30,
+        }
+    }
+
+    #[test]
+    fn sampled_clock_requires_app_preparation_on_both_binding_routes() {
+        assert!(prepared().bind().is_err());
+        let (client, _backend) = crate::steam_service::AuthClient::test_bridge(8);
+        assert!(
+            prepared()
+                .bind_authenticated(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0), client)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn failed_repeat_preparation_clears_previous_clock_binding_permission() {
+        let mut session = prepared();
+        let mut app = build_app(&ServerConfig::default(), &WorldSnapshot::default()).unwrap();
+        install_authored_clock_runtime(&mut app, Some(&clock()), 30).unwrap();
+        app.world_mut().resource_mut::<SimulationClock>().tick = 27_000;
+        session.prepare_app(&mut app).unwrap();
+        assert!(session.clock_prepared);
+        app.world_mut().remove_resource::<SimulationClock>();
+        assert!(session.prepare_app(&mut app).is_err());
+        assert!(!session.clock_prepared);
+        assert!(session.bind().is_err());
+    }
 }

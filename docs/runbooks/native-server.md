@@ -53,8 +53,8 @@ A2S shows counts; CM gets accepted joined IDs, omitted from logs/Debug/A2S
 before Begin (F-1181); populated persistence remains unqualified (U-038).
 [CM deadlines](network-readiness.md#steam-cm-deadlines): F-1180.
 
-Opt-in checkpoints, not release-bound: [setup and limits](../architecture.md#persistence).
-Delayed-pawn stock-client continuation remains unqualified.
+Checkpoints: [setup](../architecture.md#persistence);
+[authored survival options](authored-survival.md). Stock-client continuation is unqualified.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),

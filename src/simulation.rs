@@ -824,7 +824,13 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
                 .chain(),
         )
         .add_systems(FixedUpdate, begin_tick.in_set(SimulationSet::Begin))
-        .add_systems(FixedUpdate, finish_tick.in_set(SimulationSet::Finish));
+        .add_systems(
+            FixedUpdate,
+            finish_tick
+                .in_set(SimulationSet::Finish)
+                .run_if(crate::native_player_runtime::consumption_can_finish)
+                .run_if(crate::network::authored_clock_can_finish),
+        );
     app.world_mut()
         .resource_mut::<Time<Virtual>>()
         .set_max_delta(config.tick_interval() * config.max_catch_up_ticks);
@@ -834,6 +840,24 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
             players.context(),
             64,
         )?);
+    }
+    let authored_clock = config
+        .network
+        .authored_world
+        .as_ref()
+        .and_then(|world| world.clock.as_ref());
+    ensure!(
+        authored_clock.is_none() || snapshot.native_players.is_some(),
+        "authored clock requires schema 14"
+    );
+    crate::network::install_authored_clock_runtime(&mut app, authored_clock, config.tick_hz)?;
+    if let Some(consumption) = config.network.player_consumption {
+        consumption.validate()?;
+        ensure!(
+            snapshot.native_players.is_some(),
+            "player consumption requires schema 14"
+        );
+        crate::native_player_runtime::install_consumption(&mut app, consumption, config.tick_hz)?;
     }
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));
@@ -893,6 +917,49 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     Ok(app)
 }
 
+#[derive(Resource)]
+struct AuthoredPreloopGuard;
+
+/// Enabled survival features validate before TimePlugin's First-system and
+/// fixed-loop driver read Time<Fixed>. Omitted features never install this guard.
+pub(crate) fn install_authored_preloop_guard(app: &mut App) {
+    use bevy::{
+        app::{RunFixedMainLoop, RunFixedMainLoopSystems},
+        prelude::First,
+        time::TimeSystems,
+    };
+    if app.world().contains_resource::<AuthoredPreloopGuard>() {
+        return;
+    }
+    app.insert_resource(AuthoredPreloopGuard)
+        .add_systems(First, reconcile_authored_preloop.before(TimeSystems))
+        .configure_sets(
+            First,
+            TimeSystems
+                .run_if(crate::native_player_runtime::consumption_can_finish)
+                .run_if(crate::network::authored_clock_can_finish),
+        )
+        .add_systems(
+            RunFixedMainLoop,
+            reconcile_authored_preloop
+                .before(RunFixedMainLoopSystems::BeforeFixedMainLoop)
+                .before(RunFixedMainLoopSystems::FixedMainLoop),
+        )
+        .configure_sets(
+            RunFixedMainLoop,
+            RunFixedMainLoopSystems::FixedMainLoop
+                .run_if(crate::native_player_runtime::consumption_can_finish)
+                .run_if(crate::network::authored_clock_can_finish),
+        );
+}
+
+fn reconcile_authored_preloop(world: &mut World) {
+    // Evaluate both checks: either feature may have lost an owner. Each check
+    // latches its own failure before Bevy or network publication can proceed.
+    let _ = crate::native_player_runtime::reconcile_consumption_runtime(world);
+    let _ = crate::network::reconcile_authored_clock(world);
+}
+
 fn begin_tick(mut metrics: ResMut<TickMetrics>) {
     metrics.started = Some(Instant::now());
 }
@@ -916,6 +983,8 @@ fn finish_tick(
 }
 
 pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
+    crate::network::authored_clock_runtime_health(world)?;
+    crate::native_player_runtime::consumption_runtime_health(world)?;
     let tick = world
         .get_resource::<SimulationClock>()
         .context("world lacks required simulation clock")?

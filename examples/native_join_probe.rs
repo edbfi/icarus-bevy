@@ -95,6 +95,7 @@ impl AuthoredWorld {
             seed: self.seed,
             seed_initialised: self.seed_initialised,
             flod_tile_count: self.flod_tile_count,
+            clock: None,
         }
         .plan(profile, PROBE_MAP)
     }

@@ -9166,6 +9166,7 @@ fn authored_world_config_is_explicit_strict_and_validated_before_bind() {
     ] {
         let config = NetworkConfig {
             authored_world: Some(AuthoredWorldBootstrap {
+                clock: None,
                 seed: i32::MIN,
                 seed_initialised: false,
                 flod_tile_count: count,
@@ -9198,6 +9199,7 @@ fn authored_world_join_sends_seed_and_flod_without_duplicate_managers() {
     let base_managers = lab_manager_plans(&profile).len();
     let (mut app, address) = server_app(&NetworkConfig {
         authored_world: Some(AuthoredWorldBootstrap {
+            clock: None,
             seed: -7,
             seed_initialised: true,
             flod_tile_count: 2,
@@ -9315,6 +9317,7 @@ fn authored_world_planner_rejects_missing_session_prerequisites() {
     };
     let mut profile = ReleaseProfile::load(&release_toml()).unwrap();
     let world = AuthoredWorldBootstrap {
+        clock: None,
         seed: i32::MAX,
         seed_initialised: true,
         flod_tile_count: 0,
@@ -9633,6 +9636,7 @@ fn fresh_authored_host_preflight_resolves_one_stable_map_and_prospect() {
         authored_gameplay: Some(gameplay),
         hosting: Some(hosting.clone()),
         authored_world: Some(AuthoredWorldBootstrap {
+            clock: None,
             seed: 42,
             seed_initialised: true,
             flod_tile_count: 0,
@@ -9720,4 +9724,217 @@ difficulty = 2
     assert!(!stderr.contains("bind hosting"), "{stderr}");
     assert!(!stderr.contains("\"event\":\"started\""), "{stderr}");
     assert!(!state.exists());
+}
+
+/// Independently authored rates use the production schema14 preparation/store
+/// path. These fixtures do not run a Steam service or an original client.
+mod authored_progression {
+    use super::*;
+    use icarus_bevy::{
+        authored_world_bootstrap::{AuthoredClockConfig, AuthoredWorldBootstrap},
+        config::PlayerPersistenceConfig,
+        data_pak::DataPak,
+        gameplay_profile::{FreshPlayerValues, fresh_player_profile},
+        native_player_runtime::{ConsumptionConfig, PlayerRegistry},
+        native_players::{PlayerCheckpoint, PlayerKey},
+        persistence::SnapshotStore,
+        simulation::{SimulationClock, capture},
+    };
+
+    fn inputs() -> (tempfile::TempDir, NetworkConfig) {
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("authored.pak");
+        fs::write(&pak, pak_writer::fresh_join_pak()).unwrap();
+        let profile = fresh_player_profile(
+            &mut DataPak::open(&pak).unwrap(),
+            &FreshPlayerValues::default(),
+        )
+        .unwrap();
+        let recipe = directory.path().join("recipe.json");
+        fs::write(&recipe, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let config = NetworkConfig {
+            player_persistence: Some(PlayerPersistenceConfig {
+                prospect_id: "authored-survival".into(),
+                map_url: "/Authored/Maps/Workshop".into(),
+                prospect_row: "AuthoredWorkshop".into(),
+                difficulty: 2,
+            }),
+            release_profile: Some(ReleaseProfile::fixture_path("3.0.35")),
+            data_pak: Some(pak),
+            authored_gameplay: Some(recipe),
+            authored_world: Some(AuthoredWorldBootstrap {
+                seed: 42,
+                seed_initialised: true,
+                flod_tile_count: 0,
+                clock: None,
+            }),
+            ..Default::default()
+        };
+        (directory, config)
+    }
+    fn prepare(config: &NetworkConfig, hz: u32) -> network::PreparedPlayers {
+        network::prepare_run_with_tick_hz(config, network::peer_lab_config(config), hz)
+            .unwrap()
+            .1
+            .unwrap()
+    }
+    fn rules() -> ConsumptionConfig {
+        ConsumptionConfig {
+            oxygen: 8,
+            water: 3,
+            food: 1,
+        }
+    }
+
+    #[test]
+    fn rule_enable_disable_rate_and_actual_frequency_refuse_but_release_only_reopens() {
+        let (_directory, mut config) = inputs();
+        let omitted = prepare(&config, 7);
+        let plain = network::fresh_player_snapshot(Some(&omitted));
+        config.player_consumption = Some(rules());
+        assert!(network::prepare_run(&config, network::peer_lab_config(&config)).is_err());
+        let enabled = prepare(&config, 7);
+        let mut refusal = plain.clone();
+        let error = network::open_player_snapshot(&mut refusal, Some(&enabled)).unwrap_err();
+        assert!(format!("{error:#}").contains("network.player_persistence"));
+        assert_eq!(refusal, plain);
+        let enabled_snapshot = network::fresh_player_snapshot(Some(&enabled));
+        for variant in ["disable", "oxygen", "water", "food", "hz"] {
+            let mut changed = config.clone();
+            let mut hz = 7;
+            match variant {
+                "disable" => changed.player_consumption = None,
+                "oxygen" => changed.player_consumption.as_mut().unwrap().oxygen += 1,
+                "water" => changed.player_consumption.as_mut().unwrap().water += 1,
+                "food" => changed.player_consumption.as_mut().unwrap().food += 1,
+                "hz" => hz = 8,
+                _ => unreachable!(),
+            }
+            let other = prepare(&changed, hz);
+            let mut refused = enabled_snapshot.clone();
+            let error = network::open_player_snapshot(&mut refused, Some(&other)).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("network.player_persistence"),
+                "{variant}: {error:#}"
+            );
+            assert_eq!(refused, enabled_snapshot);
+        }
+        let state = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(state.path()).unwrap();
+        store.save(&enabled_snapshot).unwrap();
+        let mut restored = store.load().unwrap().unwrap().snapshot;
+        config.release_profile = Some(ReleaseProfile::fixture_path("3.0.36"));
+        let next = prepare(&config, 7);
+        network::open_player_snapshot(&mut restored, Some(&next)).unwrap();
+        assert!(
+            restored.native_players.as_ref().unwrap().context()
+                == enabled_snapshot.native_players.as_ref().unwrap().context()
+        );
+    }
+
+    #[test]
+    fn durable_seven_hz_resume_preserves_fractional_debit_and_clock_phase() {
+        let (_directory, mut network) = inputs();
+        network.player_consumption = Some(rules());
+        network.authored_world.as_mut().unwrap().clock = Some(AuthoredClockConfig {
+            initial_minute: 1439,
+            seconds_per_day: 3600,
+            tick_hz: 7,
+        });
+        assert!(network::prepare_run(&network, network::peer_lab_config(&network)).is_err());
+        assert!(
+            network::prepare_run_with_tick_hz(&network, network::peer_lab_config(&network), 8)
+                .is_err()
+        );
+        let prepared = prepare(&network, 7);
+        let mut snapshot = network::fresh_player_snapshot(Some(&prepared));
+        let mut registry = PlayerRegistry::new(
+            snapshot.native_players.take().unwrap(),
+            &prepared.context,
+            8,
+        )
+        .unwrap();
+        let key = PlayerKey::new(76_561_197_960_265_770, 3).unwrap();
+        let initial = PlayerCheckpoint {
+            location_cm: [10.0, 20.0, 30.0],
+            vitals: prepared.initial_vitals,
+        };
+        registry.reserve(key, 1, initial).unwrap();
+        registry.activate(1).unwrap();
+        snapshot.native_players = Some(registry.snapshot());
+        let config = ServerConfig {
+            tick_hz: 7,
+            network: network.clone(),
+            ..Default::default()
+        };
+        let mut uninterrupted = build_app(&config, &snapshot).unwrap();
+        uninterrupted
+            .world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .reserve(key, 1, initial)
+            .unwrap();
+        uninterrupted
+            .world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .activate(1)
+            .unwrap();
+        for _ in 0..3 {
+            uninterrupted.world_mut().run_schedule(FixedUpdate);
+        }
+        let saved = capture(uninterrupted.world_mut()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&saved).unwrap();
+        let mut restored = store.load().unwrap().unwrap().snapshot;
+        network::open_player_snapshot(&mut restored, Some(&prepared)).unwrap();
+        let mut resumed = build_app(&config, &restored).unwrap();
+        // Returning reservations remain inactive; explicit activation resumes the
+        // next interval, with durable tick3 supplying the fractional remainder.
+        resumed
+            .world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .reserve(key, 2, initial)
+            .unwrap();
+        assert!(
+            resumed
+                .world()
+                .resource::<PlayerRegistry>()
+                .activated_epochs()
+                .is_empty()
+        );
+        resumed
+            .world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .activate(2)
+            .unwrap();
+        for _ in 3..11 {
+            uninterrupted.world_mut().run_schedule(FixedUpdate);
+            resumed.world_mut().run_schedule(FixedUpdate);
+        }
+        let continuous = capture(uninterrupted.world_mut()).unwrap();
+        let reloaded = capture(resumed.world_mut()).unwrap();
+        assert_eq!(continuous, reloaded);
+        assert_eq!(resumed.world().resource::<SimulationClock>().tick, 11);
+        let clock = network
+            .authored_world
+            .as_ref()
+            .unwrap()
+            .clock
+            .as_ref()
+            .unwrap()
+            .prepare()
+            .unwrap();
+        assert_eq!(clock.sample(saved.tick), clock.sample(3));
+        assert_eq!(clock.sample(reloaded.tick), clock.sample(11));
+        let actual = reloaded
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection(key)
+            .unwrap()
+            .checkpoint;
+        assert_eq!(actual.vitals.oxygen, (initial.vitals.oxygen - 12).max(0));
+        assert_eq!(actual.vitals.water, (initial.vitals.water - 4).max(0));
+        assert_eq!(actual.vitals.food, (initial.vitals.food - 1).max(0));
+    }
 }
