@@ -73,8 +73,9 @@ reason counts saturate independently. Connected interpretation remains unqualifi
 
 ## Connected observation and stopping
 
-A skipped block leaves Begin absence inconclusive (F-1184); world entry,
-movement and checkpoints remain unqualified.
+A skipped block leaves Begin absence inconclusive (F-1184). A later protected run
+accepted Begin and reached entry/locomotion (F-1185); checkpoint and normal-leave
+qualification remain open (F-1186).
 
 If Cancel is absent, use Alt+F4 and confirm client closure before the owned
 server stop. Supervisor 130 denotes that intentional stop, not baseline
