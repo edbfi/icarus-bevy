@@ -14,8 +14,9 @@ use bevy::time::TimeUpdateStrategy;
 use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
+    native_player_runtime::CheckpointWriter,
     network,
-    persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
+    persistence::{SaveReceipt, SaveWorkerDisconnected, SnapshotStore},
     simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
 use serde_json::json;
@@ -1406,7 +1407,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         .transpose()?;
     app.finish();
     app.cleanup();
-    let mut writer = SaveWorker::spawn(store)?;
+    let mut writer = CheckpointWriter::spawn(store)?;
     let stopping = Arc::new(AtomicBool::new(false));
     let signal = Arc::clone(&stopping);
     ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
@@ -1485,7 +1486,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             network::authored_clock_runtime_health(app.world())?;
             let tick = app.world().resource::<SimulationClock>().tick;
             let now = clock.elapsed(tick);
-            autosave.observe(writer.poll(), now)?;
+            autosave.observe(writer.poll(app.world_mut()), now)?;
             if let Some(hosting) = &hosting {
                 let membership = app
                     .world_mut()
@@ -1502,11 +1503,20 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                 network::stop_admission(app.world_mut());
                 break;
             }
-            if now.saturating_sub(last_save_request) >= Duration::from_secs(config.autosave_seconds)
-            {
+            let leave_due = app
+                .world_mut()
+                .get_resource_mut::<icarus_bevy::native_player_runtime::PlayerRegistry>()
+                .is_some_and(|mut registry| registry.checkpoint_save_needed(Instant::now()));
+            let periodic_due = now.saturating_sub(last_save_request)
+                >= Duration::from_secs(config.autosave_seconds);
+            if leave_due || periodic_due {
                 // A compressed run keeps every autosave by awaiting the one in
                 // flight; a stop request leaves the wait for the bounded shutdown.
-                while compressed && writer.is_busy() && !autosave.observe(writer.poll(), now)? {
+                while compressed
+                    && periodic_due
+                    && writer.is_busy()
+                    && !autosave.observe(writer.poll(app.world_mut()), now)?
+                {
                     if stopping.load(Ordering::SeqCst) {
                         break;
                     }
@@ -1517,7 +1527,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                     break;
                 }
                 if !writer.is_busy() {
-                    writer.submit(capture(app.world_mut())?)?;
+                    writer.submit(app.world_mut())?;
                     // The interval runs from submission, after capture.
                     last_save_request = clock.elapsed(tick);
                     autosave.submitted = Some(Instant::now());
@@ -1570,7 +1580,7 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     let finalization_result = (|| -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(config.shutdown_timeout_seconds);
         // A failed in-flight autosave is reported as in the loop; the final save still runs.
-        let shutdown_output = match writer.settle_before(deadline)? {
+        let shutdown_output = match writer.settle_before(app.world_mut(), deadline)? {
             Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
             Some(Err(error)) => {
                 write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))
@@ -1582,9 +1592,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             "snapshot shutdown deadline exceeded before final capture"
         );
         let final_submitted = Instant::now();
-        writer.submit_before(capture(app.world_mut())?, deadline)?;
+        writer.submit_before(app.world_mut(), deadline)?;
         let final_output = writer
-            .finish_before(deadline)?
+            .finish_before(app.world_mut(), deadline)?
             .map(|receipt| saved(receipt, Some(final_submitted)))
             .transpose();
         let stopped_output = write_run_record(with_native_replication_counts(

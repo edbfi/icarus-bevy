@@ -3579,7 +3579,85 @@ impl fmt::Debug for PeerLab {
     }
 }
 
+/// Authored checkpoint control identity. Reusing an address does not reuse a
+/// connection ID or its registry-validated attachment epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointConnection {
+    pub address: SocketAddrV4,
+    pub connection_id: u32,
+    pub epoch: u64,
+}
+
 impl PeerLab {
+    /// Authored control/test boundary only; no inbound field dispatch invokes
+    /// this API. Resolve current authenticated identity and exact connection
+    /// epoch before taking the synchronous registry cutoff. An address alone
+    /// never identifies a completion destination or grants checkpoint authority.
+    pub fn request_authored_checkpoint_leave(
+        &mut self,
+        registry: &mut PlayerRegistry,
+        connection: CheckpointConnection,
+        expected_revision: u64,
+        timeout: Duration,
+    ) -> Result<crate::native_player_runtime::LeaveStatus> {
+        let CheckpointConnection {
+            address,
+            connection_id,
+            epoch,
+        } = connection;
+        ensure!(
+            self.checkpoint_initial_vitals.is_some(),
+            "player persistence disabled"
+        );
+        self.reconcile_player_authority(registry);
+        let entry = self.peers.get(&address).context("leave peer missing")?;
+        ensure!(
+            entry.connection_id == Some(connection_id)
+                && entry.checkpoint_epoch == Some(epoch)
+                && entry.auth_accepted
+                && entry.auth_request.is_some()
+                && entry.admission.state == ClientLoginState::Joined,
+            "leave connection identity differs"
+        );
+        let key = PlayerKey::new(
+            entry
+                .auth_identity
+                .context("leave authenticated account missing")?,
+            entry
+                .profiles
+                .character_slot
+                .context("leave slot missing")?,
+        )?;
+        Ok(registry.request_leave(key, epoch, expected_revision, Instant::now(), timeout)?)
+    }
+
+    /// Read-only domain completion polling. Backpressure simply leaves the
+    /// durable operation/barrier intact. Disconnect, revocation or address reuse
+    /// invalidates this destination; no protocol response is generated here.
+    pub fn authored_checkpoint_leave_status(
+        &mut self,
+        registry: &mut PlayerRegistry,
+        connection: CheckpointConnection,
+    ) -> Option<crate::native_player_runtime::LeaveStatus> {
+        let CheckpointConnection {
+            address,
+            connection_id,
+            epoch,
+        } = connection;
+        self.reconcile_player_authority(registry);
+        let entry = self.peers.get(&address)?;
+        if entry.connection_id != Some(connection_id)
+            || entry.checkpoint_epoch != Some(epoch)
+            || !entry.auth_accepted
+            || entry.auth_request.is_none()
+            || entry.admission.state != ClientLoginState::Joined
+        {
+            return None;
+        }
+        let key = PlayerKey::new(entry.auth_identity?, entry.profiles.character_slot?).ok()?;
+        registry.leave_status(key, epoch)
+    }
+
     /// Explicit authored-only delayed-pawn mode. Authentication is checked at
     /// each bridge pass; Login names and IDs are never registry authority.
     pub fn enable_player_checkpoints(
@@ -3751,7 +3829,7 @@ impl PeerLab {
             let Some(epoch) = entry.checkpoint_epoch else {
                 continue;
             };
-            let activate = entry.profiles.completed && friends_ready;
+            let activate = entry.profiles.completed && friends_ready && !registry.is_leaving(epoch);
             let projection = if activate {
                 registry.activate(epoch).ok()
             } else {

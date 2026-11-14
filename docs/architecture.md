@@ -90,22 +90,20 @@ A complete profile carries protocol values; its build id selects none.
 
 ## Persistence
 
-Persistence uses versioned domain snapshots: coherent simulation boundary,
-worker serialization, checksummed new generation, synchronized storage, atomic
-manifest publication, preceding valid generation retained. Autosave defaults to
+Versioned domain snapshots cross a coherent simulation boundary: worker
+serialization, checksummed generation, synchronized storage, atomic manifest
+publication and retention of the preceding valid generation. Autosave defaults to
 60 seconds. `SaveReceipt` acknowledges its submitted generation/tick after durable
-publication, not later in-memory edits. Validate or explicitly migrate before activation.
-Capture requires all components declared by the current native domain schema;
-an identified entity with missing required data must fail before publication.
-Authored schemas 4–11 (F-919, F-922, F-923, F-927, F-931) pin their
-activation, reject incomplete state and never promote implicitly; bounds imply
-neither physics nor navigation. Contracts: the
-[authored-worlds runbook](runbooks/authored-worlds.md).
+publication, never later edits. Validate or explicitly migrate before activation;
+missing required domain components refuse capture/publication. Authored schemas
+4–11 (F-919, F-922, F-923, F-927, F-931) pin activation, reject incomplete state
+and never promote implicitly; bounds imply neither physics nor navigation.
+Contracts: [authored worlds](runbooks/authored-worlds.md).
 
-Opt-in schema 14 combines foundation entities/clock with authored player checkpoints
-in one save generation. `native_players` defines private records;
-`native_player_runtime::PlayerRegistry` owns live reservations and committed state
-independently of `PeerLab`. Only fresh, non-preserved foundation worlds are supported.
+Opt-in schema 14 saves foundation entities/clock and authored player checkpoints
+together. `native_players` defines private records; `native_player_runtime::PlayerRegistry`
+owns live reservations/committed state independently of `PeerLab`.
+Only fresh, non-preserved foundation worlds are supported.
 Existing schemas 1–12, preserved/imported worlds and native actor/lifecycle/inventory
 composition refuse before Steam or sockets. Disabling the feature cannot load or
 downgrade schema 14. Schema 13, the retired release-bound format, is never
@@ -147,23 +145,19 @@ nothing; a missing row, or one moved past index 255, refuses naming table and
 row. `CurrentBiome` is not stored: no biome table is loaded, every pawn opens
 with row 0 and a checkpoint with another value refuses. No wire handle is stored.
 
-Authored gameplay schema 1 retains its strict full catalog row-count/name/order
-contract. Schema 2 supplies sparse rows keyed by name, in any order. The loader
-normalizes each supplied table to installed catalog order, creating name-only
-objects with parser defaults for omitted rows. Missing required tables,
-unknown/duplicate/invalid authored names and ambiguous catalogs reject. No
-packaged gameplay values fill omitted rows or fields.
-Schema-2 expansion is capped across supplied tables at 262,144 rows and 8 MiB
-of UTF-8 row-name bytes, independently of the 8 MiB recipe-file limit.
+Gameplay schema 1 binds full catalog row counts/names/order. Schema 2 accepts
+sparse named rows in any order, normalized to installed catalog order; omitted
+rows become name-only objects with parser defaults. Missing required tables,
+unknown/duplicate/invalid names and ambiguous catalogs reject. Packaged gameplay
+values never fill omissions. Expansion caps: 262,144 rows and 8 MiB UTF-8 row names
+across tables, separate from the 8 MiB recipe limit.
 
-The fresh-player generator emits a deterministic minimal schema-2 recipe:
-unrelated catalog row insertions, removals or reordering do not change its bytes.
-Its skeleton mode remains a full schema-1 template. A schema-14 store still binds
-the exact recipe bytes; schema-2 stores can therefore survive unrelated catalog
-churn without editing their recipe. Schema-1 recipes still require a matching
-full catalog; converting an existing store's recipe to schema 2 changes the input
-and refuses (`network.authored_gameplay differs`). Persistence remains schema 14;
-no conversion, automatic reset or new client qualification is implied.
+The fresh-player generator's minimal schema-2 recipe is byte-stable under unrelated
+catalog insertions/removals/reordering; skeleton mode emits a full schema-1 template.
+Schema 14 binds exact recipe bytes, so schema 2 tolerates that churn unchanged;
+schema 1 needs its matching catalog. Converting a bound recipe refuses
+(`network.authored_gameplay differs`). No schema conversion, reset or client
+qualification follows.
 
 Keys require an accepted live ticket request, Joined admission and matching
 nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP
@@ -171,25 +165,27 @@ and client move reports confer no authority. Limits: 4,096 retained records,
 64 per account, no eviction. One account/slot has one live attachment; a duplicate
 newcomer refuses until detach/timeout, using shared profile-failure counters.
 
-Controller/GameState/PlayerState bootstrap precedes validated slot lookup. The
-controller spawn record and handle 19 use a provisional uncommitted spawn peek;
-the later pawn uses its resolved checkpoint, so their locations may differ.
-Client effects of this divergence/order are unqualified. A new reservation commits
-one spawn point/counter increment immediately, preventing concurrent reservations
-from sharing that selection. Cancellation drops the pending player record without
-refunding the point/counter. Retries reuse reservations; committed reconnects
-consume no point. The disabled path retains its legacy spawn/History/restore behavior.
+Controller/GameState/PlayerState bootstrap precedes validated slot lookup.
+Controller spawn record/handle 19 use an uncommitted spawn peek; the later pawn
+uses its checkpoint. Locations may differ; client effects remain unqualified.
+New reservations immediately commit one spawn point/counter increment, preventing
+concurrent reuse. Cancellation drops the pending record without refund; retries
+reuse reservations and committed reconnects consume no point. The disabled path
+retains legacy spawn/History/restore behavior.
 
-`PlayerRegistry::edit` is a library API with test callers only; no operator
-surface exists. It validates an expected revision and complete checkpoint
-atomically, preserving maxima/biome/growth. Reliable vital projection
-coalesces unsent revisions; enqueue success is neither client ACK nor disk publication.
-Placement edits affect the next pawn open only, without live teleport/movement
-simulation. Disconnect/revocation releases attachments and retains committed state.
-Shutdown drains the bridge before teardown and captures the registry through the
-existing save worker. An edit accepted during an in-flight save belongs to a later
-capture; the earlier receipt gives it no durability promise. No player inventory
-owner, client-driven progression or original-save import is inferred.
+`PlayerRegistry::edit` has only test callers and no operator surface: expected
+revision and full checkpoint validate atomically, preserving maxima/biome/growth.
+Reliable vital projection
+coalesces unsent revisions; enqueue is neither client ACK nor disk publication.
+Placement changes only the next pawn open. Disconnect/revocation detaches but
+retains committed state.
+
+[Authored leave cutoffs](runbooks/authored-survival.md#checkpoint-leave) use
+`CheckpointWriter`, including shutdown after bridge drain and teardown. Only
+the successful result of the exact submission containing the pinned record and
+attempt marks it durable; generation/tick equality cannot. Cutoffs accepted after
+capture wait for an idle writer, ahead of periodic autosave. No inventory owner,
+client-driven progression or original-save import is inferred.
 
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried
