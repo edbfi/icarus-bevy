@@ -3,8 +3,9 @@ use std::path::Path;
 use icarus_bevy::experimental::{
     peer_lab::PeerLabConfig,
     release::{
-        ReleaseClassNetCacheBounds, ReleasePin, ReleaseProfile, ReleaseRowHandleProfile,
-        ReleaseTagProfile, SECTIONS_QUALIFIED_FOR_BUILD_ID, network_checksum,
+        RELEASE_FIXTURE_DIR, ReleaseClassNetCacheBounds, ReleasePin, ReleaseProfile,
+        ReleaseRowHandleProfile, ReleaseTagProfile, SECTIONS_QUALIFIED_FOR_BUILD_ID,
+        network_checksum,
     },
     rep_layout::{ICARUS_ROW_HANDLE_NONE, TagEncoding, icarus_row_handle_width_bytes},
 };
@@ -189,6 +190,31 @@ fn the_tracked_pin_is_consistent() {
     ] {
         assert!(present, "{name}");
     }
+}
+
+/// Where a frozen fixture exists for the active release, the active profile
+/// equals it, so an accidental edit of `config/release.toml` fails here. A
+/// release without a fixture is not required to get one.
+#[test]
+fn the_tracked_pin_equals_its_frozen_fixture_where_one_exists() {
+    let active =
+        ReleaseProfile::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
+            .unwrap();
+    let mut matching = Vec::new();
+    for entry in std::fs::read_dir(RELEASE_FIXTURE_DIR).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            let fixture = ReleaseProfile::load(&path).unwrap();
+            if fixture.pin == active.pin {
+                matching.push(path.display().to_string());
+                assert_eq!(active, fixture, "{}", path.display());
+            }
+        }
+    }
+    assert!(matching.len() <= 1, "{matching:?}");
 }
 
 /// Every frozen release file is complete: it carries each required section

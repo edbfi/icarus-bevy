@@ -2,8 +2,9 @@
 # The pawn adds `bIsReworkedCharacter`; other retained identities are
 # unchanged. This profile does not qualify stock-client gameplay or quest
 # class opens.
-# Tests and examples load this file by name (`release_fixture("3.0.34")`).
-# Frozen: never edit its values; a new build gets its own file.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.34")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
 
 [release]
 app_id = 2089300

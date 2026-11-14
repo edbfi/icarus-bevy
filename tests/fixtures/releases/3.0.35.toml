@@ -1,8 +1,9 @@
 # Frozen release profile: ICARUS 3.0.35, public dedicated server 26425113.
 # Retained class identities and layouts match the 3.0.34 profile; this does
 # not establish stock-client gameplay compatibility.
-# Tests and examples load this file by name (`release_fixture("3.0.35")`).
-# Frozen: never edit its values; a new build gets its own file.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.35")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
 
 [release]
 app_id = 2089300

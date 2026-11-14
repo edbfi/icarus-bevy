@@ -2,8 +2,9 @@
 # Tags are derived for this build (F-1176); selected class metadata and the
 # ordered row registry retain the 3.0.35 profile (F-1177, F-1178). Static
 # qualification does not establish stock-client compatibility.
-# Tests and examples load this file by name (`release_fixture("3.0.36")`).
-# Frozen: never edit its values; a new build gets its own file.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.36")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
 
 [release]
 app_id = 2089300

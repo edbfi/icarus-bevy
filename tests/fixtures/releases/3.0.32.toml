@@ -2,8 +2,9 @@
 # F-702..F-708). Class checksums are among the values the 25956137 derivation
 # reproduces (M-820, behind F-780); component sets and order are assumed
 # unchanged from 3.0.31.
-# Tests and examples load this file by name (`release_fixture("3.0.32")`).
-# Frozen: never edit its values; a new build gets its own file.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.32")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
 
 [release]
 app_id = 2089300

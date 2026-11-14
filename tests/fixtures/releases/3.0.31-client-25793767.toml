@@ -1,8 +1,9 @@
 # Frozen release profile: ICARUS 3.0.31 pinned by its client build 25793767.
 # Identical to `3.0.31.toml` except `build_id`: the client build of the
 # reference capture release shares every 3.0.31 value (F-689).
-# Tests and examples load this file by name (`release_fixture("3.0.31-client-25793767")`).
-# Frozen: never edit its values; a new build gets its own file.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.31-client-25793767")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
 
 [release]
 app_id = 2089300

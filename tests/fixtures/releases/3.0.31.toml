@@ -2,8 +2,9 @@
 # (server 25793607, client 25793767; F-689, F-702..F-708). Class identities
 # are reproduced bit-exactly against the 3.0.31 capture (F-779, F-784, F-794,
 # F-797, F-859).
-# Tests and examples load this file by name (`release_fixture("3.0.31")`).
-# Frozen: never edit its values; a new build gets its own file.
+# Tests and examples load it by name: `ReleaseProfile::fixture("3.0.31")`.
+# Frozen: never edit its values. Fixtures are examples kept for tests that
+# need this layout; a new release does not get one by default.
 
 [release]
 app_id = 2089300
