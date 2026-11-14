@@ -260,17 +260,11 @@ naming the table, quoting nothing of the file. Ready and summary
 ## Steam CM deadlines
 
 F-1180: completed frames get a separate 100 ms decode budget after socket polling.
-FIFO is retained; malformed/over-budget frames and logoff stay fatal. F-1181
-completed one retry without a CM fatal; universal race resolution is unproven.
+A poll may overrun its read window by one frame's decode allowance. FIFO is
+retained; malformed/over-budget frames and logoff stay fatal. F-1181 completed
+one retry without a CM fatal; universal race resolution is unproven.
 
 ## Join password
 
-F-1161 to F-1163, F-1167. `[network] join_password`: unset/empty disables.
-Probe `--join-password-file work/<case>/join-password`: regular UTF-8 under
-checkout `work/`, no symlinks/traversal, 0600, ≤1 KiB; trims one newline,
-refuses empty. Both: ≤64 UTF-16 units, no controls or `?`. Protected listings
-add `L_s` for the browser prompt. Login compares URL `password` ignoring ASCII
-case (missing is empty), refusing `Invalid Password` before capacity. Diagnostics
-omit secrets or show the boolean, rule and position. One stock-client run saw
-wrong-password denial and correct-password admission (F-1181); world entry
-remains unqualified (U-038).
+[Password configuration and privacy](join-password.md) covers hosted/probe
+listings, input limits, redaction and the F-1181 client observations.
