@@ -88,13 +88,11 @@ fn a_repinned_file_with_unqualified_sections_is_refused() {
         ReleaseProfile::parse(&text).unwrap_err().to_string(),
         expected
     );
-    let directory = std::env::temp_dir().join(format!("release-repin-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("release.toml");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("release.toml");
     std::fs::write(&path, &text).unwrap();
     let loaded = ReleaseProfile::load(&path);
     let pin = ReleasePin::load(&path);
-    std::fs::remove_dir_all(&directory).unwrap();
     assert_eq!(loaded.unwrap_err().to_string(), expected);
     let pin = pin.unwrap();
     assert_eq!(
@@ -560,7 +558,7 @@ fn release_row_widths_bind_trait_layouts_and_can_be_rebound() {
 }
 
 #[test]
-fn builtin_profiles_match_observed_3_0_31_and_3_0_32_metadata() {
+fn fixture_profiles_match_observed_3_0_31_and_3_0_32_metadata() {
     let p31 = ReleaseProfile::fixture("3.0.31");
     assert!(p31.validate().is_ok());
     assert_eq!(p31.pin.build_id, 25_793_607);
@@ -738,7 +736,7 @@ fn a_stale_checksum_or_unknown_field_is_rejected() {
 }
 
 #[test]
-fn builtin_player_controller_profiles_compose_the_captured_export_prefix() {
+fn fixture_player_controller_profiles_compose_the_captured_export_prefix() {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits},
         archive::ByteOrder,
@@ -852,7 +850,7 @@ components = [
 }
 
 #[test]
-fn builtin_player_state_identifiers_compose_the_captured_export_prefix() {
+fn fixture_player_state_identifiers_compose_the_captured_export_prefix() {
     use icarus_bevy::experimental::{
         archive::ByteOrder,
         control_messages::{ArchiveText, NetIdType, NetIdValue, UniqueNetId},
@@ -925,7 +923,7 @@ fn builtin_player_state_identifiers_compose_the_captured_export_prefix() {
 }
 
 #[test]
-fn builtin_game_state_identifiers_compose_the_captured_export_prefix() {
+fn fixture_game_state_identifiers_compose_the_captured_export_prefix() {
     use icarus_bevy::experimental::{
         archive::ByteOrder,
         game_state_open::{GameStateManagers, GameStateOpenState, compose_game_state_open},
@@ -1045,7 +1043,7 @@ fn game_state_sections_parse_and_fail_closed() {
 }
 
 #[test]
-fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
+fn fixture_pawn_identifiers_compose_the_archetype_and_components() {
     use icarus_bevy::experimental::{
         actor_channel::{ActorChannelCodec, ActorChannelLimits, PackageMapState},
         archive::ByteOrder,
@@ -1127,7 +1125,7 @@ fn builtin_pawn_identifiers_compose_the_archetype_and_components() {
 }
 
 #[test]
-fn builtin_pawn_content_composes_every_block() {
+fn fixture_pawn_content_composes_every_block() {
     use icarus_bevy::experimental::{
         actor_channel::{
             ActorChannelCodec, ActorChannelLimits, BlockTarget, PackageMapState, SubObjectClass,
@@ -1528,8 +1526,8 @@ fn pawn_sections_parse_and_fail_closed() {
 #[test]
 fn manager_sections_parse_and_fail_closed() {
     use icarus_bevy::experimental::manager_open::ManagerSlot;
-    let builtin = ReleaseProfile::fixture("3.0.32");
-    let plans = builtin.manager_open_plans("/Game/Maps/Test/Test").unwrap();
+    let fixture = ReleaseProfile::fixture("3.0.32");
+    let plans = fixture.manager_open_plans("/Game/Maps/Test/Test").unwrap();
     let slots: Vec<ManagerSlot> = plans.iter().map(|(slot, _)| *slot).collect();
     assert_eq!(
         slots,
