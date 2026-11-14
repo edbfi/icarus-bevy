@@ -52,6 +52,8 @@ session_timeout_seconds = 30
 # ]
 
 # OPTIONAL uniform authored clock; requires the schema-14 player feature above.
+# First configure the required [network.authored_world] parent; see
+# docs/runbooks/authored-worlds.md and docs/runbooks/authored-survival.md.
 # Reopen with the same recipe; tick_hz must equal the global server tick_hz.
 # Offline ticks advance phase; stopped-server time does not. No daylight claim.
 # [network.authored_world.clock]
