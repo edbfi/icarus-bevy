@@ -77,13 +77,15 @@ no per-release values.
   `[release]` records `sections_qualified_for_build_id`, the build they were
   last qualified for, and the server refuses the file, naming both builds,
   until the key is removed. Re-pinning that build clears the key; tests keep
-  it out of a committed pin.
+  it out of a committed pin. Only `pin` writes the key, so the refusal guards
+  only files it re-pinned: a hand edit of build id, version and checksum still
+  loads and serves the previous build's sections under the new version.
 - A weekly bump, until a qualifier tool generates profiles, is a qualified
   edit of the data file: fetch the public server, run `diff` and `pin`,
   re-derive each section for the new build (tags, class checksums, row
   registry, layouts), write the values, remove the key and re-run the
-  compatibility scenarios. A frozen fixture is added only when a test needs
-  that release. The player store binds the release file's bytes, so any edit
+  compatibility scenarios. That re-derivation is the guard; the only other is
+  a frozen fixture for the active release, added only when a test needs it. The player store binds the release file's bytes, so any edit
   makes an existing schema-13 store refuse to reopen (`player context
   mismatch`). No Rust change is needed unless a wire structure changed.
   Compatibility claims name the build they were made against; the native

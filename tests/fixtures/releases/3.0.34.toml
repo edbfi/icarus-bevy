@@ -35,7 +35,7 @@ bp_tame_base = 86
 bp_icarus_player_controller_survival = 183
 
 # `FRowHandle` registry: the 293-table registry the static codec reads,
-# retained as the built-in profile carried it (F-1033 records 295 tables for
+# kept as this profile has always carried it (F-1033 records 295 tables for
 # this build; the value is preserved, not corrected, here).
 [row_handles]
 table_count = 293
