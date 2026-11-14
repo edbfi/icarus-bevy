@@ -751,10 +751,10 @@ impl ReleasePlayerControllerProfile {
 /// which also checks `engine_network_version`; `row_handles` binds the
 /// row-handle widths of every layout this profile plans
 /// ([`Self::apply_row_handle_profile`]). `game_network_version` and the
-/// remaining `tags` fields record descriptive release-qualification metadata. `player_controller` feeds
-/// [`super::session_open`]; `player_state`, `game_state`, `pawn` and
-/// `managers` feed their open plans; `level_actors` names the actors a level
-/// visibility report opens. Each is `None` exactly when the file omits its
+/// remaining `tags` fields record descriptive release-qualification metadata.
+/// `player_controller` feeds [`super::session_open`]; `player_state`,
+/// `game_state`, `pawn` and `managers` feed their open plans; `level_actors`
+/// names the actors a level visibility report opens. Each is `None` exactly when the file omits its
 /// section, which turns that open off ([`Self::parse`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseProfile {
