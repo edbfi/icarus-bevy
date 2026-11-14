@@ -225,9 +225,9 @@ per session. A configured placement starts that session's move store (F-1128).
 ## Fresh-player stats
 
 F-1157, F-1168. Without tables a pawn opens with no stats and a stock client
-cannot walk. `fresh_player_gameplay` writes an authored profile over the
-official server's `data.pak`: row names and order from its catalog, every
-value from flags (round lab numbers, not ICARUS balance values):
+cannot walk. `fresh_player_gameplay` writes a deterministic minimal schema-2
+profile: required catalog row identities, values from flags (lab numbers,
+not ICARUS balance). Unrelated row inserts/removals/reorders leave its bytes unchanged:
 
 ```bash
 python3 tools/cargo_guard.py build --locked --example fresh_player_gameplay
@@ -245,7 +245,7 @@ but are never sent as stats 0 and 3 (F-1166). An existing `--output` is never
 replaced; a written profile the loader refuses is removed. Stdout:
 `table_rows`, `fresh_pawn_stats` and `movement_stat_ids`, which must read 58,
 61, 65, 69 and 73 (F-1153); never a packaged value. `--skeleton TABLE`
-(repeatable) writes names-only rows to author instead.
+(repeatable) writes a full schema-1 names-only template instead.
 
 Probe `--data-pak PATH --authored-gameplay PATH`, both or neither, as
 `[network] data_pak`/`authored_gameplay`. Before sockets, TLS or Steam the

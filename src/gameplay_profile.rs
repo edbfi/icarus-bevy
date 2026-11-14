@@ -1,7 +1,7 @@
 //! An independently authored gameplay profile (`network.authored_gameplay`,
 //! F-993) that lets a fresh player's pawn open carry replicated stats
-//! (F-839) over the official server's `data.pak`. Row names and their order
-//! come from the pak's catalog (protocol identity, F-830); every value comes
+//! (F-839) over the official server's `data.pak`. Row identities are checked
+//! against the pak's catalog (protocol identity, F-830); every value comes
 //! from [`FreshPlayerValues`]. Nothing of a packaged row is read but its name.
 use std::collections::BTreeMap;
 
@@ -17,7 +17,7 @@ use crate::network::{
 use crate::pawn_stats::{REPLICATED_FIELD, STATS_TABLE};
 
 /// The authored gameplay schema `DataTables::runtime` reads.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The tables startup and a fresh join (with no starting inventories) read
 /// as objects, so a profile must supply them: the first four always, the
@@ -162,16 +162,6 @@ fn row_index(rows: &[Map<String, Value>], table: &str, name: &str) -> Result<usi
         .with_context(|| format!("the {table} catalog has no {name} row"))
 }
 
-/// The row named `name` of `rows`, which the catalog must list.
-fn row_mut<'a>(
-    rows: &'a mut [Map<String, Value>],
-    table: &str,
-    name: &str,
-) -> Result<&'a mut Map<String, Value>> {
-    let index = row_index(rows, table, name)?;
-    Ok(&mut rows[index])
-}
-
 /// A names-only skeleton of `tables` over `pak`'s catalog, as
 /// `{"schema_version": 1, "tables": {...}}`: each table's rows in catalog
 /// order with only their `Name`, for the operator to author values into.
@@ -181,12 +171,13 @@ pub fn catalog_skeleton(pak: &mut DataPak, tables: &[&str]) -> Result<Value> {
     for table in tables {
         out.insert((*table).to_owned(), names_only(pak, table)?);
     }
-    Ok(json!({"schema_version": SCHEMA_VERSION, "tables": out}))
+    Ok(json!({"schema_version": 1, "tables": out}))
 }
 
 /// A complete profile for a fresh join over `pak`'s catalog:
-/// [`FRESH_JOIN_TABLES`] the pak holds as names-only rows, then
-/// `values` authored in. `D_CharacterStartingStats`'s `Base_Stats` grants
+/// [`FRESH_JOIN_TABLES`] the pak holds, with only value-bearing rows authored
+/// by name in stable order. Empty tables explicitly select parser defaults.
+/// `D_CharacterStartingStats`'s `Base_Stats` grants
 /// each base stat of [`FreshPlayerValues::grants`] (every base and derived
 /// stat must be in the catalog); `D_Stats` replicates only the five speeds
 /// derived from them ([`SPEED_GRANTS`]), so a fresh pawn carries 5 stats,
@@ -208,18 +199,22 @@ pub fn fresh_player_profile(pak: &mut DataPak, values: &FreshPlayerValues) -> Re
         .collect();
     let mut tables = BTreeMap::new();
     for table in &present {
-        tables.insert(*table, names_only(pak, table)?);
+        tables.insert(*table, Vec::new());
     }
+    let catalog_stats = names_only(pak, STATS_TABLE)?;
     let stats = tables.get_mut(STATS_TABLE).context("stats table")?;
     for (grant, (base, derived, _)) in values.grants().into_iter().enumerate() {
-        row_index(stats, STATS_TABLE, base)?;
-        let id = row_index(stats, STATS_TABLE, derived)?;
+        row_index(&catalog_stats, STATS_TABLE, base)?;
+        let id = row_index(&catalog_stats, STATS_TABLE, derived)?;
         if grant < SPEED_GRANTS {
             ensure!(
                 !CLIENT_RESCALED_STATS.contains(&id),
                 "the {STATS_TABLE} catalog puts {derived} at stat {id}, which the client rescales health or stamina by"
             );
-            stats[id].insert(REPLICATED_FIELD.to_owned(), true.into());
+            stats.push(Map::from_iter([
+                ("Name".to_owned(), derived.into()),
+                (REPLICATED_FIELD.to_owned(), true.into()),
+            ]));
         }
     }
     let granted: Map<String, Value> = values
@@ -227,13 +222,27 @@ pub fn fresh_player_profile(pak: &mut DataPak, values: &FreshPlayerValues) -> Re
         .iter()
         .map(|(base, _, value)| (format!("(Value=\"{base}\")"), Value::from(*value)))
         .collect();
+    row_index(
+        &names_only(pak, STARTING_STATS_TABLE)?,
+        STARTING_STATS_TABLE,
+        STARTING_STATS_ROW,
+    )?;
     let starting = tables
         .get_mut(STARTING_STATS_TABLE)
         .context("starting stats table")?;
-    row_mut(starting, STARTING_STATS_TABLE, STARTING_STATS_ROW)?
-        .insert("StatsGranted".to_owned(), Value::Object(granted));
+    starting.push(Map::from_iter([
+        ("Name".to_owned(), STARTING_STATS_ROW.into()),
+        ("StatsGranted".to_owned(), Value::Object(granted)),
+    ]));
+    row_index(
+        &names_only(pak, INVENTORY_TABLE)?,
+        INVENTORY_TABLE,
+        PLAYER_INVENTORY_ROW,
+    )?;
     let inventory = tables.get_mut(INVENTORY_TABLE).context("inventory table")?;
-    row_mut(inventory, INVENTORY_TABLE, PLAYER_INVENTORY_ROW)?
-        .insert("Inventories".to_owned(), Value::Array(Vec::new()));
+    inventory.push(Map::from_iter([
+        ("Name".to_owned(), PLAYER_INVENTORY_ROW.into()),
+        ("Inventories".to_owned(), Value::Array(Vec::new())),
+    ]));
     Ok(json!({"schema_version": SCHEMA_VERSION, "tables": tables}))
 }

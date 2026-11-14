@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-13
+Last reconciled: 2026-11-14
 
 F-968 is retired in favor of F-1175.
 
@@ -70,4 +70,5 @@ F-968 is retired in favor of F-1175.
 | F-1035 | Explicit store-drop unlock releases advisory ownership despite a surviving duplicate descriptor; live owners still exclude successors | measured | authored-test; M-1296 | high; local Linux; models transient fork inheritance; no network-filesystem or power-loss claim | U-035 | active |
 | F-1053 | Authored last-key whole-validation medians at 4096 stacks/1024 item types fall from 37.2–38.6 ms to 2.87–2.95 ms with sorted contract lookups | measured | authored-benchmark; M-1332 | high; 3 pairs × 5 samples × 20 iterations; matching workload digests; no global/frame/client/ICARUS claim | U-049 | active |
 | F-1172 | Schema 13 retains server-edited vitals/checkpoint by accepted account+matching slot; reliable pressure retries; reconnect restores state | measured | authored-test; M-1396; a836cfba | high; authored peers, fresh foundation only; generation receipt excludes later edits; no client/gameplay/import proof | U-038 | active |
-| F-1175 | User renews offline/online research, Steam/network, matched server and stock-client runs on 2026-11-13; no per-scenario approval | observed | authorization; M-1103, M-1138, M-1155, M-1177, M-1179, M-1183, M-1191, M-1201, M-1245, M-1273, M-1307, M-1331, M-1334, M-1359, M-1375, M-1397, M-1400 | high; technical gates remain; client play needs user | U-038, U-047, U-052 | active |
+| F-1175 | User renews offline/online research, Steam/network, matched server and stock-client runs on 2026-11-14; no per-scenario approval | observed | authorization; M-1103, M-1138, M-1155, M-1177, M-1179, M-1183, M-1191, M-1201, M-1245, M-1273, M-1307, M-1331, M-1334, M-1359, M-1375, M-1397, M-1400, M-1408 | high; technical gates remain; client play needs user | U-038, U-047, U-052 | active |
+| F-1179 | Sparse authored gameplay binds named rows; unrelated catalog row changes preserve recipe bytes and schema-14 player checkpoints | measured | authored-test; M-1410 | high; 57 tests; bounds/defaults, missing-row refusal, save/reload; schema 1 and input digests unchanged; no stock-client proof | U-038 | active |

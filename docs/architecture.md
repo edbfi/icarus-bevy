@@ -145,10 +145,24 @@ installed index at open, so rows inserted, removed or reordered around it change
 nothing; a missing row, or one moved past index 255, refuses naming table and
 row. `CurrentBiome` is not stored: no biome table is loaded, every pawn opens
 with row 0 and a checkpoint with another value refuses. No wire handle is stored.
-A release can still refuse a store indirectly: authored tables must match the
-installed rows, so a patch that adds, removes or reorders rows of a table that
-`network.authored_gameplay` mirrors forces an edit of that file, after which the
-store refuses (`network.authored_gameplay differs`).
+
+Authored gameplay schema 1 retains its strict full catalog row-count/name/order
+contract. Schema 2 supplies sparse rows keyed by name, in any order. The loader
+normalizes each supplied table to installed catalog order, creating name-only
+objects with parser defaults for omitted rows. Missing required tables,
+unknown/duplicate/invalid authored names and ambiguous catalogs reject. No
+packaged gameplay values fill omitted rows or fields.
+Schema-2 expansion is capped across supplied tables at 262,144 rows and 8 MiB
+of UTF-8 row-name bytes, independently of the 8 MiB recipe-file limit.
+
+The fresh-player generator emits a deterministic minimal schema-2 recipe:
+unrelated catalog row insertions, removals or reordering do not change its bytes.
+Its skeleton mode remains a full schema-1 template. A schema-14 store still binds
+the exact recipe bytes; schema-2 stores can therefore survive unrelated catalog
+churn without editing their recipe. Schema-1 recipes still require a matching
+full catalog; converting an existing store's recipe to schema 2 changes the input
+and refuses (`network.authored_gameplay differs`). Persistence remains schema 14;
+no conversion, automatic reset or new client qualification is implied.
 
 Keys require an accepted live ticket request, Joined admission and matching
 nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP

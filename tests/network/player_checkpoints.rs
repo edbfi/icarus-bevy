@@ -330,6 +330,230 @@ fn inserted_and_reordered_growth_rows_resolve_stored_rows_by_name() {
 }
 
 #[test]
+fn sparse_recipe_reopens_players_across_catalog_changes_without_reauthoring() {
+    let (directory, config) = inputs();
+    let recipe = fs::read(config.authored_gameplay.as_ref().unwrap()).unwrap();
+    let (original, stored) = stored_players(&config, &[(3, "Player"), (4, "Creature")]);
+    let before = opened_checkpoints(&stored, &original, &[3, 4]);
+    let original_names = DataPak::open(config.data_pak.as_ref().unwrap())
+        .unwrap()
+        .table_rows("D_Stats")
+        .unwrap();
+    for variant in ["insert", "reorder", "remove-unused"] {
+        let mut names = original_names.clone();
+        match variant {
+            "insert" => names.insert(21, "UnusedInserted".into()),
+            "reorder" => names[21..].reverse(),
+            "remove-unused" => {
+                names.remove(20);
+            }
+            _ => unreachable!(),
+        }
+        let pak = directory.path().join(format!("{variant}.pak"));
+        fs::write(
+            &pak,
+            pak_writer::fresh_join_pak_with(&[
+                (
+                    "Stats/D_Stats.json",
+                    pak_writer::table_json(&names.iter().map(String::as_str).collect::<Vec<_>>()),
+                ),
+                (
+                    "Traits/D_Inventory.json",
+                    pak_writer::table_json(&["Player", "UnusedInventory"]),
+                ),
+                (
+                    "Stats/D_CharacterStartingStats.json",
+                    pak_writer::table_json(&["UnusedStarting", "Base_Stats"]),
+                ),
+                (
+                    "Factions/D_FactionMissions.json",
+                    pak_writer::table_json(&["OtherMission", "Mission_Z"]),
+                ),
+            ]),
+        )
+        .unwrap();
+        // Generation itself is stable: only authored values/names are written,
+        // even when unused packaged rows change and wire indices move.
+        let regenerated = fresh_player_profile(
+            &mut DataPak::open(&pak).unwrap(),
+            &FreshPlayerValues::default(),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_vec(&regenerated).unwrap(), recipe);
+        let changed = NetworkConfig {
+            data_pak: Some(pak.clone()),
+            ..config.clone()
+        };
+        let (_, prepared) =
+            network::prepare_run(&changed, network::peer_lab_config(&changed)).unwrap();
+        let prepared = prepared.unwrap();
+        let mut reopened = stored.clone();
+        network::open_player_snapshot(&mut reopened, Some(&prepared)).unwrap();
+        assert_eq!(checkpoints(&reopened, &[3, 4]), before, "{variant}");
+        let mut tables = icarus_bevy::data_pak::DataTables::runtime_bytes(&pak, &recipe).unwrap();
+        let stats = icarus_bevy::pawn_stats::fresh_player_stats(
+            &mut tables,
+            network::STARTING_STATS_TABLE,
+            network::STARTING_STATS_ROW,
+        )
+        .unwrap();
+        let mut expected = FreshPlayerValues::default()
+            .grants()
+            .into_iter()
+            .take(5)
+            .map(|(_, derived, value)| {
+                (
+                    names.iter().position(|name| name == derived).unwrap() as u32,
+                    value,
+                )
+            })
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|pair| pair.0);
+        assert_eq!(
+            stats
+                .items
+                .iter()
+                .map(|pair| (pair.stat, pair.value))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let server = ServerConfig {
+            network: changed.clone(),
+            ..Default::default()
+        };
+        let mut app = build_app(&server, &reopened).unwrap();
+        network::install_player_registry(app.world_mut(), Some(&prepared), &changed).unwrap();
+        let captured = capture(app.world_mut()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(state.path()).unwrap();
+        store.save(&captured).unwrap();
+        let reloaded = store.load().unwrap().unwrap().snapshot;
+        assert_eq!(opened_checkpoints(&reloaded, &prepared, &[3, 4]), before);
+        assert_eq!(
+            fs::read(config.authored_gameplay.as_ref().unwrap()).unwrap(),
+            recipe
+        );
+    }
+}
+
+#[test]
+fn removed_authored_row_or_granted_base_refuses_player_preflight() {
+    let (directory, config) = inputs();
+    let names = DataPak::open(config.data_pak.as_ref().unwrap())
+        .unwrap()
+        .table_rows("D_Stats")
+        .unwrap();
+    for (removed, reason) in [
+        ("MovementSpeed_+", "missing from the installed catalog"),
+        ("BaseMovementSpeed_+", "D_Stats lacks a granted stat"),
+    ] {
+        let remaining = names
+            .iter()
+            .filter(|name| name.as_str() != removed)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let pak = directory.path().join(format!("removed-{removed}.pak"));
+        fs::write(
+            &pak,
+            pak_writer::fresh_join_pak_with(&[(
+                "Stats/D_Stats.json",
+                pak_writer::table_json(&remaining),
+            )]),
+        )
+        .unwrap();
+        for enabled in [false, true] {
+            let mut changed = NetworkConfig {
+                enabled,
+                data_pak: Some(pak.clone()),
+                ..config.clone()
+            };
+            if enabled {
+                let declaration = changed.player_persistence.as_ref().unwrap();
+                changed.hosting = Some(icarus_bevy::native_hosting::HostingConfig {
+                    query_bind: "127.0.0.1".parse().unwrap(),
+                    query_port: 27015,
+                    private_ip: "127.0.0.1".parse().unwrap(),
+                    seconds: 60,
+                    name: "Authored workshop".into(),
+                    map_url: declaration.map_url.clone(),
+                    prospect_id: declaration.prospect_id.clone(),
+                    prospect_row: declaration.prospect_row.clone(),
+                    lobby_name: "Workshop".into(),
+                    difficulty: declaration.difficulty,
+                });
+            }
+            let error = network::prepare_run(&changed, network::peer_lab_config(&changed))
+                .err()
+                .unwrap();
+            assert!(
+                format!("{error:#}").contains(reason),
+                "{removed}: {error:#}"
+            );
+        }
+    }
+}
+
+#[test]
+fn changing_a_sparse_authored_value_still_refuses_the_player_store() {
+    let (_directory, config) = inputs();
+    let (_, stored) = stored_players(&config, &[(3, "Player")]);
+    let path = config.authored_gameplay.as_ref().unwrap();
+    let mut recipe: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    recipe["tables"]["D_CharacterStartingStats"][0]["StatsGranted"]["(Value=\"BaseMovementSpeed_+\")"] =
+        601.into();
+    fs::write(path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+    let (_, prepared) = network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    let mut refused = stored.clone();
+    let error = network::open_player_snapshot(&mut refused, prepared.as_ref()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("network.authored_gameplay differs"),
+        "{error:#}"
+    );
+    assert_eq!(refused, stored);
+}
+
+#[test]
+fn legacy_aligned_recipe_reopens_and_conversion_to_sparse_refuses_existing_store() {
+    let (_directory, config) = inputs();
+    let path = config.authored_gameplay.as_ref().unwrap();
+    let sparse = fs::read(path).unwrap();
+    let profile: serde_json::Value = serde_json::from_slice(&sparse).unwrap();
+    let mut tables = icarus_bevy::data_pak::DataTables::runtime_bytes(
+        config.data_pak.as_ref().unwrap(),
+        &sparse,
+    )
+    .unwrap();
+    let mut aligned = serde_json::Map::new();
+    for name in profile["tables"].as_object().unwrap().keys() {
+        aligned.insert(
+            name.clone(),
+            serde_json::json!(tables.objects(name).unwrap()),
+        );
+    }
+    fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({"schema_version":1,"tables":aligned})).unwrap(),
+    )
+    .unwrap();
+    let (prepared, stored) = stored_players(&config, &[(3, "Player")]);
+    let before = opened_checkpoints(&stored, &prepared, &[3]);
+    let (_, same) = network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    assert_eq!(
+        opened_checkpoints(&stored, same.as_ref().unwrap(), &[3]),
+        before
+    );
+    fs::write(path, sparse).unwrap();
+    let (_, converted) = network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    let mut refused = stored.clone();
+    let error = network::open_player_snapshot(&mut refused, converted.as_ref()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("network.authored_gameplay differs"),
+        "{error:#}"
+    );
+    assert_eq!(refused, stored);
+}
+
+#[test]
 fn removed_growth_row_refuses_naming_table_and_row_without_changes() {
     let (directory, config) = inputs();
     let (_, stored) = stored_players(&config, &[(3, "Player"), (4, "Creature")]);

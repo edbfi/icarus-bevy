@@ -1,6 +1,6 @@
 //! Write an independently authored gameplay profile (`network.authored_gameplay`,
 //! F-993) for a fresh player over the official server's `data.pak`: row
-//! names and order from the pak's catalog, every value from the flags below
+//! names checked against the pak's catalog, every value from the flags below
 //! (`gameplay_profile::fresh_player_profile`), or with `--skeleton TABLE`
 //! names-only rows of the listed tables for the operator to author.
 //! The written file is then loaded the way `run` and the join probe load it,

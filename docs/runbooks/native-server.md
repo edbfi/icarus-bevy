@@ -121,11 +121,10 @@ possession update and pawn; an abandoned update closes the session instead:
 `closed_by_possession_abandoned` (F-1116).
 Removal releases a session's GUID identities; GUIDs are never reused (F-1083).
 
-`authored_gameplay`: regular JSON ≤8 MiB, e.g.
-`{"schema_version":1,"tables":{"D_Example":[{"Name":"Example","Value":7}]}}`.
-Schematic, unplayable/unqualified. Match catalog row counts/names/order; author
-values, never copy gameplay tables. Missing tables: no pak fallback; omitted
-fields: parser defaults; neither input: lab defaults.
+`authored_gameplay`: regular JSON ≤8 MiB. Schema 1: full catalog counts/names/order.
+Schema 2: sparse named rows in any order; [binding](../architecture.md#persistence).
+Missing tables, unknown/duplicate/invalid names and ambiguous catalogs fail.
+Omitted rows/fields use parser defaults, never pak values; neither input: lab defaults.
 
 UID (F-948): handle 46; ≤262,144 claims/reservations/remaps each.
 Unreadable saved ID fails startup; failed claim skips open, counts
