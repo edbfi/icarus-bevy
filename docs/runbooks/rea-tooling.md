@@ -6,27 +6,22 @@ three reference environments. Rules for when to use REA are in
 
 ## REA runtime
 
-The project uses [REA](https://github.com/morluto/rea), pinned as
-`rea-agents@6.9.0` in `.agents/rea/package-lock.json`. Its wrapper and MCP
-configuration are local to this repository: Codex reads `.codex/config.toml`,
-Claude reads `.mcp.json`, and both discover the same skill through
-`.agents/skills/reverse-engineer-anything/` and its `.claude/skills/` link.
-Restore the locked runtime and check the Ghidra provider from the repository root:
+[REA](https://github.com/morluto/rea) is pinned to `rea-agents@6.9.0` in
+`.agents/rea/package-lock.json`. Codex uses `.codex/config.toml`, Claude
+`.mcp.json`; both use `.agents/skills/reverse-engineer-anything/` (linked under
+`.claude/skills/`). Restore and check from the repository root:
 
 ```bash
 npm ci --prefix .agents/rea --cache .agents/rea/.npm-cache
 .agents/rea/rea.sh doctor --provider ghidra --json
 ```
 
-Restart Codex and Claude after configuration changes and accept their project/MCP
-trust prompts when presented. Do not run upstream global setup; it would change
-configuration outside this repository. Preserve the package lock, skill
-provenance and third-party licenses when updating.
+Restart the client after configuration changes and accept project/MCP trust
+prompts. Do not run global setup; preserve locks, skill provenance and licenses.
 
-Doctor reports provider readiness; MCP `binary_session` verifies the live
-connection. Missing user-wide registrations are informational for this
-project-local setup. For `unsupported_version` and other Ghidra drift, follow
-"Ghidra drift" in `.agents/rules/project.md`. `rea.sh` prefers
+Doctor checks readiness; MCP `binary_session` checks the connection. User-wide
+registrations are unnecessary. Follow "Ghidra drift" in `.agents/rules/project.md`
+on `unsupported_version`. `rea.sh` prefers
 `~/.local/share/rea-ghidra/current` over Homebrew's Ghidra. It selects the
 declared minimum JDK, unversioned Homebrew JDK, or closest installed newer
 `openjdk@N`, in that order; explicit `JAVA_HOME` takes precedence.
@@ -48,6 +43,11 @@ JAVA_HOME="$SCOPED_JDK" "$SCOPED_GHIDRA/support/analyzeHeadless" <arguments>
 
 Bind symbols with `tools/pdb_public_symbols.cjs` and exception entries with
 `tools/pe_function_ranges.cjs`; neither proves ownership, instruction boundaries or whole functions.
+`tools/pdb_procedure_ranges.cjs` optionally retains up to 32 unresolved TPI/IPI
+references. `tools/pdb_selected_types.cjs` reads exact UDT headers or member-function
+signatures through separate APIs; numeric selectors never follow referents.
+All retain record provenance. Header identity and declared size prove no layout;
+legacy layout readers keep their strict member and overlap checks.
 Run `tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`
 with `-noanalysis`. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, physical-byte
 checks and inspected statuses. Pseudocode and listing installation are disabled;

@@ -5181,3 +5181,249 @@ test('ordinal-3 defensive extent fixtures enforce every mapped guard without rea
     a.equal(Object.hasOwn(require('../pdb_procedure_ranges.cjs'), 'THUNK32_FRAMING_CAPS'), false);
     a.equal(Object.hasOwn(require('../pdb_procedure_ranges.cjs'), 'scanModule'), false);
 });
+
+const typeReferenceQuery = (extra = {}) => query({include_procedure_type_references: true, ...extra});
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+function expectedProcedureReference(b, module_index, stream_id, record_offset) {
+    const kind = b.readUInt16LE(2);
+    return {module_index, stream_id, record_offset, record_kind_u16: kind, record_bytes: b.length,
+        record_sha256: sha256(b), type_reference: {
+            namespace: kind === 0x110f || kind === 0x1110 ? 'tpi' : 'ipi',
+            index_u32: b.readUInt32LE(28), resolved: false, index_range_qualified: false}};
+}
+
+test('procedure type references distinguish all four kinds at the same unqualified numeric index', () => {
+    for (const index of [0, 0x12345678, 0xffffffff]) {
+        const records = [0x110f, 0x1110, 0x1146, 0x1147].map(kind => proc({kind, type: index})),
+            p = pack(zeroTailFixture({modules: [{records}]})),
+            r = invokeFramedThunk3(p, undefined, typeReferenceQuery());
+        let at = 4;
+        a.deepEqual(r.procedure_type_references, records.map(b => {
+            const expected = expectedProcedureReference(b, 0, 9, at); at += b.length; return expected;
+        }));
+        a.deepEqual(r.procedure_type_references.map(v => v.type_reference.namespace), ['tpi', 'tpi', 'ipi', 'ipi']);
+        a.equal(r.addresses[0].procedure_records_sha256, sha256(Buffer.concat(records)));
+        a.equal(r.addresses[0].procedure_record_count, 4);
+        framedThunk3Result(r, 0);
+        // No TPI/IPI resolution: neither absent stream is accessed, and the
+        // entire physical read trace matches the existing metadata-only scan.
+        const legacy = pack(p);
+        const before = invokeFramedThunk3(legacy);
+        a.deepEqual(p.reads, legacy.reads);
+        const {procedure_type_references, ...old} = r;
+        a.deepEqual(old, before); a.equal(procedure_type_references.length, 4);
+    }
+});
+
+test('procedure type references absent and false retain byte-identical frozen legacy reports and reads', () => {
+    const defaultReport = JSON.stringify(runFramedThunk3()) + '\n';
+    // Frozen independently from parent main 3f99c9f's unmodified reader.
+    a.equal(sha256(defaultReport), 'd005c7fce213d38b542d886d978fb3b6a92c0efc53ecc260be92ee90524e0724');
+    const f = zeroTailFixture({modules: [
+        {records: [proc({name: Buffer.alloc(65496, 0x41)}), inlineesRecord([0xffffffff]), thunk3Record()]},
+        {records: [proc({kind: 0x1147}), proc()]},
+    ]});
+    for (const input of [zeroTailFixture(), f]) {
+        const absent = pack(input), disabled = pack(input), enabled = pack(input),
+            old = invokeFramedThunk3(absent),
+            off = invokeFramedThunk3(disabled, undefined, query({include_procedure_type_references: false})),
+            on = invokeFramedThunk3(enabled, undefined, typeReferenceQuery());
+        a.equal(JSON.stringify(old) + '\n', JSON.stringify(off) + '\n');
+        a.deepEqual(disabled.reads, absent.reads); a.deepEqual(enabled.reads, absent.reads);
+        a.ok(!Object.hasOwn(old, 'procedure_type_references'));
+        a.ok(!Object.hasOwn(off, 'procedure_type_references'));
+        const {procedure_type_references, ...legacy} = on;
+        a.equal(JSON.stringify(legacy) + '\n', JSON.stringify(old) + '\n');
+        a.equal(procedure_type_references.length, old.addresses[0].procedure_record_count);
+    }
+});
+
+test('procedure type references preserve duplicate aliases and module/stream/logical-offset order', () => {
+    const same = proc({type: 0x1000, name: 'NEVER_EXPORT/alias'}),
+        other = proc({kind: 0x1147, type: 0x1000, name: 'NEVER_EXPORT/alias'}), prefix = record(),
+        f = zeroTailFixture({modules: [
+            {stream: 18, records: [prefix, same, same, other]}, {stream: 9, records: [same]},
+        ], contributions: [{module_index: 1}, {module_index: 0}, {module_index: 0}]});
+    for (const extra of [{}, {module_indices: [1, 0]}]) {
+        const r = runFramedThunk3(f, typeReferenceQuery(extra));
+        a.deepEqual(r.procedure_type_references, [
+            expectedProcedureReference(same, 0, 18, 4 + prefix.length),
+            expectedProcedureReference(same, 0, 18, 4 + prefix.length + same.length),
+            expectedProcedureReference(other, 0, 18, 4 + prefix.length + 2 * same.length),
+            expectedProcedureReference(same, 1, 9, 4),
+        ]);
+        a.equal(r.addresses[0].procedure_record_count, 4);
+        a.equal(r.addresses[0].procedure_records_sha256, sha256(Buffer.concat([same, same, other, same])));
+        a.ok(!JSON.stringify(r).includes('NEVER_EXPORT'));
+        a.equal(r.unique_owner_confirmed, false); a.equal(r.names_exported, false);
+    }
+});
+
+test('procedure type references are immutable snapshots of copied records and private to each call', () => {
+    const selected = proc({kind: 0x1146, type: 0x87654321, name: 'NEVER_EXPORT/record'}),
+        f = zeroTailFixture({modules: [{records: [selected, inlineesRecord([4]), thunk3Record()]}, {}]}),
+        originals = f.streams.map(b => b === null ? null : Buffer.from(b)), exe = Buffer.from(f.exe),
+        q = Object.freeze({addresses: Object.freeze([VA]), include_procedure_type_references: true}),
+        p = pack(f), expected = runFramedThunk3(f, q);
+    let borrowed = null, nested = false;
+    const reader = {size: p.reader.size, read(o, n) {
+        if (!nested) {
+            nested = true;
+            a.deepEqual(runFramedThunk3(f, q), expected);
+            redactedThrows(() => runFramedThunk3(zeroTailFixture({modules: [{records: []}]}), q),
+                'ERR_PROCEDURE_ABSENT');
+        }
+        if (borrowed !== null) borrowed.fill(0xee);
+        borrowed = p.reader.read(o, n); return borrowed;
+    }};
+    const actual = invokeFramedThunk3(p, reader, q);
+    a.deepEqual(actual, expected); a.equal(nested, true);
+    a.deepEqual(f.streams, originals); a.deepEqual(f.exe, exe);
+    actual.procedure_type_references[0].type_reference.index_u32 = 7;
+    actual.procedure_type_references[0].record_sha256 = 'NEVER_EXPORT';
+    actual.procedure_type_references.push({});
+    a.deepEqual(runFramedThunk3(f, q), expected);
+    a.ok(!Object.hasOwn(runFramedThunk3(f), 'procedure_type_references'));
+});
+
+test('procedure type reference fixed cap accepts 32 and atomically refuses 33 including aliases across modules/addresses', () => {
+    for (const mode of ['one-module', 'many-modules', 'many-addresses']) {
+        const records = Array.from({length: 33}, (_, i) => proc({
+            offset: mode === 'many-addresses' ? 0x20 + Math.min(i, 31) * 4 : 0x20,
+            size: mode === 'many-addresses' ? 4 : 0x30,
+        }));
+        const addresses = mode === 'many-addresses' ? Array.from({length: 32}, (_, i) =>
+            '0x' + (BigInt(VA) + BigInt(i * 4)).toString(16)).reverse() : [VA];
+        const makeFixture = count => zeroTailFixture({modules: mode === 'many-modules' ?
+            Array.from({length: 32}, (_, i) => ({records: i === 31 ? records.slice(31, count) : [records[i]]})) :
+            [{records: records.slice(0, count)}]});
+        const exact = runFramedThunk3(makeFixture(32), typeReferenceQuery({addresses}));
+        a.equal(exact.procedure_type_references.length, 32);
+        a.equal(exact.addresses.reduce((sum, v) => sum + v.procedure_record_count, 0), 32);
+        redactedThrows(() => runFramedThunk3(makeFixture(33), typeReferenceQuery({addresses})), 'ERR_MODULE_BOUND');
+        for (const q of [query({addresses}), query({addresses, include_procedure_type_references: false})]) {
+            a.equal(runFramedThunk3(makeFixture(33), q).addresses.reduce((sum, v) => sum + v.procedure_record_count, 0), 33);
+        }
+    }
+    const unselected = Array.from({length: 33}, () => proc({offset: 0x60}));
+    a.equal(runFramedThunk3(zeroTailFixture({modules: [{records: [...unselected, proc()]}]}),
+        typeReferenceQuery()).procedure_type_references.length, 1);
+});
+
+test('procedure type reference option is a strict boolean validated before reader and PE access', () => {
+    let reads = 0, pe = 0;
+    const reader = new Proxy({}, {get() { reads++; throw Error('NEVER_EXPORT/reader'); }}),
+        exe = new Proxy({}, {get() { pe++; throw Error('NEVER_EXPORT/PE'); }}),
+        api = inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExactThunk3FramedOpaqueTail;
+    for (const value of [undefined, null, 0, 1, '', 'true', [], {}, new Boolean(true)]) {
+        redactedThrows(() => api(reader, exe, {}, query({include_procedure_type_references: value})), 'ERR_SELECTORS');
+    }
+    for (const extra of [{procedure_type_reference_limit: 32}, {max_procedure_type_references: 32},
+        {type_index: 0x1000}, {namespace: 'tpi'}, {names: ['NEVER_EXPORT']}, {output_bytes: 65536},
+        {[Symbol('NEVER_EXPORT')]: true}]) {
+        redactedThrows(() => api(reader, exe, {}, typeReferenceQuery(extra)), 'ERR_SELECTORS');
+    }
+    redactedThrows(() => api(reader, exe, {}, {addresses: [VA], get include_procedure_type_references() {
+        throw Error('NEVER_EXPORT/option');
+    }}), 'ERR_PDB_FRAMING');
+    a.equal(reads, 0); a.equal(pe, 0);
+    const nullPrototype = Object.assign(Object.create(null), typeReferenceQuery());
+    a.equal(runFramedThunk3(zeroTailFixture(), nullPrototype).procedure_type_references.length, 1);
+});
+
+test('procedure type references cannot widen any shared-profile query or earlier grammar', () => {
+    const calls = [inspect, inspectNamedStreamNiMacZero, inspectNamedStreamNiMacZeroAbsoluteTailFrameZero,
+        inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+        diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZero,
+        diagnoseUnsupportedSymbolNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+        diagnoseThunk32OrdinalNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact,
+        diagnoseSourceMappingNamedStreamNiMacZero, diagnoseSourceMappingIdentityNamedStreamNiMacZero,
+        diagnoseTailFrameNamedStreamNiMacZero];
+    for (const api of calls) for (const value of [false, true]) {
+        const reader = new Proxy({}, {get() { a.fail('option rejection precedes all reader access'); }}),
+            exe = new Proxy({}, {get() { a.fail('option rejection precedes all PE access'); }});
+        redactedThrows(() => api(reader, exe, {}, query({include_procedure_type_references: value})), 'ERR_SELECTORS');
+    }
+    const guarded = guardedSymbolKinds.filter(kind => ![0x1102, 0x1168].includes(kind));
+    for (const kind of guarded) redactedThrows(() => runFramedThunk3(zeroTailFixture({
+        modules: [{records: [proc(), record(kind)]}]}), typeReferenceQuery()), 'ERR_SYMBOL_UNSUPPORTED');
+    for (const kind of [0x115f, 0x1160, 0x1161, 0x1167]) redactedThrows(() => runFramedThunk3(zeroTailFixture({
+        modules: [{records: [proc(), record(kind)]}]}), typeReferenceQuery()), 'ERR_FASTLINK_UNSUPPORTED');
+});
+
+test('procedure type references refuse atomically on absence, late framing, conflict and source/identity guards', () => {
+    const malformed = record(); malformed.writeUInt16LE(65535);
+    const badName = proc(); badName.fill(0xff, 39);
+    const padded = proc({name: 'x'}); padded[padded.length - 1] = 0x22;
+    const cases = [[malformed, 'ERR_MODULE_FRAMING'], [badName, 'ERR_MODULE_FRAMING'],
+        [padded, 'ERR_MODULE_FRAMING'], [inlineesRecord([], {count: 1}), 'ERR_MODULE_FRAMING'],
+        [proc({size: 0x31}), 'ERR_PROCEDURE_CONFLICT'], [proc({size: 0}), 'ERR_PROCEDURE_SIZE'],
+        [proc({segment: 0}), 'ERR_SOURCE_MAPPING'], [thunk3Record({offset: 0x20}), 'ERR_PROCEDURE_CONFLICT'],
+        [thunk3Record({ordinal: 2}), 'ERR_SYMBOL_UNSUPPORTED']];
+    for (const [bad, code] of cases) for (const modules of [
+        [{records: [proc(), bad]}], [{records: [proc()]}, {records: [bad]}],
+    ]) redactedThrows(() => runFramedThunk3(zeroTailFixture({modules}), typeReferenceQuery()), code);
+    for (const records of [[], [record()], [proc({offset: 0x60})]]) {
+        redactedThrows(() => runFramedThunk3(zeroTailFixture({modules: [{records}]}), typeReferenceQuery()),
+            'ERR_PROCEDURE_ABSENT');
+    }
+    redactedThrows(() => runFramedThunk3(zeroTailFixture(), typeReferenceQuery({addresses: [VA, '0x140001021']})),
+        'ERR_PROCEDURE_ABSENT');
+    const badNi = zeroTailFixture({info: namedStreamNiMacZeroInfo({niMac: 1})}),
+        badIdentity = zeroTailFixture(), badMap = zeroTailFixture(), badSection = zeroTailFixture();
+    badIdentity.exe[badIdentity.rsds + 4] ^= 1;
+    badMap.streams[3].writeUInt16LE(4, badMap.scAt + badMap.sc.length + 70);
+    badSection.streams[8][12] ^= 1;
+    for (const [f, code] of [[badNi, 'ERR_NI_MAC_UNSUPPORTED'], [badIdentity, 'ERR_IDENTITY'],
+        [badMap, 'ERR_SOURCE_MAPPING'], [badSection, 'ERR_SOURCE_MAPPING']]) {
+        redactedThrows(() => runFramedThunk3(f, typeReferenceQuery()), code);
+    }
+    a.equal(runFramedThunk3(zeroTailFixture(), typeReferenceQuery()).procedure_type_references.length, 1);
+});
+
+test('procedure type reference late read faults discard every accumulated reference and redact exceptions', () => {
+    const f = zeroTailFixture({modules: [{records: [proc()]}, {records: [proc({kind: 0x1147})]}]});
+    const ForeignShared = require('node:vm').runInNewContext('SharedArrayBuffer');
+    for (const mode of ['throw', 'forged', 'short', 'null', 'shared', 'foreign']) {
+        const p = pack(f), guard = excludesPhysical(p, modulePhysicalIntervals(p, 12, 4, 8), (o, n) => {
+            a.ok(observedModuleIntervals(p, 9).some(r => r.offset === 4 && r.count === proc().length));
+            if (mode === 'throw') throw Error('NEVER_EXPORT/private-late-read');
+            if (mode === 'forged') throw {code: 'ERR_MODULE_BOUND', procedure_type_references: ['NEVER_EXPORT']};
+            if (mode === 'short') return Buffer.alloc(n - 1);
+            if (mode === 'null') return null;
+            return Buffer.from(mode === 'shared' ? new SharedArrayBuffer(n) : new ForeignShared(n));
+        });
+        redactedThrows(() => invokeFramedThunk3(p, guard.reader, typeReferenceQuery()),
+            ['throw', 'forged'].includes(mode) ? 'ERR_PDB_FRAMING' :
+                ['short', 'null'].includes(mode) ? 'ERR_SHORT_READ' : 'ERR_INPUT_BOUND');
+    }
+    a.equal(runFramedThunk3(f, typeReferenceQuery()).procedure_type_references.length, 2);
+});
+
+test('procedure type reference output shares the existing inclusive UTF-8 byte cap after full validation', () => {
+    const f = zeroTailFixture({modules: [{records: [proc()]}, {records: [proc({kind: 0x1147})]}]}),
+        stringify = JSON.stringify;
+    for (const bytes of [LIMITS.output - 1, LIMITS.output]) {
+        let finished = false;
+        JSON.stringify = function(value, ...args) {
+            const out = stringify.call(this, value, ...args);
+            if (!value || !Object.hasOwn(value, 'procedure_type_references')) return out;
+            a.equal(value.selected_modules.length, 2); a.equal(value.procedure_type_references.length, 2);
+            a.equal(value.addresses[0].procedure_record_count, 2);
+            finished = true;
+            const padding = bytes - Buffer.byteLength(out);
+            return out + 'é'.repeat(Math.floor(padding / 2)) + (padding % 2 ? ' ' : '');
+        };
+        try {
+            if (bytes === LIMITS.output - 1) a.equal(runFramedThunk3(f, typeReferenceQuery()).procedure_type_references.length, 2);
+            else redactedThrows(() => runFramedThunk3(f, typeReferenceQuery()), 'ERR_OUTPUT_BOUND');
+            a.equal(finished, true);
+        } finally { JSON.stringify = stringify; }
+    }
+    JSON.stringify = function(value, ...args) {
+        if (value && Object.hasOwn(value, 'procedure_type_references')) throw Error('NEVER_EXPORT/private-serializer');
+        return stringify.call(this, value, ...args);
+    };
+    try { redactedThrows(() => runFramedThunk3(f, typeReferenceQuery()), 'ERR_PDB_FRAMING'); }
+    finally { JSON.stringify = stringify; }
+});
