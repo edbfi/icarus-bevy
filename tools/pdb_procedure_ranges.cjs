@@ -110,12 +110,20 @@ const ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR = 'identity_sections_absolute_tail_frame_
 const INLINEES_COUNTED_U32_EXACT_GRAMMAR = 'inlinees_counted_u32_exact_v1';
 const THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR = 'thunk32_ordinal3_common_prefix_namez_opaque_tail_disjoint_v1';
 const THUNK32_FRAMING_CAPS = Object.freeze({records: 256, name: 1024, names: 65536});
+const PROCEDURE_TYPE_REFERENCE_CAP = 32;
 
-function selection(query) {
+function selection(query, allowProcedureTypeReferences = false) {
     need(query && typeof query === 'object' && !Array.isArray(query) &&
         (Object.getPrototypeOf(query) === Object.prototype || Object.getPrototypeOf(query) === null), 'ERR_SELECTORS');
-    need(Reflect.ownKeys(query).every(k => k === 'addresses' || k === 'module_indices') &&
+    need(Reflect.ownKeys(query).every(k => k === 'addresses' || k === 'module_indices' ||
+        (allowProcedureTypeReferences && k === 'include_procedure_type_references')) &&
         Object.hasOwn(query, 'addresses'), 'ERR_SELECTORS');
+    let includeProcedureTypeReferences = false;
+    if (Object.hasOwn(query, 'include_procedure_type_references')) {
+        const include = query.include_procedure_type_references;
+        need(typeof include === 'boolean', 'ERR_SELECTORS');
+        includeProcedureTypeReferences = include;
+    }
     const boundedArray = (v, max) => Array.isArray(v) && v.length >= 1 && v.length <= max &&
         Array.from({length: v.length}, (_, i) => Object.hasOwn(v, i)).every(Boolean);
     need(boundedArray(query.addresses, LIMITS.selectors), 'ERR_SELECTORS');
@@ -134,7 +142,7 @@ function selection(query) {
             new Set(modules).size === modules.length, 'ERR_SELECTORS');
         modules.sort((a, b) => a - b);
     }
-    return {addresses, modules};
+    return {addresses, modules, includeProcedureTypeReferences};
 }
 
 function infoFraming(m, identity) {
@@ -485,7 +493,7 @@ function extent(image, segment, offset, size, mappingSite, stage) {
 }
 
 function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGrammar, thunkSite = null,
-    thunkGrammar = null) {
+    thunkGrammar = null, procedureTypeReferences = null) {
     const {m, image} = ctx, code = 'ERR_MODULE_FRAMING', stream = mod.stream_id;
     const thunkFraming = thunkGrammar === THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR;
     const tail = mod.sym + mod.c11 + mod.c13;
@@ -591,6 +599,16 @@ function scanModule(ctx, mod, aggregates, totals, unsupportedSite, inlineesGramm
                 const mapping = extent(image, segment, offset, size, ctx.mappingSite, 'procedure');
                 need(selected.extent === null || JSON.stringify(selected.extent) === JSON.stringify(mapping), 'ERR_PROCEDURE_CONFLICT');
                 selected.extent = mapping; selected.count++; selected.bytes += n; selected.hash.update(b); matches++;
+                if (procedureTypeReferences !== null) {
+                    need(procedureTypeReferences.length < PROCEDURE_TYPE_REFERENCE_CAP, 'ERR_MODULE_BOUND');
+                    // Only numeric facts from this already-read complete record.
+                    // ID variants encode IPI, never an implicitly resolved TPI signature.
+                    procedureTypeReferences.push({module_index: mod.module_index, stream_id: stream,
+                        record_offset: at, record_kind_u16: kind, record_bytes: n,
+                        record_sha256: createHash('sha256').update(b).digest('hex'),
+                        type_reference: {namespace: kind === 0x110f || kind === 0x1110 ? 'tpi' : 'ipi',
+                            index_u32: b.readUInt32LE(28), resolved: false, index_range_qualified: false}});
+                }
             }
         } else opaque++;
         at += n;
@@ -609,7 +627,7 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
     unsupportedSite = null, inlineesGrammar = null, thunkSite = null, thunkGrammar = null) {
     try {
         // Selector validation is deliberately before any PE parsing or reader I/O.
-        const selected = selection(query),
+        const selected = selection(query, thunkGrammar === THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR),
             ctx = context(reader, exe, identity, niMacZero, mappingSite, segmentMapGrammar), {image, m} = ctx;
         for (const a of selected.addresses) {
             mappingNeed(a.value >= image.base && a.value < image.base + BigInt(image.imageBytes),
@@ -632,12 +650,13 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
         const aggregates = new Map(selected.addresses.map(a => [a.rva,
             {address: a.address, count: 0, bytes: 0, hash: createHash('sha256'), extent: null}]));
         const totals = {records: 0, procedures: 0, opaque: 0};
+        const procedureTypeReferences = selected.includeProcedureTypeReferences ? [] : null;
         const inlineesExact = inlineesGrammar === INLINEES_COUNTED_U32_EXACT_GRAMMAR;
         const thunkFraming = thunkGrammar === THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR;
         if (inlineesExact) totals.inlinees = {grammar: INLINEES_COUNTED_U32_EXACT_GRAMMAR, records: 0, entries: 0};
         if (thunkFraming) totals.thunks = {intervals: [], nameBytes: 0};
         const scanned = routing.indices.map(i => scanModule(ctx, modules[i], aggregates, totals, unsupportedSite,
-            inlineesGrammar, thunkSite, thunkGrammar));
+            inlineesGrammar, thunkSite, thunkGrammar, procedureTypeReferences));
         if (thunkFraming) {
             for (const t of totals.thunks.intervals) for (const a of aggregates.values()) {
                 if (a.extent !== null) need(t.start >= a.extent.end_rva || a.extent.start_rva >= t.end,
@@ -679,6 +698,9 @@ function inspectProfile(reader, exe, identity, query, niMacZero, mappingSite = n
             result.thunk32_profile = {grammar: THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR, records: count,
                 variant_data_read: false, variant_data_validated: false};
         }
+        // Routing scans ascending modules, each owning one stream, then logical
+        // record offsets. Preserve aliases/duplicates in that deterministic order.
+        if (procedureTypeReferences !== null) result.procedure_type_references = procedureTypeReferences;
         need(Buffer.byteLength(JSON.stringify(result) + '\n') <= LIMITS.output, 'ERR_OUTPUT_BOUND');
         return result;
     } catch (error) {
@@ -711,6 +733,8 @@ function inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExact(reader, e
 
 // Explicit ordinal-3 common-prefix/name framing, opaque unread remaining tail,
 // and disjoint declared intervals. Never full thunk or variant validation.
+// Only this entry point accepts include_procedure_type_references: at most 32
+// selected raw type words, unresolved and namespace-labelled, with no new reads.
 function inspectNamedStreamNiMacZeroAbsoluteTailFrameZeroInlineesExactThunk3FramedOpaqueTail(reader, exe, identity, query) {
     return inspectProfile(reader, exe, identity, query, true, null, ABSOLUTE_TAIL_FRAME_ZERO_GRAMMAR,
         null, INLINEES_COUNTED_U32_EXACT_GRAMMAR, null, THUNK32_FRAMED_OPAQUE_TAIL_GRAMMAR);
