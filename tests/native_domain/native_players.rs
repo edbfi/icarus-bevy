@@ -7,8 +7,8 @@ use icarus_bevy::{
     },
     native_player_runtime::{PlayerRegistry, install},
     native_players::{
-        MAX_PLAYERS_PER_ACCOUNT, PlayerCheckpoint, PlayerContext, PlayerError, PlayerKey,
-        PlayerSnapshot,
+        MAX_PLAYERS_PER_ACCOUNT, PlayerCheckpoint, PlayerContext, PlayerError, PlayerInputs,
+        PlayerKey, PlayerSnapshot, StoreRefusal,
     },
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
@@ -18,17 +18,27 @@ use icarus_bevy::{
 };
 use std::time::{Duration, Instant};
 
+fn inputs(byte: u8) -> PlayerInputs {
+    PlayerInputs {
+        authored_gameplay: [byte; 32],
+        spawn: [byte; 32],
+        authored_world: [byte; 32],
+        declaration: [byte; 32],
+        initial_values: [byte; 32],
+    }
+}
+fn rows() -> Vec<String> {
+    vec!["Player".into()]
+}
 fn context() -> PlayerContext {
+    context_with_rows(rows())
+}
+fn context_with_rows(rows: Vec<String>) -> PlayerContext {
     PlayerContext::new(
         "authored-prospect".encode_utf16().collect(),
         "/Authored/Checkpoint".into(),
-        &ReleasePin {
-            app_id: 2089300,
-            build_id: 7,
-            project_version: "authored".into(),
-            network_checksum: network_checksum("authored"),
-        },
-        [1; 32],
+        inputs(1),
+        rows,
     )
     .unwrap()
 }
@@ -351,18 +361,24 @@ fn live_limit_context_and_checkpoint_bounds_refuse_without_state_changes() {
         Err(PlayerError::InvalidState)
     );
     assert_eq!(players.snapshot(), before);
-    let release = ReleasePin {
-        app_id: 2089300,
-        build_id: 7,
-        project_version: "other".into(),
-        network_checksum: network_checksum("other"),
-    };
-    let changed = PlayerContext::new(vec![65], "/Other/Map".into(), &release, [2; 32]).unwrap();
+    let mut biome = checkpoint();
+    biome.vitals.biome_row = 1;
+    let mut growth = checkpoint();
+    growth.vitals.growth_row = 1;
+    for unstorable in [biome, growth] {
+        assert_eq!(
+            players.reserve(PlayerKey::new(2, 0).unwrap(), 3, unstorable),
+            Err(PlayerError::InvalidState)
+        );
+    }
+    assert_eq!(players.snapshot(), before);
+    let changed = PlayerContext::new(vec![65], "/Other/Map".into(), inputs(2), rows()).unwrap();
     assert!(matches!(
         PlayerRegistry::new(before, &changed, 1),
         Err(PlayerError::InvalidContext)
     ));
-    assert!(PlayerContext::new(vec![0xd800], "/Other/Map".into(), &release, [2; 32]).is_err());
+    assert!(PlayerContext::new(vec![0xd800], "/Other/Map".into(), inputs(2), rows()).is_err());
+    assert!(PlayerContext::new(vec![65], "/Other/Map".into(), inputs(0), rows()).is_err());
 }
 
 #[test]
@@ -394,28 +410,84 @@ fn reservation_epochs_follow_readiness_not_connection_creation_order() {
 }
 
 #[test]
-fn programmatic_context_rejects_spare_capacity_and_release_length_before_copying() {
+fn programmatic_context_rejects_spare_capacity_and_unbounded_rows_before_copying() {
+    let mut prospect = Vec::with_capacity(100_000);
+    prospect.push(65);
+    assert!(matches!(
+        PlayerContext::new(prospect, "/Authored/Map".into(), inputs(1), rows()),
+        Err(PlayerError::Limit)
+    ));
+    let mut map = String::with_capacity(100_000);
+    map.push_str("/Authored/Map");
+    assert!(matches!(
+        PlayerContext::new(vec![65], map, inputs(1), rows()),
+        Err(PlayerError::Limit)
+    ));
+    let new = |rows| PlayerContext::new(vec![65], "/Authored/Map".into(), inputs(1), rows);
+    assert!(matches!(
+        new(vec!["A".repeat(1025)]),
+        Err(PlayerError::Limit)
+    ));
+    assert!(matches!(
+        new((0..65_537).map(|row| row.to_string()).collect()),
+        Err(PlayerError::Limit)
+    ));
+    // A duplicate or empty name could not resolve back to one row.
+    for invalid in [vec!["Player".into(), "Player".into()], vec![String::new()]] {
+        assert!(matches!(new(invalid), Err(PlayerError::InvalidContext)));
+    }
+}
+
+#[test]
+fn release_is_validated_provenance_and_never_part_of_the_binding() {
     let mut release = ReleasePin {
         app_id: 2089300,
         build_id: 7,
         project_version: "authored".into(),
         network_checksum: network_checksum("authored"),
     };
-    let mut prospect = Vec::with_capacity(100_000);
-    prospect.push(65);
-    assert!(matches!(
-        PlayerContext::new(prospect, "/Authored/Map".into(), &release, [1; 32]),
-        Err(PlayerError::Limit)
-    ));
-    let mut map = String::with_capacity(100_000);
-    map.push_str("/Authored/Map");
-    assert!(matches!(
-        PlayerContext::new(vec![65], map, &release, [1; 32]),
-        Err(PlayerError::Limit)
-    ));
+    let fresh = PlayerSnapshot::fresh(context(), &release).unwrap();
+    assert_eq!(fresh.written_under(), Some(&release));
+    // Same binding under any release: the registry accepts it unchanged.
+    PlayerRegistry::new(fresh, &context(), 1).unwrap();
     release.project_version = "A".repeat(513);
-    assert!(matches!(
-        PlayerContext::new(vec![65], "/Authored/Map".into(), &release, [1; 32]),
-        Err(PlayerError::Limit)
-    ));
+    release.network_checksum = network_checksum(&release.project_version);
+    assert_eq!(
+        PlayerSnapshot::fresh(context(), &release).err(),
+        Some(PlayerError::InvalidContext)
+    );
+}
+
+#[test]
+fn stored_row_moved_past_the_row_handle_range_refuses_instead_of_truncating() {
+    let mut players = registry();
+    players
+        .reserve(PlayerKey::new(1, 0).unwrap(), 1, checkpoint())
+        .unwrap();
+    players.activate(1).unwrap();
+    let stored =
+        serde_json::from_value::<PlayerSnapshot>(serde_json::to_value(players.snapshot()).unwrap())
+            .unwrap();
+    let mut moved = (0..300)
+        .map(|row| format!("Inserted_{row}"))
+        .collect::<Vec<_>>();
+    moved.push("Player".into());
+    let release = ReleasePin {
+        app_id: 2089300,
+        build_id: 7,
+        project_version: "authored".into(),
+        network_checksum: network_checksum("authored"),
+    };
+    let mut snapshot = stored.clone();
+    assert_eq!(
+        snapshot.open(&context_with_rows(moved), &release),
+        Err(StoreRefusal::RowOutOfRange {
+            table: "D_CharacterGrowth",
+            row: "Player".into(),
+            index: 300,
+        })
+    );
+    assert_eq!(snapshot, stored);
+    // The same store opens where the row stays representable.
+    snapshot.open(&context(), &release).unwrap();
 }

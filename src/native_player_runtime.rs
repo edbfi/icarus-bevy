@@ -78,6 +78,7 @@ impl PlayerRegistry {
             None
         } else {
             initial.validate()?;
+            self.snapshot.context().check_rows(&initial)?;
             let pending = self
                 .attachments
                 .values()
@@ -201,7 +202,9 @@ impl PlayerRegistry {
         self.attachments.keys().copied().collect()
     }
 }
-/// Configure an already activated schema-13 registry, never migrate old state.
+/// Configure an already opened player registry, never migrate old state. A
+/// stored snapshot must have been opened against `expected` first
+/// ([`PlayerSnapshot::open`]), which resolves its rows to the installed order.
 pub fn install(world: &mut World, expected: &PlayerContext, max_live: usize) -> anyhow::Result<()> {
     let mut registry = world
         .get_resource_mut::<PlayerRegistry>()

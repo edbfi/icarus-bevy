@@ -1,15 +1,36 @@
 //! Independently authored checkpoints. Keys are private; construction is not authentication.
+//!
+//! A store is bound to its world (prospect and map) and to one digest per
+//! operator-authored input that defines gameplay, so a refusal names the input
+//! that changed. The game release is provenance only: it is recorded when a
+//! store is opened or created, written with it and never compared, so a new
+//! game release alone never refuses a store. A checkpoint's growth row is
+//! stored as its table and row name, never as an index, and is resolved
+//! against the installed rows when the store is opened ([`PlayerSnapshot::open`]).
 use crate::experimental::{
     pawn_open::CharacterVitals,
     release::{DEDICATED_SERVER_APP_ID, ReleasePin, network_checksum},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 pub const MAX_PLAYERS: usize = 4096;
 pub const MAX_PLAYERS_PER_ACCOUNT: usize = 64;
 /// Conservative validated-state/encoding allowance, not a peak JSON-parser/RSS claim.
 pub const MAX_PLAYER_BYTES: usize = 4 * 1024 * 1024;
+/// The game-data table a checkpoint's `growth_row` indexes.
+pub const GROWTH_TABLE: &str = crate::network::CHARACTER_GROWTH_TABLE;
+/// The only `CurrentBiome` value a checkpoint holds. The server loads no biome
+/// table and opens every pawn with this value, so the biome is not player
+/// state: it is never stored, and a checkpoint with another value refuses
+/// rather than being stored with a meaning the installed data could change.
+pub const FRESH_BIOME_ROW: u8 = 0;
+/// Bounds of the installed growth-row names a context retains.
+const MAX_GROWTH_ROWS: usize = 65_536;
+const MAX_ROW_NAME_BYTES: usize = 1024;
+const MAX_GROWTH_ROW_BYTES: usize = 1024 * 1024;
+/// A 1-byte row handle reaches rows 0..=255; more distinct stored names are invalid.
+const MAX_STORED_GROWTH_ROWS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerError {
@@ -29,6 +50,60 @@ impl std::fmt::Display for PlayerError {
     }
 }
 impl std::error::Error for PlayerError {}
+
+/// Why [`PlayerSnapshot::open`] refused a stored player store. Every variant
+/// leaves the store unchanged; none resets or guesses a field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoreRefusal {
+    /// `network.player_persistence.prospect_id` differs from the store's.
+    Prospect,
+    /// `network.player_persistence.map_url` differs from the store's.
+    Map,
+    /// These authored inputs differ from the ones the store was created with.
+    Inputs(Vec<&'static str>),
+    /// A stored row reference names a row the installed data does not have.
+    MissingRow {
+        table: &'static str,
+        row: String,
+    },
+    /// A stored row reference resolves past the 1-byte row handle range.
+    RowOutOfRange {
+        table: &'static str,
+        row: String,
+        index: usize,
+    },
+    Invalid(PlayerError),
+}
+impl std::fmt::Display for StoreRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const ASIDE: &str = "restore it or move the state directory aside to start a fresh store";
+        match self {
+            Self::Prospect => write!(
+                f,
+                "player store belongs to another world: network.player_persistence.prospect_id differs from the store's; {ASIDE}"
+            ),
+            Self::Map => write!(
+                f,
+                "player store belongs to another world: network.player_persistence.map_url differs from the store's; {ASIDE}"
+            ),
+            Self::Inputs(names) => write!(
+                f,
+                "player store input changed: {} differs from the input the store was created with; {ASIDE}",
+                names.join(", ")
+            ),
+            Self::MissingRow { table, row } => write!(
+                f,
+                "player store references {table} row {row:?}, which the installed game data no longer has; restore data with that row or move the state directory aside to start a fresh store"
+            ),
+            Self::RowOutOfRange { table, row, index } => write!(
+                f,
+                "player store references {table} row {row:?}, now at index {index}, past the 1-byte row handle range; move the state directory aside to start a fresh store"
+            ),
+            Self::Invalid(error) => error.fmt(f),
+        }
+    }
+}
+impl std::error::Error for StoreRefusal {}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PlayerKey {
@@ -50,50 +125,83 @@ impl std::fmt::Debug for PlayerKey {
     }
 }
 
+/// SHA-256 digests of the operator-authored inputs a store is bound to. The
+/// release file is deliberately absent: it is provenance, never a binding.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PlayerInputs {
+    /// The exact bytes of `network.authored_gameplay`.
+    pub authored_gameplay: [u8; 32],
+    /// `network.spawn`.
+    pub spawn: [u8; 32],
+    /// `network.authored_world`.
+    pub authored_world: [u8; 32],
+    /// `network.player_persistence`.
+    pub declaration: [u8; 32],
+    /// The resolved fresh-player values: starting maxima and the growth row by name.
+    pub initial_values: [u8; 32],
+}
+impl PlayerInputs {
+    fn named(&self) -> [(&'static str, [u8; 32]); 5] {
+        [
+            ("network.authored_gameplay", self.authored_gameplay),
+            ("network.spawn", self.spawn),
+            ("network.authored_world", self.authored_world),
+            ("network.player_persistence", self.declaration),
+            ("resolved initial player values", self.initial_values),
+        ]
+    }
+    fn changed(&self, current: &Self) -> Vec<&'static str> {
+        self.named()
+            .into_iter()
+            .zip(current.named())
+            .filter(|((_, stored), (_, current))| stored != current)
+            .map(|((name, _), _)| name)
+            .collect()
+    }
+}
+impl std::fmt::Debug for PlayerInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PlayerInputs(private)")
+    }
+}
+
+/// What a store is bound to, plus the growth-row names its checkpoint indices
+/// refer to. A context prepared at startup holds the installed row order; one
+/// read from storage holds the stored names until [`PlayerSnapshot::open`]
+/// resolves them, so it differs from the prepared context until then.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PlayerContext {
     prospect_id: Vec<u16>,
     map_url: String,
-    app_id: u32,
-    build_id: u64,
-    project_version: String,
-    network_checksum: u32,
-    recipe_sha256: [u8; 32],
+    inputs: PlayerInputs,
+    growth_rows: Arc<[String]>,
 }
 impl PlayerContext {
+    /// `growth_rows` lists the installed [`GROWTH_TABLE`] rows in order; a
+    /// checkpoint's `growth_row` is an index into it.
     pub fn new(
         prospect_id: Vec<u16>,
         map_url: String,
-        release: &ReleasePin,
-        recipe_sha256: [u8; 32],
+        inputs: PlayerInputs,
+        growth_rows: Vec<String>,
     ) -> Result<Self, PlayerError> {
-        // Check borrowed lengths and moved allocations before copying release text.
-        if release.project_version.len() > 512 || prospect_id.len() > 1024 || map_url.len() > 512 {
+        if prospect_id.len() > 1024 || map_url.len() > 512 {
             return Err(PlayerError::Limit);
         }
-        retained_context_bytes(
-            prospect_id.capacity(),
-            map_url.capacity(),
-            release.project_version.len(),
-        )?;
+        retained_context_bytes(prospect_id.capacity(), map_url.capacity())?;
+        check_growth_rows(&growth_rows)?;
         let value = Self {
             prospect_id,
             map_url,
-            app_id: release.app_id,
-            build_id: release.build_id,
-            project_version: release.project_version.clone(),
-            network_checksum: release.network_checksum,
-            recipe_sha256,
+            inputs,
+            growth_rows: growth_rows.into(),
         };
         value.validate()?;
         Ok(value)
     }
+    /// Row names are immutable after construction and checked there.
     fn validate(&self) -> Result<(), PlayerError> {
-        retained_context_bytes(
-            self.prospect_id.capacity(),
-            self.map_url.capacity(),
-            self.project_version.capacity(),
-        )?;
+        retained_context_bytes(self.prospect_id.capacity(), self.map_url.capacity())?;
         if self.prospect_id.is_empty()
             || self.prospect_id.len() > 1024
             || char::decode_utf16(self.prospect_id.iter().copied()).any(|c| c.is_err())
@@ -107,16 +215,20 @@ impl PlayerContext {
                 .split('/')
                 .skip(1)
                 .any(|s| s.is_empty() || s == "." || s == "..")
-            || self.app_id != DEDICATED_SERVER_APP_ID
-            || self.build_id == 0
-            || self.project_version.is_empty()
-            || self.project_version.len() > 512
-            || !self.project_version.is_ascii()
-            || self.project_version.chars().any(char::is_control)
-            || self.network_checksum != network_checksum(&self.project_version)
-            || self.recipe_sha256 == [0; 32]
+            || self
+                .inputs
+                .named()
+                .iter()
+                .any(|(_, digest)| *digest == [0; 32])
         {
             return Err(PlayerError::InvalidContext);
+        }
+        Ok(())
+    }
+    /// A checkpoint's row references must name rows this context lists.
+    pub(crate) fn check_rows(&self, checkpoint: &PlayerCheckpoint) -> Result<(), PlayerError> {
+        if usize::from(checkpoint.vitals.growth_row) >= self.growth_rows.len() {
+            return Err(PlayerError::InvalidState);
         }
         Ok(())
     }
@@ -125,6 +237,39 @@ impl std::fmt::Debug for PlayerContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PlayerContext(private)")
     }
+}
+
+fn check_growth_rows(rows: &[String]) -> Result<(), PlayerError> {
+    let mut bytes = 0usize;
+    let mut seen = BTreeSet::new();
+    if rows.len() > MAX_GROWTH_ROWS {
+        return Err(PlayerError::Limit);
+    }
+    for row in rows {
+        bytes = bytes.checked_add(row.len()).ok_or(PlayerError::Limit)?;
+        if row.len() > MAX_ROW_NAME_BYTES || bytes > MAX_GROWTH_ROW_BYTES {
+            return Err(PlayerError::Limit);
+        }
+        // A duplicate name could not be resolved back to the same row.
+        if row.is_empty() || !seen.insert(row.as_str()) {
+            return Err(PlayerError::InvalidContext);
+        }
+    }
+    Ok(())
+}
+
+fn validate_release(release: &ReleasePin) -> Result<(), PlayerError> {
+    if release.app_id != DEDICATED_SERVER_APP_ID
+        || release.build_id == 0
+        || release.project_version.is_empty()
+        || release.project_version.len() > 512
+        || !release.project_version.is_ascii()
+        || release.project_version.chars().any(char::is_control)
+        || release.network_checksum != network_checksum(&release.project_version)
+    {
+        return Err(PlayerError::InvalidContext);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -139,6 +284,7 @@ impl PlayerCheckpoint {
             .location_cm
             .iter()
             .any(|v| !v.is_finite() || v.abs() > 1_048_576.0)
+            || v.biome_row != FRESH_BIOME_ROW
             || [
                 (v.health, v.max_health),
                 (v.stamina, v.max_stamina),
@@ -215,6 +361,7 @@ impl PlayerRecord {
 #[derive(Clone, PartialEq)]
 pub struct PlayerSnapshot {
     pub(crate) context: PlayerContext,
+    written_under: Option<ReleasePin>,
     pub(crate) high_water: u64,
     pub(crate) records: Vec<PlayerRecord>,
 }
@@ -229,12 +376,25 @@ impl PlayerSnapshot {
     pub fn empty(context: PlayerContext) -> Self {
         Self {
             context,
+            written_under: None,
             high_water: 0,
             records: Vec::new(),
         }
     }
+    /// An empty store created under `release`, recorded as provenance only.
+    pub fn fresh(context: PlayerContext, release: &ReleasePin) -> Result<Self, PlayerError> {
+        validate_release(release)?;
+        let mut snapshot = Self::empty(context);
+        snapshot.written_under = Some(release.clone());
+        Ok(snapshot)
+    }
     pub fn context(&self) -> &PlayerContext {
         &self.context
+    }
+    /// The release the store was last opened or created under. Provenance for
+    /// logs and diagnostics; no check compares it.
+    pub fn written_under(&self) -> Option<&ReleasePin> {
+        self.written_under.as_ref()
     }
     pub fn len(&self) -> usize {
         self.records.len()
@@ -248,8 +408,72 @@ impl PlayerSnapshot {
             .find(|r| r.key == key)
             .map(|r| r.projection(false))
     }
+    /// Bind this store to the current startup context. The world and every
+    /// authored input must match; each stored growth row is resolved by name
+    /// against `expected`'s installed rows, so rows added, removed or reordered
+    /// around it change nothing. `release` becomes the store's provenance. On
+    /// refusal the snapshot is unchanged. Returns the previous provenance.
+    pub fn open(
+        &mut self,
+        expected: &PlayerContext,
+        release: &ReleasePin,
+    ) -> Result<Option<ReleasePin>, StoreRefusal> {
+        self.validate().map_err(StoreRefusal::Invalid)?;
+        expected.validate().map_err(StoreRefusal::Invalid)?;
+        validate_release(release).map_err(StoreRefusal::Invalid)?;
+        let stored = &self.context;
+        if stored.prospect_id != expected.prospect_id {
+            return Err(StoreRefusal::Prospect);
+        }
+        if stored.map_url != expected.map_url {
+            return Err(StoreRefusal::Map);
+        }
+        let changed = stored.inputs.changed(&expected.inputs);
+        if !changed.is_empty() {
+            return Err(StoreRefusal::Inputs(changed));
+        }
+        // Resolve each referenced stored name once, before changing anything.
+        let mut resolved = std::collections::BTreeMap::new();
+        for r in &self.records {
+            let stored_index = r.checkpoint.vitals.growth_row;
+            if resolved.contains_key(&stored_index) {
+                continue;
+            }
+            let row = stored
+                .growth_rows
+                .get(usize::from(stored_index))
+                .ok_or(StoreRefusal::Invalid(PlayerError::InvalidState))?;
+            let index = expected
+                .growth_rows
+                .iter()
+                .position(|name| name == row)
+                .ok_or_else(|| StoreRefusal::MissingRow {
+                    table: GROWTH_TABLE,
+                    row: row.clone(),
+                })?;
+            let index = u8::try_from(index).map_err(|_| StoreRefusal::RowOutOfRange {
+                table: GROWTH_TABLE,
+                row: row.clone(),
+                index,
+            })?;
+            resolved.insert(stored_index, index);
+        }
+        let mut records = self.records.clone();
+        for record in &mut records {
+            let row = &mut record.checkpoint.vitals.growth_row;
+            *row = *resolved
+                .get(row)
+                .ok_or(StoreRefusal::Invalid(PlayerError::InvalidState))?;
+        }
+        self.records = records;
+        self.context = expected.clone();
+        Ok(self.written_under.replace(release.clone()))
+    }
     pub fn validate(&self) -> Result<(), PlayerError> {
         self.context.validate()?;
+        if let Some(release) = &self.written_under {
+            validate_release(release)?;
+        }
         Self::check_capacity(self.records.len())?;
         let retained = self
             .records
@@ -266,6 +490,7 @@ impl PlayerSnapshot {
         for r in &self.records {
             PlayerKey::new(r.key.account, r.key.slot)?;
             r.checkpoint.validate()?;
+            self.context.check_rows(&r.checkpoint)?;
             if r.id == 0 || r.id > self.high_water || r.revision == 0 {
                 return Err(PlayerError::InvalidState);
             }
@@ -295,17 +520,41 @@ impl PlayerSnapshot {
 // Only these private storage DTOs serialize account identifiers. Never forward serde diagnostics.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct InputsDto {
+    authored_gameplay: [u8; 32],
+    spawn: [u8; 32],
+    authored_world: [u8; 32],
+    declaration: [u8; 32],
+    initial_values: [u8; 32],
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ContextDto {
     #[serde(deserialize_with = "bounded_prospect")]
     prospect_id: Vec<u16>,
     #[serde(deserialize_with = "bounded_text")]
     map_url: String,
+    #[serde(deserialize_with = "crate::json::object")]
+    inputs: InputsDto,
+}
+/// Provenance only: the release the store was last opened or created under.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseDto {
     app_id: u32,
     build_id: u64,
     #[serde(deserialize_with = "bounded_text")]
     project_version: String,
     network_checksum: u32,
-    recipe_sha256: [u8; 32],
+}
+/// A stored game-data row reference: the row's identity, never its index.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RowDto {
+    #[serde(deserialize_with = "bounded_text")]
+    table: String,
+    #[serde(deserialize_with = "bounded_row")]
+    row: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -316,22 +565,52 @@ struct RecordDto {
     revision: u64,
     location_cm: [f64; 3],
     vitals: [i32; 10],
-    biome_row: u8,
-    growth_row: u8,
+    #[serde(deserialize_with = "crate::json::object")]
+    growth_row: RowDto,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
+struct SnapshotOut<'a> {
+    context: ContextDto,
+    written_under: Option<ReleaseDto>,
+    high_water: u64,
+    records: Vec<RecordOut<'a>>,
+}
+#[derive(Serialize)]
+struct RecordOut<'a> {
+    account: u64,
+    slot: i32,
+    id: u64,
+    revision: u64,
+    location_cm: [f64; 3],
+    vitals: [i32; 10],
+    growth_row: RowOut<'a>,
+}
+#[derive(Serialize)]
+struct RowOut<'a> {
+    table: &'static str,
+    row: &'a str,
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SnapshotDto {
     #[serde(deserialize_with = "crate::json::object")]
     context: ContextDto,
+    #[serde(deserialize_with = "crate::json::optional_object")]
+    written_under: Option<ReleaseDto>,
     high_water: u64,
     #[serde(deserialize_with = "bounded_records")]
-    records: Vec<RecordDto>,
+    records: StoredRecords,
 }
-fn bounded_records<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<RecordDto>, D::Error> {
+/// Records whose growth index refers to `growth_rows`, the distinct stored
+/// row names in order of first use. Interning bounds retained names.
+struct StoredRecords {
+    records: Vec<PlayerRecord>,
+    growth_rows: Vec<String>,
+}
+fn bounded_records<'de, D: Deserializer<'de>>(d: D) -> Result<StoredRecords, D::Error> {
     struct V;
     impl<'de> serde::de::Visitor<'de> for V {
-        type Value = Vec<RecordDto>;
+        type Value = StoredRecords;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded private player records")
         }
@@ -339,12 +618,56 @@ fn bounded_records<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<RecordDto>, D:
             self,
             mut seq: A,
         ) -> Result<Self::Value, A::Error> {
-            let mut out = Vec::new();
+            let mut out = StoredRecords {
+                records: Vec::new(),
+                growth_rows: Vec::new(),
+            };
             while let Some(value) = seq.next_element::<crate::json::JsonObject<RecordDto>>()? {
-                if out.len() >= MAX_PLAYERS {
+                if out.records.len() >= MAX_PLAYERS {
                     return Err(serde::de::Error::custom("player record limit"));
                 }
-                out.push(value.0);
+                let r = value.0;
+                if r.growth_row.table != GROWTH_TABLE {
+                    return Err(serde::de::Error::custom("player record row table"));
+                }
+                let growth = match out
+                    .growth_rows
+                    .iter()
+                    .position(|row| *row == r.growth_row.row)
+                {
+                    Some(index) => index,
+                    None if out.growth_rows.len() < MAX_STORED_GROWTH_ROWS => {
+                        out.growth_rows.push(r.growth_row.row);
+                        out.growth_rows.len() - 1
+                    }
+                    None => return Err(serde::de::Error::custom("player record row limit")),
+                };
+                let v = r.vitals;
+                out.records.push(PlayerRecord {
+                    key: PlayerKey {
+                        account: r.account,
+                        slot: r.slot,
+                    },
+                    id: r.id,
+                    revision: r.revision,
+                    checkpoint: PlayerCheckpoint {
+                        location_cm: r.location_cm,
+                        vitals: CharacterVitals {
+                            health: v[0],
+                            max_health: v[1],
+                            stamina: v[2],
+                            max_stamina: v[3],
+                            oxygen: v[4],
+                            max_oxygen: v[5],
+                            water: v[6],
+                            max_water: v[7],
+                            food: v[8],
+                            max_food: v[9],
+                            biome_row: FRESH_BIOME_ROW,
+                            growth_row: u8::try_from(growth).map_err(serde::de::Error::custom)?,
+                        },
+                    },
+                });
             }
             Ok(out)
         }
@@ -357,22 +680,35 @@ impl Serialize for PlayerSnapshot {
         let c = &self.context;
         let mut records = self.records.iter().collect::<Vec<_>>();
         records.sort_by_key(|r| r.key);
-        let dto = SnapshotDto {
+        let dto = SnapshotOut {
             context: ContextDto {
                 prospect_id: c.prospect_id.clone(),
                 map_url: c.map_url.clone(),
-                app_id: c.app_id,
-                build_id: c.build_id,
-                project_version: c.project_version.clone(),
-                network_checksum: c.network_checksum,
-                recipe_sha256: c.recipe_sha256,
+                inputs: InputsDto {
+                    authored_gameplay: c.inputs.authored_gameplay,
+                    spawn: c.inputs.spawn,
+                    authored_world: c.inputs.authored_world,
+                    declaration: c.inputs.declaration,
+                    initial_values: c.inputs.initial_values,
+                },
             },
+            written_under: self.written_under.as_ref().map(|r| ReleaseDto {
+                app_id: r.app_id,
+                build_id: r.build_id,
+                project_version: r.project_version.clone(),
+                network_checksum: r.network_checksum,
+            }),
             high_water: self.high_water,
             records: records
                 .into_iter()
                 .map(|r| {
                     let v = r.checkpoint.vitals;
-                    RecordDto {
+                    // validate() checked every index against the context's rows.
+                    let row = c
+                        .growth_rows
+                        .get(usize::from(v.growth_row))
+                        .ok_or_else(|| serde::ser::Error::custom(PlayerError::InvalidState))?;
+                    Ok(RecordOut {
                         account: r.key.account,
                         slot: r.key.slot,
                         id: r.id,
@@ -390,11 +726,13 @@ impl Serialize for PlayerSnapshot {
                             v.food,
                             v.max_food,
                         ],
-                        biome_row: v.biome_row,
-                        growth_row: v.growth_row,
-                    }
+                        growth_row: RowOut {
+                            table: GROWTH_TABLE,
+                            row,
+                        },
+                    })
                 })
-                .collect(),
+                .collect::<Result<_, S::Error>>()?,
         };
         dto.serialize(s)
     }
@@ -405,49 +743,30 @@ impl<'de> Deserialize<'de> for PlayerSnapshot {
             .map_err(|_| serde::de::Error::custom("invalid private player checkpoint"))?
             .0;
         let c = dto.context;
-        let value = Self {
-            context: PlayerContext {
-                prospect_id: c.prospect_id,
-                map_url: c.map_url,
-                app_id: c.app_id,
-                build_id: c.build_id,
-                project_version: c.project_version,
-                network_checksum: c.network_checksum,
-                recipe_sha256: c.recipe_sha256,
+        let i = c.inputs;
+        let context = PlayerContext::new(
+            c.prospect_id,
+            c.map_url,
+            PlayerInputs {
+                authored_gameplay: i.authored_gameplay,
+                spawn: i.spawn,
+                authored_world: i.authored_world,
+                declaration: i.declaration,
+                initial_values: i.initial_values,
             },
+            dto.records.growth_rows,
+        )
+        .map_err(serde::de::Error::custom)?;
+        let value = Self {
+            context,
+            written_under: dto.written_under.map(|r| ReleasePin {
+                app_id: r.app_id,
+                build_id: r.build_id,
+                project_version: r.project_version,
+                network_checksum: r.network_checksum,
+            }),
             high_water: dto.high_water,
-            records: dto
-                .records
-                .into_iter()
-                .map(|r| {
-                    let v = r.vitals;
-                    PlayerRecord {
-                        key: PlayerKey {
-                            account: r.account,
-                            slot: r.slot,
-                        },
-                        id: r.id,
-                        revision: r.revision,
-                        checkpoint: PlayerCheckpoint {
-                            location_cm: r.location_cm,
-                            vitals: CharacterVitals {
-                                health: v[0],
-                                max_health: v[1],
-                                stamina: v[2],
-                                max_stamina: v[3],
-                                oxygen: v[4],
-                                max_oxygen: v[5],
-                                water: v[6],
-                                max_water: v[7],
-                                food: v[8],
-                                max_food: v[9],
-                                biome_row: r.biome_row,
-                                growth_row: r.growth_row,
-                            },
-                        },
-                    }
-                })
-                .collect(),
+            records: dto.records.records,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -484,33 +803,38 @@ fn bounded_prospect<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u16>, D::Erro
     d.deserialize_seq(Units)
 }
 fn bounded_text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    struct Text;
-    impl<'de> serde::de::Visitor<'de> for Text {
+    bounded_string::<D, 512>(d)
+}
+fn bounded_row<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    bounded_string::<D, MAX_ROW_NAME_BYTES>(d)
+}
+fn bounded_string<'de, D: Deserializer<'de>, const LIMIT: usize>(d: D) -> Result<String, D::Error> {
+    struct Text<const LIMIT: usize>;
+    impl<'de, const LIMIT: usize> serde::de::Visitor<'de> for Text<LIMIT> {
         type Value = String;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded private context")
         }
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
-            if value.len() > 512 {
+            if value.len() > LIMIT {
                 return Err(E::custom("player context limit"));
             }
             Ok(value.to_owned())
         }
         fn visit_string<E: serde::de::Error>(self, value: String) -> Result<String, E> {
-            if value.len() > 512 {
+            if value.len() > LIMIT {
                 return Err(E::custom("player context limit"));
             }
             Ok(value)
         }
     }
-    d.deserialize_string(Text)
+    d.deserialize_string(Text::<LIMIT>)
 }
 
-fn retained_context_bytes(units: usize, map: usize, project: usize) -> Result<usize, PlayerError> {
+fn retained_context_bytes(units: usize, map: usize) -> Result<usize, PlayerError> {
     let bytes = units
         .checked_mul(std::mem::size_of::<u16>())
         .and_then(|n| n.checked_add(map))
-        .and_then(|n| n.checked_add(project))
         .ok_or(PlayerError::Limit)?;
     if bytes > 8192 {
         return Err(PlayerError::Limit);
@@ -523,14 +847,20 @@ mod allocation_tests {
     use super::*;
     #[test]
     fn private_records_cannot_retain_unbounded_spare_capacity() {
-        let release = ReleasePin {
-            app_id: DEDICATED_SERVER_APP_ID,
-            build_id: 1,
-            project_version: "authored".into(),
-            network_checksum: network_checksum("authored"),
+        let inputs = PlayerInputs {
+            authored_gameplay: [1; 32],
+            spawn: [1; 32],
+            authored_world: [1; 32],
+            declaration: [1; 32],
+            initial_values: [1; 32],
         };
-        let context =
-            PlayerContext::new(vec![65], "/Authored/Map".into(), &release, [1; 32]).unwrap();
+        let context = PlayerContext::new(
+            vec![65],
+            "/Authored/Map".into(),
+            inputs,
+            vec!["Player".into()],
+        )
+        .unwrap();
         let mut snapshot = PlayerSnapshot::empty(context);
         snapshot.records =
             Vec::with_capacity(MAX_PLAYER_BYTES / std::mem::size_of::<PlayerRecord>() + 1);

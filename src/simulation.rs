@@ -64,8 +64,12 @@ pub const SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS: u32 = 10;
 pub const SNAPSHOT_SCHEMA_MODIFIER_OWNERS: u32 = 11;
 /// Independent authored stacked inventories with a reproducible initial recipe.
 pub const SNAPSHOT_SCHEMA_INVENTORY_OWNERS: u32 = 12;
-/// Independently authored player checkpoints in a non-preserved foundation world.
-pub const SNAPSHOT_SCHEMA_PLAYERS: u32 = 13;
+/// Retired player schema whose binding covered the release file's bytes. It
+/// cannot be re-verified and refuses to open; it is never migrated.
+pub const SNAPSHOT_SCHEMA_RELEASE_BOUND_PLAYERS: u32 = 13;
+/// Independently authored player checkpoints in a non-preserved foundation
+/// world, bound to the world and authored inputs but not to the game release.
+pub const SNAPSHOT_SCHEMA_PLAYERS: u32 = 14;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -249,7 +253,7 @@ impl WorldSnapshot {
         if self.schema_version == SNAPSHOT_SCHEMA_PLAYERS {
             self.native_players
                 .as_ref()
-                .context("schema 13 requires player checkpoints")?
+                .context("the player schema requires player checkpoints")?
                 .validate()?;
             ensure!(
                 self.preserved_prospect.is_none()
@@ -265,7 +269,7 @@ impl WorldSnapshot {
                     && self.native_inventories.is_none()
                     && self.native_inventory_owner_import.is_none()
                     && self.native_inventory_authority.is_none(),
-                "schema 13 supports only foundation state"
+                "the player schema supports only foundation state"
             );
             let mut ids = BTreeSet::new();
             for entity in &self.entities {

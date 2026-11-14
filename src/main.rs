@@ -1243,10 +1243,24 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             json!({"event": "recovered_previous_generation", "warning": "current snapshot was unusable; restored preceding committed state"})
         );
     }
-    let snapshot = loaded
+    let reopened = loaded.is_some();
+    let mut snapshot = loaded
         .map(|loaded| loaded.snapshot)
         .unwrap_or_else(|| network::fresh_player_snapshot(players.as_ref()));
-    network::validate_player_snapshot(&snapshot, players.as_ref())?;
+    let last_release = network::open_player_snapshot(&mut snapshot, players.as_ref())?;
+    if let (true, Some(players)) = (reopened, &players) {
+        // Provenance only: a store reopens under any release.
+        eprintln!(
+            "{}",
+            json!({
+                "event": "player_store_reopened",
+                "last_written_build_id": last_release.as_ref().map(|pin| pin.build_id),
+                "last_written_project_version": last_release.as_ref().map(|pin| pin.project_version.as_str()),
+                "build_id": players.release.build_id,
+                "project_version": players.release.project_version,
+            })
+        );
+    }
     ensure!(
         config.network.hosting.is_none() || snapshot.preserved_prospect.is_none(),
         "hosting preserved worlds require a qualified saved-map binding; only fresh authored hosting is supported"
