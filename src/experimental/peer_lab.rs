@@ -3515,18 +3515,13 @@ impl PeerLab {
 
     /// Establish this interval's eligibility from one bounded auth-event drain.
     /// No reservation, activation, projection refresh or property publication.
-    pub(crate) fn reconcile_player_authority(
-        &mut self,
-        registry: &mut PlayerRegistry,
-    ) -> Result<()> {
+    pub(crate) fn reconcile_player_authority(&mut self, registry: &mut PlayerRegistry) {
         if self.checkpoint_initial_vitals.is_none() {
-            return Ok(());
+            return;
         }
+        // Backend loss shuts down peers in this drain. Detach their epochs
+        // below, leaving no eligible debit while preserving committed capture.
         self.poll_authentication();
-        let backend_failed = self
-            .authenticator
-            .as_ref()
-            .is_some_and(|auth| !auth.is_available());
         let stale: Vec<_> = self
             .peers
             .iter()
@@ -3558,11 +3553,6 @@ impl PeerLab {
                 registry.detach(epoch);
             }
         }
-        ensure!(
-            !backend_failed,
-            "player authentication backend unavailable at eligibility cut"
-        );
-        Ok(())
     }
 
     /// Bounded synchronous bridge, sequenced after packet/auth polling and
@@ -3572,9 +3562,7 @@ impl PeerLab {
             return;
         };
         // Share the narrow eligibility cut with fixed-step consumption.
-        if self.reconcile_player_authority(registry).is_err() {
-            return;
-        }
+        self.reconcile_player_authority(registry);
         self.refresh_checkpoint_projections(registry);
         let live: BTreeSet<u64> = self
             .peers
@@ -21443,7 +21431,7 @@ mod tests {
         }
 
         #[test]
-        fn event_after_explicit_cut_applies_at_next_cut_and_backend_failure_latches() {
+        fn event_after_explicit_cut_applies_at_next_cut() {
             let (mut app, _socket, address, _client, backend) = attached();
             crate::network::reconcile_player_authority(app.world_mut()).unwrap();
             let before = app.world().resource::<PlayerRegistry>().snapshot();
@@ -21485,11 +21473,32 @@ mod tests {
                 app.world().resource::<PlayerRegistry>().snapshot(),
                 after_cut
             );
+        }
+
+        #[test]
+        fn backend_loss_detaches_before_debit_and_preserves_committed_capture() {
+            let (mut app, _socket, address, _client, backend) = attached();
+            app.world_mut().run_schedule(FixedUpdate);
+            let committed = app.world().resource::<PlayerRegistry>().snapshot();
+            assert_eq!(app.world().resource::<SimulationClock>().tick, 1);
             drop(backend);
             app.world_mut().run_schedule(FixedUpdate);
-            assert!(crate::native_player_runtime::consumption_runtime_health(app.world()).is_err());
+            assert_eq!(
+                app.world().resource::<PlayerRegistry>().snapshot(),
+                committed
+            );
+            assert!(
+                app.world()
+                    .resource::<PlayerRegistry>()
+                    .active_epochs()
+                    .is_empty()
+            );
+            assert!(!app.world().resource::<PeerLab>().has_peer(address));
             assert!(!app.world().resource::<PeerLab>().is_admitting());
-            assert!(capture(app.world_mut()).is_err());
+            assert!(crate::native_player_runtime::consumption_runtime_health(app.world()).is_ok());
+            let saved = capture(app.world_mut()).unwrap();
+            assert_eq!(saved.tick, 2);
+            assert_eq!(saved.native_players, Some(committed));
         }
 
         #[test]
