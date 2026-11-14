@@ -273,10 +273,11 @@ def release_table(text: str) -> tuple[int, int]:
 
 
 def rewrite_release(text: str, values: JsonObject) -> str:
-    """Set `[release]` to exactly `values`, keeping its comments and blank lines.
+    """Set `[release]` to exactly `values`, keeping standalone comment and blank lines.
 
-    Each existing key line is rewritten in place; a key not in `values` is
-    dropped and a missing one follows the last key line.
+    Each existing key line is rewritten in place as a whole, so a trailing
+    comment on it is not kept; a key not in `values` is dropped and a missing
+    one follows the last key line.
     """
     lines = text.splitlines(keepends=True)
     start, end = release_table(text)
