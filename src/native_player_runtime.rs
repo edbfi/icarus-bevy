@@ -954,8 +954,22 @@ pub struct ConsumptionConfig {
     pub food: i32,
 }
 impl ConsumptionConfig {
-    pub fn validate(self) -> Result<(), PlayerError> {
-        ConsumptionRates::new(self.oxygen, self.water, self.food).map(|_| ())
+    pub fn validate(self) -> anyhow::Result<()> {
+        for (field, rate) in [
+            ("oxygen", self.oxygen),
+            ("water", self.water),
+            ("food", self.food),
+        ] {
+            anyhow::ensure!(
+                (0..=10_000_000).contains(&rate),
+                "network.player_consumption.{field} must be 0..=10000000"
+            );
+        }
+        anyhow::ensure!(
+            self.oxygen != 0 || self.water != 0 || self.food != 0,
+            "network.player_consumption requires at least one positive rate"
+        );
+        Ok(())
     }
     fn for_tick(self, tick: u64, tick_hz: u32) -> ConsumptionRates {
         let delta = |rate: i32| {
@@ -1142,6 +1156,31 @@ pub(crate) fn install_consumption(
 #[cfg(test)]
 mod consumption_phase_tests {
     use super::*;
+    #[test]
+    fn consumption_toml_errors_name_the_invalid_key_or_zero_rule() {
+        let valid: ConsumptionConfig = toml::from_str("oxygen = 1\nwater = 2\nfood = 3\n").unwrap();
+        assert!(valid.validate().is_ok());
+        for field in ["oxygen", "water", "food"] {
+            for invalid in [-1, 10_000_001] {
+                let mut document = toml::Value::try_from(valid).unwrap();
+                document[field] = toml::Value::Integer(invalid);
+                let parsed: ConsumptionConfig = document.try_into().unwrap();
+                let message = parsed.validate().unwrap_err().to_string();
+                assert!(message.contains(&format!("network.player_consumption.{field}")));
+                assert!(message.contains("0..=10000000"));
+            }
+        }
+        let zero: ConsumptionConfig = toml::from_str("oxygen = 0\nwater = 0\nfood = 0\n").unwrap();
+        assert!(
+            zero.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("at least one positive rate")
+        );
+        assert!(
+            toml::from_str::<ConsumptionConfig>("oxygen=1\nwater=2\nfood=3\nunknown=4\n").is_err()
+        );
+    }
     fn declaration() -> crate::config::PlayerPersistenceConfig {
         crate::config::PlayerPersistenceConfig {
             prospect_id: "authored".into(),

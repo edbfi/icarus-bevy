@@ -56,3 +56,6 @@ Owner/Fixed-timestep checks precede Bevy time/polling and every debit, including
 offline consumption without a day clock. Failure latches: stop admission, refuse
 Finish/publication/capture and fail the runner. Resource reinsertion cannot
 clear failure; preserve the store and diagnose before restarting.
+
+Authentication backend loss closes peers and detaches their epochs before debit;
+committed player state remains capturable for shutdown.

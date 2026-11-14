@@ -2209,7 +2209,8 @@ pub fn reconcile_player_authority(world: &mut World) -> Result<()> {
         let mut registry = world
             .get_resource_mut::<crate::native_player_runtime::PlayerRegistry>()
             .context("player authority registry missing")?;
-        lab.reconcile_player_authority(&mut registry)
+        lab.reconcile_player_authority(&mut registry);
+        Ok(())
     })
 }
 
