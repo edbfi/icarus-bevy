@@ -10,7 +10,7 @@ const path = require('node:path');
 const {isProxy} = require('node:util').types;
 const {createHash} = require('node:crypto');
 const {msf, LIMITS} = require('./pdb_public_symbols.cjs');
-const {inspectSelectedTypes, inspectSelectedEnums, PROFILE, PARAMETER_PROFILE, ENUM_PROFILE} = require('./pdb_selected_types.cjs');
+const {inspectSelectedTypes, inspectSelectedEnums, PROFILE, PARAMETER_PROFILE, ENUM_PROFILE, DECLARATION_PROFILE} = require('./pdb_selected_types.cjs');
 const CAPS = Object.freeze({input_bytes: LIMITS.pdb, output_bytes: 65536, request_bytes: 65536});
 const ERROR = 'selected metadata request failed';
 const need = ok => { if (!ok) throw Error(ERROR); };
@@ -90,7 +90,7 @@ function run(request) {
         need(plain(id) && Reflect.ownKeys(id).length === 2 && Object.hasOwn(id, 'guid_bytes')
             && typeof id.guid_bytes === 'string' && /^[0-9a-f]{32}$/.test(id.guid_bytes)
             && Object.hasOwn(id, 'age') && Number.isInteger(id.age) && id.age > 0 && id.age <= 0xffffffff);
-        need([PROFILE, PARAMETER_PROFILE, ENUM_PROFILE].includes(request.profile));
+        need([PROFILE, PARAMETER_PROFILE, ENUM_PROFILE, DECLARATION_PROFILE].includes(request.profile));
         const bytes = snapshot(request.pdb_path, inputCap, request.pdb_bytes);
         need(createHash('sha256').update(bytes).digest('hex') === request.pdb_sha256);
         const container = msf({size: bytes.length, read: (offset, length) => bytes.subarray(offset, offset + length)});

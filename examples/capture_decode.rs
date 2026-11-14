@@ -57,7 +57,7 @@ use icarus_bevy::experimental::{
         PacketConfig, Payload, RELIABLE_SEQUENCE_LIMIT, Receiver, read_packet,
     },
     peer_lab::PeerLabConfig,
-    release::ReleaseProfile,
+    release::{InboundControllerRevision, ReleaseProfile},
     rep_layout::{
         MovementLevel, PawnLayoutVersion, RepCommand, RepLayoutCodec, RepLayoutLimits,
         RotationLevel, actionable_component_rep_layout, actor_component_rep_layout,
@@ -3044,20 +3044,18 @@ impl InboundConfig {
             self.engine_net_version == profile.engine_network_version,
             "engine net version does not match explicit release profile"
         );
-        // The component constants have no runtime per-release override.
-        // 3.0.32 is qualified by F-954/F-955/F-1015; 3.0.34 by F-1016.
-        // These are static framing bounds, not RPC parameter semantics.
-        let qualified = match profile.pin.build_id {
-            25_956_137 => "3.0.32",
-            26_313_077 => "3.0.34",
-            _ => bail!("inbound component bounds unavailable for this release"),
-        };
-        let qualified = ReleaseProfile::load(&ReleaseProfile::fixture_path(qualified))?;
+        // The typed revision selects the existing fixed component constants
+        // (149/27/8), never arbitrary per-release bounds or RPC semantics.
+        // profile.validate() checks its full identity/engine/class binding.
         ensure!(
-            profile.pin == qualified.pin
-                && profile.engine_network_version == qualified.engine_network_version
-                && profile.class_net_cache == qualified.class_net_cache,
-            "inbound field bounds require a qualified controller release profile"
+            matches!(
+                profile
+                    .qualifications
+                    .as_ref()
+                    .and_then(|q| q.inbound_controller),
+                Some(InboundControllerRevision::FixedComponentBoundsV1)
+            ),
+            "inbound component bounds unavailable for this release"
         );
         let guids = [
             self.backend_proxy_guid,

@@ -9,15 +9,13 @@ Last reconciled: 2026-11-14
 
 ## Summary
 
-Native foundation only (F-487). Steam auth/control Join observed (F-1009).
-In two bounded runs (one account) world entry no longer stalls at the loading
-screen: it clears once the server releases the pawn's frozen flag (F-1148),
-and the character stands on terrain at the default spawn (F-1149). It can
-look and jump but not walk, and its stats read 0 (F-1143, F-1147): the
-probe sent no stats, and walk speed is a stat (F-1157; U-080); move
-acknowledgements change nothing (F-1150). `run` unfreezes each pawn
-after its record ACK by default (F-1099), untested with a stock client.
-Compatibility remains unproven.
+Native foundation with partial stock-client observations (F-487). Protected
+production entry accepts Begin/profiles, finalises and releases the pawn; the
+owner reports walk/look/sprint/jump with authored speed stats (F-1185). The
+spawn is inside mountain geometry; collision and audio remain unqualified.
+Normal leave shows saving pending and returns to gameplay; Alt+F4 ends the
+session (F-1186). Foundation saves do not prove player persistence. Full
+compatibility remains unproven.
 
 Standing research authorization F-1175, renewed 2026-11-14 for offline and
 online work, still requires scoped cases.
@@ -44,7 +42,7 @@ Digests: [foundation](research/foundation/foundation.md) and
 1. Data F-828/F-829/F-831/F-832/F-993; saved rows F-861/F-866. Next: independent gameplay/reference qualification; no client dependency or packaged values.
 2. Import U-045/U-025: restoration unproven F-766/F-916. Candidates F-920/F-927/F-929; lifecycle/removal/timers F-930/F-937/F-940/F-931. Next: overrides, owner/row/subclass bindings and coordinates before all-or-nothing import. Publication stays closed (F-660); [procedures](runbooks/authored-worlds.md), costs F-926.
 3. Player state F-668/F-643; build ambiguity/time window F-635/F-896/F-685/F-878. Next: producing log U-040. Authored checkpoints F-1172; [Authored survival](runbooks/authored-survival.md) passes authored tests (F-1183); next: separately scoped client qualification.
-4. Network bounds F-841/F-975/F-1015/F-1016; restore F-973/F-978 to F-993/F-1054 to F-1056/F-1063/F-1064/F-1066; ticks/publication F-995 to F-1000. Next: environment/timing/callbacks U-069; new players F-947, refresh U-070, quests U-076. Empty hosting/save/reopen passes F-1170; CM deadline F-1180, password retry F-1181. Diagnostics F-1182 observed a protected Geometry stall F-1184: no accepted Begin/profile requests, one skipped subobject block; Begin absence is inconclusive. Skipped-block/drop metadata is authored-tested (F-1182); next: a scoped fresh-world restart-only comparison. World entry, movement, checkpoints and populated CM membership F-1171 remain unqualified (U-038/U-052). Preserved-world hosting refuses.
-5. Replication replay/scheduling F-762/F-761, lifecycle/costs F-938/F-952. Rotation awaits qualification. Native acknowledges moves behind a switch (F-1127, F-1128; no visible effect with a stock client, F-1150) and takes operator spawn points (F-1139, F-1140); the default spawn lands on terrain (F-1149). Next: a connected run with the probe's five speed stats (F-1168; U-080); saved-location placement (F-1134 to F-1138, M-1374) and spawn points with a stock client. Then properties/poses U-025, physics, velocity and stock-client behavior. [Protocol](specs/network/actor-channel.md); [configuration](runbooks/native-server.md#network-sessions-experimental).
+4. Network bounds F-841/F-975/F-1015/F-1016; restore F-973/F-978 to F-993/F-1054 to F-1056/F-1063/F-1064/F-1066; ticks/publication F-995 to F-1000. Protected production entry/locomotion F-1185 supersedes the pending restart comparison; leave/save UI fails F-1186. Next: bind ignored leave RPCs and completion, then populated membership F-1171 and checkpoint qualification. Preserved-world hosting refuses. Environment/timing U-069, refresh U-070 and quests U-076 remain open.
+5. Replication replay/scheduling F-762/F-761, lifecycle/costs F-938/F-952. Authored speed stats accompany stock-client locomotion F-1185; authoritative motion/physics, collision, audio and stat UI remain unqualified (U-025/U-080). Next: qualify operator spawn points F-1139/F-1140 after the mountain spawn, then saved-location placement F-1134 to F-1138/M-1374. [Protocol](specs/network/actor-channel.md); [configuration](runbooks/native-server.md#network-sessions-experimental).
 6. Reliability F-1029/F-1030/F-872/F-873/F-875/F-833/F-932/M-1055/F-877. Next: wall-clock holds/controller receipts and physical power loss U-035; no ICARUS performance proof F-871.
-7. Current pin/tags/profiles/rows F-1176 to F-1178 (static only); friends query F-1051; fields66/86 F-1052; runs finalise, record ACKed, UI stalls F-1084/F-1085. Original after 126 F-1068/F-1081, record F-1072 to F-1075, curtain F-1069/F-1076, tile gate F-1078 to F-1080; native record F-1077/F-1086, possession F-1088, run 3 F-1089, gaps F-1082/F-1087. Original answer to tile reports F-1090 to F-1095; native answer probe-only F-1097/F-1098 (server refuses the key), off the read path F-1104; S2 unfreezes the pawn F-1099/F-1100, native now too (F-1141). The screen is the blocker count (F-1101, F-1117, F-1124; ends F-1102/F-1103/F-1121; logs F-1123) held by the pawn's frozen blocker (F-1126; anchor F-1110 to F-1113): runs A/B cleared it with the release alone (F-1141 to F-1148; U-079 resolved); handle 26 F-1120. Next: a connected run with the five speed stats (F-1164 to F-1166, F-1168; U-080), then the `run` binary's default release with a stock client, saved-location placement, properties/poses (U-038); the probe-switch run is not scheduled; visibility stays gated. [Gates](gates.md).
+7. Current pin/tags/profiles/rows F-1176 to F-1178; selected static semantics only. Entry blockers and pawn release F-1099 to F-1104/F-1110 to F-1148; U-079 resolved. Protected production now reaches entry with default record-ACK release and restart-pawn F-1185; no causal isolation. Next: normal leave/save completion F-1186, placement and properties/poses U-038/U-025. Visibility remains gated; the probe-switch run is not scheduled. [Gates](gates.md).

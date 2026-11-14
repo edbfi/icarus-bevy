@@ -44,53 +44,49 @@ Provide official-settings import/mapping and report unsupported settings.
 
 ## Release tracking
 
-ICARUS ships weekly. The Hello network version hashes the project version
-string and is compared for exact equality (F-541, F-563); server code,
-gameplay-tag tables and paks change between builds (F-700, F-702).
-Release-specific protocol facts are therefore data, not code: a release is
-one complete profile file, its build id is only a label, and the library holds
-no per-release values.
+Hello hashes the project version and compares it for exact equality (F-541,
+F-563); weekly releases also change code, tags and paks (F-700, F-702).
+A complete profile carries protocol values; its build id selects none.
 
-- `config/release.toml` is the active release, validated by
-  `experimental::release::ReleaseProfile`. `[release]` (app, build, project
-  version, checked network checksum), `[tags]`, `[class_net_cache]` and
-  `[row_handles]` are required, since every enabled open takes its tag
-  encoding, field bounds and row widths from them; a missing one fails with
-  an error naming it, so pin-only files no longer load. `[player_controller]`,
-  `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and
-  `[level_actors]` are optional: absent turns that open off, never another
-  release's values.
-- Frozen profiles of selected historical releases live under
-  `tests/fixtures/releases/` (`3.0.32.toml`) for tests that need that
-  layout; tests and examples load them with `ReleaseProfile::fixture("3.0.32")`
-  or `fixture_path`. A release gets no fixture by default; where one exists
-  for the active release, a test requires the active profile to equal it.
-  The remaining gates keyed on build-id lists (quest class opens, visibility
-  decoding, inbound controller bounds) are the next piece of this design.
-- `tools/release_watch.py check` compares the pin with Steam's public branch
-  (anonymous app info); the daily `Release watch` workflow opens an issue when
-  the pin falls behind and closes resolved or superseded release issues.
-  `diff --older DIR --newer DIR` compares build IDs, versions, checksums, PE
-  section sizes and tag/node counts.
-- `pin --install DIR` rewrites only `[release]` in place and verifies the
-  result. The other sections stay but are unqualified for a new build, so
-  `[release]` records `sections_qualified_for_build_id`, the build they were
-  last qualified for, and the server refuses the file, naming both builds,
-  until the key is removed. Re-pinning that build clears the key; tests keep
-  it out of a committed pin. Only `pin` writes the key, so the refusal guards
-  only files it re-pinned: a hand edit of build id, version and checksum still
-  loads and serves the previous build's sections under the new version.
-- A weekly bump, until a qualifier tool generates profiles, is a qualified
-  edit of the data file: fetch the public server, run `diff` and `pin`,
-  re-derive each section for the new build (tags, class checksums, row
-  registry, layouts), write the values, remove the key and re-run the
-  compatibility scenarios. That re-derivation is the guard; the only other is
-  a frozen fixture for the active release, added only when a test needs it.
-  The release is only provenance to the player store, so neither a new
-  release nor any edit of this file refuses it ([persistence](#persistence)).
-  No Rust change is needed unless a wire structure changed.
-  Compatibility claims name the build they were made against; the native
-  server answers only the pinned version by default.
+- `config/release.toml` is active, validated by `ReleaseProfile`. Required
+  tables are `[release]` (app, build, version, checked checksum), `[tags]`,
+  `[class_net_cache]` and `[row_handles]`. Opens take their encoding, bounds
+  and row widths from these tables. Optional `[player_controller]`,
+  `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and `[level_actors]`
+  supply identities; absence turns that open off, with no fallback.
+- Optional `[qualifications]` declares typed `quest_catalog`,
+  `visibility_decode` and `inbound_controller` revisions. Missing declarations
+  disable the capability; unknown revisions fail parsing. Its complete pin,
+  engine/game versions and class-bound snapshot must equal the profile before
+  planning or decoder output. Runtime qualification reads no test fixture.
+  Editing both sides requires qualification; metadata cannot prove provenance.
+- `quest_classes_v1` selects the existing reviewed `QUEST_CLASSES` catalog
+  (F-935, M-1030), only declared on 3.0.31 server/client aliases and 3.0.32.
+  Visibility `normal_custom_v1` is declared only on 3.0.34/3.0.35 for conditional
+  decoding (F-1034). Caller archive/layout assertions, production switch refusal
+  and the [visibility gate](gates.md#before-enabling-visibility-dispatch-or-effects)
+  remain; metadata installs no dispatch or effects. Inbound
+  `fixed_component_bounds_v1` is declared only on 3.0.32/3.0.34, retaining full
+  identity/framing checks and fixed component bounds 149/27/8 (F-1015, F-1016,
+  M-1197). Output stays metadata-only; unknown components stay opaque. Active
+  3.0.36 declares none; F-1177 qualifies none of these capabilities.
+- Historical profiles under `tests/fixtures/releases/` are loaded explicitly
+  with `ReleaseProfile::fixture` or `fixture_path`. No release gets a fixture
+  automatically; an active fixture, where present, must equal the pin.
+- `tools/release_watch.py check` compares Steam's public branch anonymously;
+  the daily workflow manages release issues. `diff --older DIR --newer DIR`
+  compares identities, PE section sizes and tag/node counts. `pin --install DIR`
+  rewrites only `[release]`, marking carried-over tables with
+  `sections_qualified_for_build_id`. Any marker refuses the profile, naming
+  both builds; pin-only reads remain possible. Clearing it does not transfer
+  capabilities: their bindings must also validate. Other sections still depend
+  on review of hand edits without the marker.
+- A weekly bump requires deriving and qualifying each retained section from
+  allowed inputs, updating or removing capability declarations, clearing the
+  marker and rerunning compatibility scenarios. No Rust change is needed
+  unless a wire structure or reviewed revision changes. Release metadata is
+  only provenance to the player store ([persistence](#persistence)). Claims name
+  their qualified build; the server answers only the pinned Hello version.
 
 ## Persistence
 

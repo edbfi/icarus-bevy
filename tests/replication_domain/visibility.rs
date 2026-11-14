@@ -351,12 +351,24 @@ fn explicit_profiles_accept_qualified_routes_and_reject_unknown_or_wrong_metadat
     wrong_engine.engine_network_version = 6;
     let mut wrong_game = release.clone();
     wrong_game.game_network_version = 1;
+    let mut wrong_bounds = release.clone();
+    wrong_bounds.class_net_cache.inventory += 1;
+    let mut wrong_version = release.clone();
+    wrong_version.pin.project_version.push_str("-altered");
+    wrong_version.pin.network_checksum =
+        icarus_bevy::experimental::release::network_checksum(&wrong_version.pin.project_version);
+    let mut missing = release.clone();
+    missing.qualifications.as_mut().unwrap().visibility_decode = None;
     for unsupported in [
         wrong_app,
         unknown_build,
         wrong_engine,
         wrong_game,
+        wrong_bounds,
+        wrong_version,
+        missing,
         ReleaseProfile::fixture("3.0.32"),
+        ReleaseProfile::fixture("3.0.36"),
     ] {
         assert!(
             VisibilityDecodeProfile::qualify(

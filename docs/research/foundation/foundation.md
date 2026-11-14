@@ -33,7 +33,8 @@ normal Bevy drivers or publication (F-1183). Stock-client behavior is unqualifie
 Sparse gameplay schema 2 keeps the authored recipe and player checkpoints stable
 across unrelated catalog row changes (F-1179). Schema 1 retains its full catalog
 contract; converting a bound recipe refuses. [Contracts](../../architecture.md#persistence).
-Authored qualification only; no stock-client evidence.
+Checkpoint/catalog stability is authored-qualified; production locomotion
+with the recipe is reported in F-1185, without player-persistence proof.
 
 Authored persistence/lifecycle: schemas 4–12 (F-919, F-922, F-923, F-927),
 exclusions (F-928), schema-11 timers/cache/authority (F-931).
@@ -73,8 +74,9 @@ Protected hosting: CM deadline F-1180 and password retry F-1181. Lifetime receiv
 metadata F-1182 observed a further Geometry stall (F-1184): no accepted Begin
 slots/profile requests despite settled opens/possession. One skipped subobject
 block makes Begin absence inconclusive; its owner and fields remain unknown.
-World entry/movement/checkpoints remain unqualified. Skipped-block/drop metadata is authored-tested (F-1182); next: scope a
-fresh-world restart-only comparison.
+The later restart-only run reaches entry/locomotion (F-1185), while normal
+leave fails (F-1186). Player checkpoints remain unqualified. Skipped-block/drop
+metadata is authored-tested (F-1182); next: bind leave RPCs and save completion.
 
 Toolchain/headless/CI: F-879, F-497; client identity: F-878/F-731 (U-034
 resolved). Original fixity/entry-map/exchange: F-265/F-268/F-253; unrun

@@ -740,6 +740,63 @@ impl ReleasePlayerControllerProfile {
     }
 }
 
+/// Reviewed `QUEST_CLASSES` checksum/Check catalog (F-935, M-1030).
+/// Selects the existing catalog; no quest entries are copied into a profile.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestCatalogRevision {
+    QuestClassesV1,
+}
+
+/// Conditional normal visibility decoding only (F-1034), never installation
+/// of dispatch or effects. Archive and RPC layout assertions remain separate.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VisibilityDecodeRevision {
+    NormalCustomV1,
+}
+
+/// Metadata-only inbound controller framing (F-1015, F-1016, M-1197).
+/// V1 retains the fixed component bounds 149/27/8, not RPC semantics.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundControllerRevision {
+    FixedComponentBoundsV1,
+}
+
+/// Optional reviewed capabilities and their complete identity/framing binding.
+/// Absence of each revision means disabled; unknown revisions fail parsing.
+/// This snapshot replaces runtime build lists and reads of test fixtures.
+/// Editing the release identity or class bounds alone invalidates it; changing
+/// both sides is a new qualification edit, not evidence of qualification.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseQualifications {
+    pub pin: ReleasePin,
+    pub engine_network_version: u32,
+    pub game_network_version: u32,
+    pub class_net_cache: ReleaseClassNetCacheBounds,
+    pub quest_catalog: Option<QuestCatalogRevision>,
+    pub visibility_decode: Option<VisibilityDecodeRevision>,
+    pub inbound_controller: Option<InboundControllerRevision>,
+}
+
+impl ReleaseQualifications {
+    fn validate(&self, release: &ReleaseProfile) -> Result<()> {
+        ensure!(
+            self.pin == release.pin
+                && self.pin.app_id == DEDICATED_SERVER_APP_ID
+                && self.engine_network_version == release.engine_network_version
+                && self.engine_network_version == ENGINE_NETWORK_VERSION
+                && self.game_network_version == release.game_network_version
+                && self.game_network_version == GAME_NETWORK_VERSION
+                && self.class_net_cache == release.class_net_cache,
+            "capability qualification requires its bound release identity, engine/game versions and class bounds"
+        );
+        Ok(())
+    }
+}
+
 /// Data-driven protocol profile for one ICARUS release, read from one
 /// complete release file (`docs/architecture.md#release-tracking`); the
 /// library holds no per-release values.
@@ -750,8 +807,9 @@ impl ReleasePlayerControllerProfile {
 /// bounds of the opens this profile plans and of `examples/capture_decode.rs`,
 /// which also checks `engine_network_version`; `row_handles` binds the
 /// row-handle widths of every layout this profile plans
-/// ([`Self::apply_row_handle_profile`]). `game_network_version` and the
-/// remaining `tags` fields record descriptive release-qualification metadata.
+/// ([`Self::apply_row_handle_profile`]). `qualifications` binds optional
+/// reviewed capabilities to the pin, engine/game versions and class bounds;
+/// the remaining `tags` fields record descriptive qualification metadata.
 /// `player_controller` feeds [`super::session_open`]; `player_state`,
 /// `game_state`, `pawn` and `managers` feed their open plans; `level_actors`
 /// names the actors a level visibility report opens. Each is `None` exactly
@@ -761,11 +819,14 @@ impl ReleasePlayerControllerProfile {
 pub struct ReleaseProfile {
     pub pin: ReleasePin,
     pub engine_network_version: u32,
-    /// Descriptive game network protocol version (`0` in observed builds, F-541).
+    /// Game network protocol version (`0` in observed builds, F-541), also
+    /// checked by capability qualification bindings.
     pub game_network_version: u32,
     pub tags: ReleaseTagProfile,
     pub class_net_cache: ReleaseClassNetCacheBounds,
     pub row_handles: ReleaseRowHandleProfile,
+    /// Historical capabilities, absent unless independently qualified.
+    pub qualifications: Option<ReleaseQualifications>,
     pub player_controller: Option<ReleasePlayerControllerProfile>,
     pub player_state: Option<ReleasePlayerStateProfile>,
     pub game_state: Option<ReleaseGameStateProfile>,
@@ -842,6 +903,8 @@ struct ReleaseFile {
     #[serde(default)]
     row_handles: Option<ReleaseRowHandleProfile>,
     #[serde(default)]
+    qualifications: Option<ReleaseQualifications>,
+    #[serde(default)]
     player_controller: Option<ReleasePlayerControllerProfile>,
     #[serde(default)]
     player_state: Option<ReleasePlayerStateProfile>,
@@ -898,6 +961,9 @@ impl ReleaseProfile {
         self.tags.validate()?;
         self.class_net_cache.validate()?;
         self.row_handles.validate()?;
+        if let Some(qualifications) = &self.qualifications {
+            qualifications.validate(self)?;
+        }
         if let Some(player_controller) = &self.player_controller {
             player_controller.validate()?;
         }
@@ -976,7 +1042,9 @@ impl ReleaseProfile {
     /// an error naming it (pin-only files are no longer accepted).
     /// `[player_controller]`, `[player_state]`, `[game_state]`, `[pawn]`,
     /// `[managers]` and `[level_actors]` are optional: absent means the
-    /// release does not carry that open, which stays off.
+    /// release does not carry that open, which stays off. `[qualifications]`
+    /// separately binds reviewed capability revisions to identity and framing;
+    /// missing declarations disable them, and unknown revisions are errors.
     ///
     /// A `[release]` table carrying [`SECTIONS_QUALIFIED_FOR_BUILD_ID`] was
     /// re-pinned to a new build while its other sections remain the earlier
@@ -997,6 +1065,7 @@ impl ReleaseProfile {
             tags: required("tags", parsed.tags)?,
             class_net_cache: required("class_net_cache", parsed.class_net_cache)?,
             row_handles: required("row_handles", parsed.row_handles)?,
+            qualifications: parsed.qualifications,
             pin,
             engine_network_version: ENGINE_NETWORK_VERSION,
             game_network_version: GAME_NETWORK_VERSION,
@@ -1138,15 +1207,17 @@ impl ReleaseProfile {
     }
 
     /// The base `AQuest` open plan (`C019`, `F-934`, `F-935`) for the map
-    /// package of `map_url`, or `None` without `[managers]` or when
-    /// `pin.build_id` is outside the builds whose `QUEST_CLASSES` checksums
-    /// and `Check()` rules are qualified (`25793607`/`25793767` for 3.0.31,
-    /// `25956137` for 3.0.32).
+    /// package of `map_url`, or `None` without `[managers]` or a reviewed
+    /// `qualifications.quest_catalog` declaration for `QUEST_CLASSES`.
     pub fn quest_open_base_plan(&self, map_url: &str) -> Result<Option<QuestOpenBasePlan>> {
+        self.validate()?;
         let Some(managers) = &self.managers else {
             return Ok(None);
         };
-        if !matches!(self.pin.build_id, 25_793_607 | 25_793_767 | 25_956_137) {
+        if !matches!(
+            self.qualifications.as_ref().and_then(|q| q.quest_catalog),
+            Some(QuestCatalogRevision::QuestClassesV1)
+        ) {
             return Ok(None);
         }
         Ok(Some(QuestOpenBasePlan {

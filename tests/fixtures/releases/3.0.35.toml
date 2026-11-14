@@ -162,3 +162,26 @@ actor_state_checksum = 455559420
 [level_actors]
 names = ["IcarusWorldSettings_0", "BP_IcarusWorldSettings_C"]
 checksum = 3401274505
+
+# Reviewed historical capabilities only; identity/framing snapshot, not activation.
+[qualifications]
+engine_network_version = 17
+game_network_version = 0
+# F-1034: conditional decoding; archive/layout assertions still required.
+visibility_decode = "normal_custom_v1"
+
+[qualifications.pin]
+app_id = 2089300
+build_id = 26425113
+project_version = "3.0.35.159586-rel-DangerousHorizons"
+network_checksum = 1299872271
+
+[qualifications.class_net_cache]
+stat_container = 5
+inventory = 11
+ui_projection_mount_status = 7
+bp_icarus_player_state = 38
+bp_mount_base = 84
+bp_mount_horse = 85
+bp_tame_base = 86
+bp_icarus_player_controller_survival = 183
