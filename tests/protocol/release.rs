@@ -119,7 +119,18 @@ fn a_repinned_file_with_unqualified_sections_is_refused() {
             .to_string()
             .contains("last qualified for build 26613688")
     );
-    ReleaseProfile::parse(&with_key(None)).unwrap();
+    // Clearing the repin marker cannot transfer the old capabilities. They
+    // must be removed or independently requalified against the new identity.
+    let cleared = with_key(None);
+    assert!(
+        ReleaseProfile::parse(&cleared)
+            .unwrap_err()
+            .to_string()
+            .contains("capability qualification")
+    );
+    let mut disabled = release_table(&cleared);
+    disabled.remove("qualifications");
+    ReleaseProfile::parse(&toml::to_string(&disabled).unwrap()).unwrap();
 
     // The key's value is a build id; anything else is no release file.
     let malformed = with_key(Some("26425113".into()));
@@ -174,7 +185,8 @@ fn the_tracked_pin_is_consistent() {
     for name in table.keys() {
         assert!(
             REQUIRED_SECTIONS.contains(&name.as_str())
-                || OPTIONAL_SECTIONS.contains(&name.as_str()),
+                || OPTIONAL_SECTIONS.contains(&name.as_str())
+                || name == "qualifications",
             "{name}"
         );
     }
@@ -285,7 +297,106 @@ fn release_profile_files_are_complete() {
     }
     let mut alias = ReleaseProfile::fixture("3.0.31-client-25793767");
     alias.pin.build_id = 25_793_607;
+    alias.qualifications.as_mut().unwrap().pin.build_id = 25_793_607;
     assert_eq!(alias, ReleaseProfile::fixture("3.0.31"));
+}
+
+#[test]
+fn historical_capability_declarations_are_explicit_and_bound() {
+    for (name, quest, visibility, inbound) in [
+        ("3.0.31", true, false, false),
+        ("3.0.31-client-25793767", true, false, false),
+        ("3.0.32", true, false, true),
+        ("3.0.34", false, true, true),
+        ("3.0.35", false, true, false),
+        ("3.0.36", false, false, false),
+    ] {
+        let profile = ReleaseProfile::fixture(name);
+        let q = profile.qualifications.as_ref();
+        assert_eq!(q.and_then(|q| q.quest_catalog).is_some(), quest, "{name}");
+        assert_eq!(
+            q.and_then(|q| q.visibility_decode).is_some(),
+            visibility,
+            "{name}"
+        );
+        assert_eq!(
+            q.and_then(|q| q.inbound_controller).is_some(),
+            inbound,
+            "{name}"
+        );
+        let table =
+            release_table(&std::fs::read_to_string(ReleaseProfile::fixture_path(name)).unwrap());
+        let mut without = table.clone();
+        without.remove("qualifications");
+        let without = ReleaseProfile::parse(&toml::to_string(&without).unwrap()).unwrap();
+        assert!(without.qualifications.is_none());
+        assert!(
+            without
+                .quest_open_base_plan("/Game/Maps/Test/Test")
+                .unwrap()
+                .is_none()
+        );
+        if q.is_none() {
+            continue;
+        }
+        // All identity fields and all class bounds are bound, including values
+        // that still satisfy the generic profile validator.
+        for key in ["app_id", "build_id", "project_version", "network_checksum"] {
+            let mut bad = table.clone();
+            let value = &mut bad["qualifications"]["pin"][key];
+            *value = if key == "project_version" {
+                "other".into()
+            } else {
+                1.into()
+            };
+            assert!(
+                ReleaseProfile::parse(&toml::to_string(&bad).unwrap()).is_err(),
+                "{name} {key}"
+            );
+        }
+        for key in table["class_net_cache"].as_table().unwrap().keys() {
+            let mut bad = table.clone();
+            bad["class_net_cache"][key] = 999.into();
+            assert!(
+                ReleaseProfile::parse(&toml::to_string(&bad).unwrap()).is_err(),
+                "{name} {key}"
+            );
+        }
+        for key in ["engine_network_version", "game_network_version"] {
+            let mut bad = table.clone();
+            bad["qualifications"][key] = 999.into();
+            assert!(
+                ReleaseProfile::parse(&toml::to_string(&bad).unwrap()).is_err(),
+                "{name} {key}"
+            );
+        }
+        for key in ["quest_catalog", "visibility_decode", "inbound_controller"] {
+            let mut bad = table.clone();
+            // Unknown revisions and boolean enabled flags never qualify.
+            for value in [toml::Value::from("future_v2"), true.into()] {
+                bad["qualifications"]
+                    .as_table_mut()
+                    .unwrap()
+                    .insert(key.into(), value);
+                assert!(
+                    ReleaseProfile::parse(&toml::to_string(&bad).unwrap()).is_err(),
+                    "{name} {key}"
+                );
+            }
+            let mut missing = table.clone();
+            missing["qualifications"]
+                .as_table_mut()
+                .unwrap()
+                .remove(key);
+            let parsed = ReleaseProfile::parse(&toml::to_string(&missing).unwrap()).unwrap();
+            let q = parsed.qualifications.unwrap();
+            assert!(match key {
+                "quest_catalog" => q.quest_catalog.is_none(),
+                "visibility_decode" => q.visibility_decode.is_none(),
+                _ => q.inbound_controller.is_none(),
+            });
+        }
+    }
 }
 
 #[test]
@@ -671,6 +782,7 @@ two_byte_row_tables = [0, 29, 54, 64, 65, 73, 80, 84, 92, 112, 134, 135, 136, 14
             pawn: None,
             managers: None,
             level_actors: None,
+            qualifications: None,
             ..ReleaseProfile::fixture("3.0.32")
         }
     );
