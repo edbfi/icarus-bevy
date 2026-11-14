@@ -19,8 +19,9 @@ rejection: F-482. [Operations](../../runbooks/native-server.md).
 Independent schema-12 inventories: F-1029/F-1030; source-free authority, CLI and
 transaction/reload checks; no restoration or replication.
 
-Authored schema-13 checkpoints retain explicit server vital edits and next-open
-placement through reconnect/save/reload (F-1172). Accepted account/slot bindings
+Authored player checkpoints retain explicit server vital edits and next-open
+placement through reconnect/save/reload (F-1172, measured on schema 13; schema 14
+drops its release binding). Accepted account/slot bindings
 and reliable-pressure retries are authored-tested only; delayed-pawn stock-client
 continuation remains unqualified (U-038). Generation receipts acknowledge the
 submitted snapshot, not later edits.

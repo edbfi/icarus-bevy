@@ -53,8 +53,7 @@ F-1170 qualifies empty-session deadline save, teardown and copied-store reopen.
 Nonempty CM remains synthetic (F-1171); browser/client and populated persistence
 remain unqualified (U-038). F-1004 covers a no-player listing.
 
-Opt-in checkpoints: [schema-13 setup and boundaries](../architecture.md#persistence).
-Delayed-pawn stock-client continuation remains unqualified.
+Opt-in player checkpoints: [setup and limits](../architecture.md#persistence).
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
@@ -219,21 +218,22 @@ cargo run --release --locked --example authored_host_bench # F-938 vs no bridge
 
 ## Persistence and recovery
 
-State: ignored `work/runtime/`, single-writer lock, 60 s bounded-worker autosave
+State: ignored `work/runtime/`, single-writer lock, 60 s worker autosave
 of authored records/clock; no ICARUS gameplay. Domain-ID entities need positions (F-482).
 Schema 1: records/clock, 64 MiB; schema 3: plus write-once, digest-verified
 `preserved-<sha256>.bin` sidecar; schema 2 loads (F-567).
 Schemas 4–12: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
-F-931, F-1029); 64 MiB + 4 KiB per generation including sections/sidecar reference.
-Preservation grants no import acceptance.
+F-931, F-1029); 64 MiB + 4 KiB per generation with sections/sidecar reference.
+Schema 14 player stores survive releases; release-bound schema 13 refuses
+untouched: move it aside. Preservation grants no import acceptance.
 
 Checksum/sync before atomic manifest publication; retain two generations.
 Corrupt current file recovers previous. Invalid/missing manifests,
 noncanonical digests, unsupported schemas and I/O errors fail closed
 (F-869, F-870, F-771). Back up before manual recovery. SIGINT/SIGTERM:
 freeze simulation, drain/save by deadline; failure exits nonzero.
-No hard exit-time guarantee (F-869); only local Linux storage qualified,
-not network filesystems/physical power loss (U-035).
+Only local Linux storage is qualified, not network filesystems or physical
+power loss (U-035).
 
 ## Supplied saves
 
