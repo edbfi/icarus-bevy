@@ -574,7 +574,8 @@ fn every_future_discriminator_is_terminal_beside_corruption_and_missing_sidecars
             store.save(&current).unwrap();
             let mut value = read_json(&root.join("snapshot-2.json"));
             *value.pointer_mut(path).unwrap() = if path == "/schema_version" {
-                14.into()
+                // One past the current (player) schema.
+                (icarus_bevy::simulation::SNAPSHOT_SCHEMA_PLAYERS + 1).into()
             } else if path.ends_with("_format") {
                 2.into()
             } else {

@@ -735,6 +735,7 @@ mod tests {
 
     #[test]
     fn authored_schema_headers_are_scanned_and_future_duplicates_are_terminal() {
+        let future = crate::simulation::SNAPSHOT_SCHEMA_PLAYERS + 1;
         for schema in [9, 10, 11, 12] {
             assert!(header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
             for other in [9, 10, 11, 12] {
@@ -748,9 +749,9 @@ mod tests {
             }
             for future_first in [false, true] {
                 let (first, second) = if future_first {
-                    (14, schema)
+                    (future, schema)
                 } else {
-                    (schema, 14)
+                    (schema, future)
                 };
                 let bytes = format!(
                     "{{\"schema_version\":{first},\"tick\":null,\"schema_version\":{second}}}"
@@ -762,7 +763,9 @@ mod tests {
                 );
             }
         }
-        assert!(!header(b"{\"schema_version\":13}").unwrap());
+        for players in [13, crate::simulation::SNAPSHOT_SCHEMA_PLAYERS] {
+            assert!(!header(format!("{{\"schema_version\":{players}}}").as_bytes()).unwrap());
+        }
         for schema in 1..=8 {
             assert!(!header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
         }
