@@ -246,7 +246,8 @@ use super::modifier_timing::{
 use super::packet::BunchLimits;
 use super::packet::Payload;
 use super::packet_lab::{
-    ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition, PacketLabConfig,
+    ActorBunchDropReasons, ActorOpenSent, DeliveredSummary, LabPeer, PacketDisposition,
+    PacketLabConfig,
 };
 use super::pawn_open::{
     InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState, PawnTemperatureState,
@@ -796,8 +797,11 @@ pub struct PeerLabStats {
     pub player_controller_open_errors: u64,
     /// Actor bunches on unopened/closing channels or outside this peer's controller.
     pub actor_bunches_ignored: u64,
-    /// Unsupported forms, reliable queue overflow, or refused partial parts.
+    /// Unreliable traffic, unsupported forms, reliable queue refusal or partial refusal.
     pub actor_bunches_dropped: u64,
+    /// Same aggregation eligibility as `actor_bunches_dropped`; rejected packets
+    /// outside that existing path are not added here independently.
+    pub actor_bunch_drop_reasons: ActorBunchDropReasons,
     /// Reliable partial parts released in order, excluding duplicate arrivals.
     pub actor_partial_parts: u64,
     /// Complete bodies constructed, before domain validation or application.
@@ -2442,7 +2446,57 @@ pub struct ControllerFieldSummary {
     pub count: u64,
 }
 
-/// At most 64 distinct observations per live peer; no payloads or identities.
+/// Relation to the committed controller's exports, not a decoded class or RPC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub enum ControllerSubobjectRelation {
+    ConfiguredControllerComponent,
+    Unmapped,
+    /// No mapping was committed, or the bounded mapping may omit this target.
+    MappingOverflow,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ControllerSkippedBlockSummary {
+    pub relation: ControllerSubobjectRelation,
+    /// Position in the configured export list, never a runtime object identity.
+    pub component_ordinal: Option<u8>,
+    pub has_rep_layout: bool,
+    pub payload_bits: usize,
+    pub count: u64,
+}
+
+/// Private, diagnostic-only references from a successfully committed open.
+/// Retention never scales beyond 64 configured components per peer.
+#[derive(Default)]
+struct ControllerComponentMapping {
+    guids: Vec<u32>,
+    complete: bool,
+}
+
+impl ControllerComponentMapping {
+    fn committed(guids: &[u32]) -> Self {
+        Self {
+            guids: guids.iter().take(64).copied().collect(),
+            complete: guids.len() <= 64,
+        }
+    }
+
+    fn relation(&self, guid: u32) -> (ControllerSubobjectRelation, Option<u8>) {
+        if let Some(index) = self.guids.iter().position(|candidate| *candidate == guid) {
+            (
+                ControllerSubobjectRelation::ConfiguredControllerComponent,
+                Some(index as u8),
+            )
+        } else if self.complete {
+            (ControllerSubobjectRelation::Unmapped, None)
+        } else {
+            (ControllerSubobjectRelation::MappingOverflow, None)
+        }
+    }
+}
+
+/// At most 64 distinct field rows and 16 skipped-block rows per live peer;
+/// lifetime aggregation has the same independent caps. No payloads or identities.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ControllerFieldDiagnostics {
     pub entries: Vec<ControllerFieldSummary>,
@@ -2459,12 +2513,21 @@ pub struct ControllerFieldDiagnostics {
     pub max_rejected_block_payload_bits: u64,
     /// Content blocks skipped because their subobject GUID is not permitted.
     pub unknown_subobject_blocks: u64,
+    /// Skipped before property/field parsing; observation is not application.
+    pub skipped_blocks: Vec<ControllerSkippedBlockSummary>,
+    pub skipped_blocks_overflow: u64,
 }
 
 impl ControllerFieldDiagnostics {
     /// Bounded aggregate; discarded row occurrences charge overflow.
     fn merge(&mut self, other: &Self) {
         self.overflow = self.overflow.saturating_add(other.overflow);
+        self.skipped_blocks_overflow = self
+            .skipped_blocks_overflow
+            .saturating_add(other.skipped_blocks_overflow);
+        for entry in &other.skipped_blocks {
+            self.record_skipped_count(entry.clone());
+        }
         self.unknown_subobject_blocks = self
             .unknown_subobject_blocks
             .saturating_add(other.unknown_subobject_blocks);
@@ -2502,6 +2565,21 @@ impl ControllerFieldDiagnostics {
         disposition: ControllerFieldDisposition,
     ) {
         self.record_count(target, index, payload_bits, disposition, 1);
+    }
+
+    fn record_skipped_count(&mut self, entry: ControllerSkippedBlockSummary) {
+        if let Some(retained) = self.skipped_blocks.iter_mut().find(|retained| {
+            retained.relation == entry.relation
+                && retained.component_ordinal == entry.component_ordinal
+                && retained.has_rep_layout == entry.has_rep_layout
+                && retained.payload_bits == entry.payload_bits
+        }) {
+            retained.count = retained.count.saturating_add(entry.count);
+        } else if self.skipped_blocks.len() < 16 {
+            self.skipped_blocks.push(entry);
+        } else {
+            self.skipped_blocks_overflow = self.skipped_blocks_overflow.saturating_add(entry.count);
+        }
     }
 
     fn record_count(
@@ -2542,6 +2620,7 @@ pub struct ControllerReceiveDiagnostics {
     pub data_malformed: u64,
     pub actor_bunches_ignored: u64,
     pub actor_bunches_dropped: u64,
+    pub actor_bunch_drop_reasons: ActorBunchDropReasons,
     pub actor_partial_parts: u64,
     pub actor_partial_completed: u64,
     pub actor_partial_rejected: u64,
@@ -2690,6 +2769,7 @@ struct PeerEntry {
     backend_proxy: Option<u32>,
     player_data: Option<u32>,
     bestiary: Option<u32>,
+    controller_component_mapping: ControllerComponentMapping,
     profiles: ProfileExchange,
     pending_profile_exchange: Option<PendingProfileExchange>,
     profile_exchange_retry_ready: bool,
@@ -3018,6 +3098,7 @@ fn controller_initialisation_calls(
         order,
         components,
         None,
+        None,
         &mut [diagnostics],
     )
     .map(|staged| (staged.calls, staged.ignored))
@@ -3044,6 +3125,7 @@ fn controller_calls(
     engine_net_version: u32,
     order: super::archive::ByteOrder,
     components: [Option<u32>; 3],
+    component_mapping: Option<&ControllerComponentMapping>,
     level_visibility: Option<&VisibilityDecodeProfile>,
     diagnostics: &mut [&mut ControllerFieldDiagnostics],
 ) -> Result<StagedControllerCalls> {
@@ -3105,9 +3187,20 @@ fn controller_calls(
                     .iter()
                     .position(|guid| *guid == Some(object.guid))
                 else {
+                    let (relation, component_ordinal) = component_mapping.map_or(
+                        (ControllerSubobjectRelation::MappingOverflow, None),
+                        |mapping| mapping.relation(object.guid),
+                    );
                     for diagnostics in diagnostics.iter_mut() {
                         diagnostics.unknown_subobject_blocks =
                             diagnostics.unknown_subobject_blocks.saturating_add(1);
+                        diagnostics.record_skipped_count(ControllerSkippedBlockSummary {
+                            relation,
+                            component_ordinal,
+                            has_rep_layout: block.has_rep_layout,
+                            payload_bits: block.payload.bit_len(),
+                            count: 1,
+                        });
                     }
                     continue;
                 };
@@ -7125,6 +7218,7 @@ impl PeerLab {
             data_malformed: self.stats.data_malformed,
             actor_bunches_ignored: self.stats.actor_bunches_ignored,
             actor_bunches_dropped: self.stats.actor_bunches_dropped,
+            actor_bunch_drop_reasons: self.stats.actor_bunch_drop_reasons,
             actor_partial_parts: self.stats.actor_partial_parts,
             actor_partial_completed: self.stats.actor_partial_completed,
             actor_partial_rejected: self.stats.actor_partial_rejected,
@@ -7590,6 +7684,7 @@ impl PeerLab {
                         backend_proxy: None,
                         player_data: None,
                         bestiary: None,
+                        controller_component_mapping: ControllerComponentMapping::default(),
                         profiles: ProfileExchange::default(),
                         pending_profile_exchange: None,
                         profile_exchange_retry_ready: false,
@@ -7948,6 +8043,9 @@ impl PeerLab {
                             .stats
                             .actor_bunches_dropped
                             .saturating_add(summary.actor_bunches_dropped as u64);
+                        self.stats
+                            .actor_bunch_drop_reasons
+                            .merge(&summary.actor_bunch_drop_reasons);
                         self.stats.actor_partial_parts = self
                             .stats
                             .actor_partial_parts
@@ -8090,6 +8188,7 @@ impl PeerLab {
                                 plan.engine_net_version,
                                 order,
                                 [entry.backend_proxy, entry.player_data, entry.bestiary],
+                                Some(&entry.controller_component_mapping),
                                 level_visibility,
                                 &mut [
                                     &mut entry.controller_field_diagnostics,
@@ -10728,6 +10827,8 @@ impl PeerLab {
             pending.controller_guids = Some((guids.actor, guids.player_state));
         }
         commit_exports(&mut exports, &sent);
+        entry.controller_component_mapping =
+            ControllerComponentMapping::committed(&guids.components);
         entry.exports = exports;
         entry.ack_pending = false;
         let channel = plan.channel_index;
@@ -19297,6 +19398,11 @@ mod tests {
             actual: &ControllerFieldDiagnostics,
             expected: &ControllerFieldDiagnostics,
         ) {
+            assert_eq!(actual.skipped_blocks, expected.skipped_blocks);
+            assert_eq!(
+                actual.skipped_blocks_overflow,
+                expected.skipped_blocks_overflow
+            );
             assert_eq!(actual.entries, expected.entries);
             assert_eq!(actual.overflow, expected.overflow);
             assert_eq!(actual.malformed_bunches, expected.malformed_bunches);
@@ -20294,8 +20400,257 @@ mod tests {
         }
 
         #[test]
+        fn skipped_controller_exports_are_attributed_without_parsing_or_dispatch() {
+            let mut lab = prospect_refresh_lab();
+            let profile = super::super::super::release::ReleaseProfile::fixture("3.0.36");
+            lab.player_controller_open = profile
+                .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+                .unwrap();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let mapping = &lab.peers[&address].controller_component_mapping;
+            assert!(mapping.complete);
+            let configured = mapping.guids[3];
+            let unmapped = (2..).find(|guid| !mapping.guids.contains(guid)).unwrap();
+            let mut invalid = BitWriter::new();
+            invalid.write_bit(true);
+            let payload = client_actor_body(
+                &lab,
+                vec![
+                    // Invalid field bits and a property flag remain opaque even
+                    // though this target was really exported by the committed open.
+                    ContentBlock {
+                        has_rep_layout: true,
+                        target: subobject(configured),
+                        payload: Payload::from_writer(invalid),
+                    },
+                    field_block(
+                        subobject(unmapped),
+                        BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                        &[(
+                            SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX,
+                            empty_payload(),
+                        )],
+                    ),
+                ],
+            );
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload.clone());
+            let observed = lab.controller_receive_diagnostics();
+            assert_eq!(observed.fields.unknown_subobject_blocks, 2);
+            assert_eq!(observed.fields.skipped_blocks.len(), 2);
+            assert_eq!(
+                observed.fields.skipped_blocks[0],
+                ControllerSkippedBlockSummary {
+                    relation: ControllerSubobjectRelation::ConfiguredControllerComponent,
+                    component_ordinal: Some(3),
+                    has_rep_layout: true,
+                    payload_bits: 1,
+                    count: 1,
+                }
+            );
+            assert_eq!(
+                observed.fields.skipped_blocks[1].relation,
+                ControllerSubobjectRelation::Unmapped
+            );
+            assert_eq!(observed.fields.skipped_blocks[1].component_ordinal, None);
+            assert!(observed.fields.entries.is_empty());
+            assert_eq!(observed.actor_bunches_malformed, 0);
+            assert_eq!(lab.stats.initialisation_slots_recorded, 0);
+            assert_eq!(lab.character_slot(address), None);
+            assert_eq!(lab.stats.controller_fields_ignored, 0);
+            // Releasing a duplicate reliable sequence cannot observe it twice.
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            assert_eq!(lab.controller_receive_diagnostics().fields, observed.fields);
+            assert_eq!(lab.stats.actor_duplicate_reliable, 1);
+        }
+
+        #[test]
+        fn controller_component_mapping_is_bounded_and_installed_only_on_commit() {
+            let guids: Vec<u32> = (100..165).collect();
+            for count in [64, 65] {
+                let mapping = ControllerComponentMapping::committed(&guids[..count]);
+                assert_eq!(mapping.guids.len(), 64);
+                assert_eq!(
+                    mapping.relation(163),
+                    (
+                        ControllerSubobjectRelation::ConfiguredControllerComponent,
+                        Some(63)
+                    )
+                );
+                assert_eq!(
+                    mapping.relation(164),
+                    (
+                        if count == 64 {
+                            ControllerSubobjectRelation::Unmapped
+                        } else {
+                            ControllerSubobjectRelation::MappingOverflow
+                        },
+                        None
+                    )
+                );
+                let lab = prospect_refresh_lab();
+                let payload = client_actor_body(
+                    &lab,
+                    vec![ContentBlock {
+                        has_rep_layout: true,
+                        target: subobject(164),
+                        payload: empty_payload(),
+                    }],
+                );
+                let mut diagnostics = ControllerFieldDiagnostics::default();
+                let staged = controller_calls(
+                    &payload,
+                    lab.player_controller_open
+                        .as_ref()
+                        .unwrap()
+                        .engine_net_version,
+                    lab.config.packet.codec.order,
+                    [None; 3],
+                    Some(&mapping),
+                    None,
+                    &mut [&mut diagnostics],
+                )
+                .unwrap();
+                assert!(staged.calls.is_empty());
+                assert_eq!(
+                    diagnostics.skipped_blocks[0].relation,
+                    mapping.relation(164).0
+                );
+                assert_eq!(diagnostics.unknown_subobject_blocks, 1);
+            }
+            assert_eq!(
+                ControllerComponentMapping::default().relation(100),
+                (ControllerSubobjectRelation::MappingOverflow, None)
+            );
+
+            let mut lab = prospect_refresh_lab();
+            let (_socket, address, _) = acked_game_state_peer(&mut lab);
+            let components = lab
+                .player_controller_open
+                .as_ref()
+                .unwrap()
+                .profile
+                .components
+                .clone();
+            lab.player_controller_open
+                .as_mut()
+                .unwrap()
+                .profile
+                .components
+                .clear();
+            assert!(matches!(
+                lab.send_initial_controller_open(address),
+                InitialOpenOutcome::Failed
+            ));
+            assert!(
+                lab.peers[&address]
+                    .controller_component_mapping
+                    .guids
+                    .is_empty()
+            );
+            assert!(!lab.peers[&address].controller_component_mapping.complete);
+            lab.player_controller_open
+                .as_mut()
+                .unwrap()
+                .profile
+                .components = components;
+            assert!(matches!(
+                lab.send_initial_controller_open(address),
+                InitialOpenOutcome::Committed(_)
+            ));
+            assert_eq!(
+                lab.peers[&address].controller_component_mapping.guids[0],
+                lab.peers[&address].backend_proxy.unwrap()
+            );
+            assert!(lab.peers[&address].controller_component_mapping.complete);
+        }
+
+        #[test]
+        fn skipped_block_lifetime_cap_merge_saturation_and_departure_are_stable() {
+            let mut lab = prospect_refresh_lab();
+            let (socket, address, mut client) = controller_peer(&mut lab);
+            let configured = lab.peers[&address].controller_component_mapping.guids[3];
+            for bits in 0..17 {
+                let mut writer = BitWriter::new();
+                for _ in 0..bits {
+                    writer.write_bit(true);
+                }
+                let payload = client_actor_body(
+                    &lab,
+                    vec![ContentBlock {
+                        has_rep_layout: true,
+                        target: subobject(configured),
+                        payload: Payload::from_writer(writer),
+                    }],
+                );
+                let raw = wire_reliable_sequence(client.initial_reliable().1 + 1 + bits);
+                receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            }
+            let snapshot = lab.controller_receive_diagnostics();
+            assert_eq!(snapshot.fields.skipped_blocks.len(), 16);
+            assert_eq!(snapshot.fields.skipped_blocks_overflow, 1);
+            assert_eq!(snapshot.fields.unknown_subobject_blocks, 17);
+            assert_eq!(lab.controller_field_totals(), snapshot.fields);
+            lab.remove_peer(address).unwrap();
+            assert_eq!(lab.controller_receive_diagnostics(), snapshot);
+            assert!(lab.controller_field_totals().skipped_blocks.is_empty());
+
+            // A replacement connection has its own newly committed mapping;
+            // shutting it down must retain both historical and new rows.
+            let (socket, replacement, mut client) = controller_peer(&mut lab);
+            let configured = lab.peers[&replacement].controller_component_mapping.guids[4];
+            let payload = client_actor_body(
+                &lab,
+                vec![ContentBlock {
+                    has_rep_layout: false,
+                    target: subobject(configured),
+                    payload: empty_payload(),
+                }],
+            );
+            let raw = wire_reliable_sequence(client.initial_reliable().1 + 1);
+            receive_controller_payload(&mut lab, &socket, &mut client, raw, payload);
+            let replacement_snapshot = lab.controller_receive_diagnostics();
+            assert_eq!(
+                replacement_snapshot.fields.skipped_blocks,
+                snapshot.fields.skipped_blocks
+            );
+            assert_eq!(replacement_snapshot.fields.skipped_blocks_overflow, 2);
+            assert_eq!(lab.shutdown(), 1);
+            assert_eq!(lab.controller_receive_diagnostics(), replacement_snapshot);
+            assert_eq!(lab.shutdown(), 0);
+            assert_eq!(lab.controller_receive_diagnostics(), replacement_snapshot);
+
+            let mut saturated = snapshot.fields;
+            for entry in &mut saturated.skipped_blocks {
+                entry.count = u64::MAX;
+            }
+            saturated.skipped_blocks_overflow = u64::MAX;
+            let mut merged = saturated.clone();
+            merged.merge(&saturated);
+            assert!(
+                merged
+                    .skipped_blocks
+                    .iter()
+                    .all(|entry| entry.count == u64::MAX)
+            );
+            assert_eq!(merged.skipped_blocks_overflow, u64::MAX);
+            assert_eq!(merged.skipped_blocks.len(), 16);
+        }
+
+        #[test]
         fn lifetime_receive_metadata_has_fixed_allowlist_and_serialized_bound() {
             let mut lab = prospect_refresh_lab();
+            for index in 0..17 {
+                lab.lifetime_controller_fields.record_skipped_count(
+                    ControllerSkippedBlockSummary {
+                        relation: ControllerSubobjectRelation::ConfiguredControllerComponent,
+                        component_ordinal: Some(index),
+                        has_rep_layout: true,
+                        payload_bits: usize::MAX,
+                        count: u64::MAX,
+                    },
+                );
+            }
             for index in 0..65_u32 {
                 lab.lifetime_controller_fields.record_count(
                     ControllerFieldTarget::PermittedSubobject,
@@ -20320,6 +20675,13 @@ mod tests {
                 data_malformed: u64::MAX,
                 actor_bunches_ignored: u64::MAX,
                 actor_bunches_dropped: u64::MAX,
+                actor_bunch_drop_reasons: ActorBunchDropReasons {
+                    unreliable: u64::MAX,
+                    reliable_queue_refusal: u64::MAX,
+                    unsupported_header: u64::MAX,
+                    partial_policy: u64::MAX,
+                    partial_reassembly: u64::MAX,
+                },
                 actor_partial_parts: u64::MAX,
                 actor_partial_completed: u64::MAX,
                 actor_partial_rejected: u64::MAX,
@@ -20346,6 +20708,7 @@ mod tests {
                     "data_malformed",
                     "actor_bunches_ignored",
                     "actor_bunches_dropped",
+                    "actor_bunch_drop_reasons",
                     "actor_partial_parts",
                     "actor_partial_completed",
                     "actor_partial_rejected",
@@ -20374,6 +20737,8 @@ mod tests {
                     "block_payload_length_rejections",
                     "max_rejected_block_payload_bits",
                     "unknown_subobject_blocks",
+                    "skipped_blocks",
+                    "skipped_blocks_overflow",
                 ]
                 .into_iter()
                 .collect()
@@ -20391,6 +20756,44 @@ mod tests {
                         .collect()
                 );
             }
+            assert_eq!(diagnostics.fields.skipped_blocks.len(), 16);
+            assert_eq!(diagnostics.fields.skipped_blocks_overflow, u64::MAX);
+            for entry in value["fields"]["skipped_blocks"].as_array().unwrap() {
+                assert_eq!(
+                    entry
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    [
+                        "relation",
+                        "component_ordinal",
+                        "has_rep_layout",
+                        "payload_bits",
+                        "count"
+                    ]
+                    .into_iter()
+                    .collect()
+                );
+            }
+            assert_eq!(
+                value["actor_bunch_drop_reasons"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                [
+                    "unreliable",
+                    "reliable_queue_refusal",
+                    "unsupported_header",
+                    "partial_policy",
+                    "partial_reassembly"
+                ]
+                .into_iter()
+                .collect()
+            );
             assert!(serde_json::to_vec(&diagnostics).unwrap().len() <= 16 * 1024);
         }
 
@@ -20513,6 +20916,8 @@ mod tests {
                     "malformed_bunches",
                     "max_rejected_block_payload_bits",
                     "overflow",
+                    "skipped_blocks",
+                    "skipped_blocks_overflow",
                     "unknown_subobject_blocks"
                 ]
             );
@@ -20871,6 +21276,12 @@ mod tests {
             // Still dropped exactly as before: nothing dispatched or diagnosed.
             // Seven counted bunches plus the one sent before counting began.
             assert_eq!(lab.stats.actor_bunches_dropped, dropped + 8);
+            assert_eq!(lab.stats.actor_bunch_drop_reasons.unreliable, dropped + 8);
+            assert_eq!(
+                lab.controller_receive_diagnostics()
+                    .actor_bunch_drop_reasons,
+                lab.stats.actor_bunch_drop_reasons
+            );
             assert_eq!(lab.stats.controller_fields_ignored, 0);
             assert_eq!(lab.stats.actor_bunches_malformed, 0);
             let diagnostics = lab.controller_field_diagnostics(address).unwrap();
