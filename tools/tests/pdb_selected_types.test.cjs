@@ -474,3 +474,240 @@ test('parameter shared dependencies retain exact output and retained-byte admiss
     assert.deepEqual(parameterInspect(bytes, {retained_bytes: result.charged_retained_bytes}), result);
     fails(() => parameterInspect(bytes, {retained_bytes: result.charged_retained_bytes - 1}));
 });
+
+const {DECLARATION_PROFILE, DECLARATION_CAPS} = require('../pdb_selected_types.cjs');
+const DECL_ROW = 'Authored::Row', DECL_BASE = 'Authored::MetaBase';
+const declarationInspect = (bytes, limits = {}, names = [DECL_BASE, DECL_ROW]) =>
+    inspectSelectedTypes(reader(bytes), {profile: DECLARATION_PROFILE, names, limits});
+const oneMethod = (name, type, attributes = 3, extra = Buffer.alloc(0)) =>
+    padded(Buffer.concat([u16(0x1511), u16(attributes), u32(type), extra, z(name)]));
+const methodGroup = (name, type, count = 2) => padded(Buffer.concat([u16(0x150f), u16(count), u32(type), z(name)]));
+const nestedType = (name, type, reserved = 0) => padded(Buffer.concat([u16(0x1510), u16(reserved), u32(type), z(name)]));
+const argList = (args = [], count = args.length) => record(0x1201, u32(count), ...args.map(u32));
+const methodList = (methods = [[3, 0x1008], [0x103, 0x1009]], reserved = 0) =>
+    record(0x1206, ...methods.map(([attributes, type]) => Buffer.concat([u16(attributes), u16(reserved), u32(type)])));
+function methodSignature({returns = 3, owner = 0x1006, thisType = 0x1000, cc = 0, options = 0,
+    count = 0, args = 0x1001, adjustment = 0} = {}) {
+    const adjust = Buffer.alloc(4); adjust.writeInt32LE(adjustment);
+    return record(0x1009, u32(returns), u32(owner), u32(thisType), u8(cc), u8(options), u16(count), u32(args), adjust);
+}
+// Indices are chosen solely for these authored records. Unknown referent bodies
+// must stay opaque, including a signature's return/class/this/argument types.
+function declarationRecords() {
+    return [record(0x7777, u32(0xdecaf)), // opaque synthetic identity, not a layout
+        argList(), argList([0x1000, 0x41]),
+        methodSignature({owner: 0x1006, thisType: 0}),
+        methodSignature({returns: 0x1000, owner: 0x100c, options: 1}),
+        list(oneMethod('Describe', 0x1003, 0xb)),
+        udt({name: DECL_BASE, fields: 0x1005, size: 1, unique: 'AuthoredMetaIdentity'}),
+        methodList(),
+        methodSignature({owner: 0x100c, options: 2}),
+        methodSignature({owner: 0x100c, count: 2, args: 0x1002}),
+        list(baseEntry(0x1006), member('Value', 0x77), nestedType('Alias', 0x1000),
+            oneMethod('operator struct Authored Value', 0x1004, 0x103), methodGroup('Choose', 0x1007)),
+        udt({name: DECL_ROW, fields: 0, count: 0, size: 0, flags: 0x80, unique: 'AuthoredRowIdentity'}),
+        udt({name: DECL_ROW, fields: 0x100a, count: 6, size: 8, unique: 'AuthoredRowIdentity'}),
+    ];
+}
+function declarationChange(index, replacement, limits = {}, names) {
+    const records = declarationRecords(); records[index] = replacement;
+    // Most field-list refusal probes replace the row with one declaration.
+    // Keep its count otherwise valid so a malformed payload is the blocker.
+    if (index === 10) records[12] = udt({name: DECL_ROW, fields: 0x100a,
+        count: replacement.readUInt16LE(4) === 0x150f ? replacement.readUInt16LE(6) : 1,
+        size: 8, unique: 'AuthoredRowIdentity'});
+    return declarationInspect(stream(records), limits, names);
+}
+
+test('declarations preserve identity, weighted counts, methods and coincident base/member offsets without layouts', () => {
+    const bytes = stream(declarationRecords()), result = declarationInspect(bytes), [base, row] = result.selected;
+    assert.equal(result.profile, DECLARATION_PROFILE);
+    assert.equal(base.name, DECL_BASE); assert.equal(base.size_bytes, 1);
+    assert.equal(base.unique_name, 'AuthoredMetaIdentity'); assert.equal(base.fields.length, 0);
+    assert.equal(row.forward_declarations[0].type_index, 0x100b);
+    assert.equal(row.physical_member_count, 5); assert.equal(row.weighted_member_count, 6);
+    assert.equal(row.declared_member_count, 6); assert.equal(row.method_count, 3);
+    assert.deepEqual(row.declarations.map(x => x.entry_kind), ['base', 'member', 'nested_type', 'method', 'overload_group']);
+    assert.equal(row.declarations[0].offset_bytes, 0); assert.equal(row.fields[0].offset_bytes, 0);
+    assert.equal(row.fields.length, 1); assert.equal(row.fields[0].type_index, 0x77);
+    for (const value of [base, row, result]) assert.equal(value.storage_layout_complete, false);
+    for (const value of [...base.declarations, ...row.declarations]) {
+        assert.equal(Object.hasOwn(value, 'width_bytes'), false);
+        assert.equal(Object.hasOwn(value, 'occupied_storage'), false);
+        if (['method', 'nested_type', 'overload_group'].includes(value.entry_kind)) assert.equal(Object.hasOwn(value, 'offset_bytes'), false);
+        assert.ok(value.entry_offset >= 4); assert.ok(value.field_list_type_index >= 0x1000);
+    }
+    assert.equal(row.declarations[3].name, 'operator struct Authored Value');
+    assert.equal(row.declarations[3].attributes, 0x103);
+    assert.deepEqual(result.dependent_types, []);
+    assert.deepEqual(result.direct_references.filter(x => x.leaf === 0x1009).map(x => x.options), [0, 1, 2, 0]);
+    assert.equal(result.direct_references.find(x => x.type_index === 0x1003).this_type_index, 0);
+    assert.equal(result.direct_references.find(x => x.type_index === 0x1000).interpretation, 'opaque');
+    assert.equal(result.direct_references.find(x => x.type_index === 0x41).interpretation, 'opaque');
+    for (const profile of [PROFILE, PARAMETER_PROFILE]) {
+        fails(() => inspectSelectedTypes(reader(bytes), {profile, names: [DECL_BASE, DECL_ROW]}));
+    }
+    for (const key of ['original_layout_qualified', 'release_qualified', 'runtime_behavior_proven',
+        'caller_provenance_verified', 'unselected_payloads_validated']) assert.equal(result[key], false);
+});
+
+test('declaration references are memoized while shared overload occurrences consume their full weights', () => {
+    const records = declarationRecords();
+    records[10] = list(methodGroup('First', 0x1007), methodGroup('Second', 0x1007));
+    records[12] = udt({name: DECL_ROW, fields: 0x100a, count: 4, size: 8, unique: 'AuthoredRowIdentity'});
+    const bytes = stream(records), result = declarationInspect(bytes);
+    assert.equal(result.selected[1].method_count, 4);
+    assert.equal(result.direct_references.filter(x => x.type_index === 0x1007).length, 1);
+    assert.equal(declarationInspect(bytes, {methods: 5}).selected.length, 2);
+    fails(() => declarationInspect(bytes, {methods: 4})); // static base method also counts
+    assert.equal(declarationInspect(bytes, {dependencies: 6}).selected.length, 2);
+    fails(() => declarationInspect(bytes, {dependencies: 5}));
+});
+
+test('declaration signatures and direct lists reject truncated, trailing, wrong-leaf and invalid metadata', () => {
+    for (const change of [{cc: 1}, {options: 3}, {options: 4}, {options: 0x80}, {adjustment: 1},
+        {adjustment: -1}, {count: 1}, {count: 257}, {args: 0x1007}, {args: 0x2000},
+        {returns: 0}, {returns: 0x2000}, {returns: 0x80000000}, {returns: 0x999},
+        {owner: 0}, {owner: 3}, {thisType: 0}, {thisType: 0x2000}, {thisType: 0x603}]) {
+        fails(() => declarationChange(4, methodSignature(change)));
+    }
+    fails(() => declarationChange(3, methodSignature({thisType: 0x1000})));
+    for (const index of [1, 2, 3, 4, 7, 8, 9]) {
+        const original = declarationRecords()[index];
+        const cut = Buffer.from(original.subarray(0, original.length - 4)); cut.writeUInt16LE(cut.length - 2);
+        fails(() => declarationChange(index, cut));
+        const extra = Buffer.concat([original, Buffer.alloc(4)]); extra.writeUInt16LE(extra.length - 2);
+        fails(() => declarationChange(index, extra));
+        const wrong = Buffer.from(original); wrong.writeUInt16LE(0x7777, 2);
+        fails(() => declarationChange(index, wrong));
+    }
+    for (const args of [argList([0x2000, 0x75]), argList([0, 0x75]), argList([0x75], 2), argList([], 0xffffffff)]) {
+        fails(() => declarationChange(2, args));
+    }
+    fails(() => declarationChange(7, methodList(undefined, 1)));
+    fails(() => declarationChange(7, methodList([[3, 0x1008]])));
+    fails(() => declarationChange(7, methodList([[3, 0x1008], [3, 0x1008], [3, 0x1008]])));
+    fails(() => declarationChange(7, methodList([[3, 0x1007], [3, 0x1009]])));
+});
+
+test('declaration attributes refuse virtual, friend, introducing, reserved and unsupported option bits', () => {
+    for (const attributes of [0, 4, 7, 0xf, 0x13, 0x17, 0x1b, 0x1f, 0x23, 0x43, 0x83, 0x203, 0x8003]) {
+        fails(() => declarationChange(10, list(oneMethod('Invalid', 0x1004, attributes))));
+        fails(() => declarationChange(7, methodList([[attributes, 0x1008], [3, 0x1009]])));
+    }
+    // Neither missing nor extra VFTableOffset is guessed for introducing forms.
+    fails(() => declarationChange(10, list(oneMethod('Invalid', 0x1004, 0x13, u32(0)))));
+    fails(() => declarationChange(10, list(oneMethod('Invalid', 0x1004, 3, u32(0)))));
+    fails(() => declarationChange(10, list(nestedType('Alias', 0x1000, 1))));
+    fails(() => declarationChange(10, list(methodGroup('Choose', 0x1007, 0))));
+    fails(() => declarationChange(10, list(member('Valid'), record(0x7777))));
+    for (const leaf of [0x1401, 0x1402, 0x150e]) fails(() => declarationChange(10, list(u16(leaf))));
+});
+
+test('declaration method names permit printable spaces with bounded termination and exact padding', () => {
+    for (const name of ['', 'Bad\nName', 'Bad\x7fName', 'Bad\x01Name', 'x'.repeat(257)]) {
+        fails(() => declarationChange(10, list(oneMethod(name, 0x1004))));
+        fails(() => declarationChange(10, list(methodGroup(name, 0x1007))));
+    }
+    for (const entry of [oneMethod('A', 0x1004), methodGroup('A', 0x1007), nestedType('A', 0x1000), member('AB')]) {
+        const bad = Buffer.from(entry); bad[bad.length - 1] = 0;
+        fails(() => declarationChange(10, list(bad)));
+        const unterminated = Buffer.from(entry); unterminated.fill(0x41, 8);
+        fails(() => declarationChange(10, list(unterminated)));
+    }
+    for (const entry of [member('Bad Name'), nestedType('Bad Alias', 0x1000)]) {
+        fails(() => declarationChange(10, list(entry)));
+    }
+    const bytes = stream([argList(), methodSignature({owner: 0x1003, args: 0x1000}),
+        list(oneMethod('A B', 0x1001)), udt({fields: 0x1002})]);
+    assert.equal(declarationInspect(bytes, {}, [TARGET]).selected[0].declarations[0].name, 'A B');
+    fails(() => declarationInspect(bytes, {name_bytes: TARGET.length - 1}, [TARGET]));
+});
+
+test('declaration counts, exact forwards, ambiguity, continuations and selected base cycles fail closed', () => {
+    for (const count of [0, 1, 5, 7]) fails(() => declarationChange(12,
+        udt({name: DECL_ROW, fields: 0x100a, count, size: 8, unique: 'AuthoredRowIdentity'})));
+    for (const forward of [{count: 1}, {fields: 0x100a}, {size: 8}, {unique: 'Conflict'}, {unique: null}, {leaf: 0x1504}]) {
+        fails(() => declarationChange(11, udt({name: DECL_ROW, fields: 0, count: 0, size: 0,
+            flags: 0x80, unique: 'AuthoredRowIdentity', ...forward})));
+    }
+    const records = declarationRecords();
+    for (const extra of [records[11], records[12]]) fails(() => declarationInspect(stream([...records, extra])));
+    fails(() => declarationInspect(stream(records.slice(0, -1))));
+    const bytes = stream([list(member('First'), continuation(0x1001)), list(nestedType('Alias', 0x75)),
+        udt({fields: 0x1000, count: 2})]);
+    const value = declarationInspect(bytes, {}, [TARGET]).selected[0];
+    assert.equal(value.physical_member_count, 2); assert.equal(value.field_lists.length, 2);
+    assert.equal(value.field_lists[0].continuation_type_index, 0x1001);
+    fails(() => declarationInspect(bytes, {continuations: 1}, [TARGET]));
+    for (const tail of [continuation(0x1000), continuation(0x1001), continuation(0x2000),
+        Buffer.concat([u16(0x1404), u16(1), u32(0x1000)]), Buffer.concat([continuation(0x1000), member('After')])]) {
+        fails(() => declarationInspect(stream([list(member('First'), tail), udt({count: 2})]), {}, [TARGET]));
+    }
+    const cyclic = stream([list(baseEntry(0x1003)), udt({name: 'First'}),
+        list(baseEntry(0x1001)), udt({name: 'Second', fields: 0x1002})]);
+    fails(() => declarationInspect(cyclic, {}, ['First', 'Second']));
+    fails(() => declarationInspect(stream([list(baseEntry(0x1001)), udt()]), {}, [TARGET]));
+});
+
+test('declaration independent budgets admit exact boundaries and never return a valid prefix', () => {
+    const bytes = stream(declarationRecords()), result = declarationInspect(bytes);
+    const boundaries = {declarations: 6, weighted_members: 7, methods: 4,
+        references: result.direct_references.length, dependencies: 7, parameters: 2, argument_types: 2,
+        output_bytes: Buffer.byteLength(JSON.stringify(result)), retained_bytes: result.charged_retained_bytes};
+    for (const [key, value] of Object.entries(boundaries)) {
+        assert.deepEqual(declarationInspect(bytes, {[key]: value}), result, key);
+        fails(() => declarationInspect(bytes, {[key]: value - 1}));
+    }
+    fails(() => declarationInspect(bytes, {depth: 0}));
+    for (const key of ['declarations', 'weighted_members', 'methods', 'references', 'parameters', 'argument_types']) {
+        fails(() => declarationInspect(bytes, {[key]: DECLARATION_CAPS[key] + 1}));
+        fails(() => declarationInspect(bytes, {[key]: -1}));
+        fails(() => inspectSelectedTypes(reader(bytes), {profile: PROFILE, names: [DECL_ROW], limits: {[key]: 1}}));
+    }
+    const broken = declarationRecords(); broken[10] = list(member('Valid'), u16(0x7777));
+    let published;
+    fails(() => { published = declarationInspect(stream(broken)); });
+    assert.equal(published, undefined);
+});
+
+test('declaration offsets give no empty-base privilege to opaque or data-bearing bases', () => {
+    const bytes = stream([list(member('Stored')), udt({name: 'OpaqueBase'}),
+        list(baseEntry(0x1001), member('SameOffset')), udt({fields: 0x1002, count: 2})]);
+    const result = declarationInspect(bytes, {}, [TARGET]);
+    assert.equal(result.selected[0].storage_layout_complete, false);
+    assert.equal(result.direct_references.find(x => x.type_index === 0x1001).interpretation, 'opaque');
+    assert.equal(result.selected[0].declarations[0].type_index, 0x1001);
+    assert.equal(Object.hasOwn(result.selected[0].declarations[0], 'width_bytes'), false);
+    fails(() => parameterInspect(bytes)); // ordinary base/member overlap unchanged
+    fails(() => parameterInspect(stream([list(member('A'), member('B')), udt({count: 2})])));
+    fails(() => declarationInspect(stream([list(baseEntry(0x75)), udt()]), {}, [TARGET]));
+});
+
+test('declaration truncated field payloads and malformed storage metadata refuse independently of counts', () => {
+    for (const entry of [baseEntry(0x1006), member('Value', 0x77), nestedType('Alias', 0x1000),
+        oneMethod('Describe', 0x1004), methodGroup('Choose', 0x1007)]) {
+        let payloadLength = entry.length;
+        while (entry[payloadLength - 1] >= 0xf1) payloadLength--;
+        for (let length = 2; length < payloadLength; length += 4) {
+            const truncated = record(0x1203, entry.subarray(0, length));
+            fails(() => declarationChange(10, truncated));
+        }
+    }
+    const badAttributes = member('Value'); badAttributes.writeUInt16LE(0x103, 2);
+    fails(() => declarationChange(10, list(badAttributes)));
+    fails(() => declarationChange(10, list(member('Value', 0x2000))));
+    fails(() => declarationChange(10, list(member('Value', 0x77, 9))));
+    fails(() => declarationChange(10, list(nestedType('Alias', 0x2000))));
+    const self = stream([list(member('Self', 0x1001)), udt()]);
+    fails(() => declarationInspect(self, {}, [TARGET]));
+});
+
+test('memoized direct signatures preserve depth admission across single and overloaded occurrences', () => {
+    const records = declarationRecords();
+    records[10] = list(oneMethod('First', 0x1008), oneMethod('Second', 0x1009), methodGroup('Overloads', 0x1007));
+    records[12] = udt({name: DECL_ROW, fields: 0x100a, count: 4, size: 8, unique: 'AuthoredRowIdentity'});
+    const bytes = stream(records);
+    assert.equal(declarationInspect(bytes, {depth: 2}).selected.length, 2);
+    fails(() => declarationInspect(bytes, {depth: 1}));
+});

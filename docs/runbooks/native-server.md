@@ -281,15 +281,14 @@ unvalidated; [workload](synthetic-workload.md).
 
 ## Offline metadata tools
 
-`tools/native_field_catalog.cjs`: call `joinNativeFieldCatalog` with three
-reader reports, exported `PROFILE` and exact `options.addresses`; limits only
-lower `CAPS`. Output stays `ready: false`.
+`tools/native_field_catalog.cjs`: `joinNativeFieldCatalog` takes three reader
+reports, `PROFILE` and exact `options.addresses`. Lower-only `CAPS`; `ready: false`.
 
-`tools/pdb_selected_types.cjs`: exported `PARAMETER_PROFILE` reads bounded
-parameter/base/embedded declarations. No runtime ancestry/consumers, net order,
-checksums, activation or compatibility qualification.
+`tools/pdb_selected_types.cjs`: `PARAMETER_PROFILE` reads layouts.
+`DECLARATION_PROFILE` (`tpi_v80_exact_udt_declarations_v1`) reports UDT
+identity/size, declarations, counts and references; no layout.
 
 `node tools/pdb_selected_metadata.cjs --request request.json`: JSON binds
 PDB path/size/SHA-256, GUID/age, profile/names and output path.
-Exclusive mode-0600 publication follows complete writes and sync; failures
-are redacted. Caps only lower limits.
+Exclusive mode-0600 publication requires complete validation/write/sync;
+redacted failures, lower-only limits. Compatibility unqualified.
