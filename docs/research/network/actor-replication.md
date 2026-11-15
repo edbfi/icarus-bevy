@@ -12,8 +12,9 @@ Actor opens, codecs, relevancy and readiness after admission.
 
 Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034; authored controller lifetime
 F-1182. Protected production entry and locomotion F-1185; normal leave fails
-F-1186. Static current-build controller evidence F-1193/F-1194 does not bind
-field 149/169 identities or native counts; F-1177 remains active.
+F-1186. Declarations F-1193/F-1196 match procedure/arglist counts, with opaque
+refs and 122-byte coverage. Types/ABI, entry binding, counts/cache
+and wire 149/169 stay unqualified; F-1177 stays active.
 
 [Visibility](../../specs/network/visibility-state.md): wire/staging/capture,
 conditional consumer and inert models F-1020 to F-1024; replay F-1034;
@@ -57,4 +58,4 @@ UID/membership F-1061/F-945/F-946/F-949 to F-951; loadout/backend F-1062/F-958.
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407; M-1415; M-1421 to M-1423. M-1459 to M-1470.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407; M-1415; M-1421 to M-1423. M-1459 to M-1471, M-1477 to M-1480.
