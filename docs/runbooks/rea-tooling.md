@@ -49,7 +49,8 @@ by index, raw header, SHA and FIELDLIST index. Only bounded FIELDLIST chains
 are followed; cycles, shared roots/tails refuse and weighted counts must match
 the header. Vshape, derived, type and METHODLIST references stay opaque.
 Record provenance is retained; no layout, width or signature closure is inferred.
-Legacy profiles are unchanged. Authored qualification admits no original entries.
+Legacy layout readers retain strict member and overlap checks. Header identity
+and declared size prove no layout. Authored qualification admits no original entries.
 Run `tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`
 with `-noanalysis`. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, physical-byte
 checks and inspected statuses. Pseudocode and listing installation are disabled;
