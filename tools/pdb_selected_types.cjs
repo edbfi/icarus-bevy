@@ -1040,3 +1040,358 @@ function metadataImpl(reader, options, signatures, state) {
 }
 Object.assign(module.exports, {UDT_HEADER_PROFILE, UDT_HEADER_CAPS, MFUNCTION_PROFILE, MFUNCTION_CAPS,
     inspectSelectedUdtHeaders, inspectSelectedMemberFunctions});
+
+// Separate research-only declaration-entry contract. Keep the legacy region
+// above byte-for-byte unchanged. This API has no layout/signature resolver.
+// Independently authored grammar, qualified against:
+// https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/llvm/lib/DebugInfo/CodeView/TypeRecordMapping.cpp
+// (MapOneMethodRecord and visitKnownMember), CodeView.h (attributes), and
+// https://raw.githubusercontent.com/microsoft/microsoft-pdb/master/include/cvinfo.h
+// (lfClass, lfIndex, lfVBClass, lfVFuncTab, lfOneMethod, lfNestType).
+// No upstream implementation is copied. Modern zero-terminated names only.
+// Caller binds ONLY a TPI stream to its immutable container/hash/provenance.
+// Selectors pin exact numeric complete class/struct records, raw bytes/hash,
+// and fieldlist identity; no name search or original-input I/O takes place.
+// Duplicate selectors/selected identities and all shared FIELDLISTs refuse.
+// Unselected identities/payloads are not inspected for global uniqueness.
+const DECLARATION_ENTRY_PROFILE = 'tpi_v80_exact_udt_declaration_entries_v1';
+const DECLARATION_ENTRY_CAPS = Object.freeze({
+    stream_bytes: 512 * 1024 * 1024,
+    records: 6000000,
+    record_bytes: 65536,
+    read_bytes: 65536,
+    logical_read_bytes: 64 * 1024 * 1024,
+    read_calls: 6100000,
+    selectors: 8,
+    selected_record_bytes: 65536,
+    selected_bytes: 4 * 1024 * 1024,
+    retained_bytes: 64 * 1024 * 1024,
+    output_bytes: 4 * 1024 * 1024,
+    name_bytes: 256,
+    unique_name_bytes: 4096,
+    field_lists: 128,
+    continuations: 64,
+    depth: 32,
+    declarations: 4096,
+    weighted_members: 8192,
+    direct_references: 8192,
+});
+const DECLARATION_ENTRY_ERROR = 'invalid or unsupported TPI declaration entries';
+
+function inspectSelectedDeclarationEntries(reader, options) {
+    try { return declarationEntriesImpl(reader, options); }
+    catch { throw Error(DECLARATION_ENTRY_ERROR); }
+}
+
+function declarationEntriesImpl(reader, options) {
+    const crypto = require('node:crypto');
+    const {isProxy} = require('node:util').types;
+    const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+    // Reject getters and unknown keys, snapshot every option before the first
+    // callback, and capture reader size/read once. Callback buffers are copied.
+    function object(value, keys) {
+        need(!isProxy(value) && plain(value));
+        const copy = Object.create(null);
+        for (const key of Reflect.ownKeys(value)) {
+            need(typeof key === 'string' && keys.includes(key));
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            need(Object.hasOwn(descriptor, 'value'));
+            copy[key] = descriptor.value;
+        }
+        return copy;
+    }
+    const opt = object(options, ['profile', 'owners', 'limits']);
+    need(opt.profile === DECLARATION_ENTRY_PROFILE);
+    const limits = {...DECLARATION_ENTRY_CAPS};
+    if (opt.limits !== undefined) {
+        const supplied = object(opt.limits, Object.keys(limits));
+        for (const key of Object.keys(supplied)) {
+            const value = supplied[key];
+            need(Number.isSafeInteger(value) && value >= 0 && value <= limits[key]);
+            limits[key] = value;
+        }
+    }
+    let retained = 0;
+    function charge(bytes) {
+        need(Number.isSafeInteger(bytes) && bytes >= 0 && retained + bytes <= limits.retained_bytes);
+        retained += bytes;
+    }
+    const ownersInput = opt.owners;
+    need(!isProxy(ownersInput) && Array.isArray(ownersInput));
+    const ownerCount = ownersInput.length;
+    need(ownerCount > 0 && ownerCount <= limits.selectors);
+    need(Reflect.ownKeys(ownersInput).every(key => key === 'length'
+        || (typeof key === 'string' && /^(0|[1-9][0-9]*)$/.test(key) && Number(key) < ownerCount)));
+    const owners = [], indices = new Set();
+    const ownerKeys = ['type_index', 'record_sha256', 'record_hex', 'field_list_type_index'];
+    for (let i = 0; i < ownerCount; i++) {
+        const descriptor = Object.getOwnPropertyDescriptor(ownersInput, String(i));
+        need(descriptor && Object.hasOwn(descriptor, 'value'));
+        const owner = object(descriptor.value, ownerKeys);
+        need(ownerKeys.every(key => Object.hasOwn(owner, key)));
+        need(Number.isSafeInteger(owner.type_index) && owner.type_index >= 0x1000
+            && owner.type_index < 0x80000000 && !indices.has(owner.type_index));
+        need(Number.isSafeInteger(owner.field_list_type_index) && owner.field_list_type_index >= 0
+            && owner.field_list_type_index < 0x80000000);
+        need(typeof owner.record_sha256 === 'string' && /^[0-9a-f]{64}$/.test(owner.record_sha256));
+        need(typeof owner.record_hex === 'string' && owner.record_hex.length >= 8
+            && owner.record_hex.length % 8 === 0
+            && owner.record_hex.length <= limits.selected_record_bytes * 2
+            && /^[0-9a-f]+$/.test(owner.record_hex));
+        charge(owner.record_hex.length + 256);
+        owners.push({...owner}); indices.add(owner.type_index);
+    }
+    need(reader && !isProxy(reader) && typeof reader === 'object');
+    const sizeDescriptor = Object.getOwnPropertyDescriptor(reader, 'size');
+    const readDescriptor = Object.getOwnPropertyDescriptor(reader, 'read');
+    need(sizeDescriptor && Object.hasOwn(sizeDescriptor, 'value')
+        && readDescriptor && Object.hasOwn(readDescriptor, 'value'));
+    const streamSize = sizeDescriptor.value, readCallback = readDescriptor.value;
+    need(Number.isSafeInteger(streamSize) && streamSize >= 56 && streamSize <= limits.stream_bytes
+        && typeof readCallback === 'function');
+    let logicalBytes = 0, calls = 0, selectedBytes = 0;
+    // Logical charging is a conservative budget, not an RSS guarantee. All
+    // individual reads are bounded, including prefix-only unselected reads.
+    charge(limits.read_bytes * 2);
+    function exact(offset, length) {
+        need(Number.isSafeInteger(offset) && offset >= 0 && Number.isSafeInteger(length)
+            && length >= 0 && length <= limits.read_bytes && offset + length <= streamSize);
+        need(calls + 1 <= limits.read_calls && logicalBytes + length <= limits.logical_read_bytes);
+        calls++; logicalBytes += length;
+        const bytes = readCallback.call(reader, offset, length);
+        need(!isProxy(bytes) && Buffer.isBuffer(bytes) && bytes.length === length && !isSharedArrayBuffer(bytes.buffer));
+        return Buffer.from(bytes);
+    }
+    const header = exact(0, 56);
+    const begin = header.readUInt32LE(8), end = header.readUInt32LE(12);
+    const recordBytes = header.readUInt32LE(16), count = end - begin;
+    need(header.readUInt32LE(0) === 20040203 && header.readUInt32LE(4) === 56
+        && begin === 0x1000 && end >= begin && end < 0x80000000);
+    need(count <= limits.records && count * 4 <= recordBytes && 56 + recordBytes === streamSize);
+    need(header.readUInt32LE(24) === 4 && header.readUInt16LE(22) === 0xffff);
+    const buckets = header.readUInt32LE(28);
+    need(buckets >= 0x1000 && buckets <= 0x40000);
+    const hashBytes = header.readUInt32LE(36), indexBytes = header.readUInt32LE(44);
+    need((hashBytes === 0 || hashBytes === count * 4) && indexBytes % 8 === 0
+        && header.readUInt32LE(52) === 0);
+    for (const offset of [32, 40, 48]) need(header.readInt32LE(offset) >= 0);
+    if (header.readUInt16LE(20) === 0xffff) need(hashBytes === 0 && indexBytes === 0);
+    function tpi(index) { need(Number.isSafeInteger(index) && index >= begin && index < end); }
+    for (const owner of owners) tpi(owner.type_index);
+    charge((count + 1) * 4 + count * 2);
+    const offsets = new Uint32Array(count + 1), leaves = new Uint16Array(count);
+    let at = 56;
+    // No cache/read-ahead: only each outer prefix is read for opaque records.
+    for (let i = 0; i < count; i++) {
+        offsets[i] = at;
+        const prefix = exact(at, 4), length = prefix.readUInt16LE() + 2;
+        need(length >= 4 && length % 4 === 0 && length <= limits.record_bytes && at + length <= streamSize);
+        leaves[i] = prefix.readUInt16LE(2);
+        at += length;
+    }
+    offsets[count] = at; need(at === streamSize);
+    const records = [];
+    function selectedRecord(index, expected) {
+        tpi(index);
+        const ordinal = index - begin, offset = offsets[ordinal], length = offsets[ordinal + 1] - offset;
+        need(expected.includes(leaves[ordinal]) && length <= limits.selected_record_bytes
+            && selectedBytes + length <= limits.selected_bytes);
+        selectedBytes += length;
+        charge(length * 3 + 256);
+        const bytes = exact(offset, length);
+        need(bytes.readUInt16LE() + 2 === length && bytes.readUInt16LE(2) === leaves[ordinal]);
+        const provenance = {type_index: index, leaf: leaves[ordinal], record_offset: offset,
+            record_bytes: length, record_sha256: sha(bytes), record_hex: bytes.toString('hex')};
+        records.push(provenance);
+        return {bytes, provenance};
+    }
+    const directReferences = [];
+    function reference(index, role, source, domain = 'type', allowNone = false) {
+        need(Number.isSafeInteger(index) && index >= 0 && index < 0x80000000);
+        let actual;
+        if (index === 0) { need(allowNone); actual = 'none'; }
+        else if (index >= begin) { tpi(index); actual = 'tpi'; }
+        else {
+            need(domain === 'type' && index < 0x800 && OPAQUE_SIMPLE.has(index & 0xff));
+            actual = 'simple';
+        }
+        need(directReferences.length < limits.direct_references);
+        charge(192);
+        const value = {type_index: index, domain: actual, role,
+            source_type_index: source.type_index, source_record_offset: source.record_offset,
+            source_entry_offset: source.entry_offset ?? null,
+            interpretation: 'opaque', followed: false};
+        directReferences.push(value);
+        return index;
+    }
+    function name(c, unique = false) {
+        const bytes = c.name();
+        need(bytes.length > 0 && bytes.length <= (unique ? limits.unique_name_bytes : limits.name_bytes)
+            && bytes.every(byte => byte >= 0x20 && byte <= 0x7e));
+        charge(bytes.length * 2);
+        return bytes.toString('ascii');
+    }
+    const selected = [], identities = new Set();
+    for (const owner of owners) {
+        const entry = selectedRecord(owner.type_index, [LEAF.CLASS, LEAF.STRUCTURE]);
+        need(entry.provenance.record_sha256 === owner.record_sha256
+            && entry.provenance.record_hex === owner.record_hex);
+        const c = new Cursor(entry.bytes);
+        const memberCount = c.u16(), flags = c.u16(), fieldList = c.u32();
+        const derived = c.u32(), vshape = c.u32(), declaredSize = c.numeric();
+        // Only the individually named LLVM ClassOptions bits are qualified;
+        // HFA/managed/other header variants remain unsupported.
+        need((flags & ~0x27ff) === 0 && (flags & 0x80) === 0);
+        const ownerName = name(c), uniqueName = flags & 0x200 ? name(c, true) : null;
+        c.finish();
+        need(fieldList === owner.field_list_type_index && memberCount <= limits.weighted_members);
+        if (fieldList !== 0) tpi(fieldList); else need(memberCount === 0);
+        // Exact selection is not a global name census. Refuse duplicate names
+        // or unique identities among requested complete owners only.
+        need(!identities.has('name:' + ownerName)
+            && (uniqueName === null || !identities.has('unique:' + uniqueName)));
+        identities.add('name:' + ownerName);
+        if (uniqueName !== null) identities.add('unique:' + uniqueName);
+        reference(derived, 'derived', entry.provenance, 'tpi', true);
+        reference(vshape, 'vshape', entry.provenance, 'tpi', true);
+        charge(384);
+        selected.push({...entry.provenance, name: ownerName, unique_name: uniqueName, flags,
+            forward_reference: false, declared_size_bytes: declaredSize,
+            declared_member_count: memberCount, field_list_type_index: fieldList,
+            derived_type_index: derived, vshape_type_index: vshape,
+            declarations: [], field_list_type_indices: [], continuations: []});
+    }
+    const usedLists = new Set();
+    let declarationsTotal = 0, weightedTotal = 0, continuationTotal = 0;
+    function access(c) { const value = c.u16(); need(value >= 1 && value <= 3); return value; }
+    function framing(c, start, provenance) {
+        const contentEnd = c.at; c.pad();
+        const raw = c.bytes.subarray(start, c.at);
+        charge(raw.length * 2 + 256);
+        return {field_list_type_index: provenance.type_index, entry_offset: start,
+            stream_offset: provenance.record_offset + start, content_bytes: contentEnd - start,
+            padding_bytes: c.at - contentEnd, framed_bytes: c.at - start,
+            entry_sha256: sha(raw), entry_hex: raw.toString('hex')};
+    }
+    for (const owner of selected) {
+        let next = owner.field_list_type_index, depth = 0, physical = 0, weighted = 0;
+        while (next !== 0) {
+            // Global no-reuse policy also rejects cycles, self-links and
+            // shared tails across owners. Depth counts edges, root is zero.
+            need(depth <= limits.depth && !usedLists.has(next) && usedLists.size < limits.field_lists);
+            usedLists.add(next); owner.field_list_type_indices.push(next);
+            const entry = selectedRecord(next, [LEAF.FIELDLIST]);
+            const c = new Cursor(entry.bytes); next = 0;
+            while (c.at < c.bytes.length) {
+                const start = c.at, leaf = c.u16();
+                const source = {...entry.provenance, entry_offset: start};
+                if (leaf === LEAF.INDEX) {
+                    need(c.u16() === 0);
+                    next = c.u32(); tpi(next);
+                    need(++continuationTotal <= limits.continuations);
+                    const frame = framing(c, start, entry.provenance);
+                    need(c.at === c.bytes.length);
+                    owner.continuations.push({leaf, ...frame, target_type_index: next,
+                        interpretation: 'field_list_continuation', followed: true});
+                    break;
+                }
+                need(++declarationsTotal <= limits.declarations);
+                let value, weight = 1;
+                switch (leaf) {
+                case LEAF.MEMBER: {
+                    const attributes = access(c), type = reference(c.u32(), 'member_type', source);
+                    value = {entry_kind: 'member', attributes, type_index: type,
+                        declared_offset_bytes: c.numeric(), name: name(c)}; break;
+                }
+                case LEAF.BCLASS: {
+                    const attributes = access(c), type = reference(c.u32(), 'base_type', source, 'tpi');
+                    value = {entry_kind: 'base', attributes, type_index: type,
+                        declared_offset_bytes: c.numeric()}; break;
+                }
+                case 0x1401: case 0x1402: {
+                    const attributes = access(c), base = reference(c.u32(), 'virtual_base_type', source, 'tpi');
+                    const pointer = reference(c.u32(), 'vbptr_type', source);
+                    value = {entry_kind: leaf === 0x1401 ? 'virtual_base' : 'indirect_virtual_base',
+                        attributes, type_index: base, vbptr_type_index: pointer,
+                        declared_vbptr_offset_bytes: c.numeric(), declared_vbtable_index: c.numeric()}; break;
+                }
+                case 0x150e: {
+                    const attributes = access(c), type = reference(c.u32(), 'static_member_type', source);
+                    value = {entry_kind: 'static_member', attributes, type_index: type, name: name(c)}; break;
+                }
+                case LEAF.NESTTYPE: {
+                    need(c.u16() === 0);
+                    const type = reference(c.u32(), 'nested_type', source);
+                    value = {entry_kind: 'nested_type', type_index: type, name: name(c)}; break;
+                }
+                case LEAF.ONEMETHOD: {
+                    const attributes = c.u16(), kind = (attributes >>> 2) & 7;
+                    need((attributes & ~0x3ff) === 0 && (attributes & 3) !== 0
+                        && [0, 1, 2, 4, 5, 6].includes(kind));
+                    const type = reference(c.u32(), 'method_type', source, 'tpi');
+                    const offset = kind === 4 || kind === 6 ? c.take(4).readInt32LE() : null;
+                    value = {entry_kind: 'one_method', attributes, method_kind: kind, type_index: type,
+                        declared_vftable_offset: offset, name: name(c), signature_followed: false}; break;
+                }
+                case LEAF.METHOD: {
+                    weight = c.u16(); need(weight > 0);
+                    const type = reference(c.u32(), 'method_list', source, 'tpi');
+                    value = {entry_kind: 'method_group', declared_overload_count: weight,
+                        method_list_type_index: type, name: name(c), method_list_followed: false,
+                        overload_signatures_complete: false}; break;
+                }
+                case 0x1409: {
+                    need(c.u16() === 0);
+                    const type = reference(c.u32(), 'vfptr_type', source);
+                    value = {entry_kind: 'vfptr_marker', type_index: type}; break;
+                }
+                default: need(false);
+                }
+                need(weightedTotal + weight <= limits.weighted_members);
+                weightedTotal += weight; weighted += weight; physical++;
+                owner.declarations.push({leaf, ...framing(c, start, entry.provenance),
+                    declared_weight: weight, ...value});
+            }
+            depth++;
+        }
+        need(weighted === owner.declared_member_count);
+        owner.physical_declaration_count = physical;
+        owner.weighted_declaration_count = weighted;
+    }
+    const result = {
+        profile: DECLARATION_ENTRY_PROFILE, version: 1, tpi_version: 20040203,
+        type_index_begin: begin, type_index_end: end, records_framed: count, record_bytes: recordBytes,
+        tpi_header_sha256: sha(header), tpi_header_hex: header.toString('hex'),
+        selected, selected_records: records, direct_references: directReferences,
+        physical_declaration_count: declarationsTotal, weighted_declaration_count: weightedTotal,
+        continuation_count: continuationTotal, field_list_reuse_policy: 'refuse_all_reuse',
+        complete_outer_record_framing: true, selected_entry_framing_complete: true,
+        hash_tables_validated: false, unselected_payloads_validated: false,
+        unselected_identity_uniqueness_validated: false, caller_provenance_verified: false,
+        references_resolved: false, method_lists_followed: false, signatures_complete: false,
+        storage_layout_complete: false, occupied_storage_qualified: false,
+        native_owner_qualified: false, native_receiver_qualified: false,
+        compatibility_qualified: false, save_import_qualified: false, wire_qualified: false,
+        logical_read_bytes: logicalBytes, read_calls: calls, selected_bytes: selectedBytes,
+        charged_retained_bytes: retained,
+        limitations: [
+            'Research declaration metadata only; declared sizes/offsets and count closure establish no storage layout or runtime semantics.',
+            'Each METHOD contributes its declared overload weight; METHODLIST payloads and overload/signature closure remain unqualified.',
+            'All direct type/simple/derived/vshape references are opaque and explicitly unfollowed; only FIELDLIST continuations are traversed.',
+            'Caller supplies trusted synchronous immutable exact reads, whole-input identity, authorization and provenance; no callback runtime guarantee.',
+            'Only selected complete class/struct identities are checked; unselected payloads and global identity uniqueness remain unqualified.',
+            'Unknown leaves, friend methods, HFA/managed headers, external type servers and incremental hash adjustments refuse.',
+        ],
+    };
+    let units = 0;
+    const serialized = JSON.stringify(result, (key, value) => {
+        units += 1 + Buffer.byteLength(key) + (typeof value === 'string' ? Buffer.byteLength(value) : 0);
+        need(units <= limits.output_bytes);
+        return value;
+    });
+    need(Buffer.byteLength(serialized) <= limits.output_bytes);
+    return result;
+}
+
+Object.assign(module.exports, {DECLARATION_ENTRY_PROFILE, DECLARATION_ENTRY_CAPS,
+    inspectSelectedDeclarationEntries});

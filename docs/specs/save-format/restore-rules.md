@@ -6,7 +6,7 @@ Experimental: pure rules in `experimental::restore_rules` and
 `experimental::modifier_lifecycle` (`tests/save_format/restore_rules.rs`,
 `tests/save_format/modifier_lifecycle.rs`, U-045; U-020..U-022, U-032, U-046,
 U-048, U-050 resolved).
-Last reconciled: 2026-10-26.
+Last reconciled: 2026-11-15.
 
 ## Scope
 
@@ -157,9 +157,12 @@ addresses retain helper names or stand alone.
   `Activate(false)` on the first `bAutoActivate` (`+0x8b & 1`) match and `+0x280`
   `Deactivate()` on the rest. Subclass/Blueprint overrides, downstream callee
   effects, owner/row binding and live execution remain unqualified.
-  Server procedure/signature metadata reaches a forward component class
-  (F-1189); return, receiver and argument-list references stay opaque.
-  It proves neither member layout nor runtime ownership.
+  Method metadata reaches the complete component header through its forward
+  (F-1190): `0x20195b`, declared size 968, count 112, FIELDLIST `0x20195a`,
+  vshape `0x1fdd9d`. FName forward `0x1d6a` matches complete `0x2ac3`
+  (declared size 8, count 79, FIELDLIST `0x2abf`). Members, storage, row
+  binding and native ownership remain unqualified. Return, receiver and
+  argument-list references stay opaque.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
   match (`-1` disables), else last opaque-comparison match; request virtual
@@ -187,5 +190,5 @@ addresses retain helper names or stand alone.
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937, F-940, F-1189; M-1430 to M-1434; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+F-750, F-897, F-930, F-937, F-940, F-1190; M-1431 to M-1438; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
 M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.
