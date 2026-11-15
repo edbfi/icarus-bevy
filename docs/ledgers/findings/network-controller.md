@@ -3,7 +3,7 @@
 Connected startup observations and controller receive boundaries.
 [Interpretation](../../runbooks/controller-receive.md).
 
-Last reconciled: 2026-11-14
+Last reconciled: 2026-11-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
