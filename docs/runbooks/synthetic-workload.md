@@ -1,8 +1,7 @@
 # Synthetic durability workload
 
-The synthetic soak runs authored entities through Bevy's fixed schedule and
-asynchronous writer. In a fresh data directory, it mutates positions, measures
-ticks and saves, then reopens the store and compares the complete snapshot.
+`synthetic_soak` mutates authored entity positions through Bevy's fixed schedule
+and asynchronous writer, then reopens the fresh store to compare the full snapshot.
 
 ```bash
 cargo run --release --locked --example synthetic_soak -- \
@@ -42,9 +41,8 @@ production loop's autosave timer, peer idle timeouts), real-time deadline
 pressure between ticks, or storage, page-cache and host effects that accrue
 over days; pair it with a short paced run for those.
 
-These authored workloads establish neither stock-client compatibility nor an
-official-server speedup. The [plan's](../linux-dedicated-server-plan.md) stability
-target requires heavy ICARUS worlds, not 72 hours of synthetic scheduling.
+These authored workloads prove neither compatibility nor official-server speedup.
+The [plan](../linux-dedicated-server-plan.md) requires heavy ICARUS worlds.
 
 For repeated synchronous persistence measurements, use:
 
@@ -53,12 +51,11 @@ cargo run --release --locked --example snapshot_bench -- \
   --data-dir work/bench-new --entities 100000 --iterations 20
 ```
 
-The benchmark first performs two warm-up commits, then records each save and load
-separately and compares all recovered state. Use multiple fresh-directory runs per
-revision, the same CPU affinity and population, and retain the executable hashes.
-`/usr/bin/time -v` can record the whole process's peak RSS; that includes verification
-and must not be labeled steady-state server memory. Keep baseline binaries under
-ignored `work/` when comparing revisions.
+The benchmark makes two warm-up commits, times each save/load and checks all
+recovered state. Repeat fresh runs at matched population, affinity and build
+settings; retain baseline binaries and hashes under ignored `work/`.
+`/usr/bin/time -v` includes verification allocations: its peak RSS must not be
+labeled steady-state server memory.
 
 For schemas 7–9, `native_lifecycle_bench` measures capture, preflight, storage
 and owner actions, verifying full state outside each timer. Create the case
@@ -69,20 +66,34 @@ cargo run --release --locked --example native_lifecycle_bench -- \
   --data-dir work/CASE/new-store --operations preflight --slots 3,64,256,1024
 ```
 
-Select operations separately to avoid starving later ones under the shared
-20-second case limit. Defaults are three repetitions, five warm-ups and 50
-samples; JSON retains raw times and marks incomplete cases. Enforce external
-CPU, memory and hard-time limits. Action timings include internal capture and
-preflight; load uses the same open store. Match fixtures, build settings and
-affinity across revisions; exclude incomplete cases from comparisons.
+Run operations separately to avoid starving later ones within the shared
+20-second limit. Defaults: three repetitions, five warm-ups, 50 samples. JSON
+retains raw times and incomplete markers. Enforce external CPU, memory and
+hard-time limits. Action timings include capture and preflight; load reuses the
+open store. Match fixtures, builds and affinity; exclude incomplete cases from
+comparisons.
 
-The recovery campaign alternates SIGKILL/SIGTERM near autosaves after an initial
-committed save, using 10,000 authored entities. Each cycle checks the checksum,
-clock, acknowledged generation and all entities. Use a fresh directory; retain
-helper/binary provenance and cycle logs. It does not qualify exact filesystem
-interception, disk exhaustion or physical power loss.
+Recovery alternates SIGKILL/SIGTERM around autosaves after one commit.
+Default mode checks 10,000 authored entities, checksum, clock and acknowledgements.
+Use fresh output; retain provenance/logs. Neither mode qualifies
+filesystem fault points, disk exhaustion or physical power loss.
 
 ```bash
 python3 tools/native_recovery_campaign.py --binary target/release/icarus-server \
   --output work/recovery-new --cycles 24
 ```
+
+Build and run the schema14 fixture:
+
+```bash
+python3 tools/cargo_guard.py build --locked --example authored_player_recovery
+python3 tools/native_recovery_campaign.py --mode authored-player \
+  --binary target/debug/examples/authored_player_recovery \
+  --output work/CASE/new-campaign --cycles 4
+```
+
+The 7 Hz fixture has active/detached players (F-1183). A fresh Rust verifier
+checks full typed state and eight resumed steps against an integer oracle; no
+downtime debit. All receipts are retained. Identity, collection, exit, deadline
+(20s) or disk-guard (30 GiB) failures deny success. This does not qualify the
+production loop or leave adapter.
