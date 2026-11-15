@@ -196,6 +196,27 @@ fn writer_restart(ctx: PlayerContext, initial: PlayerCheckpoint) {
     assert!(proof.phase_ready().unwrap());
     let verdict = inspect_phase(&path, root.path(), "11111111111111111111111111111111").unwrap();
     assert!(verdict.food_debited && verdict.exact_durable);
+    assert!(!verdict.actual_load_equal && !verdict.first_projection_equal);
+    publish_completion(
+        root.path(),
+        &path,
+        &verdict,
+        &OwnerConfirmation {
+            phase: 1,
+            invocation: verdict.invocation.clone(),
+            menu_confirmed: true,
+        },
+    )
+    .unwrap();
+    let completion: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("phase-1-complete.json")).unwrap())
+            .unwrap();
+    assert_eq!(completion["actual_load_equal"], false);
+    assert_eq!(completion["restored_record_equal"], false);
+    assert_eq!(
+        completion["first_projection_composed_before_activation"],
+        true
+    );
     for _ in 0..3 {
         writer.submit(app.world_mut()).unwrap();
         writer
@@ -553,7 +574,7 @@ fn phase_two_zero_food_can_leave_without_claiming_another_debit() {
     e.apply(&Event::Detached { epoch: 1 }).unwrap();
     e.apply(&Event::Ready).unwrap();
     let v = e.verdict("22222222222222222222222222222222");
-    assert!(v.phase_ready && v.exact_durable && v.actual_load_equal);
+    assert!(v.phase_ready && v.exact_durable && v.actual_load_equal && v.first_projection_equal);
     assert!(!v.food_debited);
 }
 
