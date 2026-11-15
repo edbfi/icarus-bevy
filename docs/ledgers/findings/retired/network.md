@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../network.md): superseded by a summary ro
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-11-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -191,3 +191,6 @@ Last reconciled: 2026-10-22
 | F-801 | Original GameState open sends the loaded save's ProspectInfo (handles 51..67; non-default fields, arrays whole), ElapsedTime being C015's recorded level time and no member playing (none joined); active_prospect_values rebuilds it from the save bit for bit | observed | runtime-capture, authored-test; M-707, M-780, M-839 | high; one capture and save, 3.0.31 | U-070 | superseded-by F-855 |
 | F-803 | Original GameState open restores Seed (34, with SeedInitialised), SecondsPerGameDay, DynamicQuestSeed and LastSessionProspectGameTime (39, 41, 42) from C015; LevelTimeElapsedSec (46) is recorded plus whole world seconds; saved_game_mode_values rebuilds them | observed | runtime-capture, authored-test; M-707, M-840 | high; one capture, save, 3.0.31 | U-071 | superseded-by F-855 |
 | F-806 | Original TimeOfDay (minutes) advances per tick by curve(TimeOfDay/60) * TimeScale * DeltaSeconds, committed at a minimum step, wrapped at 1440; prospect setup sets SecondsPerGameDay to the truncated sum of 3600/(60 * hourly mean curve value) | observed | static-decompile; M-842, M-843 | high; client 25793767 = server 25793607 (M-707); the curve is world data |  | superseded-by F-856 |
+| F-1194 | Build 26613688: 122-B consumer trace; local root copies/loads/tests; unique S_GPROC32 declares 908 B with opaque TPI32738 | observed | static; M-1460/ev_a40bde4cc914, M-1460/ev_f597d97d17d7, M-1461/ev_d4777e243691, M-1462/ev_6efd526229b2 | bounded; calls/edges opaque; all three closure flags false; no ABI, count/cache, field149/169 or extra instruction proof | U-038 | superseded |
+
+F-1194 superseded-by F-1196.

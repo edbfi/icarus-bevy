@@ -35,19 +35,22 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   opaque references (F-1193; M-1459/ev_dc84ad5d8171,
   M-1459/ev_3bf00dd12847). Declared offsets do not prove member widths,
   storage or entry-argument binding. Header/source details remain private.
-- Retained consumer evidence (F-1194) covers only 122 bytes, 34 instructions,
-  126 p-code operations and two outgoing edges (M-1460/ev_a40bde4cc914).
-  Local value flow establishes root copies, loads and tests only
-  (M-1461/ev_d4777e243691, M-1460/ev_f597d97d17d7): root types and argument
-  binding are unproved; calls, clobbers, alias/reentry effects and outgoing
-  successors remain opaque. Flow, whole-function and native-flow closure
-  flags are all false.
-- At the same exact start, the unique S_GPROC32 declares a 908-byte procedure
-  at `[0x1421935d0, 0x14219395c)`; TPI reference 32738 remains opaque
-  (F-1194; M-1462/ev_6efd526229b2). This PDB declaration adds no instruction
-  coverage, whole-function closure or ABI proof to the 122-byte trace.
-  Native counts and field-149/169 identities still need separate evidence;
-  normal leave remains failed (F-1186), and F-1177 stays active.
+- Build 26613688 consumer declarations/flow (F-1196): coverage is
+  122 bytes/34 instructions/126 p-code operations/two outgoing edges
+  (M-1460/ev_a40bde4cc914). Root copies/loads/tests only: M-1461/ev_d4777e243691,
+  M-1460/ev_f597d97d17d7. Root types/entry arguments, calls/clobbers,
+  alias/reentry effects and outgoing successors remain opaque; flow,
+  whole-function and native-flow closure flags are false.
+  At that exact start, unique S_GPROC32 declares 908 bytes at
+  `[0x1421935d0, 0x14219395c)` (M-1462/ev_6efd526229b2), adding no instruction
+  coverage or closure. TPI 32738 is a 16-byte `LF_PROCEDURE`: return 3,
+  convention 0/options 0, count 2, arglist 32737 (M-1477, M-1478, M-1471/ev_09215f4b5a5c).
+  Retained 32737 is a 16-byte `LF_ARGLIST`: count 2 matches the procedure,
+  ordered 32735/32736 (M-1479, M-1480, M-1471/ev_91b94602b069,
+  M-1471/ev_a3a1a61f26ba). Grammar inherits framing without original replay.
+  Return/argument references stay opaque; types, ABI and entry-register
+  mapping remain unknown. Descriptor values/initialization, native counts/cache
+  and wire 149/169 stay unqualified; normal leave fails (F-1186), F-1177 stays active.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
@@ -204,4 +207,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. M-1459 to M-1470.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1196; M-1459 to M-1471, M-1477 to M-1480.

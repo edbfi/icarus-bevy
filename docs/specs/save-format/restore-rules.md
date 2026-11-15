@@ -136,33 +136,35 @@ addresses retain helper names or stand alone.
   Unresolved/non-`USceneComponent` attachment classes crash.
   Subclass/Blueprint overrides, downstream callee
   effects, owner/row binding and live execution remain unqualified.
-  `DataRowHandleNew +0xb4` joins FRowHandle and `RowName +8`/FName
-  (F-1192). FName declares `ComparisonIndex +0`/FNameEntryId and `Number +4`.
-  FNameEntryId forward `0x28d8` joins complete `0x310dd` (declared size 4):
-  16 declaration entries have weight 17, including `Value +0`. Number and
-  Value declare direct unsigned32 (`0x75`). Method identities and the empty
-  argument list agree. Occupied/inherited storage, return/this definitions,
-  aggregate ABI, comparator associations and native ownership remain open.
-- Server 25621760 `RemoveModifierState` metadata (F-1192): procedure `0x1414b5950`,
-  declared extent 1059 bytes, selects only TPI `2050973`
-  (M-1452, M-1454/ev_892924c04bd4); this step alone establishes no signature
-  semantics. Exact envelope: 28 bytes, leaf `0x1009`
-  (M-1453, M-1454/ev_b213265d962e). Its retained `LF_MFUNCTION` header declares
-  return `48`, class `2050923`, this `0`, calling convention `0`, attributes
-  `0`, argument count `3`, argument-list reference `2050972`, this adjustment
-  `0` (M-1455, M-1456/ev_86dc4a8fa781). Framing/fixity are inherited here,
-  without original replay. These are numeric declarations;
-  return/this definitions, pointer types and static ABI are not inferred.
-  Class `2050923` has a 76-byte forward record for `UIcarusFunctionLibrary`,
-  leaf `0x1504`, flags
-  `640`, declared size/member count/field-list reference all `0`; no definition
-  is followed (M-1458/ev_e9e2faf6b771). Argument reference `2050972` has a
-  20-byte envelope, leaf `0x1201`; its payload stays uninterpreted. Two complete
-  framing passes and full pre/post fixity cover these reads, with 3150352684
-  physical bytes and independent owned-unit/cgroup cleanup (M-1457,
-  M-1458/ev_800189c44abc); host-wide cleanup is not claimed. Argument-count
-  equality, reference definitions, storage, ABI, comparator associations,
-  native owner/receiver, runtime, import and compatibility remain unqualified.
+  Row declarations (F-1195): `DataRowHandleNew +0xb4` joins FRowHandle;
+  `RowName +8` joins FName, declaring `ComparisonIndex +0`/FNameEntryId and
+  `Number +4`. Forward FNameEntryId `0x28d8` joins complete `0x310dd`
+  (declared size 4); 16 entries weigh 17, including `Value +0`. Number/Value
+  declare direct unsigned32 (`0x75`); method identities/empty arglist agree.
+- Server 25621760 removal declarations (F-1195): `0x1414b5950` declares
+  1059 bytes and selects TPI 2050973 alone (M-1452, M-1454/ev_892924c04bd4).
+  Its 28-byte `LF_MFUNCTION` (leaf `0x1009`) declares return 48, class 2050923,
+  this 0, convention/attributes 0, count 3, arglist 2050972, this-adjustment 0
+  (M-1453, M-1454/ev_b213265d962e, M-1455, M-1456/ev_86dc4a8fa781).
+  Class 2050923 is a 76-byte forward `UIcarusFunctionLibrary` `LF_CLASS`
+  (leaf `0x1504`, flags 640, size/count/field-list 0); no definition is followed
+  (M-1458/ev_e9e2faf6b771).
+  The 20-byte `LF_ARGLIST` 2050972 (leaf `0x1201`) declares count 3 matching
+  2050973, ordered 7453/1997626/116 (M-1471/ev_b12f5b8b75a1).
+  Envelopes: M-1471/ev_ac1d9cdde283. Grammar declares
+  7453 `LF_POINTER`: referent 7450, attributes 65548, kind 12/mode 0; no physical
+  width/ABI follows. Forward 1997626 names `FModifierStatesRowHandle`,
+  flags 640, size/count/field-list/derived/vshape 0 (M-1471/ev_c593a2dcb42c).
+  Its complete 1997679 header declares flags 566, size 24, count 30, field-list 1997678,
+  derived/vshape 0 (M-1471/ev_85400f1f84f1); no member widths, occupied storage
+  or complete semantic definition follows. Retained 7450 `LF_CLASS` names
+  forward `AActor`, flags 640, size/count/field-list/derived/vshape 0
+  (M-1471/ev_516c488fb7d2). Argument 116 stays numeric/opaque.
+  Grammar inherits framing/fixity; no original replay. Prior two complete framing
+  passes, 3150352684 physical bytes, full pre/post fixity and independent owned-unit/cgroup
+  cleanup (not host-wide): M-1457, M-1458/ev_800189c44abc; receipts M-1472 to M-1476.
+  Return/this definitions, storage, aggregate/static ABI, comparator associations,
+  native owner/receiver, overrides, coordinates, runtime/import/compatibility stay open.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
   match (`-1` disables), else last opaque-comparison match; request virtual
@@ -190,5 +192,5 @@ addresses retain helper names or stand alone.
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937, F-940, F-1192; M-1425 to M-1428, M-1431 to M-1458; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+F-750, F-897, F-930, F-937, F-940, F-1195; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
 M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.
