@@ -60,28 +60,31 @@ committed player state remains capturable for shutdown.
 
 ## Checkpoint leave
 
-F-1188: `request_leave` pins active key/epoch/revision and authored location/vitals,
-blocking consumption, edits and reattachment. Duplicates retain the cutoff and
-deadline. At most 64 unresolved operations include detached/failed/durable ones.
-Attempts last at most 60 monotonic seconds. Capture/storage failure or timeout
-needs explicit `retry_leave`, which rejects prior-attempt receipts; worker loss
-is terminal. Timeout grants no I/O cancellation or rollback. Poll `leave_status`;
-`settle_leave` requires durability and original-attachment detachment.
+F-1188: `request_leave` freezes active key/epoch/revision and authored location/vitals,
+blocking consumption, edits and reattachment. The 64-operation cap includes
+detached/failed/durable barriers; attempts last ≤60 monotonic seconds.
+Capture/storage failure or timeout needs explicit `retry_leave`, rejecting stale
+attempt receipts; worker loss is terminal. Timeout never cancels or rolls back I/O.
+Poll `leave_status`; `settle_leave` requires durability and original detachment.
 
-Separate API `PeerLab::enable_authored_controller_leave(plan)` requires checkpoints,
-matching controller identity/layout/checksum and installation before admission.
-Production configuration and active release leave dispatch disabled. Supported
-normal types: Quit (1), ReturnToCharacterSelect (2), ReturnToTitlescreen (4).
-Missing/None, dropship, disconnected and no-save requests make no transition.
+API `PeerLab::enable_authored_controller_leave(plan)` requires checkpoints and a
+matching controller identity/layout/checksum before admission. Production config
+and active release disable dispatch. Supported types: Quit (1), CharacterSelect
+(2), Titlescreen (4). Missing/None, dropship, disconnected and no-save do nothing.
 
 The plugin cuts off before fixed ticks, including zero-tick/consuming updates.
+Missing projection or refused cutoff silently drops the intent: no retry,
+completion or registry change. A fresh normal request is required, avoiding
+an automatic delayed freeze of a later revision.
 Only the exact writer receipt permits one reliable completion property update;
 pressure/loss retains that operation. ACK of the reliable prefix through completion
-permits detach; later traffic is excluded. Original
-address/connection/epoch checks prevent redirected completion after revocation or
-reuse. Detached durable barriers settle automatically; pending/failed ones remain.
+permits detach; later traffic is excluded. Address/connection/epoch checks prevent
+redirected completion after revocation/reuse. Detached durable barriers settle
+automatically; pending/failed ones remain.
 
-Cancel before reliable admission suppresses completion, retaining the frozen
-checkpoint obligation; it grants no gameplay resume. Cancel after admission
-cannot retract traffic. Duplicate normals preserve the first type/cutoff/deadline.
+Cancel before reliable admission suppresses completion but retains the frozen
+save obligation; after admission it cannot retract traffic. Duplicate normals
+preserve the first type/cutoff/deadline. Failed or suppressed leaves stay connected
+and frozen until disconnect, revocation or transport expiry: no automatic retry,
+failure-close or gameplay resume. A client continuing ACKs can remain frozen.
 Authored policy and transport ACK grant no full player-save or client menu proof.
