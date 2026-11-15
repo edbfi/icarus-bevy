@@ -47,6 +47,155 @@ fn inputs() -> (tempfile::TempDir, NetworkConfig) {
 }
 
 #[test]
+fn controller_leave_opt_in_defaults_off_and_requires_player_preparation() {
+    let parsed: ServerConfig = toml::from_str("").unwrap();
+    assert!(!parsed.network.authored_controller_leave);
+    assert!(
+        ReleaseProfile::load(&release_toml())
+            .unwrap()
+            .controller_leave_plan()
+            .unwrap()
+            .is_some()
+    );
+    let config = NetworkConfig {
+        authored_controller_leave: true,
+        ..Default::default()
+    };
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires player persistence")
+    );
+    assert!(network::prepare_run(&config, network::peer_lab_config(&config)).is_err());
+    assert!(network::prepare_session(&config, network::peer_lab_config(&config)).is_err());
+}
+
+#[test]
+fn controller_leave_offline_reopen_validates_binding_without_installing_a_session() {
+    let (_directory, mut config) = inputs();
+    let (_, mut snapshot) = stored_players(&config, &[(3, "Player")]);
+    config.authored_controller_leave = true;
+    let (session, players) =
+        network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+    assert!(session.is_none());
+    // The transport opt-in changes no persisted player input or schema.
+    network::open_player_snapshot(&mut snapshot, players.as_ref()).unwrap();
+    let app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+    assert!(!app.world().contains_resource::<PeerLab>());
+}
+
+#[test]
+fn controller_leave_bad_qualification_refuses_before_network_or_state_side_effects() {
+    let (directory, mut config) = inputs();
+    config.authored_controller_leave = true;
+    let original: toml::Value =
+        toml::from_str(&fs::read_to_string(release_toml()).unwrap()).unwrap();
+    for variant in ["absent", "controller", "checksum", "controller_checksum"] {
+        let mut profile = original.clone();
+        match variant {
+            "absent" => {
+                profile.as_table_mut().unwrap().remove("qualifications");
+            }
+            "controller" => {
+                profile.as_table_mut().unwrap().remove("player_controller");
+            }
+            "checksum" => {
+                profile["qualifications"]["pin"]["network_checksum"] = 1.into();
+            }
+            _ => {
+                profile["player_controller"]["archetype"][0]["checksum"] = 1.into();
+            }
+        }
+        let path = directory.path().join(format!("{variant}-release.toml"));
+        fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
+        config.release_profile = Some(path);
+        let error = network::prepare_run(&config, network::peer_lab_config(&config))
+            .err()
+            .unwrap();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains(if variant == "absent" {
+                "requires qualified controller codecs"
+            } else {
+                "network.release_profile"
+            }),
+            "{variant}: {text}"
+        );
+        let state = directory.path().join(format!("{variant}-state"));
+        let config_path = directory.path().join(format!("{variant}-server.toml"));
+        fs::write(
+            &config_path,
+            toml::to_string(&ServerConfig {
+                data_dir: state.clone(),
+                network: config.clone(),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .args(["run", "--max-ticks", "1", "--config"])
+            .arg(config_path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let logs = String::from_utf8_lossy(&output.stderr);
+        assert!(!logs.contains("\"event\":\"started\""), "{variant}: {logs}");
+        assert!(
+            !state.exists(),
+            "{variant}: startup must refuse before creating state"
+        );
+    }
+}
+
+#[test]
+fn controller_leave_installs_only_for_explicit_prepared_authenticated_player_sessions() {
+    let (_directory, mut config) = inputs();
+    // Offline checkpoint fixtures need no hosting prospect lookup. This test
+    // prepares an authenticated host, which also resolves its independently
+    // authored prospect row before any listener or service is acquired.
+    fs::write(
+        config.data_pak.as_ref().unwrap(),
+        pak_writer::fresh_join_pak_with(&[(
+            "Prospects/D_ProspectList.json",
+            pak_writer::table_json(&["AuthoredWorkshop"]),
+        )]),
+    )
+    .unwrap();
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    config.enabled = true;
+    config.port = occupied.local_addr().unwrap().port();
+    let declaration = config.player_persistence.as_ref().unwrap();
+    config.hosting = Some(icarus_bevy::native_hosting::HostingConfig {
+        query_bind: "127.0.0.1".parse().unwrap(),
+        query_port: if config.port == 27015 { 27016 } else { 27015 },
+        private_ip: "127.0.0.1".parse().unwrap(),
+        seconds: 60,
+        name: "Authored workshop".into(),
+        map_url: declaration.map_url.clone(),
+        prospect_id: declaration.prospect_id.clone(),
+        prospect_row: declaration.prospect_row.clone(),
+        lobby_name: "Workshop".into(),
+        difficulty: declaration.difficulty,
+    });
+    for enabled in [false, true] {
+        config.authored_controller_leave = enabled;
+        let (session, players) =
+            network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+        let mut session = session.unwrap();
+        assert!(players.is_some());
+        let lab = &session.session_mut().lab;
+        assert_eq!(lab.has_authored_controller_leave(), enabled);
+        // An occupied game port does not obstruct pure preflight: no socket or
+        // Steam backend has been acquired, and no player state was published.
+        assert!(lab.local_addr().is_err());
+        assert_eq!(lab.session_counts().active_peers, 0);
+    }
+}
+
+#[test]
 fn offline_context_is_prepared_and_old_schema_is_never_promoted() {
     let (_directory, config) = inputs();
     let (session, prepared) =

@@ -22,65 +22,52 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 - 3.0.36 pin/tags F-1176, selected class semantics F-1177 and row widths
   F-1178 remain static only. Connected behavior, level-actor identities and
   legacy row-index transfer remain unqualified.
-- Build 26613688: F-1193 retains exact controller locations, descriptor/factory
-  spans and complete FFunctionParams declaration; its original evidence limits
-  stand. Later selected type/construction/cache qualifications are F-1197.
-- Controller (F-1197): the older trace remains 122 bytes/34 instructions/
-  126 p-code operations/two opaque edges (M-1460/ev_a40bde4cc914,
-  M-1461), with calls/clobbers, alias/reentry effects and successors opaque;
-  its flow, whole-function and native-flow closures remain false. New listings
-  cover M-1462's independent 908-byte S_GPROC32 extent through return, without
-  expanding the older trace (M-1488/ev_2a71799cb7ec, M-1488/ev_601449ecca14).
-  Exact forward identities and inherited type chain declare ordered
-  `UFunction*&`, `FFunctionParams const&` arguments (M-1477 to M-1485;
-  M-1488/ev_8018de4b3bea); no runtime object state or storage follows.
-- Selected construction arguments and cached-singleton bypass are F-1197;
-  creation consumes property descriptors, not source arguments/cache indices.
-  The selected enum constructor is qualified below. General ABI, immutability,
-  traversal direction and callee/reentry effects stay open
-  (M-1488/ev_2a71799cb7ec).
-- Native registration counts and initial super-function/property dimensions
-  remain F-1197's physical statistics, which alone prove no runtime bound
-  (F-1197; M-1488/ev_9deb9b5f9475, M-1488/ev_601449ecca14).
-- On cache miss only, the consumer calls the runtime-list producer; hits
-  bypass it. The producer copies inherited ClassReps, selects locally owned
-  Net properties and non-overriding Net functions, and sorts local functions
-  by ascending case-insensitive FName string. Properties precede functions in
-  each cache layer. The selected build-26613688 public-server ancestry ends in
-  `BP_IcarusPlayerControllerSurvival_C`, derived directly from the native
-  survival controller. Its conditional cache has 155 native fields plus
-  5 cooked properties and 22 cooked functions: 182 total, ordinary bound 183
-  (parent start+own count+1). Export-group framing is separate (F-1197;
-  M-1492/ev_e687899447b7, M-1492/ev_0415b46141fb,
-  M-1492/ev_b571dc207b36, M-1492/ev_8b1024fed268; M-1493, M-1494).
-- Under that selected ancestry and ordinary cache/header path, fields 148/149/
-  150 are `ServerCancelLeaveProspectSession`, `ServerLeaveProspectSession`,
-  `ServerLeaveProspectSessionWithoutSave`; 169 is `OnServer_ReturnFocus`,
-  whose effects were not inspected. Producer ready/null-PropertyLink paths,
-  editor/global/CDO callbacks, external mutation and initialized cache state
-  remain unobserved. No live controller class/cache or completion effect for
-  169 follows. Illustrative native property ordering is not newly proved;
-  these function indices depend on property counts, not their permutation
-  (F-1197; M-1492/ev_8b1024fed268, M-1493, M-1494).
-- Selected listing verification covers 24 starts/2,834 instructions/11,427
-  instruction bytes. The two reported escapes cover direct absolute jumps
-  only, excluding unresolved indirect jumps; the getter target is forward
-  out-of-window. No exhaustive flow, live dispatch or whole-function behavior
-  follows (F-1197; M-1488/ev_601449ecca14, M-1489 to M-1491).
-  New selected listings likewise leave calls/indirect dispatch and branch
-  escapes open; predominantly one-byte imported function bodies do not prove
-  function coverage (M-1493, M-1494).
-- Normal request 149 has one `ELeaveProspectSessionType` parameter; its byte
-  child is not a second argument. Current enum construction/vtable/codec
-  evidence derives a 3-bit value for registered maxima 5 or 6. This does not
-  fix total RPC payload size: inherited generic RPC framing does not prove the
-  complete current path. Completed `ReplicatedLeftProspectSession` uses that
-  enum at native +0x95b. Flattened property handle 26 is supported by
-  inherited F-846/F-1120 rules, current M-1405 ancestry/type/offset equality
-  and selected current command-builder evidence; it is neither RPC 26 nor a
-  freshly proved entire layout (F-1197; M-1492/ev_a0a995ccf9d1,
-  M-1492/ev_9867ef330866, M-1492/ev_2851c7038d64,
-  M-1492/ev_8645af881a57, M-1493, M-1494).
+- F-1197 public-server 26613688 retains F-1193's spans/declaration. Ordered
+  `UFunction*&`, `FFunctionParams const&` types: M-1477 to M-1485,
+  M-1488/ev_8018de4b3bea. Construction consumes descriptors; cached construction
+  bypasses them. Counts alone grant no runtime bound. General ABI, traversal,
+  immutability, clobber/alias/reentry remain open.
+- Frozen 122-byte/34-instruction/126-p-code trace has two opaque edges and all
+  three closures false (M-1460/ev_a40bde4cc914, M-1461). Independent 908-byte
+  listings do not expand it (M-1462; M-1488/ev_2a71799cb7ec,
+  M-1488/ev_601449ecca14). Earlier indirect edges/forward getter remain open
+  (M-1488 to M-1491).
+- Conditional `BP_IcarusPlayerControllerSurvival_C` inherits native survival:
+  155 native + 5 cooked properties + 22 functions = 182 fields/bound 183.
+  Fields 148/149/150 are cancel/normal/no-save; 169 is uninspected return-focus.
+  Cache misses inherit ClassReps and append local Net properties before
+  non-overriding functions sorted by folded FName. Function indices need counts,
+  not a proved property permutation; export framing is separate (M-1492 to M-1494).
+- Selected listings: 24 starts/2,834 instructions/11,427 instruction bytes;
+  no exhaustive flow or live dispatch (M-1493, M-1494).
+- Ordinary 149: one enum argument, presence bit + 3 value bits if present
+  (registered maxima 5 or 6; declared byte enum 0..5);
+  148/150 are empty. ReceivedRPC requires no error/exact consumption before
+  dispatch; permission/hooks/GUID/reliable deferral remain
+  (M-1498/ev_8fb379f7c758). Enum cast-bit 17 clear, named `memset` and RET
+  initializer conditionally preserve absent zero, distinct from explicit None
+  (M-1498/ev_5d6f0416550b, M-1498/ev_fe828a00c89c,
+  M-1498/ev_834aa65ff472, M-1498/ev_0fd716bd216a). Enum 6/7 refusal
+  is authored only.
+- Completed `ReplicatedLeftProspectSession` at +0x95b is property handle 26,
+  not RPC 26: inherited 15+2+2+0+6 then enum; cooked fields append. Current
+  metadata/scalar emission reuse F-703/F-704/F-846/F-1120 custom-struct rules,
+  not fresh mutable layout/struct-ops/CDO proof (M-1405; M-1492 to M-1494;
+  M-1498/ev_0fd716bd216a).
+- Checksum-off/nonshared: flag 0 + packed 26 + enum 3 bits + packed 0 = 20
+  property bits; actor content adds rep-layout/actor flags + packed length = 30.
+  Archive slots, packed 7-bit groups/low-bit continuation and value/copy/send
+  operands support this conditional codec (M-1500/ev_f461811e1d6e,
+  M-1500/ev_214a079abf4d, M-1500/ev_c47f406ef20f, M-1500/ev_1bf96fac88a2).
+  Active archive/vptr/settings, zeroed backing and selected profile remain
+  conditions; original canonical-varint rejection is unproved.
+- M-1499's eight listings match declaration/pdata unions; M-1501 retains partial
+  post-value switch, 8 padding bytes and 150-byte overflow lookahead outside
+  its declaration. Calls stay opaque; one-byte imported bodies prove no coverage.
+  No full callback/overflow/scheduler or live class/cache/archive proof follows.
+  Producer-ready/null-PropertyLink, editor/global/CDO and mutation stay open.
+  Encoding permits a default-off scoped experiment; F-1177/durability/client
+  limits stand.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
@@ -161,20 +148,14 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 
 ## Candidate
 
-- Normal leave (F-1197): state-notification completion candidate; no new bound
-  completion RPC. The save-intending request takes one native byte; two
-  descriptor properties do not mean two arguments. No-save selects declared
-  value 4 and finalises. The byte enum spans 0..5; its value codec is qualified
-  above (M-1488/ev_9deb9b5f9475). The checker tests authority,
-  cancellation and pending work. Finalisation writes the completed byte,
-  emits the local event/delegate path only on change, then clears pending/
-  cancel. Cancellation can retain 0 without a changed-state event. The
-  selected replication notification reads that byte and calls the same path.
-  Finalisation/completion descriptors lack Net. Physical vtable candidates
-  prove no live dispatch; callback/timer effects, persistence policy, durable
-  writes and client outcome stay open (M-1488/ev_7386f0c70678,
-  M-1488/ev_7481920a03ac, M-1490, M-1491). Failed normal leave F-1186 and
-  authored-only checkpoint barriers F-1188 stand; F-1177 is not superseded.
+- F-1197 completion candidate: no bound completion RPC; descriptors lack Net.
+  No-save selects 4/finalises. Checker tests authority/cancel/pending work.
+  Finalisation writes completed state, emits local event/delegate on change,
+  clears pending/cancel; Cancel may retain zero without an event. OnRep calls
+  that path. Vtable candidates prove no live dispatch; callback/timer/original
+  persistence/durability/client effects stay open (M-1488/ev_7386f0c70678,
+  M-1488/ev_7481920a03ac, M-1490, M-1491). Failed live leave F-1186 and
+  authored adapter F-1188 retain separate scopes; F-1177 stands.
 
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
 Explicit temperature/modifier ticks retain connection-local timing (F-1000). No automatic climate,
@@ -197,9 +178,9 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
-- F-1188 adds an authored adapter only. F-1197: complete current-path,
-  live controller/cache/dispatch, remaining layout dependencies, durability
-  and stock-client completion qualification remain open.
+- F-1197/F-1188: live class/cache/archive/OnRep/menu behavior, mutable layout,
+  complete player-state coverage, restart/rejoin and original durability remain
+  open. Conditional encoding permits an explicit default-off experiment only.
 - U-079: live visibility bindings/effects and client profile execution remain
   unqualified (F-1034, F-1042, F-1051).
 
@@ -209,4 +190,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1197; M-1459 to M-1462, M-1477 to M-1485, M-1488 to M-1494.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1197; M-1459 to M-1462, M-1477 to M-1485, M-1488 to M-1494; M-1498 to M-1501.

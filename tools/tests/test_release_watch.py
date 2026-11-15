@@ -225,8 +225,12 @@ class ReleaseWatchTests(unittest.TestCase):
         commented = "".join(lines[: start + 2] + ["# a note about the build\n", "\n"] + lines[start + 2 :])
         text, _, qualified = repin(commented, 7, "9.9.9.1-rel-Test")
         self.assertEqual(json_object(_toml(text)["release"]), release_values(7, "9.9.9.1-rel-Test", qualified))
-        self.assertEqual(text.count("\nbuild_id = "), 1)
-        self.assertEqual(text.count("\nproject_version = "), 1)
+        # A separate qualification pin may carry the same key names. Only
+        # the rewritten release table must contain exactly one of each.
+        rewritten_start, rewritten_end = release_table(text)
+        release_text = "".join(text.splitlines(keepends=True)[rewritten_start:rewritten_end])
+        self.assertEqual(release_text.count("\nbuild_id = "), 1)
+        self.assertEqual(release_text.count("\nproject_version = "), 1)
         self.assertIn("# a note about the build\n", text)
         # The table ends at the next header, not at the first comment or blank line.
         self.assertLess(text.index(f"\n{QUALIFIED_KEY} = "), text.index("\n[tags]\n"))

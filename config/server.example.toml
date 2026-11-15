@@ -18,6 +18,10 @@ max_players = 8
 # Native inbound-idle / outstanding-delivery-progress timeout; removal is local.
 session_timeout_seconds = 30
 
+# OPTIONAL authored leave; requires player_persistence, authenticated hosting
+# and a qualified release. Stock-client leave remains unqualified.
+# authored_controller_leave = false
+
 # OPTIONAL authored server-owned checkpoints, schema-14 stores only.
 # Requires release_profile, data_pak, authored_gameplay and authored_world.
 # Online use also requires authenticated hosting with the exact same context.

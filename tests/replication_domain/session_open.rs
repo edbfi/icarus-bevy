@@ -811,6 +811,19 @@ fn controller_leave_completed_update_contains_exactly_property_26() {
             expected.write_bits(u32::from(raw), 3);
             expected.write_bits(0, 8);
             assert_eq!(block.payload, Payload::from_writer(expected));
+            // Current conditional checksum-off/nonshared static vectors;
+            // bytes include padding outside the authoritative bit lengths.
+            if let Some((property, actor)) = match raw {
+                1 => Some(([0x68_u8, 0x02, 0], [0xa3_u8, 0xa0, 0x09, 0])),
+                2 => Some(([0x68_u8, 0x04, 0], [0xa3_u8, 0xa0, 0x11, 0])),
+                4 => Some(([0x68_u8, 0x08, 0], [0xa3_u8, 0xa0, 0x21, 0])),
+                _ => None,
+            } {
+                assert_eq!(block.payload.bit_len(), 20);
+                assert_eq!(block.payload.bytes(), property);
+                assert_eq!(payload.bit_len(), 30);
+                assert_eq!(payload.bytes(), actor);
+            }
             let stream = parse_rep_properties(&block.payload, plan.actor_layout(), &rep).unwrap();
             assert_eq!(stream.entries.len(), 1);
             assert_eq!(stream.entries[0].handle, 26);

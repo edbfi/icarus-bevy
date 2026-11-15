@@ -7,6 +7,16 @@ use super::super::{
 use super::*;
 use crate::native_player_runtime::LeavePhase;
 
+/// Aggregate native transport transitions. ACK means delivery of the reliable
+/// prefix, never client application or menu success. Retained after departure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ControllerLeaveCounts {
+    pub intents_accepted: u64,
+    pub cancel_suppressions: u64,
+    pub completions_admitted: u64,
+    pub completion_prefix_acked: u64,
+}
+
 pub(super) struct Operation {
     connection: CheckpointConnection,
     key: PlayerKey,
@@ -20,9 +30,14 @@ pub(super) struct Operation {
 }
 
 impl PeerLab {
-    /// Install an authored/test-only policy separately from codec qualification.
-    /// Production preparation never calls this API. No active pin, defaults or
-    /// static capability declaration grants dispatch or client qualification.
+    /// Whether an authored leave policy is installed.
+    pub fn has_authored_controller_leave(&self) -> bool {
+        self.authored_controller_leave.is_some()
+    }
+
+    /// Install an explicit authored policy separately from codec qualification.
+    /// A caller must opt in separately from static codec qualification; no
+    /// active pin or default grants dispatch or client qualification.
     pub fn enable_authored_controller_leave(&mut self, plan: ControllerLeavePlan) -> Result<()> {
         ensure!(
             self.peers.is_empty() && self.peak_peers == 0,
@@ -68,8 +83,12 @@ impl PeerLab {
             return;
         }
         if let Some(operation) = &mut entry.controller_leave {
-            if request == ControllerLeaveRequest::Cancel && operation.receipt.channel.is_none() {
+            if request == ControllerLeaveRequest::Cancel
+                && operation.receipt.channel.is_none()
+                && !operation.suppressed
+            {
                 operation.suppressed = true;
+                bump(&mut self.stats.controller_leave.cancel_suppressions);
             }
             // The first normal intent owns the cutoff/type; duplicate or
             // conflicting calls never extend its deadline or replace it.
@@ -110,6 +129,7 @@ impl PeerLab {
             receipt: InitialisationReceipt::default(),
             retry_ready: true,
         });
+        bump(&mut self.stats.controller_leave.intents_accepted);
     }
 
     /// Apply accepted intents at an exclusive boundary before fixed ticks,
@@ -208,6 +228,7 @@ impl PeerLab {
                         // until the whole prefix through completion settles.
                         operation.receipt = InitialisationReceipt::through(&entry.peer, channel)
                             .expect("committed leave controller channel");
+                        bump(&mut self.stats.controller_leave.completions_admitted);
                         entry.ack_pending = false;
                         outgoing.push((address, sent));
                     }

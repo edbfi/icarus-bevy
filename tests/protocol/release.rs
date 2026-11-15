@@ -231,8 +231,8 @@ fn the_tracked_pin_equals_its_frozen_fixture_where_one_exists() {
 /// and every class section, and `[level_actors]` exactly where those
 /// identities were derived (3.0.34 and 3.0.35). The 3.0.31 client-build file
 /// differs from 3.0.31 only in its build id. Removing a required section
-/// fails with an error naming it; removing an optional one turns it off and
-/// never falls back to other values.
+/// fails with an error naming it; an optional identity can be disabled after
+/// dropping capabilities bound to it, without falling back to other values.
 #[test]
 fn release_profile_files_are_complete() {
     for (name, build_id, level_actors) in [
@@ -265,8 +265,22 @@ fn release_profile_files_are_complete() {
         for section in OPTIONAL_SECTIONS {
             let mut without = table.clone();
             without.remove(section);
+            let dependent_leave = section == "player_controller"
+                && profile
+                    .qualifications
+                    .as_ref()
+                    .is_some_and(|q| q.controller_leave.is_some());
+            if dependent_leave {
+                // A codec qualification cannot survive removal of its bound
+                // controller. Explicitly remove that capability to disable it.
+                assert!(ReleaseProfile::parse(&toml::to_string(&without).unwrap()).is_err());
+                without["qualifications"]
+                    .as_table_mut()
+                    .unwrap()
+                    .remove("controller_leave");
+            }
             let parsed = ReleaseProfile::parse(&toml::to_string(&without).unwrap()).unwrap();
-            let expected = match section {
+            let mut expected = match section {
                 "player_controller" => ReleaseProfile {
                     player_controller: None,
                     ..profile.clone()
@@ -292,6 +306,9 @@ fn release_profile_files_are_complete() {
                     ..profile.clone()
                 },
             };
+            if dependent_leave {
+                expected.qualifications.as_mut().unwrap().controller_leave = None;
+            }
             assert_eq!(parsed, expected, "{name} {section}");
         }
     }
@@ -407,7 +424,6 @@ fn controller_leave_capability_requires_an_explicit_complete_binding() {
         "3.0.32",
         "3.0.34",
         "3.0.35",
-        "3.0.36",
     ] {
         assert!(
             ReleaseProfile::fixture(name)
@@ -420,29 +436,22 @@ fn controller_leave_capability_requires_an_explicit_complete_binding() {
     let text =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
             .unwrap();
-    let mut table = release_table(&text);
+    let table = release_table(&text);
+    // The reviewed current profile declares codecs only. Dispatch still needs
+    // an explicit native policy opt-in, independently tested by preflight.
     assert!(
-        ReleaseProfile::parse(&text)
-            .unwrap()
+        ReleaseProfile::fixture("3.0.36")
             .controller_leave_plan()
             .unwrap()
-            .is_none()
+            .is_some()
     );
-    // Authored declaration exercises the codec gate; it is not evidence that
-    // the selected original class/cache was instantiated or a client left.
-    let mut leave = toml::Table::new();
-    leave.insert("revision".into(), "selected_controller_v1".into());
-    leave.insert(
-        "player_controller".into(),
-        table["player_controller"].clone(),
-    );
-    let mut qualification = toml::Table::new();
-    qualification.insert("pin".into(), table["release"].clone());
-    qualification.insert("engine_network_version".into(), 17.into());
-    qualification.insert("game_network_version".into(), 0.into());
-    qualification.insert("class_net_cache".into(), table["class_net_cache"].clone());
-    qualification.insert("controller_leave".into(), leave.into());
-    table.insert("qualifications".into(), qualification.into());
+    let qualifications = ReleaseProfile::parse(&text)
+        .unwrap()
+        .qualifications
+        .unwrap();
+    assert!(qualifications.quest_catalog.is_none());
+    assert!(qualifications.visibility_decode.is_none());
+    assert!(qualifications.inbound_controller.is_none());
     let parse = |table: &toml::Table| ReleaseProfile::parse(&toml::to_string(table).unwrap());
     let qualified = parse(&table).unwrap();
     let plan = qualified.controller_leave_plan().unwrap().unwrap();
@@ -664,18 +673,17 @@ fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
     assert_eq!(profile.class_net_cache, previous.class_net_cache);
     // Current-build ordered registry and widths match 3.0.35 (F-1178).
     assert_eq!(profile.row_handles, previous.row_handles);
-    // The build id is only a label: another id selects no other values, while
-    // a checksum that does not match the version string still fails.
+    // A build id selects no other values. Its complete codec qualification
+    // must still be rebound explicitly; changing the release alone refuses.
     let text = std::fs::read_to_string(ReleaseProfile::fixture_path("3.0.36")).unwrap();
-    let relabelled = ReleaseProfile::parse(&text.replace("26613688", "26613689")).unwrap();
+    let mut release_only = release_table(&text);
+    release_only["release"]["build_id"] = 26_613_689.into();
+    assert!(ReleaseProfile::parse(&toml::to_string(&release_only).unwrap()).is_err());
+    let mut relabelled = ReleaseProfile::parse(&text.replace("26613688", "26613689")).unwrap();
     assert_eq!(relabelled.pin.build_id, 26_613_689);
-    assert_eq!(
-        ReleaseProfile {
-            pin: profile.pin.clone(),
-            ..relabelled
-        },
-        profile
-    );
+    relabelled.pin = profile.pin.clone();
+    relabelled.qualifications.as_mut().unwrap().pin = profile.pin.clone();
+    assert_eq!(relabelled, profile);
     assert!(ReleaseProfile::parse(&text.replace("3984737729", "1299872271")).is_err());
     use icarus_bevy::experimental::visibility::{
         VisibilityArchiveProfile, VisibilityDecodeProfile,

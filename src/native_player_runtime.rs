@@ -7,7 +7,9 @@ use bevy::prelude::{Res, Resource, World};
 use std::collections::BTreeMap;
 
 mod leave;
-pub use leave::{CheckpointWriter, LeaveFailure, LeavePhase, LeaveStatus};
+pub use leave::{
+    CheckpointWriter, DurableLeaveReceipt, LeaveFailure, LeavePhase, LeaveStatus, PlayerLeaveCounts,
+};
 
 #[derive(Clone)]
 struct Attachment {
@@ -24,6 +26,7 @@ pub struct PlayerRegistry {
     epoch_high_water: u64,
     leaves: BTreeMap<PlayerKey, leave::LeaveOperation>,
     writer_failed: bool,
+    leave_counts: PlayerLeaveCounts,
 }
 impl std::fmt::Debug for PlayerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,6 +57,7 @@ impl PlayerRegistry {
             epoch_high_water: 0,
             leaves: BTreeMap::new(),
             writer_failed: false,
+            leave_counts: PlayerLeaveCounts::default(),
         })
     }
     pub fn snapshot(&self) -> PlayerSnapshot {

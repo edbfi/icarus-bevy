@@ -25,7 +25,7 @@ drops its release binding). Accepted account/slot bindings
 and reliable-pressure retries are authored-tested only; delayed-pawn stock-client
 continuation remains unqualified (U-038). F-1188: authored leave cuts off before
 ticks; exact-writer durability precedes reliable completion/ACK detach. Pending
-cancellation suppresses completion; production dispatch remains disabled.
+cancellation suppresses completion; production leave remains default-off.
 
 Schema-14 authored survival resumes fractional debit and day phase from committed
 ticks, excludes inactive attachments and latches owner/timestep failures before

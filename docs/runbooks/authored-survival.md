@@ -68,8 +68,9 @@ attempt receipts; worker loss is terminal. Timeout never cancels or rolls back I
 Poll `leave_status`; `settle_leave` requires durability and original detachment.
 
 API `PeerLab::enable_authored_controller_leave(plan)` requires checkpoints and a
-matching controller identity/layout/checksum before admission. Production config
-and active release disable dispatch. Supported types: Quit (1), CharacterSelect
+matching controller identity/layout/checksum before admission. Explicit
+`network.authored_controller_leave` enables it after qualified preflight; default
+false. Codec declarations alone never enable dispatch. Types: Quit (1), CharacterSelect
 (2), Titlescreen (4). Missing/None, dropship, disconnected and no-save do nothing.
 
 The plugin cuts off before fixed ticks, including zero-tick/consuming updates.

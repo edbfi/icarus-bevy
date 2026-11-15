@@ -1143,6 +1143,13 @@ fn with_native_replication_counts(
     {
         record["native_replication"] = json!(counts);
     }
+    if matches!(record["event"].as_str(), Some("status" | "stopped"))
+        && network::session_counts(world).is_some_and(|counts| counts.controller_leave.is_some())
+        && let Some(registry) =
+            world.get_resource::<icarus_bevy::native_player_runtime::PlayerRegistry>()
+    {
+        record["player_leave"] = json!(registry.leave_counts());
+    }
     record
 }
 
@@ -1575,6 +1582,17 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         .take()
         .map(|hosting| hosting.stop_and_join())
         .transpose();
+    let leave_diagnostics = network::session_counts(app.world())
+        .is_some_and(|counts| counts.controller_leave.is_some());
+    let stopped = |world: &bevy::prelude::World| {
+        write_run_record(with_native_replication_counts(
+            json!({"event": "stopped", "tick": world.resource::<SimulationClock>().tick,
+        "gameplay_ready": false, "sessions": &sessions,
+        "controller_receive": network::controller_receive_diagnostics(world),
+        "readiness_before_shutdown": &readiness}),
+            world,
+        ))
+    };
     // Always attempt persistence, but retain the earlier failure if shutdown
     // also fails (for example, an already-disconnected save worker).
     let finalization_result = (|| -> Result<()> {
@@ -1597,18 +1615,25 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             .finish_before(app.world_mut(), deadline)?
             .map(|receipt| saved(receipt, Some(final_submitted)))
             .transpose();
-        let stopped_output = write_run_record(with_native_replication_counts(
-            json!({"event": "stopped", "tick": app.world().resource::<SimulationClock>().tick,
-        "gameplay_ready": false, "sessions": sessions,
-        "controller_receive": network::controller_receive_diagnostics(app.world()),
-        "readiness_before_shutdown": readiness}),
-            app.world(),
-        ));
+        // Preserve the existing output/error ordering when leave is disabled.
+        let stopped_output = if leave_diagnostics {
+            Ok(())
+        } else {
+            stopped(app.world())
+        };
         shutdown_output?;
         final_output?;
         stopped_output?;
         Ok(())
     })();
+    // Keep final aggregate leave failures visible even when writer drain or
+    // final capture fails. The registry outlives network teardown and owns
+    // the exact submission observations; retained sessions own transport totals.
+    let stopped_output = if leave_diagnostics {
+        stopped(app.world())
+    } else {
+        Ok(())
+    };
     // Keep secondary failures observable without letting a failed diagnostic
     // replace the original error. Run records already go to stderr.
     if run_result.is_err()
@@ -1625,5 +1650,141 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     }
     run_result?;
     hosting_result?;
-    finalization_result
+    finalization_result?;
+    stopped_output
+}
+
+#[cfg(test)]
+mod leave_diagnostics_tests {
+    use super::*;
+    use icarus_bevy::{
+        config::{NetworkConfig, ServerConfig},
+        experimental::{pawn_open::CharacterVitals, release::ReleaseProfile},
+        native_player_runtime::PlayerRegistry,
+        native_players::{
+            PlayerCheckpoint, PlayerContext, PlayerInputs, PlayerKey, PlayerSnapshot,
+        },
+        simulation::{SNAPSHOT_SCHEMA_PLAYERS, WorldSnapshot},
+    };
+
+    #[test]
+    fn status_and_stopped_counts_are_opt_in_aggregate_and_survive_teardown() {
+        const ACCOUNT: u64 = 76561197960265770;
+        for enabled in [false, true] {
+            let profile = ReleaseProfile::fixture("3.0.36");
+            let network = NetworkConfig {
+                enabled: true,
+                port: 0,
+                release_profile: Some(ReleaseProfile::fixture_path("3.0.36")),
+                ..Default::default()
+            };
+            let mut lab = network::prepare_session(&network, network::peer_lab_config(&network))
+                .unwrap()
+                .unwrap()
+                .bind()
+                .unwrap()
+                .lab;
+            let vitals = CharacterVitals {
+                health: 100,
+                max_health: 100,
+                stamina: 100,
+                max_stamina: 100,
+                oxygen: 100,
+                max_oxygen: 100,
+                water: 100,
+                max_water: 100,
+                food: 100,
+                max_food: 100,
+                biome_row: 0,
+                growth_row: 0,
+            };
+            lab.enable_player_checkpoints(vitals).unwrap();
+            if enabled {
+                lab.enable_authored_controller_leave(
+                    profile.controller_leave_plan().unwrap().unwrap(),
+                )
+                .unwrap();
+            }
+            let context = PlayerContext::new(
+                "PRIVATE-PROSPECT-SENTINEL".encode_utf16().collect(),
+                "/Authored/Map".into(),
+                PlayerInputs {
+                    authored_gameplay: [7; 32],
+                    spawn: [7; 32],
+                    authored_world: [7; 32],
+                    declaration: [7; 32],
+                    initial_values: [7; 32],
+                },
+                vec!["Player".into()],
+            )
+            .unwrap();
+            let mut registry =
+                PlayerRegistry::new(PlayerSnapshot::empty(context.clone()), &context, 1).unwrap();
+            let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+            registry
+                .reserve(
+                    key,
+                    1,
+                    PlayerCheckpoint {
+                        location_cm: [123., 456., 789.],
+                        vitals,
+                    },
+                )
+                .unwrap();
+            registry.activate(1).unwrap();
+            registry
+                .request_leave(key, 1, 1, Instant::now(), Duration::from_secs(60))
+                .unwrap();
+            let snapshot = WorldSnapshot {
+                schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+                native_players: Some(registry.snapshot()),
+                ..Default::default()
+            };
+            let mut app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+            app.insert_resource(registry).insert_resource(lab);
+            for event in ["status", "network_listening"] {
+                let record = with_native_replication_counts(json!({"event": event}), app.world());
+                assert_eq!(
+                    record.get("player_leave").is_some(),
+                    enabled && event == "status"
+                );
+            }
+            network::teardown(app.world_mut());
+            let directory = tempfile::tempdir().unwrap();
+            let mut writer =
+                CheckpointWriter::spawn(SnapshotStore::open(directory.path()).unwrap()).unwrap();
+            writer.submit(app.world_mut()).unwrap();
+            writer
+                .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let record = with_native_replication_counts(
+                json!({"event": "stopped", "sessions": network::session_counts(app.world())}),
+                app.world(),
+            );
+            if enabled {
+                assert_eq!(record["player_leave"]["cutoffs_accepted"], 1);
+                assert_eq!(record["player_leave"]["durable"], 1);
+                assert_eq!(record["player_leave"]["pending"], 0);
+                assert!(record["sessions"]["controller_leave"].is_object());
+            } else {
+                assert!(record.get("player_leave").is_none());
+                assert!(record["sessions"].get("controller_leave").is_none());
+            }
+            let text = record.to_string();
+            assert!(!text.contains(&ACCOUNT.to_string()));
+            assert!(!text.contains("PRIVATE-PROSPECT-SENTINEL"));
+            for key in [
+                "epoch",
+                "revision",
+                "checkpoint",
+                "location",
+                "vitals",
+                "ticket",
+                "account",
+            ] {
+                assert!(!text.contains(&format!("\"{key}\"")));
+            }
+        }
+    }
 }

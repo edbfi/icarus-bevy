@@ -59,6 +59,10 @@ pub struct NetworkConfig {
     /// unqualified with stock clients; absence retains the ordinary path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_persistence: Option<PlayerPersistenceConfig>,
+    /// EXPERIMENTAL: explicitly dispatch the selected ordinary controller leave
+    /// protocol against authored checkpoints. Codec qualification alone never
+    /// enables this policy. Default false; stock-client completion is unqualified.
+    pub authored_controller_leave: bool,
     /// Independent integer vital units per simulated second; requires checkpoints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_consumption: Option<crate::native_player_runtime::ConsumptionConfig>,
@@ -173,6 +177,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             player_persistence: None,
+            authored_controller_leave: false,
             player_consumption: None,
             hosting: None,
             authored_world: None,
@@ -244,6 +249,10 @@ pub const LEVEL_VISIBILITY_ACTORS_GATED: &str = "network.level_visibility_actors
 
 impl NetworkConfig {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.authored_controller_leave || self.player_persistence.is_some(),
+            "network.authored_controller_leave requires player persistence"
+        );
         if let Some(consumption) = self.player_consumption {
             consumption.validate()?;
             ensure!(

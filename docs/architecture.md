@@ -55,21 +55,25 @@ A complete profile carries protocol values; its build id selects none.
   `[player_state]`, `[game_state]`, `[pawn]`, `[managers]` and `[level_actors]`
   supply identities; absence turns that open off, with no fallback.
 - Optional `[qualifications]` declares typed `quest_catalog`,
-  `visibility_decode` and `inbound_controller` revisions. Missing declarations
-  disable the capability; unknown revisions fail parsing. Its complete pin,
-  engine/game versions and class-bound snapshot must equal the profile before
+  `visibility_decode`, `inbound_controller` and `controller_leave` revisions.
+  Missing declarations disable the capability; unknown revisions fail parsing.
+  Its complete pin, engine/game versions and class-bound snapshot must equal
+  the profile before
   planning or decoder output. Runtime qualification reads no test fixture.
   Editing both sides requires qualification; metadata cannot prove provenance.
-- `quest_classes_v1` selects the existing reviewed `QUEST_CLASSES` catalog
-  (F-935, M-1030), only declared on 3.0.31 server/client aliases and 3.0.32.
-  Visibility `normal_custom_v1` is declared only on 3.0.34/3.0.35 for conditional
-  decoding (F-1034). Caller archive/layout assertions, production switch refusal
-  and the [visibility gate](gates.md#before-enabling-visibility-dispatch-or-effects)
-  remain; metadata installs no dispatch or effects. Inbound
-  `fixed_component_bounds_v1` is declared only on 3.0.32/3.0.34, retaining full
-  identity/framing checks and fixed component bounds 149/27/8 (F-1015, F-1016,
-  M-1197). Output stays metadata-only; unknown components stay opaque. Active
-  3.0.36 declares none; F-1177 qualifies none of these capabilities.
+- `quest_classes_v1` binds the reviewed catalog on 3.0.31 aliases/3.0.32
+  (F-935, M-1030). Visibility `normal_custom_v1` on 3.0.34/3.0.35 grants
+  conditional decoding only (F-1034), retaining caller archive/layout assertions,
+  production refusal and the [visibility gate](gates.md#before-enabling-visibility-dispatch-or-effects).
+  Inbound `fixed_component_bounds_v1` on 3.0.32/3.0.34 keeps complete identity/
+  framing checks and bounds 149/27/8 (F-1015, F-1016, M-1197); output is metadata
+  only, unknown components opaque. Active 3.0.36 retains none of these.
+- Controller `selected_controller_v1` binds identity/pin/versions/bounds.
+  F-1197's conditional codec (M-1498 to M-1501) permits an explicit default-off
+  experiment; metadata grants no dispatch. F-1188 requires current exact pinned
+  cutoffs, cancel suppression and reliable admission/ACK; obsolete state cannot
+  replace the current cutoff. Live archive/cache/OnRep/menu behavior, coverage and
+  original durability remain unproved.
 - Historical profiles under `tests/fixtures/releases/` are loaded explicitly
   with `ReleaseProfile::fixture` or `fixture_path`. No release gets a fixture
   automatically; an active fixture, where present, must equal the pin.
@@ -172,8 +176,15 @@ retains committed state.
 `CheckpointWriter` through shutdown: only the pinned attempt's exact submission
 can establish durability. The separate authored adapter waits for that result
 before reliable completion and its prefix ACK before detach. Pre-admission cancellation
-retains the frozen obligation and suppresses completion. Production configuration
-leaves dispatch disabled; no full player-save or client qualification follows.
+retains the frozen obligation and suppresses completion. Default-false
+`network.authored_controller_leave` separately enables the policy only with
+checkpoints, authenticated online hosting and matching codec/controller plans.
+`check-config` checks shape; pure offline preparation verifies binding before
+storage/services. Opt-in status/stopped `player_leave` reports cutoff, durability/
+failure gauges and last global generation/tick; `sessions.controller_leave`
+reports intent/cancel/admission/prefix-ACK totals. These survive teardown;
+aggregates or ACK cannot prove exact private record equality or menu success.
+No full player-save/client qualification follows.
 
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried

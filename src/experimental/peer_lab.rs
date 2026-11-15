@@ -201,6 +201,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 mod controller_leave;
+pub use controller_leave::ControllerLeaveCounts;
 
 use crate::{
     authored_world_bootstrap::AuthoredClockPlan,
@@ -692,6 +693,8 @@ impl PeerLabConfig {
 /// Counters only; no addresses, payloads, cookies or field values.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PeerLabStats {
+    #[serde(skip)]
+    pub controller_leave: ControllerLeaveCounts,
     /// Datagrams taken from the socket, including rejected ones.
     pub received: u64,
     /// Longer than the maximum datagram size (possibly kernel-truncated).
@@ -1161,6 +1164,8 @@ impl PeerLabStats {
 /// addresses, identifiers or message fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SessionCounts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controller_leave: Option<ControllerLeaveCounts>,
     /// False after [`PeerLab::stop_admission`].
     pub admitting: bool,
     /// Peers currently in the table, in any login state.
@@ -7092,6 +7097,10 @@ impl PeerLab {
     /// Current session gauges and counters (counts only).
     pub fn session_counts(&self) -> SessionCounts {
         let mut counts = SessionCounts {
+            controller_leave: self
+                .authored_controller_leave
+                .as_ref()
+                .map(|_| self.stats.controller_leave),
             admitting: self.admitting,
             active_peers: self.peers.len(),
             peak_peers: self.peak_peers,
@@ -7847,10 +7856,14 @@ impl PeerLab {
                         // more traffic. NAKs and close ACKs cannot settle opens.
                         if !summary.acked.is_empty() {
                             if let Some(operation) = &mut entry.controller_leave {
+                                let settled = operation.receipt.settled;
                                 operation.receipt.observe_positive_ack(
                                     &entry.peer,
                                     &summary.released_actor_channels,
                                 );
+                                if operation.receipt.settled && !settled {
+                                    bump(&mut self.stats.controller_leave.completion_prefix_acked);
+                                }
                             }
                             entry.initialisation_request_receipt.observe_positive_ack(
                                 &entry.peer,

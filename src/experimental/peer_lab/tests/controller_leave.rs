@@ -274,6 +274,8 @@ fn normal_leave_freezes_without_ticks_and_waits_for_exact_receipt_then_reliable_
         f.send(Request::Normal(Some(kind)));
         f.bridge();
         assert_eq!(f.phase(), Some(LeavePhase::Pending));
+        assert_eq!(f.registry().leave_counts().cutoffs_accepted, 1);
+        assert_eq!(f.registry().leave_counts().durable, 0);
         f.app.update();
         assert_eq!(f.app.world().resource::<SimulationClock>().tick, 0);
         {
@@ -304,6 +306,15 @@ fn normal_leave_freezes_without_ticks_and_waits_for_exact_receipt_then_reliable_
         // A distinct request cannot replace the first requested destination.
         f.send(Request::Normal(Some(Kind::ReturnToTitlescreen)));
         f.bridge();
+        assert_eq!(f.registry().leave_counts().cutoffs_accepted, 1);
+        assert_eq!(
+            f.lab
+                .session_counts()
+                .controller_leave
+                .unwrap()
+                .intents_accepted,
+            1
+        );
         let receipt = f.save(&mut writer);
         assert_eq!(older.tick, receipt.tick);
         assert!(receipt.generation > older.generation);
@@ -328,6 +339,9 @@ fn normal_leave_freezes_without_ticks_and_waits_for_exact_receipt_then_reliable_
         f.bridge();
         assert!(f.lab.peers.contains_key(&f.address));
         assert!(f.registry().projection(f.epoch).is_some());
+        let transport = f.lab.session_counts().controller_leave.unwrap();
+        assert_eq!(transport.completions_admitted, 1);
+        assert_eq!(transport.completion_prefix_acked, 0);
         assert!(f.lab.peers[&f.address].peer.pending_resends() > 0);
         // Reliable NAKs queue their unchanged bunch for the next written
         // datagram. Use ordinary ACK traffic to drive that transport step.
@@ -354,6 +368,29 @@ fn normal_leave_freezes_without_ticks_and_waits_for_exact_receipt_then_reliable_
         assert!(!f.lab.peers.contains_key(&f.address));
         assert!(f.registry().projection(f.epoch).is_none());
         assert_eq!(f.phase(), None);
+        let counts = f.registry().leave_counts();
+        assert_eq!(
+            (
+                counts.cutoffs_accepted,
+                counts.durable,
+                counts.detached_settled
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            (counts.pending, counts.failed, counts.durable_unsettled),
+            (0, 0, 0)
+        );
+        assert_eq!(counts.last_durable.unwrap().generation, receipt.generation);
+        let transport = f.lab.session_counts().controller_leave.unwrap();
+        assert_eq!(
+            (
+                transport.intents_accepted,
+                transport.completions_admitted,
+                transport.completion_prefix_acked
+            ),
+            (1, 1, 1)
+        );
         assert_eq!(
             f.registry()
                 .snapshot()
@@ -391,6 +428,13 @@ fn normal_leave_freezes_without_ticks_and_waits_for_exact_receipt_then_reliable_
 
 #[test]
 fn unsupported_requests_and_disabled_dispatch_do_not_cut_off_or_complete() {
+    assert!(
+        ReleaseProfile::load(std::path::Path::new("config/release.toml"))
+            .unwrap()
+            .controller_leave_plan()
+            .unwrap()
+            .is_some()
+    );
     for enabled in [false, true] {
         let mut f = Fixture::new(enabled);
         let before = f.registry().snapshot();
@@ -413,15 +457,13 @@ fn unsupported_requests_and_disabled_dispatch_do_not_cut_off_or_complete() {
             assert_eq!(f.registry().activated_epochs(), vec![f.epoch]);
             let received = f.deliver(true);
             assert!(f.completions(&received).is_empty());
+            assert_eq!(f.registry().leave_counts(), Default::default());
+            assert_eq!(
+                f.lab.session_counts().controller_leave,
+                enabled.then_some(Default::default())
+            );
         }
     }
-    assert!(
-        ReleaseProfile::load(std::path::Path::new("config/release.toml"))
-            .unwrap()
-            .controller_leave_plan()
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[test]
@@ -441,6 +483,8 @@ fn cancel_before_admission_suppresses_completion_and_keeps_the_frozen_checkpoint
         }
         f.send(Request::Cancel);
         f.bridge();
+        f.send(Request::Cancel);
+        f.bridge();
         if stage != "durable" {
             f.save(&mut writer);
         }
@@ -457,6 +501,16 @@ fn cancel_before_admission_suppresses_completion_and_keeps_the_frozen_checkpoint
         f.bridge();
         assert_eq!(f.phase(), None);
         assert_eq!(f.registry().snapshot(), before);
+        let transport = f.lab.session_counts().controller_leave.unwrap();
+        assert_eq!(
+            (
+                transport.intents_accepted,
+                transport.cancel_suppressions,
+                transport.completions_admitted
+            ),
+            (1, 1, 0)
+        );
+        assert_eq!(f.registry().leave_counts().detached_settled, 1);
     }
 }
 
@@ -491,6 +545,14 @@ fn completion_waits_under_queue_pressure_and_cancel_after_admission_cannot_retra
     f.bridge();
     assert!(!f.lab.peers.contains_key(&f.address));
     assert_eq!(f.phase(), None);
+    assert_eq!(
+        f.lab
+            .session_counts()
+            .controller_leave
+            .unwrap()
+            .cancel_suppressions,
+        0
+    );
 }
 
 #[test]
@@ -525,6 +587,16 @@ fn storage_failure_never_emits_completion_or_unfreezes_the_player() {
     assert!(
         f.phase().is_some(),
         "failure keeps the detached checkpoint barrier"
+    );
+    let counts = f.registry().leave_counts();
+    assert_eq!(
+        (
+            counts.storage_failed,
+            counts.failed,
+            counts.durable,
+            counts.detached_settled
+        ),
+        (1, 1, 0, 0)
     );
 }
 
@@ -570,6 +642,23 @@ fn revoked_disconnected_or_reused_destinations_never_receive_late_completion() {
             "only detached durable obligations can settle without a response"
         );
         assert_eq!(f.registry().snapshot(), before);
+        let counts = f.registry().leave_counts();
+        assert_eq!(
+            (
+                counts.cutoffs_accepted,
+                counts.durable,
+                counts.detached_settled
+            ),
+            (1, 1, 1)
+        );
+        let transport = f.lab.session_counts().controller_leave.unwrap();
+        assert_eq!(
+            (
+                transport.completions_admitted,
+                transport.completion_prefix_acked
+            ),
+            (0, 0)
+        );
         if let Some((_socket, _client)) = replacement_client {
             assert!(f.lab.peers.contains_key(&f.address));
             assert!(f.lab.peers[&f.address].peer.actor_channel_settled(
@@ -730,6 +819,14 @@ fn completion_ack_waits_for_earlier_reliable_bunch_but_not_later_traffic() {
     );
     assert!(f.registry().projection(f.epoch).is_some());
     assert!(matches!(f.phase(), Some(LeavePhase::Durable { .. })));
+    assert_eq!(
+        f.lab
+            .session_counts()
+            .controller_leave
+            .unwrap()
+            .completion_prefix_acked,
+        0
+    );
     assert!(f.lab.peers[&f.address].peer.pending_resends() > 0);
     let repair = f
         .lab
@@ -761,4 +858,79 @@ fn completion_ack_waits_for_earlier_reliable_bunch_but_not_later_traffic() {
     assert!(!f.lab.peers.contains_key(&f.address));
     assert!(f.registry().projection(f.epoch).is_none());
     assert_eq!(f.phase(), None);
+}
+
+#[test]
+fn aggregate_diagnostics_survive_teardown_and_final_writer_observation_without_private_values() {
+    let mut f = Fixture::new(true);
+    let (_directory, mut writer) = f.writer();
+    f.send(Request::Normal(Some(Kind::Quit)));
+    f.bridge();
+    let transport = f.lab.session_counts().controller_leave;
+    let address = f.address.to_string();
+    let Fixture { lab, mut app, .. } = f;
+    app.insert_resource(lab);
+    crate::network::teardown(app.world_mut());
+    assert_eq!(
+        crate::network::session_counts(app.world())
+            .unwrap()
+            .controller_leave,
+        transport
+    );
+    assert_eq!(
+        app.world()
+            .resource::<PlayerRegistry>()
+            .leave_counts()
+            .pending,
+        1
+    );
+    writer.submit(app.world_mut()).unwrap();
+    let receipt = writer
+        .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    let counts = app.world().resource::<PlayerRegistry>().leave_counts();
+    assert_eq!(
+        (
+            counts.cutoffs_accepted,
+            counts.pending,
+            counts.durable,
+            counts.durable_unsettled
+        ),
+        (1, 0, 1, 1)
+    );
+    assert_eq!(counts.last_durable.unwrap().generation, receipt.generation);
+    assert_eq!(
+        crate::network::session_counts(app.world())
+            .unwrap()
+            .controller_leave,
+        transport
+    );
+    let encoded = serde_json::to_string(
+        &serde_json::json!({"player_leave": counts, "controller_leave": transport}),
+    )
+    .unwrap();
+    for sentinel in [
+        ACCOUNT.to_string(),
+        address,
+        "PRIVATE-NAME-SENTINEL".into(),
+        "UNTRUSTED-LOGIN-SENTINEL".into(),
+    ] {
+        assert!(!encoded.contains(&sentinel));
+    }
+    for key in [
+        "account",
+        "slot",
+        "epoch",
+        "revision",
+        "checkpoint",
+        "location",
+        "vitals",
+        "ticket",
+        "address",
+        "guid",
+        "hash",
+    ] {
+        assert!(!encoded.contains(&format!("\"{key}\"")));
+    }
 }
