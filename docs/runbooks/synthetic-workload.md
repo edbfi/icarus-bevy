@@ -41,9 +41,8 @@ production loop's autosave timer, peer idle timeouts), real-time deadline
 pressure between ticks, or storage, page-cache and host effects that accrue
 over days; pair it with a short paced run for those.
 
-These authored workloads establish neither stock-client compatibility nor an
-official-server speedup. The [plan's](../linux-dedicated-server-plan.md) stability
-target requires heavy ICARUS worlds, not 72 hours of synthetic scheduling.
+These authored workloads prove neither compatibility nor official-server speedup.
+The [plan](../linux-dedicated-server-plan.md) requires heavy ICARUS worlds.
 
 For repeated synchronous persistence measurements, use:
 
@@ -54,9 +53,9 @@ cargo run --release --locked --example snapshot_bench -- \
 
 The benchmark makes two warm-up commits, times each save/load and checks all
 recovered state. Repeat fresh runs at matched population, affinity and build
-settings; retain baseline binaries and hashes under `work/`. `/usr/bin/time -v`
-includes verification allocations, so its peak RSS is not steady-state server
-memory.
+settings; retain baseline binaries and hashes under ignored `work/`.
+`/usr/bin/time -v` includes verification allocations: its peak RSS must not be
+labeled steady-state server memory.
 
 For schemas 7–9, `native_lifecycle_bench` measures capture, preflight, storage
 and owner actions, verifying full state outside each timer. Create the case
@@ -67,11 +66,12 @@ cargo run --release --locked --example native_lifecycle_bench -- \
   --data-dir work/CASE/new-store --operations preflight --slots 3,64,256,1024
 ```
 
-Run operations separately within the shared 20-second limit. Defaults: three
-repetitions, five warm-ups, 50 samples. JSON retains raw times and incomplete
-markers. Enforce external CPU, memory and time limits. Action timings include
-capture and preflight; load reuses the open store. Match fixtures, builds and
-affinity; exclude incomplete cases from comparisons.
+Run operations separately to avoid starving later ones within the shared
+20-second limit. Defaults: three repetitions, five warm-ups, 50 samples. JSON
+retains raw times and incomplete markers. Enforce external CPU, memory and
+hard-time limits. Action timings include capture and preflight; load reuses the
+open store. Match fixtures, builds and affinity; exclude incomplete cases from
+comparisons.
 
 Recovery alternates SIGKILL/SIGTERM around autosaves after one commit.
 Default mode checks 10,000 authored entities, checksum, clock and acknowledgements.
@@ -83,9 +83,10 @@ python3 tools/native_recovery_campaign.py --binary target/release/icarus-server 
   --output work/recovery-new --cycles 24
 ```
 
-Build schema14 example `authored_player_recovery` through `cargo_guard.py`:
+Build and run the schema14 fixture:
 
 ```bash
+python3 tools/cargo_guard.py build --locked --example authored_player_recovery
 python3 tools/native_recovery_campaign.py --mode authored-player \
   --binary target/debug/examples/authored_player_recovery \
   --output work/CASE/new-campaign --cycles 4
