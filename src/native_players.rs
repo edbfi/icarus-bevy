@@ -499,6 +499,12 @@ impl PlayerSnapshot {
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
+    pub fn projection_by_id(&self, id: u64) -> Option<PlayerProjection> {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.projection(false))
+    }
     pub fn projection(&self, key: PlayerKey) -> Option<PlayerProjection> {
         self.records
             .iter()

@@ -70,6 +70,8 @@ pub const SNAPSHOT_SCHEMA_RELEASE_BOUND_PLAYERS: u32 = 13;
 /// Independently authored player checkpoints in a non-preserved foundation
 /// world, bound to the world and authored inputs but not to the game release.
 pub const SNAPSHOT_SCHEMA_PLAYERS: u32 = 14;
+/// Opt-in independently authored player inventory, fresh stores only.
+pub const SNAPSHOT_SCHEMA_PLAYER_INVENTORY: u32 = 15;
 
 /// Stable domain identity, independent of Bevy's runtime entity allocation.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -134,6 +136,12 @@ pub struct WorldSnapshot {
     pub native_inventory_authority: Option<crate::native_inventory::AuthoredInventoryAuthorityV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_players: Option<crate::native_players::PlayerSnapshot>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::native_player_inventory::deserialize_optional"
+    )]
+    pub player_inventory: Option<crate::native_player_inventory::PlayerInventorySnapshotV1>,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +196,12 @@ struct WorldSnapshotFields {
         deserialize_with = "crate::native_players::deserialize_optional"
     )]
     pub native_players: Option<crate::native_players::PlayerSnapshot>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::native_player_inventory::deserialize_optional"
+    )]
+    pub player_inventory: Option<crate::native_player_inventory::PlayerInventorySnapshotV1>,
 }
 
 impl<'de> Deserialize<'de> for WorldSnapshot {
@@ -197,7 +211,11 @@ impl<'de> Deserialize<'de> for WorldSnapshot {
         let fields = crate::json::JsonObject::<WorldSnapshotFields>::deserialize(deserializer)
             .map_err(|_| serde::de::Error::custom("invalid native snapshot fields"))?
             .0;
-        if fields.schema_version != SNAPSHOT_SCHEMA_PLAYERS && fields.native_players.is_some() {
+        if !matches!(
+            fields.schema_version,
+            SNAPSHOT_SCHEMA_PLAYERS | SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+        ) && fields.native_players.is_some()
+        {
             return Err(serde::de::Error::custom(
                 "snapshot schema cannot hold player checkpoints",
             ));
@@ -220,6 +238,7 @@ impl<'de> Deserialize<'de> for WorldSnapshot {
             native_inventory_owner_import: fields.native_inventory_owner_import,
             native_inventory_authority: fields.native_inventory_authority,
             native_players: fields.native_players,
+            player_inventory: fields.player_inventory,
         })
     }
 }
@@ -244,13 +263,26 @@ impl Default for WorldSnapshot {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         }
     }
 }
 
 impl WorldSnapshot {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version == SNAPSHOT_SCHEMA_PLAYERS {
+        if matches!(
+            self.schema_version,
+            SNAPSHOT_SCHEMA_PLAYERS | SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+        ) {
+            match (&self.player_inventory, self.schema_version) {
+                (Some(inventory), SNAPSHOT_SCHEMA_PLAYER_INVENTORY) => inventory.validate(
+                    self.native_players
+                        .as_ref()
+                        .context("player inventory requires players")?,
+                )?,
+                (None, SNAPSHOT_SCHEMA_PLAYERS) => (),
+                _ => anyhow::bail!("player inventory schema mismatch"),
+            }
             self.native_players
                 .as_ref()
                 .context("the player schema requires player checkpoints")?
@@ -283,7 +315,7 @@ impl WorldSnapshot {
             return Ok(());
         }
         ensure!(
-            self.native_players.is_none(),
+            self.native_players.is_none() && self.player_inventory.is_none(),
             "snapshot schema cannot hold player checkpoints"
         );
         if self.schema_version != SNAPSHOT_SCHEMA_INVENTORY_OWNERS {
@@ -624,6 +656,8 @@ impl PreparedNativeWorld {
 pub struct SnapshotMode {
     native: bool,
     players: Option<crate::native_players::PlayerContext>,
+    player_inventory: Option<String>,
+    player_inventory_activation: Option<Arc<()>>,
     native_activation: Option<NativeWorldContext>,
     relationship_activation: Option<NativeRelationshipsContext>,
     lifecycle_activation: Option<NativeLifecycleContext>,
@@ -806,6 +840,11 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
                 .native_players
                 .as_ref()
                 .map(|p| p.context().clone()),
+            player_inventory: snapshot
+                .player_inventory
+                .as_ref()
+                .map(|i| i.recipe_id.clone()),
+            player_inventory_activation: None,
             native_activation: None,
             relationship_activation: None,
             lifecycle_activation: None,
@@ -835,11 +874,14 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .resource_mut::<Time<Virtual>>()
         .set_max_delta(config.tick_interval() * config.max_catch_up_ticks);
     if let Some(players) = &snapshot.native_players {
-        app.insert_resource(crate::native_player_runtime::PlayerRegistry::new(
-            players.clone(),
-            players.context(),
-            64,
-        )?);
+        app.insert_resource(
+            crate::native_player_runtime::PlayerRegistry::new_with_inventory(
+                players.clone(),
+                players.context(),
+                64,
+                snapshot.player_inventory.clone(),
+            )?,
+        );
     }
     let authored_clock = config
         .network
@@ -910,7 +952,12 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .world()
         .get_resource::<NativeLifecycleContext>()
         .cloned();
+    let player_inventory_activation = app
+        .world()
+        .get_resource::<crate::native_player_runtime::PlayerRegistry>()
+        .and_then(|r| r.inventory_capture_identity());
     let mut mode = app.world_mut().resource_mut::<SnapshotMode>();
+    mode.player_inventory_activation = player_inventory_activation;
     mode.native_activation = native_activation;
     mode.relationship_activation = relationship_activation;
     mode.lifecycle_activation = lifecycle_activation;
@@ -1061,6 +1108,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         // capture_native validates every record against the immutable loaded
         // catalog. Storage independently validates the serialized snapshot;
@@ -1071,6 +1119,27 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
     ensure!(
         !world.contains_resource::<crate::native_runtime::NativeWorldContext>(),
         "foundation world contains an unexpected native catalog context"
+    );
+    let actual_inventory_activation = world
+        .get_resource::<crate::native_player_runtime::PlayerRegistry>()
+        .and_then(|r| r.inventory_capture_identity());
+    ensure!(
+        match (
+            &mode.player_inventory_activation,
+            &actual_inventory_activation
+        ) {
+            (None, None) => true,
+            (Some(expected), Some(actual)) => Arc::ptr_eq(expected, actual),
+            _ => false,
+        },
+        "player inventory registry differs from activation"
+    );
+    let player_inventory = world
+        .get_resource::<crate::native_player_runtime::PlayerRegistry>()
+        .and_then(|r| r.inventory_snapshot());
+    ensure!(
+        player_inventory.as_ref().map(|i| &i.recipe_id) == mode.player_inventory.as_ref(),
+        "player inventory resource differs from activation"
     );
     let players = match (
         &mode.players,
@@ -1104,7 +1173,9 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
     // Sharing the immutable section keeps capture cheap; the worker writes its
     // held encoding only when no verified sidecar already holds it.
     let snapshot = WorldSnapshot {
-        schema_version: if players.is_some() {
+        schema_version: if player_inventory.is_some() {
+            SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+        } else if players.is_some() {
             SNAPSHOT_SCHEMA_PLAYERS
         } else if preserved_prospect.is_some() {
             SNAPSHOT_SCHEMA_REFERENCED
@@ -1127,6 +1198,7 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         native_inventory_owner_import: None,
         native_inventory_authority: None,
         native_players: players,
+        player_inventory,
     };
     snapshot.validate()?;
     Ok(snapshot)

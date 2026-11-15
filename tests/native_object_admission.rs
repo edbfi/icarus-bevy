@@ -217,8 +217,8 @@ fn proper_future_schema_objects_still_refuse_rollback_without_writes() {
     let _fixture = FIXTURE_LOCK.lock().unwrap();
     let directory = initial(true);
     let root = directory.path();
-    // Schema 14 holds authored player checkpoints; 15 is the future one.
-    replace_current(root, &json!({"schema_version":15,"tick":20,"entities":[]}));
+    // Schema 15 holds authored player inventories; 16 is the future one.
+    replace_current(root, &json!({"schema_version":16,"tick":20,"entities":[]}));
     let before = inventory(root);
     let mut store = SnapshotStore::open(root).unwrap();
     for error in [

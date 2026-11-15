@@ -7,6 +7,7 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 #[derive(Clone, Copy)]
 enum Kind {
     Format(u32),
+    ExactFormat(u32),
     Enum(&'static [&'static str]),
 }
 
@@ -119,7 +120,8 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
                             == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_INVENTORY_OWNERS)
                         || schema
                             == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS);
-                    self.future |= schema > u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYERS);
+                    self.future |=
+                        schema > u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY);
                 }
             } else {
                 map.next_value::<IgnoredAny>()?;
@@ -149,6 +151,12 @@ pub(super) fn header(bytes: &[u8]) -> anyhow::Result<bool> {
 }
 
 impl Probe<'_> {
+    fn non_integer_format(&mut self) {
+        *self.future |= self
+            .rules
+            .iter()
+            .any(|r| r.path.is_empty() && matches!(r.kind, Kind::ExactFormat(_)));
+    }
     fn children(&self, key: &str) -> Vec<Rule> {
         self.rules
             .iter()
@@ -179,7 +187,8 @@ impl<'de> Visitor<'de> for Probe<'_> {
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("snapshot discriminator value")
     }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+    fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<(), A::Error> {
+        self.non_integer_format();
         while let Some(key) = map.next_key::<String>()? {
             // '*' selects array elements only, never a supplied object member.
             let children = if key == "*" {
@@ -194,7 +203,8 @@ impl<'de> Visitor<'de> for Probe<'_> {
         }
         Ok(())
     }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
+        self.non_integer_format();
         let children = self.children("*");
         while seq
             .next_element_seed(Probe {
@@ -208,27 +218,36 @@ impl<'de> Visitor<'de> for Probe<'_> {
     fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<(), E> {
         *self.future |= self.rules.iter().any(|r| {
             r.path.is_empty()
-                && matches!(r.kind, Kind::Format(current) if value > u64::from(current))
+                && match r.kind {
+                    Kind::Format(current) => value > u64::from(current),
+                    Kind::ExactFormat(current) => value != u64::from(current),
+                    Kind::Enum(_) => false,
+                }
         });
         Ok(())
     }
-    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<(), E> {
+    fn visit_str<E: serde::de::Error>(mut self, value: &str) -> Result<(), E> {
+        self.non_integer_format();
         *self.future |= self.rules.iter().any(|r| {
             r.path.is_empty()
                 && matches!(r.kind, Kind::Enum(accepted) if !accepted.contains(&value))
         });
         Ok(())
     }
-    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
+    fn visit_bool<E: serde::de::Error>(mut self, _: bool) -> Result<(), E> {
+        self.non_integer_format();
         Ok(())
     }
-    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> {
+    fn visit_i64<E: serde::de::Error>(mut self, _: i64) -> Result<(), E> {
+        self.non_integer_format();
         Ok(())
     }
-    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> {
+    fn visit_f64<E: serde::de::Error>(mut self, _: f64) -> Result<(), E> {
+        self.non_integer_format();
         Ok(())
     }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+    fn visit_unit<E: serde::de::Error>(mut self) -> Result<(), E> {
+        self.non_integer_format();
         Ok(())
     }
 }
@@ -264,6 +283,18 @@ fn scan(bytes: &[u8], rules: &[Rule]) -> anyhow::Result<()> {
     result.map_err(|error| {
         crate::json_parse_error("decode native snapshot discriminators JSON", error)
     })
+}
+
+// Always scan all occurrences before typed admission; malformed siblings and
+// duplicate fields cannot conceal a future recipe/section format from recovery.
+pub(super) fn player_inventory(bytes: &[u8]) -> anyhow::Result<()> {
+    scan(
+        bytes,
+        rules![
+            "player_inventory/format" => Kind::ExactFormat(1),
+            "player_inventory/recipe/format" => Kind::ExactFormat(1),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -650,7 +681,7 @@ mod tests {
         for case in cases {
             let rule = RULES.iter().find(|rule| rule.path == case.path).unwrap();
             match rule.kind {
-                Kind::Format(current) => {
+                Kind::Format(current) | Kind::ExactFormat(current) => {
                     assert_eq!(case.accepted, [json!(current)], "{}", case.path);
                 }
                 Kind::Enum(accepted) => {
@@ -735,7 +766,7 @@ mod tests {
 
     #[test]
     fn authored_schema_headers_are_scanned_and_future_duplicates_are_terminal() {
-        let future = crate::simulation::SNAPSHOT_SCHEMA_PLAYERS + 1;
+        let future = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY + 1;
         for schema in [9, 10, 11, 12] {
             assert!(header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
             for other in [9, 10, 11, 12] {

@@ -3829,6 +3829,29 @@ impl PeerLab {
         }
     }
 
+    /// Apply results from the exclusive-world inventory admission. A failed
+    /// activation keeps the existing peer removal path, including after Pawn.
+    pub(crate) fn finish_inventory_activations(
+        &mut self,
+        registry: &PlayerRegistry,
+        failed: &[u64],
+    ) {
+        let mut rejected = Vec::new();
+        for (address, entry) in &mut self.peers {
+            if let Some(epoch) = entry.checkpoint_epoch {
+                if failed.contains(&epoch) {
+                    rejected.push(*address);
+                } else if registry.is_activated(epoch) {
+                    entry.checkpoint_active = true;
+                    entry.checkpoint_projection = registry.projection(epoch);
+                }
+            }
+        }
+        for address in rejected {
+            self.fail_profile_exchange(address);
+        }
+    }
+
     /// Bounded synchronous bridge, sequenced after packet/auth polling and
     /// before simulation/capture. Registry ownership outlives the lab.
     pub fn bridge_player_checkpoints(&mut self, registry: &mut PlayerRegistry) {
@@ -3971,7 +3994,11 @@ impl PeerLab {
                     .private_leave_proof
                     .as_ref()
                     .is_none_or(|proof| proof.first_pawn_admitted(epoch));
-            let projection = if activate {
+            let inventory_pending = activate && registry.has_inventory();
+            let projection = if inventory_pending {
+                registry.request_inventory_activation(epoch);
+                registry.projection(epoch)
+            } else if activate {
                 registry.activate(epoch).ok()
             } else {
                 registry.projection(epoch)
@@ -3989,7 +4016,7 @@ impl PeerLab {
                     entry.pawn_property_retry_ready = true;
                 }
                 entry.checkpoint_projection = Some(projection);
-                entry.checkpoint_active |= activate;
+                entry.checkpoint_active |= activate && !inventory_pending;
             }
         }
         // Character completion may have become ready while the pawn opened.
@@ -12152,9 +12179,14 @@ fn poll_peer_lab(world: &mut bevy::prelude::World) {
         }
         if !consuming
             && lab.checkpoint_initial_vitals.is_some()
-            && let Some(mut registry) = world.get_resource_mut::<PlayerRegistry>()
+            && world.contains_resource::<PlayerRegistry>()
         {
-            lab.bridge_player_checkpoints(&mut registry);
+            {
+                let mut registry = world.resource_mut::<PlayerRegistry>();
+                lab.bridge_player_checkpoints(&mut registry);
+            }
+            let failed = crate::native_player_runtime::drain_inventory_activations(world);
+            lab.finish_inventory_activations(world.resource::<PlayerRegistry>(), &failed);
         }
     });
 }
@@ -21797,6 +21829,7 @@ mod tests {
     mod move_acks;
     mod pawn_capture;
     mod player_checkpoints;
+    mod player_inventory;
     mod private_join_budget;
     mod record_ack_gating;
     mod spawn_placement;

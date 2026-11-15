@@ -139,6 +139,25 @@ struct PlayersIn {
     native_players: crate::native_players::PlayerSnapshot,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlayerInventoryGeneration {
+    schema_version: u32,
+    tick: u64,
+    #[serde(deserialize_with = "crate::json::objects")]
+    entities: Vec<EntityRecord>,
+    native_players: crate::native_players::PlayerSnapshot,
+    player_inventory: crate::native_player_inventory::PlayerInventorySnapshotV1,
+}
+#[derive(Serialize)]
+struct PlayerInventoryOut<'a> {
+    schema_version: u32,
+    tick: u64,
+    entities: &'a [EntityRecord],
+    native_players: &'a crate::native_players::PlayerSnapshot,
+    player_inventory: &'a crate::native_player_inventory::PlayerInventorySnapshotV1,
+}
+
 // Probe only the schema before typed decoding. Ignoring the entity fields avoids
 // allocating an intermediate JSON object tree for every saved entity.
 #[derive(Deserialize)]
@@ -841,6 +860,22 @@ fn prepare_generation<O: GenerationOutput>(
     }
     // Dispatch by schema before considering an optional source sidecar.
     let output = match snapshot.schema_version {
+        crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY => O::serialize_bounded_generation(
+            &PlayerInventoryOut {
+                schema_version: snapshot.schema_version,
+                tick: snapshot.tick,
+                entities: &snapshot.entities,
+                native_players: snapshot
+                    .native_players
+                    .as_ref()
+                    .context("players missing")?,
+                player_inventory: snapshot
+                    .player_inventory
+                    .as_ref()
+                    .context("player inventory missing")?,
+            },
+            MAX_DOMAIN_SNAPSHOT_BYTES,
+        )?,
         SNAPSHOT_SCHEMA_PLAYERS => O::serialize_bounded_generation(
             &PlayersOut {
                 schema_version: SNAPSHOT_SCHEMA_PLAYERS,
@@ -1303,7 +1338,9 @@ impl SnapshotStore {
     /// Decode checksummed generation bytes completely, including any referenced
     /// sidecar, which is verified by size and digest before it is decoded.
     fn decode_generation(&self, bytes: &[u8]) -> Result<(WorldSnapshot, Option<SectionReference>)> {
-        if discriminators::header(bytes)? {
+        let authored_owners = discriminators::header(bytes)?;
+        discriminators::player_inventory(bytes)?;
+        if authored_owners {
             ensure!(
                 bytes.len() as u64 <= MAX_REFERENCED_SNAPSHOT_BYTES,
                 "schema 9–12 native snapshot exceeds its size limit"
@@ -1314,6 +1351,27 @@ impl SnapshotStore {
             .map_err(|error| crate::json_parse_error("decode native snapshot JSON", error))?
             .0;
         match header.schema_version.as_u64() {
+            Some(schema)
+                if schema == u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY) =>
+            {
+                ensure!(
+                    bytes.len() as u64 <= MAX_DOMAIN_SNAPSHOT_BYTES,
+                    "player inventory generation byte limit"
+                );
+                let dto = serde_json::from_slice::<JsonObject<PlayerInventoryGeneration>>(bytes)
+                    .map_err(|_| anyhow::anyhow!("invalid private player inventory generation"))?
+                    .0;
+                let snapshot = WorldSnapshot {
+                    schema_version: dto.schema_version,
+                    tick: dto.tick,
+                    entities: dto.entities,
+                    native_players: Some(dto.native_players),
+                    player_inventory: Some(dto.player_inventory),
+                    ..Default::default()
+                };
+                snapshot.validate()?;
+                return Ok((snapshot, None));
+            }
             Some(schema) if schema == u64::from(SNAPSHOT_SCHEMA_RELEASE_BOUND_PLAYERS) => {
                 return Err(ReleaseBoundPlayerStore.into());
             }
@@ -1393,6 +1451,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, None))
@@ -1436,6 +1495,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1480,6 +1540,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         // Validation recompiles the embedded catalog and verifies its identity
         // and every native record before this generation can be activated.
@@ -1526,6 +1587,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, Some(reference)))
@@ -1616,6 +1678,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1721,6 +1784,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1769,6 +1833,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1822,6 +1887,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: Some(native.native_inventory_authority),
             native_players: None,
+            player_inventory: None,
         };
         snapshot.validate()?;
         Ok((snapshot, reference))
@@ -1861,6 +1927,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -1901,6 +1968,7 @@ impl SnapshotStore {
             native_inventory_owner_import: None,
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -1948,6 +2016,7 @@ impl SnapshotStore {
             native_inventory_owner_import: Some(native.native_inventory_owner_import),
             native_inventory_authority: None,
             native_players: None,
+            player_inventory: None,
             native_relationships: native.native_relationships,
             preserved_prospect: Some(Arc::new(preserved)),
             native_import: None,
@@ -4321,7 +4390,7 @@ mod crash_consistency_tests {
         state.entities.push(state.entities[0].clone());
         invalid.push(state);
         let mut state = snapshot(10);
-        state.schema_version = SNAPSHOT_SCHEMA_PLAYERS + 1;
+        state.schema_version = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY + 1;
         invalid.push(state);
         for mut state in [inert(10, 1), owners(10, 1, 2), scalar_owners(10, 1, 8)] {
             state.preserved_prospect = inert(10, 2).preserved_prospect;
@@ -6459,6 +6528,142 @@ mod player_publication_tests {
             let directory = tempfile::tempdir().unwrap();
             let store = SnapshotStore::open(directory.path()).unwrap();
             assert!(store.decode_generation(input.as_bytes()).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod player_inventory_publication_tests {
+    use super::*;
+    use crate::{
+        config::ServerConfig,
+        experimental::pawn_open::CharacterVitals,
+        native_inventory::{InventoryDefinitionV1, ItemDefinitionV1, SlotRuleV1},
+        native_player_inventory::*,
+        native_player_runtime::{PlayerRegistry, activate_player},
+        native_players::{
+            PlayerCheckpoint, PlayerContext, PlayerInputs, PlayerKey, PlayerSnapshot,
+        },
+        simulation::{SNAPSHOT_SCHEMA_PLAYER_INVENTORY, build_app, capture},
+    };
+    #[test]
+    fn complete_player_inventory_publication_failure_and_uncertain_error() {
+        let recipe = CompiledPlayerInventoryRecipe::compile(PlayerInventoryRecipeV1 {
+            format: 1,
+            items: vec![ItemDefinitionV1 {
+                key: "authored".into(),
+                stack_limit: 10,
+            }],
+            inventories: vec![InventoryDefinitionV1 {
+                key: "bag".into(),
+                initial_slots: 1,
+                slot_rules: vec![SlotRuleV1 {
+                    allowed_items: vec!["authored".into()],
+                }],
+                overflow_limit: 0,
+                force_add_when_zero: false,
+            }],
+            starter: vec![PlayerStarterItemV1 {
+                inventory: "bag".into(),
+                requested_slot: 0,
+                item: "authored".into(),
+                count: 3,
+            }],
+        })
+        .unwrap();
+        let context = PlayerContext::new(
+            vec![65],
+            "/Authored/Inventory".into(),
+            PlayerInputs {
+                authored_gameplay: [1; 32],
+                spawn: [1; 32],
+                authored_world: [1; 32],
+                declaration: [1; 32],
+                initial_values: [1; 32],
+            },
+            vec!["Player".into()],
+        )
+        .unwrap();
+        let state = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
+            native_players: Some(PlayerSnapshot::empty(context)),
+            player_inventory: Some(recipe.empty()),
+            ..Default::default()
+        };
+        let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+        let checkpoint = PlayerCheckpoint {
+            location_cm: [0.; 3],
+            vitals: CharacterVitals {
+                health: 100,
+                max_health: 100,
+                stamina: 100,
+                max_stamina: 100,
+                oxygen: 100,
+                max_oxygen: 100,
+                water: 100,
+                max_water: 100,
+                food: 100,
+                max_food: 100,
+                biome_row: 0,
+                growth_row: 0,
+            },
+        };
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .reserve(PlayerKey::new(7, 0).unwrap(), 1, checkpoint)
+            .unwrap();
+        activate_player(app.world_mut(), 1).unwrap();
+        let before = capture(app.world_mut()).unwrap();
+        let bag = &before.player_inventory.as_ref().unwrap().bags[0];
+        let request = PlayerInventoryRequestV1 {
+            player_id: 1,
+            expected_player_revision: 1,
+            expected_bag_revision: 1,
+            action: PlayerInventoryActionV1::Consume {
+                source: PlayerStackEndpointV1 {
+                    owner: bag.owner,
+                    inventory: "bag".into(),
+                    stack_id: bag.inventories[0].slots[0].as_ref().unwrap().id,
+                },
+                amount: 1,
+            },
+        };
+        let (after, _) = prepare_offline(&before, &request).unwrap();
+        for fail_at in ["snapshot-2.json", "manifest.json"] {
+            for after_write in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut store = SnapshotStore::open(directory.path()).unwrap();
+                store.save(&before).unwrap();
+                let result = store.save_with_writer(&after, |root, name, bytes| {
+                    if name == fail_at && !after_write {
+                        anyhow::bail!("injected player inventory publication failure");
+                    }
+                    atomic_write(root, name, bytes)?;
+                    if name == fail_at && after_write {
+                        anyhow::bail!("injected uncertain player inventory publication");
+                    }
+                    Ok(())
+                });
+                assert!(
+                    result.is_err(),
+                    "an uncertain write must produce no SaveReceipt"
+                );
+                drop(store);
+                let reopened = SnapshotStore::open_existing(directory.path())
+                    .unwrap()
+                    .load()
+                    .unwrap()
+                    .unwrap()
+                    .snapshot;
+                assert_eq!(
+                    reopened,
+                    if fail_at == "manifest.json" && after_write {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    }
+                );
+            }
         }
     }
 }
