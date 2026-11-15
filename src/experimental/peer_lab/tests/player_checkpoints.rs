@@ -91,12 +91,24 @@ fn peer(
     account: u64,
     accepted: bool,
 ) -> (UdpSocket, SocketAddrV4, PacketSequencer, Vec<Bunch>) {
+    let (socket, address, mut client) = joined_peer(lab, connection, account, accepted);
+    assert!(lab.send_player_controller_open(address));
+    let bunches = deliver_bunches(lab, &socket, &mut client, |_| true);
+    (socket, address, client, bunches)
+}
+
+fn joined_peer(
+    lab: &mut PeerLab,
+    connection: u32,
+    account: u64,
+    accepted: bool,
+) -> (UdpSocket, SocketAddrV4, PacketSequencer) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect(lab.local_addr().unwrap()).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
-    let (address, mut client) = handshake_peer_on(lab, &socket);
+    let (address, client) = handshake_peer_on(lab, &socket);
     let entry = lab.peers.get_mut(&address).unwrap();
     entry.connection_id = Some(connection);
     entry.player = Some(RegisteredPlayer {
@@ -111,9 +123,228 @@ fn peer(
     entry.auth_request = Some(u64::from(connection));
     entry.auth_identity = Some(account);
     entry.auth_accepted = accepted;
+    (socket, address, client)
+}
+
+/// Same initial manager plans and authored-world preparation as native hosting.
+/// Interleave an authored Quest before FLOD to exercise both sorted extra kinds.
+fn world_bootstrap(lab: &mut PeerLab) -> Vec<u32> {
+    use super::super::super::{quest_open::StitchedQuest, session_open::PathSegment};
+    use crate::authored_world_bootstrap::AuthoredWorldBootstrap;
+
+    let profile = ReleaseProfile::fixture("3.0.32");
+    let map = PeerLabAdmission::default().map_url;
+    lab.enable_manager_opens(profile.manager_open_plans(map).unwrap(), 6)
+        .unwrap();
+    let base = profile.quest_open_base_plan(map).unwrap().unwrap();
+    let quest = base
+        .quest_plan(&StitchedQuest {
+            key: ActorKey::Saved(777),
+            archetype: vec![
+                PathSegment::new("AuthoredQuest", 40, false),
+                PathSegment::new("/Lab/Quest", 0, false),
+            ],
+            location: None,
+            quest_row: 0,
+            relevant_actors: Vec::new(),
+            relevant_characters: Vec::new(),
+            active_quests: Vec::new(),
+            variables: Vec::new(),
+            subquests: Vec::new(),
+            parent: None,
+        })
+        .unwrap();
+    lab.enable_quest_opens(base).unwrap();
+    let quest_channel = lab.add_quest_open(quest).unwrap();
+    let (values, flod) = AuthoredWorldBootstrap {
+        seed: 123,
+        seed_initialised: true,
+        flod_tile_count: 3,
+        clock: None,
+    }
+    .plan(&profile, map)
+    .unwrap();
+    lab.extend_game_state_values(values).unwrap();
+    let flod_channel = lab.add_manager_open(ManagerSlot::Flod, flod).unwrap();
+    assert!(quest_channel < flod_channel);
+    (6..=flod_channel).collect()
+}
+
+fn open_channels(bunches: &[Bunch]) -> Vec<u32> {
+    bunches
+        .iter()
+        .filter(|bunch| bunch.header.open)
+        .map(|bunch| {
+            assert!(bunch.header.reliable);
+            bunch.header.channel_index
+        })
+        .collect()
+}
+
+fn assert_no_checkpoint_pawn(lab: &PeerLab, registry: &PlayerRegistry, address: SocketAddrV4) {
+    let entry = &lab.peers[&address];
+    assert_eq!(entry.checkpoint_epoch, None);
+    assert_eq!(entry.checkpoint_projection, None);
+    assert!(!entry.checkpoint_active);
+    assert_eq!(entry.placement, None);
+    assert_eq!(entry.controller_startup_pawn_guid, None);
+    assert!(!entry.peer.has_actor_channel(PAWN_CHANNEL_INDEX));
+    assert_eq!(lab.next_checkpoint_epoch, 1);
+    assert!(registry.active_epochs().is_empty());
+    assert!(registry.activated_epochs().is_empty());
+    assert!(registry.snapshot().is_empty());
+    assert_eq!(lab.stats.pawn_opens_sent, 0);
+    assert_eq!(lab.stats.pawn_spawns_configured, 0);
+    assert_eq!(lab.stats.pawn_spawns_default, 0);
+    assert_eq!(lab.stats.pawn_spawns_saved, 0);
+    assert_eq!(
+        lab.spawn.peek(None, [0.0; 3]).placement.location,
+        [100.0, 200.0, 300.0]
+    );
+}
+
+#[test]
+fn independent_world_bootstrap_settles_before_begin_and_legacy_keeps_pawn_first() {
+    for checkpoint in [false, true] {
+        let mut lab = if checkpoint { lab() } else { record_lab(false) };
+        let extras = world_bootstrap(&mut lab);
+        let mut registry = registry();
+        let (socket, address, mut client, mut opened) = peer(&mut lab, 1, ACCOUNT, true);
+        opened.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        let mut expected = if checkpoint {
+            vec![2, 4, 5]
+        } else {
+            vec![2, 3, 4, 5]
+        };
+        expected.extend(extras);
+        assert_eq!(open_channels(&opened), expected);
+        let outcomes = lab.readiness_counts().initial_open_outcomes;
+        assert_eq!(outcomes.committed.controller, 1);
+        assert_eq!(outcomes.committed.game_state, 1);
+        assert_eq!(outcomes.committed.player_state, 1);
+        assert_eq!(outcomes.committed.managers, lab.manager_opens.len());
+        assert_eq!(outcomes.committed.quests, 1);
+        assert_eq!(outcomes.settled, outcomes.committed);
+        assert!(outcomes.awaiting_ack.is_empty());
+        assert!(outcomes.failed.is_empty());
+        assert!(outcomes.skipped.is_empty());
+        if checkpoint {
+            for _ in 0..3 {
+                lab.bridge_player_checkpoints(&mut registry);
+                lab.retry_initial_opens();
+                assert_no_checkpoint_pawn(&lab, &registry, address);
+                assert_eq!(lab.readiness_counts().initial_open_outcomes, outcomes);
+            }
+            assert_eq!(outcomes.pending.pawn, 1);
+        } else {
+            assert_eq!(outcomes.committed.pawn, 1);
+            assert!(outcomes.pending.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pre_begin_pressure_and_loss_retry_independent_opens_without_recomposition() {
+    let (mut lab, mut registry) = (lab(), registry());
+    let extras = world_bootstrap(&mut lab);
+    lab.config.packet.sent_capacity = 6;
+    let (socket, address, mut client) = joined_peer(&mut lab, 1, ACCOUNT, true);
+    // Fill the actual sent ring before bootstrap; no independent stage fits.
+    for _ in 0..6 {
+        let datagram = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&datagram, address));
+    }
     assert!(lab.send_player_controller_open(address));
-    let bunches = deliver_bunches(lab, &socket, &mut client, |_| true);
-    (socket, address, client, bunches)
+    assert_eq!(
+        lab.readiness_counts()
+            .initial_open_outcomes
+            .deferred
+            .controller,
+        1
+    );
+    for _ in 0..3 {
+        lab.retry_initial_opens();
+        lab.bridge_player_checkpoints(&mut registry);
+        assert_no_checkpoint_pawn(&lab, &registry, address);
+    }
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    lab.retry_initial_opens();
+    let deferred = lab.readiness_counts().initial_open_outcomes.deferred;
+    let mut independent_deferred = deferred.managers + deferred.quests > 0;
+    // Lose the first manager packet after the three identity opens.
+    let first = deliver_bunches(&mut lab, &socket, &mut client, |index| index != 3);
+    assert!(lab.readiness_counts().resend_bunches_pending > 0);
+    let mut transmitted = first;
+    for _ in 0..32 {
+        lab.retry_initial_opens();
+        let deferred = lab.readiness_counts().initial_open_outcomes.deferred;
+        independent_deferred |= deferred.managers + deferred.quests > 0;
+        lab.bridge_player_checkpoints(&mut registry);
+        assert_no_checkpoint_pawn(&lab, &registry, address);
+        if lab.readiness_counts().resend_bunches_pending > 0 {
+            let datagram = lab
+                .peers
+                .get_mut(&address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(lab.send(&datagram, address));
+        }
+        transmitted.extend(deliver_bunches(&mut lab, &socket, &mut client, |_| true));
+        let outcomes = lab.readiness_counts().initial_open_outcomes;
+        if outcomes.pending
+            == (InitialOpenStageCounts {
+                pawn: 1,
+                ..Default::default()
+            })
+            && outcomes.awaiting_ack.is_empty()
+        {
+            break;
+        }
+    }
+    // A reliable retry may repeat a transmission, but keeps the same channel,
+    // reliable sequence and exact payload. First admissions retain stage order.
+    let mut seen = BTreeMap::new();
+    let mut unique = Vec::new();
+    let mut repaired = false;
+    for bunch in transmitted.iter().filter(|bunch| bunch.header.reliable) {
+        let key = (
+            bunch.header.channel_index,
+            bunch.header.reliable_sequence_raw,
+        );
+        if let Some(previous) = seen.insert(key, bunch) {
+            assert_eq!(bunch, previous);
+            repaired = true;
+        } else {
+            unique.push(bunch.clone());
+        }
+    }
+    let mut expected = vec![2, 4, 5];
+    expected.extend(extras);
+    assert!(independent_deferred);
+    assert!(repaired);
+    assert_eq!(open_channels(&unique), expected);
+    let outcomes = lab.readiness_counts().initial_open_outcomes;
+    assert_eq!(outcomes.committed.managers, lab.manager_opens.len());
+    assert_eq!(outcomes.committed.quests, 1);
+    assert_eq!(outcomes.settled, outcomes.committed);
+    assert_eq!(
+        outcomes.pending,
+        InitialOpenStageCounts {
+            pawn: 1,
+            ..Default::default()
+        }
+    );
+    assert!(outcomes.failed.is_empty());
+    assert!(outcomes.skipped.is_empty());
+    assert_eq!(lab.stats.player_controller_opens_sent, 1);
 }
 
 fn response(kind: ProfileKind, slot: i32) -> ProfileResponse {
@@ -230,9 +461,54 @@ fn health(lab: &PeerLab, bunches: &[Bunch], open: bool) -> i32 {
     health
 }
 
+fn assert_first_pawn(lab: &PeerLab, bunches: &[Bunch], checkpoint: PlayerCheckpoint) {
+    assert_eq!(open_channels(bunches), vec![PAWN_CHANNEL_INDEX]);
+    let plan = &lab.pawn_open.as_ref().unwrap().0;
+    let codec = RepLayoutCodec {
+        actor: actor_codec(plan.engine_net_version, ByteOrder::Little),
+        checksums: false,
+        limits: Default::default(),
+    };
+    let body =
+        read_actor_bunch_body(&mut pawn_payload(bunches).reader(), true, &codec.actor).unwrap();
+    let values: BTreeMap<_, _> = read_rep_properties(
+        &mut body.blocks[1 + plan.actor_state].payload.reader(),
+        &plan.content.character_state_layout,
+        &codec,
+    )
+    .unwrap()
+    .entries
+    .into_iter()
+    .map(|entry| (entry.handle, entry.value))
+    .collect();
+    for (handle, expected) in checkpoint.vitals.values() {
+        assert_eq!(
+            values.get(&handle),
+            Some(&expected),
+            "vital handle {handle}"
+        );
+    }
+    let spawn = read_spawn(&mut pawn_payload(bunches).reader(), &codec.actor).unwrap();
+    assert_eq!(
+        spawn.dynamic.unwrap().location,
+        Some(
+            crate::experimental::session_open::quantize_spawn_vector(
+                checkpoint.location_cm.map(|v| v as f32)
+            )
+            .unwrap()
+        )
+    );
+}
+
 #[test]
 fn bootstrap_begin_profiles_precede_reservation_and_pawn() {
     let (mut lab, mut registry) = (lab(), registry());
+    world_bootstrap(&mut lab);
+    lab.enable_controller_startup(
+        &ReleaseProfile::fixture("3.0.32"),
+        vec![ControllerStartupAction::RestartPawn],
+    )
+    .unwrap();
     let (socket, address, mut client, bootstrap) = peer(&mut lab, 1, ACCOUNT, true);
     assert!(bootstrap.iter().any(|b| b.header.channel_index == 2));
     assert!(bootstrap.iter().any(|b| b.header.channel_index == 4));
@@ -246,12 +522,67 @@ fn bootstrap_begin_profiles_precede_reservation_and_pawn() {
         lab.spawn.peek(None, [0.0; 3]).placement.location,
         [100.0, 200.0, 300.0]
     );
+    lab.retry_controller_startup();
+    assert_eq!(lab.peers[&address].controller_startup_queued, 0);
+    assert_eq!(lab.readiness_counts().controller_startup_actions_pending, 1);
     identify(&mut lab, &socket, &mut client, address, 3, 3);
     assert!(lab.peers[&address].profiles.initialisation_requested);
     assert_eq!(lab.peers[&address].checkpoint_epoch, None);
     lab.bridge_player_checkpoints(&mut registry);
+    let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+    let checkpoint = registry.projection(epoch).unwrap().checkpoint;
+    lab.retry_controller_startup();
+    assert_eq!(lab.peers[&address].controller_startup_queued, 0);
     let opened = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
-    assert_eq!(health(&lab, &opened, true), 100);
+    assert_first_pawn(&lab, &opened, checkpoint);
+    let pawn = read_spawn(
+        &mut pawn_payload(&opened).reader(),
+        &actor_codec(17, ByteOrder::Little),
+    )
+    .unwrap()
+    .actor
+    .guid;
+    assert_eq!(lab.peers[&address].controller_startup_pawn_guid, Some(pawn));
+    lab.retry_controller_startup();
+    assert_eq!(lab.peers[&address].controller_startup_queued, 1);
+    let restart = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    let channel = lab.player_controller_open.as_ref().unwrap().channel_index;
+    let codec = RepLayoutCodec {
+        actor: actor_codec(17, ByteOrder::Little),
+        checksums: false,
+        limits: Default::default(),
+    };
+    let body = read_actor_bunch_body(
+        &mut restart
+            .iter()
+            .find(|b| b.header.channel_index == channel && !b.header.has_package_map_exports)
+            .unwrap()
+            .payload
+            .reader(),
+        false,
+        &codec.actor,
+    )
+    .unwrap();
+    let field = read_field_header(
+        &mut body.blocks[0].payload.reader(),
+        lab.controller_startup_bound,
+        codec.actor.limits.max_payload_bits,
+    )
+    .unwrap();
+    assert_eq!(field.index, 40);
+    assert_eq!(
+        super::super::super::rep_rpc::parse_rpc_payload(
+            &field.payload,
+            &player_controller_rpc_parameters(40).unwrap(),
+            &codec
+        )
+        .unwrap(),
+        vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(
+            super::super::super::actor_channel::NetGuidRef::plain(pawn)
+        ))])]
+    );
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_opens_sent, 1);
     assert!(
         registry.snapshot().is_empty(),
         "reservation grants no committed player"
@@ -269,12 +600,17 @@ fn unaccepted_auth_or_invalid_slots_never_commit_players() {
         lab.bridge_player_checkpoints(&mut registry);
         assert!(registry.snapshot().is_empty());
         assert!(registry.active_epochs().is_empty());
+        assert!(registry.activated_epochs().is_empty());
+        assert_eq!(lab.next_checkpoint_epoch, 1);
+        assert_eq!(lab.stats.pawn_opens_sent, 0);
+        assert_eq!(lab.stats.pawn_spawns_configured, 0);
     }
 }
 
 #[test]
 fn health_checkpoint_survives_reload_and_reconnect_does_not_rotate_spawn() {
     let (mut lab, mut registry) = (lab(), registry());
+    world_bootstrap(&mut lab);
     let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
     identify(&mut lab, &socket, &mut client, address, 3, 3);
     lab.bridge_player_checkpoints(&mut registry);
@@ -284,6 +620,10 @@ fn health_checkpoint_survives_reload_and_reconnect_does_not_rotate_spawn() {
     let before = registry.snapshot().projection(key).unwrap();
     let mut checkpoint = before.checkpoint;
     checkpoint.vitals.health = 37;
+    checkpoint.vitals.stamina = 36;
+    checkpoint.vitals.oxygen = 35;
+    checkpoint.vitals.water = 34;
+    checkpoint.vitals.food = 33;
     checkpoint.location_cm = [700.0, 800.0, 900.0];
     registry.edit(key, before.revision, checkpoint).unwrap();
     lab.bridge_player_checkpoints(&mut registry);
@@ -363,7 +703,9 @@ fn health_checkpoint_survives_reload_and_reconnect_does_not_rotate_spawn() {
     identify(&mut lab, &socket, &mut client, address, 3, 3);
     lab.bridge_player_checkpoints(&mut registry);
     let opened = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
-    assert_eq!(health(&lab, &opened, true), 37);
+    assert_first_pawn(&lab, &opened, checkpoint);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.stats.pawn_opens_sent, 2);
     let spawn = read_spawn(
         &mut pawn_payload(&opened).reader(),
         &actor_codec(17, ByteOrder::Little),

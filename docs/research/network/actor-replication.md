@@ -35,8 +35,9 @@ F-1152. Authored speed stats accompany
 reported walk/look/sprint/jump after leaving a mountain spawn (F-1185);
 authoritative physics, collision and audio remain unqualified. Earlier
 zero-speed/provenance: F-1143/F-1147/F-1150 to F-1157/F-1164 to F-1166.
-Leave/save UI failure remains F-1186. Authored leave adapter F-1188 adds no
-stock-client persistence proof; production leave remains default-off.
+Leave failure: F-1186; checkpoint-entry stall: F-1199.
+F-1172 reorders independent opens in authored tests; F-1188 proves no client
+persistence. Production leave remains default-off.
 
 Pin/tags/classes/row widths F-1176 to F-1178 remain static only.
 Sources F-828/F-832; replay F-762.

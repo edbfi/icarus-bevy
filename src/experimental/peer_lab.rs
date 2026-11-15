@@ -10805,10 +10805,6 @@ impl PeerLab {
         if self.player_state_open.is_some() {
             remaining.push_back(InitialOpenStage::PlayerState);
         }
-        // Only the authored checkpoint path bootstraps identity before pawn.
-        if self.pawn_open.is_some() && self.checkpoint_initial_vitals.is_some() {
-            remaining.push_back(InitialOpenStage::Pawn);
-        }
         let mut extras: Vec<_> = self
             .manager_opens
             .iter()
@@ -10823,6 +10819,11 @@ impl PeerLab {
             .collect();
         extras.sort_unstable_by_key(|&(channel, _)| channel);
         remaining.extend(extras.into_iter().map(|(_, stage)| stage));
+        // Checkpoint identity can arrive after independent world bootstrap.
+        // Keep its gated pawn from withholding managers and quests before Begin.
+        if self.pawn_open.is_some() && self.checkpoint_initial_vitals.is_some() {
+            remaining.push_back(InitialOpenStage::Pawn);
+        }
         entry.initial_open_outcomes = InitialOpenOutcomes::default();
         for &stage in &remaining {
             entry.initial_open_outcomes.configured.record(stage);
