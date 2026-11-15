@@ -75,7 +75,7 @@ comparisons.
 
 Recovery alternates SIGKILL/SIGTERM around autosaves after one commit.
 Default mode checks 10,000 authored entities, checksum, clock and acknowledgements.
-Use fresh output; retain provenance/logs. Neither mode qualifies
+Use fresh output; retain provenance/logs. No mode qualifies
 filesystem fault points, disk exhaustion or physical power loss.
 
 ```bash
@@ -92,8 +92,12 @@ python3 tools/native_recovery_campaign.py --mode authored-player \
   --output work/CASE/new-campaign --cycles 4
 ```
 
-The 7 Hz fixture has active/detached players (F-1183). A fresh Rust verifier
-checks full typed state and eight resumed steps against an integer oracle; no
-downtime debit. All receipts are retained. Identity, collection, exit, deadline
-(20s) or disk-guard (30 GiB) failures deny success. This does not qualify the
-production loop or leave adapter.
+The 7 Hz schema14 fixture covers active/detached players (F-1183). Fresh Rust
+verification checks typed state and eight resumed steps; no downtime debit.
+Identity/collection/exit failures, 20s child deadlines or the 30 GiB disk floor
+deny success; retain all receipts. No production-loop/client qualification.
+
+Use `--mode authored-player-inventory` for schema15 (1–4 cycles). Its independent
+oracle checks sparse bags, conservation, revisions and allocation; graceful stop
+checks the exact writer's leave cutoff. Bounds: 240s workload, 64 MiB output,
+3 GiB available RAM. Runtime qualification is separate from fixture tests.

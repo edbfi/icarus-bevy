@@ -1,4 +1,4 @@
-//! Source-authored schema-14 process-recovery workload; no network or original inputs.
+//! Source-authored schema-14/15 recovery fixtures; no network or original inputs.
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::{App, FixedUpdate};
 use clap::{Parser, Subcommand};
@@ -33,6 +33,23 @@ const HZ: u32 = 7;
 const MAX_TICK: u64 = 100_000;
 const RATES: [i32; 3] = [2, 3, 5];
 const PROTOCOL: &str = "authored_player_recovery_v1";
+
+#[path = "authored_player_recovery/inventory.rs"]
+mod inventory;
+
+#[derive(Parser)]
+struct Invocation {
+    /// Select the independent schema-15 inventory fixture on every invocation.
+    #[arg(long)]
+    inventory: bool,
+    #[command(flatten)]
+    options: Options,
+}
+
+enum Fixture {
+    Players,
+    Inventory,
+}
 
 #[derive(Parser)]
 struct Options {
@@ -361,12 +378,20 @@ fn verify(directory: &Path, acknowledgements: &[Acknowledgement]) -> Result<serd
     )
 }
 fn emit(options: &Options, event: &str, mut fields: serde_json::Value) -> Result<()> {
+    emit_protocol(options, PROTOCOL, event, &mut fields)
+}
+fn emit_protocol(
+    options: &Options,
+    protocol: &str,
+    event: &str,
+    fields: &mut serde_json::Value,
+) -> Result<()> {
     fields["event"] = json!(event);
-    fields["protocol"] = json!(PROTOCOL);
+    fields["protocol"] = json!(protocol);
     fields["run_id"] = json!(options.run_id);
     fields["pid"] = json!(std::process::id());
     let mut out = io::stdout().lock();
-    serde_json::to_writer(&mut out, &fields)?;
+    serde_json::to_writer(&mut out, fields)?;
     writeln!(out)?;
     out.flush()?;
     Ok(())
@@ -458,7 +483,13 @@ fn run(options: &Options, duration: u64, save_millis: u64, stopping: &AtomicBool
     )
 }
 fn main() -> Result<()> {
-    let options = Options::parse();
+    let invocation = Invocation::parse();
+    let fixture = if invocation.inventory {
+        Fixture::Inventory
+    } else {
+        Fixture::Players
+    };
+    let options = invocation.options;
     ensure!(
         !options.run_id.is_empty() && options.run_id.len() <= 128,
         "invalid run identity"
@@ -466,6 +497,9 @@ fn main() -> Result<()> {
     let stopping = Arc::new(AtomicBool::new(false));
     let signal = stopping.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))?;
+    if let Fixture::Inventory = fixture {
+        return inventory::execute(&options, &stopping);
+    }
     match &options.command {
         Command::Init => {
             let mut store = SnapshotStore::open(&options.data_dir)?;
