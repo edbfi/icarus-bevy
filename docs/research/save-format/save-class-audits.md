@@ -28,14 +28,10 @@ All 15 prospects type recorder values losslessly within tree limits (F-766).
 Reference plans: F-897, F-898, F-916; candidate retention, not restoration:
 F-920.
 
-Strict authored C001 adapters: F-927; ordinary import stays closed.
-Reload/lifecycle: F-930; removal and comparator models and their open limits:
-F-937, with the server helper F-940
-([boundary](../../specs/save-format/restore-rules.md#confirmed)). Row-handle
-declarations join FName/FNameEntryId; Number/Value declare direct unsigned32.
-Removal joins signature/forward owner, matching counts, ordered
-refs, pointer/forward AActor and complete row-handle header (F-1195).
-Storage, ABI, comparator/native owner, runtime/import stay open.
+Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
+append chains F-937/F-940. F-1195 declares types, not native element/requested-row
+storage, getter/class identity, ABI, aliases or lifetimes; client/runtime/import
+remain open ([boundary](../../specs/save-format/restore-rules.md#confirmed)).
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
 Row references: F-660; reader allocation/comparator limits: F-142, F-198.
@@ -48,4 +44,4 @@ Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Artifacts
 
-Earlier artifacts: cited findings; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476.
+Earlier artifacts: cited findings; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-1508.
