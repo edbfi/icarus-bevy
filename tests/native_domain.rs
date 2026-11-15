@@ -96,3 +96,6 @@ mod persistence_fuzz;
 
 #[path = "native_domain/native_players.rs"]
 mod native_players;
+
+#[path = "native_domain/native_player_inventory.rs"]
+mod native_player_inventory;

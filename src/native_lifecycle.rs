@@ -1142,6 +1142,7 @@ pub fn prepare_owner_restore(
         native_inventory_owner_import: None,
         native_inventory_authority: None,
         native_players: None,
+        player_inventory: None,
         native_modifiers: modifiers,
     };
     if !staged.already_completed {

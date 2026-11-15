@@ -7,6 +7,10 @@ use icarus_bevy::{
 
 pub(super) fn validate_config(config: &ServerConfig) -> Result<()> {
     ensure!(
+        config.network.player_inventory.is_none(),
+        "private leave proof requires schema 14"
+    );
+    ensure!(
         config.network.enabled
             && config.network.authored_controller_leave
             && config.network.player_persistence.is_some()
@@ -73,5 +77,19 @@ mod tests {
         vitals.food = 100;
         vitals.max_food = 99;
         assert!(validate_initial_vitals(vitals).is_err());
+    }
+}
+
+#[cfg(test)]
+mod inventory_refusal_tests {
+    use super::*;
+    #[test]
+    fn schema15_recipe_is_refused_before_any_proof_or_service_setup() {
+        let mut config = ServerConfig::default();
+        config.network.player_inventory = Some("unused-authored-recipe.json".into());
+        assert_eq!(
+            validate_config(&config).unwrap_err().to_string(),
+            "private leave proof requires schema 14"
+        );
     }
 }
