@@ -47,9 +47,9 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   Net properties and non-overriding Net functions, and sorts local functions
   by ascending case-insensitive FName string. Properties precede functions in
   each cache layer. The selected build-26613688 public-server ancestry ends in
-  `BP_IcarusPlayerControllerSurvival_C`, derived directly from the native survival
-  controller. Its conditional cache has 155 native fields plus 5 cooked
-  properties and 22 cooked functions: 182 total, ordinary integer bound 183
+  `BP_IcarusPlayerControllerSurvival_C`, derived directly from the native
+  survival controller. Its conditional cache has 155 native fields plus
+  5 cooked properties and 22 cooked functions: 182 total, ordinary bound 183
   (parent start+own count+1). Export-group framing is separate (F-1197;
   M-1492/ev_e687899447b7, M-1492/ev_0415b46141fb,
   M-1492/ev_b571dc207b36, M-1492/ev_8b1024fed268; M-1493, M-1494).
@@ -74,11 +74,11 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   child is not a second argument. Current enum construction/vtable/codec
   evidence derives a 3-bit value for registered maxima 5 or 6. This does not
   fix total RPC payload size: inherited generic RPC framing does not prove the
-  complete current path. Completed `ReplicatedLeftProspectSession` uses that enum
-  at native +0x95b. Flattened property handle 26 is supported by inherited
-  F-846/F-1120 rules, current M-1405 ancestry/type/offset equality and selected
-  current command-builder evidence; it is neither RPC 26 nor a freshly proved
-  entire layout (F-1197; M-1492/ev_a0a995ccf9d1,
+  complete current path. Completed `ReplicatedLeftProspectSession` uses that
+  enum at native +0x95b. Flattened property handle 26 is supported by
+  inherited F-846/F-1120 rules, current M-1405 ancestry/type/offset equality
+  and selected current command-builder evidence; it is neither RPC 26 nor a
+  freshly proved entire layout (F-1197; M-1492/ev_a0a995ccf9d1,
   M-1492/ev_9867ef330866, M-1492/ev_2851c7038d64,
   M-1492/ev_8645af881a57, M-1493, M-1494).
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)

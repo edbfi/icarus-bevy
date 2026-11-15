@@ -377,8 +377,9 @@ pub const SERVER_CANCEL_LEAVE_PROSPECT_SESSION_FIELD_INDEX: u32 = 148;
 pub const SERVER_LEAVE_PROSPECT_SESSION_FIELD_INDEX: u32 = 149;
 pub const SERVER_LEAVE_PROSPECT_SESSION_WITHOUT_SAVE_FIELD_INDEX: u32 = 150;
 
-/// The six declared leave values. A declaration is not evidence that any value
-/// completed, saved player state or caused a stock-client menu transition.
+/// The six declared leave values (F-1197; M-1488, M-1492). A declaration is not
+/// evidence that any value completed, saved player state or caused a
+/// stock-client menu transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum LeaveProspectSessionType {
@@ -417,6 +418,8 @@ pub enum ControllerLeaveRequest {
 }
 
 fn leave_session_parameters() -> Vec<RpcParameter> {
+    // Keep the selected request width independent of the inherited completion
+    // layout's max-value helper: this revision binds three bits (F-1197; M-1492).
     vec![RpcParameter::Value(vec![RepCommand::Enum { bits: 3 }])]
 }
 

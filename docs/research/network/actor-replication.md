@@ -11,13 +11,13 @@ Actor opens, codecs, relevancy and readiness after admission.
 ## Current answer
 
 Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034; lifetime F-1182; entry F-1185.
-Controller F-1197 conditionally binds fields 148/149/150/169 and cache 182/bound
-183 for the selected current-pin ancestry and ordinary header path. One enum
-argument has a 3-bit value codec; total current-path RPC framing remains open. Handle
-26 inherits F-846/F-1120 with current metadata equality, not a fresh full-layout
-proof. Older trace/flow limits, unobserved producer/cache paths and F-1193's
-scope stand. No live controller/cache, durability or client-result proof;
-F-1177 active.
+Controller F-1197 conditionally binds fields 148/149/150/169 and cache
+182/bound 183 for the selected current-pin ancestry and ordinary header path.
+One enum argument has a 3-bit value codec; total current-path RPC framing
+remains open. Handle 26 inherits F-846/F-1120 with current metadata
+equality, not a fresh full-layout proof. Older trace/flow limits,
+unobserved producer/cache paths and F-1193's scope stand. No live
+controller/cache, durability or client-result proof; F-1177 active.
 
 [Visibility](../../specs/network/visibility-state.md): wire/staging/capture,
 conditional consumer and inert models F-1020 to F-1024; replay F-1034;
@@ -26,18 +26,21 @@ probe-only and gated (F-1097, F-1098), unnecessary for entry (F-1148;
 U-079 resolved). State/restart F-1036; query118/callback126 F-1051;
 fields66/86 F-1052; handle-26 width F-1120.
 
-Earlier entry failures and frozen-state/record/streaming qualifications are
-indexed in the actor-channel spec. Pawn release cleared the screen without
-an 82 answer (F-1141 to F-1148).
+Earlier entry/frozen-state findings: F-1084/F-1085/F-1089, F-1099 to F-1113,
+F-1117/F-1118/F-1121 to F-1126. Record/streaming/startup: F-1068/F-1069,
+F-1072 to F-1082/F-1086 to F-1088. Pawn release cleared the screen without an
+82 answer (F-1141 to F-1148).
 
 Moves/acks/corrections F-1129 to F-1132; placement F-1134 to F-1138/F-1149/
 F-1152. Authored speed stats accompany
 reported walk/look/sprint/jump after leaving a mountain spawn (F-1185);
-authoritative physics, collision and audio remain unqualified. Leave/save UI
-failure and Alt+F4 exit remain F-1186; no player-persistence proof follows.
+authoritative physics, collision and audio remain unqualified. Earlier
+zero-speed/provenance: F-1143/F-1147/F-1150 to F-1157/F-1164 to F-1166.
+Leave/save UI failure and Alt+F4 exit remain F-1186; no player-persistence
+proof follows.
 
-Current pin/tags F-1176; selected class semantics F-1177; ordered row widths
-F-1178. Static only; compatibility unproven. Sources F-828/F-832; replay F-762.
+Pin/tags/classes/row widths F-1176 to F-1178 remain static only.
+Sources F-828/F-832; replay F-762.
 
 [World managers](../../specs/network/world-managers.md): managers, quests,
 profiles/restore, modifier/temperature; automatic climate/scheduling unqualified.
