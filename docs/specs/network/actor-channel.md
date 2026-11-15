@@ -4,30 +4,50 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-13.
+Last reconciled: 2026-11-15.
 
 ## Scope
 
 Actor framing/scheduling after control admission: exports, partials, spawn/content,
 close/dormancy, relevancy/priority/readiness and visibility RPCs.
-Function bindings are in the cited finding/evidence IDs; older-build
-addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
+Function bindings are in the cited finding/evidence IDs.
+Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 
 ## Confirmed
 
-- Matched connected boundaries: possession restart chain F-1036; UserProfile
-  guards F-1039; BackendProxy identity and receiver gates F-1041;
-  CharacterProfile parameters F-1048; friends query (118) and response (126)
-  F-1051, native Begin queueing it; fields 66/86 F-1052 (no visibility ACK).
-  Receive framing has no independent content-block cap (F-1046); constructed
-  partials default to 64 KiB, raised to 128 KiB by shipped configuration
-  (F-1047), which native envelopes follow (F-1043). Public phases F-1045 and
-  private headers F-1042 are observation boundaries.
+- Connected restart/profile/backend boundaries: F-1036/F-1039/F-1041/F-1048.
+  Begin queues query118; callback126 F-1051; fields66/86 F-1052 (no visibility
+  ACK). Receive/content framing F-1046; constructed partial defaults/config
+  64/128 KiB F-1047, followed natively F-1043. Public phase/private-header
+  observation boundaries F-1045/F-1042.
 
-- 3.0.36: pin/tags F-1176, retained selected class semantics F-1177 and
-  ordered row widths F-1178. Static qualification only; connected behavior
-  remains unqualified for this release; level-actor instance identities stay
-  unset. Legacy row indices do not transfer.
+- 3.0.36 pin/tags F-1176, selected class semantics F-1177 and row widths
+  F-1178 remain static only. Connected behavior, level-actor identities and
+  legacy row-index transfer remain unqualified.
+- Build 26613688 controller locations/factories (F-1193): 39 exact locations;
+  19 disjoint, file-backed, 8-byte-aligned 68-byte descriptor spans in a
+  readable/writable, nonexecuting section; 19 complete 47-byte factory windows
+  with direct descriptor/callee/singleton operands and finite caller flow.
+  No descriptor/singleton values, initialization, immutability, cached-path
+  descriptor use, native count or cache semantics follow
+  (M-1459/ev_423d954d3a24, M-1459/ev_3ceb9b9b7732).
+- The complete 72-byte FFunctionParams declaration has 12 members and 14
+  opaque references (F-1193; M-1459/ev_dc84ad5d8171,
+  M-1459/ev_3bf00dd12847). Declared offsets do not prove member widths,
+  storage or entry-argument binding. Header/source details remain private.
+- Retained consumer evidence (F-1194) covers only 122 bytes, 34 instructions,
+  126 p-code operations and two outgoing edges (M-1460/ev_a40bde4cc914).
+  Local value flow establishes root copies, loads and tests only
+  (M-1461/ev_d4777e243691, M-1460/ev_f597d97d17d7): root types and argument
+  binding are unproved; calls, clobbers, alias/reentry effects and outgoing
+  successors remain opaque. Flow, whole-function and native-flow closure
+  flags are all false.
+- At the same exact start, the unique S_GPROC32 declares a 908-byte procedure
+  at `[0x1421935d0, 0x14219395c)`; TPI reference 32738 remains opaque
+  (F-1194; M-1462/ev_6efd526229b2). This PDB declaration adds no instruction
+  coverage, whole-function closure or ABI proof to the 122-byte trace.
+  Native counts and field-149/169 identities still need separate evidence;
+  normal leave remains failed (F-1186), and F-1177 stays active.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
@@ -116,17 +136,12 @@ addresses are retained at `c2e76dc:docs/specs/network/actor-channel.md`.
   `NetSerialize` (`293` `F*RowHandle`, `FRowHandle`, `FVector`, `FVector2D`,
   `FQuat`, `FPlane`, `FDateTime`, `FTimespan`, `FRotator`, `FUniqueNetIdRepl`,
   `FStatPairRepState`, `FVector_NetQuantize*`, `FRepMovement`, `FHitResult`).
-- Server relevancy, priority, tick rate and replication stages match across
-  the older builds (F-761; selected server bindings F-745/F-748/F-749/F-751).
-  Actor/Pawn/Controller/Beacon relevancy and Actor/Controller/Matinee priority
-  remain distinct. Readiness checks connection state, viewer, recent receive
-  time and channel capacity. Consideration filters lifecycle/driver/timing
-  state before CallPreReplication; prioritization handles owner expiry and
-  dormancy.
-  RelevantTime and force-frame rules remain F-788/F-851. Saturation, startup
-  level initialization and tear-off affect replication/close; no runtime
-  relevancy/priority qualification follows (U-038). Numeric thresholds and
-  defaults remain in the source-bound constants/comments in
+- Older-build relevancy/priority/tick/replication stages: F-761 and selected
+  server bindings F-745/F-748/F-749/F-751; actor classes retain distinct
+  relevancy/priority policies. Readiness, consideration and prioritization
+  checks are static; RelevantTime/force-frame F-788/F-851. Saturation,
+  startup-level initialization and tear-off affect replication/close;
+  runtime relevancy/priority remains unqualified (U-038). Thresholds/defaults:
   [actor_channel.rs](../../../src/experimental/actor_channel.rs).
 - GameState updates (F-1057, F-807): ~30 Hz unreliable actor blocks (component
   blocks may follow) carry changed `TimeOfDay` (38), 0.1 s
@@ -189,4 +204,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. M-1459 to M-1470.

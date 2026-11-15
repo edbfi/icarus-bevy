@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-13
+Last reconciled: 2026-11-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -128,3 +128,5 @@ Last reconciled: 2026-11-13
 | F-1176 | Public build 26613688 pins 3.0.36.159996-rel-DangerousHorizons, checksum 3984737729; 130 data tags + 1929 INI tags yield 2343 nodes/hash 0x3cc93081; old tag replay passes | derived | protocol-metadata; M-1403/ev_52a2435bf23f, M-1404, M-1405 | bounded; widths 12/0/6; metadata only, no runtime compatibility proof | U-038 | active |
 | F-1177 | 3.0.36 retains 42 core native classes/5881 CRC inputs, 24 cache layers and 48 unique expanded native classes; 26 cooked classes/52 members retain protocol semantics, two pairs change byte hashes | derived | static-metadata; M-1403/ev_f883070c4229, M-1403/ev_3f1c56e2fd93, M-1405 | bounded; selected ancestry/fields equal; no gameplay, visibility or client proof | U-038 | active |
 | F-1178 | 3.0.36 retains all 296 ordered table names and widths: 3 zero-byte, 28 two-byte, others one-byte; initializer slots and count*8 publication bound | derived | static-registry; M-1403/ev_d0adf684a1d8, M-1405 | bounded; SetupTables PDB query had no match, not a function-identity claim; no gameplay values or runtime proof | U-038 | active |
+| F-1193 | Build 26613688: 39 exact locations, 19 aligned RW/NX 68-B descriptor spans; 19 complete 47-B factories bind direct operands; complete 72-B FFunctionParams has 12 members/14 opaque refs | observed | static; M-1459/ev_423d954d3a24, M-1459/ev_3ceb9b9b7732, M-1459/ev_3bf00dd12847 | bounded; no values, init, widths, entry binding, counts/cache or wire proof | U-038 | active |
+| F-1194 | Build 26613688: 122-B consumer trace; local root copies/loads/tests; unique S_GPROC32 declares 908 B with opaque TPI32738 | observed | static; M-1460/ev_a40bde4cc914, M-1460/ev_f597d97d17d7, M-1461/ev_d4777e243691, M-1462/ev_6efd526229b2 | bounded; calls/edges opaque; all three closure flags false; no ABI, count/cache, field149/169 or extra instruction proof | U-038 | active |
