@@ -787,11 +787,27 @@ pub struct ControllerLeaveQualification {
 /// equality; it is a supported static derivation, not a runtime observation.
 #[derive(Clone, Debug)]
 pub struct ControllerLeavePlan {
+    controller: ReleasePlayerControllerProfile,
+    network_checksum: u32,
     actor_layout: Vec<super::rep_layout::RepCommand>,
     engine_net_version: u32,
 }
 
 impl ControllerLeavePlan {
+    pub(crate) fn network_checksum(&self) -> u32 {
+        self.network_checksum
+    }
+    pub(crate) fn validate_controller_open(&self, plan: &PlayerControllerOpenPlan) -> Result<()> {
+        let expected = self.controller.session_profile(plan.profile.level.clone());
+        ensure!(
+            plan.engine_net_version == self.engine_net_version
+                && plan.actor_layout == self.actor_layout
+                && plan.profile.archetype == expected.archetype
+                && plan.profile.components == expected.components,
+            "controller leave differs from its selected controller identity or layout"
+        );
+        Ok(())
+    }
     /// Exclusive bound for the qualified ordinary field-header reader.
     pub fn field_index_bound(&self) -> u32 {
         super::rep_rpc::BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND
@@ -1217,6 +1233,8 @@ impl ReleaseProfile {
             ControllerLeaveRevision::SelectedControllerV1 => {}
         }
         Ok(Some(ControllerLeavePlan {
+            controller: qualification.player_controller.clone(),
+            network_checksum: self.pin.network_checksum,
             actor_layout: self.row_layout(icarus_player_controller_survival_rep_layout(
                 MovementLevel::Whole,
                 MovementLevel::Whole,

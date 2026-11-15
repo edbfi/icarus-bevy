@@ -197,7 +197,7 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
-- F-1197: native leave integration/persistence policy; complete current-path,
+- F-1188 adds an authored adapter only. F-1197: complete current-path,
   live controller/cache/dispatch, remaining layout dependencies, durability
   and stock-client completion qualification remain open.
 - U-079: live visibility bindings/effects and client profile execution remain

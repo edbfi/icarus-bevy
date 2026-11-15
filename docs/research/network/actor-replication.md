@@ -36,8 +36,8 @@ F-1152. Authored speed stats accompany
 reported walk/look/sprint/jump after leaving a mountain spawn (F-1185);
 authoritative physics, collision and audio remain unqualified. Earlier
 zero-speed/provenance: F-1143/F-1147/F-1150 to F-1157/F-1164 to F-1166.
-Leave/save UI failure and Alt+F4 exit remain F-1186; no player-persistence
-proof follows.
+Leave/save UI failure remains F-1186. Authored leave adapter F-1188 adds no
+stock-client persistence proof; production dispatch stays disabled.
 
 Pin/tags/classes/row widths F-1176 to F-1178 remain static only.
 Sources F-828/F-832; replay F-762.
@@ -54,7 +54,7 @@ UID/membership F-1061/F-945/F-946/F-949 to F-951; loadout/backend F-1062/F-958.
 - Stat UI and movement fidelity (U-080), spawn placement and normal leave (U-038);
   listing L_s only with
   a join password, enforced as the original does (F-1161 to F-1163).
-- F-1197: native leave integration/persistence policy; complete current-path,
+- F-1197/F-1188: complete current-path,
   remaining layout and live client qualification remain open.
 - Quest exclusions (U-076) and saved-container gaps/unreferenced-container
   nulling: [world-manager open questions](../../specs/network/world-managers.md#open-questions).
