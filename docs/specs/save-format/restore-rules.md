@@ -165,21 +165,23 @@ addresses retain helper names or stand alone.
   cleanup (not host-wide): M-1457, M-1458/ev_800189c44abc; receipts M-1472 to M-1476.
   Return/this definitions, storage, aggregate/static ABI, comparator associations,
   native owner/receiver, overrides, coordinates, runtime/import/compatibility stay open.
-- `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
+- `UIcarusFunctionLibrary::RemoveModifierState` matches local selection in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
-  match (`-1` disables), else last opaque-comparison match; request virtual
-  `+0x3c0(0)`. Its pure model takes supplied candidates/results; enumeration
-  and destruction effects stay unqualified. The bounded comparator calls one
-  opaque callee right then left with distinct scratch slots, then reads
-  left/right result u64s and returns equality. Its separate model preserves
-  late reads/aliasing. Both server calls target `0x1410eb490`
-  (M-1046/ev_89fc8bd4555c). PDB metadata routes (Evidence) declare an 11-byte helper
-  there (M-1071); thunk links/tails stay unread and no complete profile is
-  accepted. Its bytes decode as `mov rax,[rcx+8]; mov [rdx],rax;
-  mov rax,rdx; ret` (F-940): each call copies its receiver's u64 at +8 into
-  the scratch slot, so server equality compares those words. Field and row
-  meaning, aliases and the client helper (its metadata route unattempted)
-  stay unqualified.
+  match (`-1` disables), else last comparison match; request `+0x3c0(0)`.
+  Models take supplied results. F-940's 11-byte server helper copies
+  `u64[RCX+8]` to `[RDX]`, returns `RDX`; hidden-return ABI is unproved.
+  Entry `C=RCX,D=RDX`: calls sample `D+8`, then `C+8` into distinct stack
+  slots before AL equality, not an initial snapshot. Selected call:
+  `V=load64[RDI],P=load64[RBP+0x6f],RDX=V+0xb4,RCX=P` gives sources
+  `V+0xbc,P+8`; outer RDX=P requires frame/slot preservation.
+  Population uses 16-byte source/8-byte append strides and signed32 counts;
+  A skips zero, B adds signed-index/pointer tests, not a class/safe-null contract.
+  Getters return cached words or pass slot addresses to a common helper.
+  Its three STORE8 sites and later LOAD8 require cross-call preservation;
+  an intervening call prevents readback identity; its indirect tail is unresolved.
+  F-1195 declares types; native element/row storage, requested 24-byte argument
+  lowering, ABI, aliases, lifetimes, class/owner/effects and client helper stay
+  open. M-1508 binds static checks; M-1509/M-1510 record processes only.
 
 ## Candidate
 

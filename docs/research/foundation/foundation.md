@@ -19,9 +19,9 @@ rejection: F-482. [Operations](../../runbooks/native-server.md).
 Independent schema-12 inventories: F-1029/F-1030; source-free authority, CLI and
 transaction/reload checks; no restoration or replication.
 
-Authored checkpoints F-1172 retain server-edited vitals/next-open placement across
-reconnect/save/reload (schema 13; schema 14 removes release binding). Accepted
-account/slot and pressure retries remain authored-only. F-1188 pins pre-tick
+Authored checkpoints F-1172 retain vitals/placement across reconnect/save/reload;
+schema 14 removes release binding. Independent managers/quests precede the
+identity-gated Pawn; ordering and pressure repairs remain authored-only. F-1188 pins pre-tick
 cutoffs, exact-writer durability, completion-prefix ACK/detach and pre-admission
 Cancel suppression. Its default-off private receipts check committed readback,
 restart load and actual first pawn composition before activation. Client
@@ -34,8 +34,7 @@ physical power loss remain unqualified.
 Sparse gameplay schema 2 keeps the authored recipe and player checkpoints stable
 across unrelated catalog row changes (F-1179). Schema 1 retains its full catalog
 contract; converting a bound recipe refuses. [Contracts](../../architecture.md#persistence).
-Checkpoint/catalog stability is authored-qualified; production locomotion
-with the recipe is reported in F-1185, without player-persistence proof.
+Locomotion F-1185 does not qualify player persistence.
 
 Authored persistence/lifecycle: schemas 4–12 (F-919, F-922, F-923, F-927),
 exclusions (F-928), schema-11 timers/cache/authority (F-931).
@@ -75,9 +74,9 @@ Protected hosting: CM deadline F-1180 and password retry F-1181. Lifetime receiv
 metadata F-1182 observed a further Geometry stall (F-1184): no accepted Begin
 slots/profile requests despite settled opens/possession. One skipped subobject
 block makes Begin absence inconclusive; its owner and fields remain unknown.
-Entry/locomotion F-1185; failed live leave F-1186. F-1188 adds no client
-persistence proof. Skipped-block/drop metadata F-1182; next: scoped leave/restart
-qualification. Operator-point candidate F-1198 remains terrain-unqualified.
+Entry/locomotion F-1185; failed leave F-1186; checkpoint entry stalls F-1199.
+F-1188 adds no client persistence proof. Next: checkpoint entry, then leave/restart.
+Operator-point candidate F-1198 remains terrain-unqualified.
 
 Toolchain/headless/CI: F-879, F-497; client identity: F-878/F-731 (U-034
 resolved). Original fixity/entry-map/exchange: F-265/F-268/F-253; unrun
