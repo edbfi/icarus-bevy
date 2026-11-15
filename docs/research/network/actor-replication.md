@@ -27,7 +27,7 @@ U-079 resolved). State/restart F-1036; query118/callback126 F-1051;
 fields66/86 F-1052; handle-26 width F-1120.
 
 Earlier entry/frozen-state findings: F-1084/F-1085/F-1089, F-1099 to F-1113,
-F-1117/F-1118/F-1121 to F-1126. Record/streaming/startup: F-1068/F-1069,
+F-1117/F-1118/F-1121 to F-1124/F-1126. Record/streaming/startup: F-1068/F-1069,
 F-1072 to F-1082/F-1086 to F-1088. Pawn release cleared the screen without an
 82 answer (F-1141 to F-1148).
 
