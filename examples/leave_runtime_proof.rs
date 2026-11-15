@@ -1,9 +1,9 @@
-//! Case-bound private observer. It launches nothing and never confirms menus.
+//! Case-bound private observer. Menus require an explicit actual owner report.
 //! All checkpoint decoding/comparison remains in the library's closed reader.
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use icarus_bevy::leave_runtime_proof::{
-    OwnerConfirmation, inspect_phase, publish_abort, publish_completion, read_private_input,
-    seal_exit_store, validate_descriptor,
+    OwnerConfirmation, inspect_phase, publish_abort, publish_completion,
+    publish_owner_confirmation, read_private_input, seal_exit_store, validate_descriptor,
 };
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,15 @@ enum Command {
         #[arg(long)]
         descriptor: PathBuf,
     },
+    /// Record only a menu personally reported by the owner, never a runtime cue.
+    RecordMenu {
+        #[arg(long)]
+        descriptor: PathBuf,
+        #[arg(long)]
+        manager_receipts: PathBuf,
+        #[arg(long, value_enum)]
+        reported_menu: ReportedMenu,
+    },
     /// Validate one ready phase and a separately supplied actual owner report.
     Observe {
         #[arg(long)]
@@ -44,6 +53,12 @@ enum Command {
         #[arg(long)]
         store: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ReportedMenu {
+    CharacterSelection,
+    Title,
 }
 
 // No runtime identity or checkpoint fields are accepted from this descriptor.
@@ -203,6 +218,31 @@ fn prepare(root: &Path, config: PathBuf, descriptor: &Path) -> Checked<()> {
 fn run(root: &Path, command: Command) -> Checked<()> {
     match command {
         Command::Prepare { config, descriptor } => prepare(root, config, &descriptor),
+        Command::RecordMenu {
+            descriptor,
+            manager_receipts,
+            reported_menu,
+        } => {
+            let phase = descriptor_phase(root, &descriptor)?;
+            if !matches!(
+                (phase, reported_menu),
+                (1, ReportedMenu::CharacterSelection) | (2, ReportedMenu::Title)
+            ) {
+                return Err(());
+            }
+            let manager = read_private_input(root, &manager_receipts, 32 * 1024).map_err(|_| ())?;
+            let invocation = manager_invocation(&manager, phase, false)?;
+            publish_owner_confirmation(
+                root,
+                &descriptor,
+                &OwnerConfirmation {
+                    phase,
+                    invocation,
+                    menu_confirmed: true,
+                },
+            )
+            .map_err(|_| ())
+        }
         Command::Observe {
             descriptor,
             manager_receipts,
@@ -256,13 +296,15 @@ fn main() -> std::process::ExitCode {
     let mut prepared = std::env::args_os()
         .nth(1)
         .is_some_and(|arg| arg == "prepare");
+    let mut recording = false;
     let result = root.as_ref().map_err(|_| ()).and_then(|root| {
         let result = Cli::try_parse().map_err(|_| ()).and_then(|cli| {
             prepared = matches!(&cli.command, Command::Prepare { .. });
+            recording = matches!(&cli.command, Command::RecordMenu { .. });
             run(root, cli.command)
         });
         // Pure preflight must not create even an abort marker. A failed live
-        // observation/seal instead publishes abort and can never mint success.
+        // observation/seal/menu recording publishes abort and cannot mint success.
         if prepared {
             result
         } else {
@@ -274,6 +316,8 @@ fn main() -> std::process::ExitCode {
             println!(
                 "{{\"event\":\"private_proof_prepared\",\"qualified_preflight_passed\":true}}"
             );
+        } else if recording {
+            println!("{{\"event\":\"private_owner_menu_recorded\",\"recorded\":true}}");
         } else {
             println!("{{\"event\":\"private_proof_observed\",\"pass\":true}}");
         }
@@ -307,6 +351,145 @@ mod tests {
         }
         bytes
     }
+    fn menu_fixture(root: &Path, phase: u8, rows: &[serde_json::Value]) -> (PathBuf, PathBuf) {
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        let descriptor = root.join("descriptor.json");
+        let manager = root.join("manager.jsonl");
+        let binding = serde_json::json!({"format":1,
+            "case_id":root.file_name().unwrap().to_str().unwrap(),"phase":phase,
+            "output":format!("phase-{phase}.jsonl"),
+            "predecessor":(phase==2).then_some("phase-1.jsonl"),
+            "exit_seal":(phase==2).then_some("phase-1-exit.json")});
+        for (path, bytes) in [
+            (&descriptor, serde_json::to_vec(&binding).unwrap()),
+            (&manager, journal(rows)),
+        ] {
+            fs::write(path, bytes).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        (descriptor, manager)
+    }
+
+    #[test]
+    fn record_menu_binds_matching_menu_to_current_created_receipt() {
+        let first = "0123456789abcdef0123456789abcdef";
+        let second = "123456789abcdef0123456789abcdef0";
+        for (phase, reported_menu, invocation) in [
+            (1, ReportedMenu::CharacterSelection, first),
+            (2, ReportedMenu::Title, second),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let rows = if phase == 1 {
+                vec![receipt("created", 1, first)]
+            } else {
+                vec![
+                    receipt("created", 1, first),
+                    receipt("before_stop", 1, first),
+                    receipt("after_exit", 1, first),
+                    receipt("created", 2, second),
+                ]
+            };
+            let (descriptor, manager_receipts) = menu_fixture(root.path(), phase, &rows);
+            assert!(
+                run(
+                    root.path(),
+                    Command::RecordMenu {
+                        descriptor,
+                        manager_receipts,
+                        reported_menu,
+                    }
+                )
+                .is_ok()
+            );
+            let bytes = fs::read(root.path().join(format!("phase-{phase}-owner.json"))).unwrap();
+            let owner: OwnerReport = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(owner.phase, phase);
+            assert_eq!(owner.invocation, invocation);
+            assert!(owner.menu_confirmed);
+            assert!(
+                !root
+                    .path()
+                    .join(format!("phase-{phase}-complete.json"))
+                    .exists()
+            );
+        }
+    }
+
+    #[test]
+    fn record_menu_refuses_wrong_menu_stopped_duplicate_and_stale_prefixes() {
+        let first = "0123456789abcdef0123456789abcdef";
+        let second = "123456789abcdef0123456789abcdef0";
+        for variant in ["menu1", "menu2", "stopped", "duplicate", "stale"] {
+            let root = tempfile::tempdir().unwrap();
+            let phase = if matches!(variant, "menu2" | "stale") {
+                2
+            } else {
+                1
+            };
+            let mut rows = vec![receipt("created", 1, first)];
+            if phase == 2 {
+                rows.extend([
+                    receipt("before_stop", 1, first),
+                    receipt("after_exit", 1, first),
+                    receipt(
+                        "created",
+                        2,
+                        if variant == "stale" { first } else { second },
+                    ),
+                ]);
+            } else if variant == "stopped" {
+                rows.push(receipt("before_stop", 1, first));
+            } else if variant == "duplicate" {
+                rows.push(receipt("created", 1, first));
+            }
+            let reported_menu = match variant {
+                "menu1" => ReportedMenu::Title,
+                "menu2" => ReportedMenu::CharacterSelection,
+                "stale" => ReportedMenu::Title,
+                _ => ReportedMenu::CharacterSelection,
+            };
+            let (descriptor, manager_receipts) = menu_fixture(root.path(), phase, &rows);
+            assert!(
+                run(
+                    root.path(),
+                    Command::RecordMenu {
+                        descriptor,
+                        manager_receipts,
+                        reported_menu,
+                    }
+                )
+                .is_err()
+            );
+            assert!(
+                !root
+                    .path()
+                    .join(format!("phase-{phase}-owner.json"))
+                    .exists()
+            );
+            assert!(
+                !root
+                    .path()
+                    .join(format!("phase-{phase}-owner.pending.json"))
+                    .exists()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "observer",
+                "record-menu",
+                "--descriptor",
+                "descriptor.json",
+                "--manager-receipts",
+                "manager.jsonl",
+                "--reported-menu",
+                "title",
+                "--invocation",
+                first,
+            ])
+            .is_err()
+        );
+    }
+
     #[test]
     fn manager_prefix_refuses_order_duplicates_stale_invocations_and_failed_exit() {
         let first = "0123456789abcdef0123456789abcdef";

@@ -1325,5 +1325,6 @@ use reader::predecessor;
 mod tests;
 pub use reader::validate_descriptor;
 pub use reader::{
-    OwnerConfirmation, inspect_phase, publish_abort, publish_completion, seal_exit_store,
+    OwnerConfirmation, inspect_phase, publish_abort, publish_completion,
+    publish_owner_confirmation, seal_exit_store,
 };

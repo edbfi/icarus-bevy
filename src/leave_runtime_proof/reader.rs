@@ -349,6 +349,57 @@ pub struct OwnerConfirmation {
     pub invocation: String,
     pub menu_confirmed: bool,
 }
+/// Record an explicit owner report; this does not inspect or infer a menu.
+/// Failed pending files are retained. The visible name is never overwritten.
+pub fn publish_owner_confirmation(
+    root: &Path,
+    path: &Path,
+    owner: &OwnerConfirmation,
+) -> Result<()> {
+    require(
+        invocation(&owner.invocation) && owner.menu_confirmed,
+        ProofFailure::Binding,
+    )?;
+    let dir = Directory::open(root)?;
+    dir.absent("abort.json")?;
+    let d = descriptor(&dir, path)?;
+    require(owner.phase == d.phase, ProofFailure::Mismatch)?;
+    let name = format!("phase-{}-owner.json", d.phase);
+    let pending = format!("phase-{}-owner.pending.json", d.phase);
+    dir.absent(&name)?;
+    let bytes = encode(owner)?;
+    let mut file = dir.create(&pending)?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| error(ProofFailure::Io))?;
+    finish_owner_confirmation(&dir, &pending, &name, &file)
+}
+pub(super) fn finish_owner_confirmation(
+    dir: &Directory,
+    pending: &str,
+    name: &str,
+    file: &File,
+) -> Result<()> {
+    use rustix::fs::{AtFlags, RenameFlags, renameat_with, statat};
+    dir.absent("abort.json")?;
+    // Direct Linux no-replace operation: unsupported/error cases have no
+    // copy, hardlink or overwriting-rename fallback, and retain the pending file.
+    renameat_with(&dir.file, pending, &dir.file, name, RenameFlags::NOREPLACE)
+        .map_err(|_| error(ProofFailure::Io))?;
+    dir.file.sync_all().map_err(|_| error(ProofFailure::Io))?;
+    let held = file.metadata().map_err(|_| error(ProofFailure::Io))?;
+    let named =
+        statat(&dir.file, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| error(ProofFailure::Io))?;
+    require(
+        held.nlink() == 1
+            && held.uid() == dir.uid
+            && held.mode() & 0o777 == 0o600
+            && named.st_ino == held.ino()
+            && named.st_dev == held.dev()
+            && named.st_nlink == 1,
+        ProofFailure::Binding,
+    )
+}
 pub fn publish_completion(
     root: &Path,
     path: &Path,

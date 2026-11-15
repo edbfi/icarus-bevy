@@ -54,9 +54,9 @@ CM deadlines: F-1180.
 
 `network.authored_controller_leave` defaults false ([binding](../architecture.md#persistence)).
 Run-only `--private-leave-proof DESCRIPTOR` requires protected one-player hosting,
-manager `INVOCATION_ID`, owned 0700 CWD and 0600 files. The typed observer's
-`prepare` is state-free; `observe` needs Ready plus the owner's menu report.
-Successful exit/resource release and `seal-exit` precede restart. ACK is transport only.
+manager `INVOCATION_ID`, owned 0700 CWD and 0600 files. Observer `prepare` is pure.
+`record-menu` records the owner's report atomically; `observe` also needs Ready.
+Exit/resource release and `seal-exit` must succeed before restart; ACK is transport only.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),

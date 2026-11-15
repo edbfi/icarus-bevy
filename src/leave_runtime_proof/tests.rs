@@ -27,6 +27,140 @@ fn descriptor_file(root: &Path, phase: u8) -> PathBuf {
     write(&path, &serde_json::to_vec(&d).unwrap());
     path
 }
+#[test]
+fn owner_report_publication_has_exact_fields_and_single_link() {
+    for phase in [1, 2] {
+        let root = tempfile::tempdir().unwrap();
+        let descriptor = descriptor_file(root.path(), phase);
+        let owner = OwnerConfirmation {
+            phase,
+            invocation: "11111111111111111111111111111111".into(),
+            menu_confirmed: true,
+        };
+        publish_owner_confirmation(root.path(), &descriptor, &owner).unwrap();
+        let target = root.path().join(format!("phase-{phase}-owner.json"));
+        let bytes = read_private_input(root.path(), &target, 4096).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"phase":phase,"invocation":owner.invocation,"menu_confirmed":true})
+        );
+        let metadata = std::fs::metadata(&target).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.nlink(), 1);
+        assert!(
+            !root
+                .path()
+                .join(format!("phase-{phase}-owner.pending.json"))
+                .exists()
+        );
+        assert!(!root.path().join(format!("phase-{phase}.jsonl")).exists());
+        assert!(
+            !root
+                .path()
+                .join(format!("phase-{phase}-complete.json"))
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn owner_report_refuses_phase_identity_false_confirmation_and_abort() {
+    for variant in ["phase", "invocation", "confirmation", "abort"] {
+        let root = tempfile::tempdir().unwrap();
+        let descriptor = descriptor_file(root.path(), 1);
+        let mut owner = OwnerConfirmation {
+            phase: 1,
+            invocation: "11111111111111111111111111111111".into(),
+            menu_confirmed: true,
+        };
+        match variant {
+            "phase" => owner.phase = 2,
+            "invocation" => owner.invocation = "invalid-authored-identity".into(),
+            "confirmation" => owner.menu_confirmed = false,
+            _ => publish_abort(root.path()).unwrap(),
+        }
+        assert!(publish_owner_confirmation(root.path(), &descriptor, &owner).is_err());
+        assert!(!root.path().join("phase-1-owner.json").exists());
+        assert!(!root.path().join("phase-1-owner.pending.json").exists());
+    }
+}
+
+#[test]
+fn owner_report_never_overwrites_existing_pending_target_or_symlink() {
+    for (name, link) in [
+        ("phase-1-owner.json", false),
+        ("phase-1-owner.json", true),
+        ("phase-1-owner.pending.json", false),
+        ("phase-1-owner.pending.json", true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let descriptor = descriptor_file(root.path(), 1);
+        let kept = root.path().join("kept.json");
+        let existing = root.path().join(name);
+        if link {
+            write(&kept, b"authored unchanged\n");
+            symlink(&kept, &existing).unwrap();
+        } else {
+            write(&existing, b"authored unchanged\n");
+        }
+        let owner = OwnerConfirmation {
+            phase: 1,
+            invocation: "11111111111111111111111111111111".into(),
+            menu_confirmed: true,
+        };
+        assert!(publish_owner_confirmation(root.path(), &descriptor, &owner).is_err());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"authored unchanged\n");
+        if link {
+            assert!(
+                std::fs::symlink_metadata(&existing)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read(&kept).unwrap(), b"authored unchanged\n");
+        }
+        if name.ends_with("pending.json") {
+            assert!(!root.path().join("phase-1-owner.json").exists());
+        } else {
+            assert!(!root.path().join("phase-1-owner.pending.json").exists());
+        }
+    }
+}
+
+#[test]
+fn owner_report_atomic_cut_refuses_late_target_or_abort_and_keeps_synced_pending() {
+    for aborted in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        descriptor_file(root.path(), 1);
+        let dir = Directory::open(root.path()).unwrap();
+        let name = "phase-1-owner.json";
+        let pending = "phase-1-owner.pending.json";
+        dir.absent(name).unwrap();
+        let mut file = dir.create(pending).unwrap();
+        file.write_all(b"authored complete pending\n").unwrap();
+        file.sync_all().unwrap();
+        if aborted {
+            publish_abort(root.path()).unwrap();
+        } else {
+            // Introduce a destination after the caller's initial absence check.
+            write(&root.path().join(name), b"authored late target\n");
+        }
+        assert!(reader::finish_owner_confirmation(&dir, pending, name, &file).is_err());
+        assert_eq!(
+            std::fs::read(root.path().join(pending)).unwrap(),
+            b"authored complete pending\n"
+        );
+        if aborted {
+            assert!(!root.path().join(name).exists());
+        } else {
+            assert_eq!(
+                std::fs::read(root.path().join(name)).unwrap(),
+                b"authored late target\n"
+            );
+        }
+    }
+}
+
 fn context_fixture() -> PlayerContext {
     context_with_growth("Player")
 }
