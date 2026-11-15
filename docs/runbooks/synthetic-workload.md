@@ -76,13 +76,26 @@ CPU, memory and hard-time limits. Action timings include internal capture and
 preflight; load uses the same open store. Match fixtures, build settings and
 affinity across revisions; exclude incomplete cases from comparisons.
 
-The recovery campaign alternates SIGKILL/SIGTERM near autosaves after an initial
-committed save, using 10,000 authored entities. Each cycle checks the checksum,
-clock, acknowledged generation and all entities. Use a fresh directory; retain
-helper/binary provenance and cycle logs. It does not qualify exact filesystem
-interception, disk exhaustion or physical power loss.
+Recovery alternates SIGKILL/SIGTERM around autosaves after one commit.
+Default mode checks 10,000 authored entities, checksum, clock and acknowledgements.
+Use fresh output; retain provenance/logs. Neither mode qualifies
+filesystem fault points, disk exhaustion or physical power loss.
 
 ```bash
 python3 tools/native_recovery_campaign.py --binary target/release/icarus-server \
   --output work/recovery-new --cycles 24
 ```
+
+Build schema14 example `authored_player_recovery` through `cargo_guard.py`:
+
+```bash
+python3 tools/native_recovery_campaign.py --mode authored-player \
+  --binary target/debug/examples/authored_player_recovery \
+  --output work/CASE/new-campaign --cycles 4
+```
+
+The 7 Hz fixture has active/detached players (F-1172/F-1183/F-1188). A fresh Rust
+verifier checks typed state, context, revisions/ticks and eight resumed steps
+against an integer oracle; no downtime debit. All observed receipts are retained.
+Identity, output, collection, exit, deadline (20s) or disk-guard (30 GiB) failure
+denies success. No client, leave-adapter or production-loop qualification.
