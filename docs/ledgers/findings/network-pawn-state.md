@@ -1,10 +1,10 @@
 # Findings: Network pawn state
 
-Restored stats and temperature transitions. IDs remain in the shared finding space.
+Restored stats, temperature transitions and placement. IDs remain in the shared finding space.
 
 Before restructure: 9f684fb:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-12
+Last reconciled: 2026-11-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -14,3 +14,4 @@ Last reconciled: 2026-11-12
 | F-997 | 3.0.32 internal-temperature setter snapshots entry, reads GetStat upper then lower, stores its ordered clamp and requests the temperature delegate only if that result differs from entry | observed | static-bytes; M-1144/ev_3d47e345fc06, M-1145 | high; exact 186 B; stat/listener effects and full TemperatureTick unqualified | U-069 | active |
 | F-999 | 3.0.32 TemperatureTick samples after a strict interval threshold, consumes one period and adjusts internal temperature with ordered callbacks and asymmetric fractional conversion | observed | static-bytes, authored-test; M-1147/ev_2cd387431009, M-1148, M-1149 | high; full 553 B; climate, defaults, listeners and scheduling unqualified | U-069 | active |
 | F-1000 | Explicit native temperature/modifier ticks retain per-connection/UID timing, read latest values and publish final callback state without replay on polling or loss repair; disconnect drops timing | measured | authored-test; M-1149, M-1151 | high; caller inputs; no automatic clock, climate, expiry, destruction, persistence or stock-client proof | U-069 | active |
+| F-1198 | One new-member player-created location is associated with its historical full-map load; that URL matches the frozen current-pin protected configuration | derived | save/log/config; M-1161, M-1422, M-1423, M-1504 | one candidate; no general name inversion, terrain/collision/clearance or current-client placement proof; F-1134 base absent | U-038, U-025 | active |

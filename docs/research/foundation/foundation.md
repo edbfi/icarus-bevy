@@ -19,13 +19,13 @@ rejection: F-482. [Operations](../../runbooks/native-server.md).
 Independent schema-12 inventories: F-1029/F-1030; source-free authority, CLI and
 transaction/reload checks; no restoration or replication.
 
-Authored player checkpoints retain explicit server vital edits and next-open
-placement through reconnect/save/reload (F-1172, measured on schema 13; schema 14
-drops its release binding). Accepted account/slot bindings
-and reliable-pressure retries are authored-tested only; delayed-pawn stock-client
-continuation remains unqualified (U-038). F-1188: authored leave cuts off before
-ticks; exact-writer durability precedes reliable completion/ACK detach. Pending
-cancellation suppresses completion; production leave remains default-off.
+Authored checkpoints F-1172 retain server-edited vitals/next-open placement across
+reconnect/save/reload (schema 13; schema 14 removes release binding). Accepted
+account/slot and pressure retries remain authored-only. F-1188 pins pre-tick
+cutoffs, exact-writer durability, completion-prefix ACK/detach and pre-admission
+Cancel suppression. Its default-off private receipts check committed readback,
+restart load and actual first pawn composition before activation. Client
+continuation remains U-038.
 
 Schema-14 authored survival resumes fractional debit and day phase from committed
 ticks, excludes inactive attachments and latches owner/timestep failures before
@@ -75,9 +75,9 @@ Protected hosting: CM deadline F-1180 and password retry F-1181. Lifetime receiv
 metadata F-1182 observed a further Geometry stall (F-1184): no accepted Begin
 slots/profile requests despite settled opens/possession. One skipped subobject
 block makes Begin absence inconclusive; its owner and fields remain unknown.
-The later restart-only run reaches entry/locomotion (F-1185), while normal
-leave fails (F-1186). Player checkpoints remain unqualified. Skipped-block/drop
-metadata is authored-tested (F-1182); next: bind leave RPCs and save completion.
+Entry/locomotion F-1185; failed live leave F-1186. F-1188 adds no client
+persistence proof. Skipped-block/drop metadata F-1182; next: scoped leave/restart
+qualification. Operator-point candidate F-1198 remains terrain-unqualified.
 
 Toolchain/headless/CI: F-879, F-497; client identity: F-878/F-731 (U-034
 resolved). Original fixity/entry-map/exchange: F-265/F-268/F-253; unrun
@@ -98,4 +98,4 @@ Authored inventory last-key validation costs: F-1053.
 
 ## Artifacts
 
-M-1274 to M-1278; M-1130, M-1131; M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060, M-1063, M-1064, M-1069, M-1070, M-1075, M-1076, M-1088, M-1256 to M-1260; M-1396, M-1410 to M-1414; M-1416 to M-1418.
+M-1274 to M-1278; M-1130, M-1131; M-001, M-002, M-006, M-009, M-010, M-015..M-022, M-076, M-078, M-109..M-117, M-131..M-165, M-174, M-175, M-178, M-182..M-184, M-191, M-192, M-200, M-203, M-204, M-207, M-208, M-212..M-220, M-225, M-240, M-241, M-251, M-252, M-269, M-270, M-271, M-277, M-311, M-391, M-397..M-399, M-411..M-419, M-452..M-454, M-471..M-475, M-577, M-578, M-770, M-771, M-809, M-810, M-812, M-861, M-862, M-864..M-867, M-870, M-898, M-899, M-915..M-918, M-926..M-972, M-1012..M-1023, M-1040, M-1041, M-1055..M-1057, M-1060, M-1063, M-1064, M-1069, M-1070, M-1075, M-1076, M-1088, M-1256 to M-1260; M-1396, M-1410 to M-1414; M-1416 to M-1418; M-1503, M-1504.

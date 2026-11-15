@@ -52,12 +52,11 @@ Presence/listing/empty saves: F-1171/F-1004/F-1170. CM IDs omitted from logs/Deb
 [Stall limits](controller-receive.md): F-1181/F-1184; populated saves unqualified (U-038).
 CM deadlines: F-1180.
 
-`network.authored_controller_leave` defaults false; true requires
-[checkpoints, codec binding and hosting](../architecture.md#persistence). Metadata
-grants no dispatch/client proof. Pure offline `prepare_run_with_tick_hz` checks
-binding before state/services. Opt-in status/stopped counters
-`player_leave`/`sessions.controller_leave` survive teardown; generation/tick or
-prefix ACK proves neither exact private record equality nor menu success.
+`network.authored_controller_leave` defaults false ([binding](../architecture.md#persistence)).
+Run-only `--private-leave-proof DESCRIPTOR` requires protected one-player hosting,
+manager `INVOCATION_ID`, owned 0700 CWD and 0600 files. Observer `prepare` is pure.
+`record-menu` records the owner's report atomically; `observe` also needs Ready.
+Exit/resource release and `seal-exit` must succeed before restart; ACK is transport only.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),

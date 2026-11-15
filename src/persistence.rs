@@ -55,6 +55,8 @@ const MAX_REFERENCED_SNAPSHOT_BYTES: u64 = MAX_DOMAIN_SNAPSHOT_BYTES + 4 * 1024;
 /// Streaming verification buffer, so checking a sidecar never holds it whole.
 const VERIFY_CHUNK_BYTES: usize = 1024 * 1024;
 
+type PrivateGeneration = (u64, String, Vec<u8>);
+
 #[derive(Debug)]
 struct UnsupportedSchema;
 
@@ -1083,6 +1085,42 @@ struct Committed {
 pub struct LoadedSnapshot {
     pub snapshot: WorldSnapshot,
     pub recovered_previous: bool,
+    pub selected_generation: u64,
+    pub selected_sha256: String,
+}
+
+// Proof-only reads are bound to an already opened directory. Ordinary store
+// readers and their compatibility/retention policy remain unchanged.
+fn read_private_proof_file(directory: &File, name: &str, cap: usize) -> Result<Vec<u8>> {
+    use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
+    use std::os::unix::fs::MetadataExt;
+    let uid = fs::metadata("/proc/self")?.uid();
+    let parent = directory.metadata()?;
+    ensure!(
+        parent.is_dir() && parent.uid() == uid && parent.mode() & 0o777 == 0o700,
+        "proof directory binding"
+    );
+    let fd = openat2(
+        directory,
+        name,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+    )?;
+    let file = File::from(fd);
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == uid
+            && metadata.mode() & 0o777 == 0o600
+            && metadata.nlink() == 1
+            && metadata.len() <= cap as u64,
+        "proof file binding"
+    );
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= cap, "proof file cap");
+    Ok(bytes)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2097,10 +2135,12 @@ impl SnapshotStore {
     pub fn load(&self) -> Result<Option<LoadedSnapshot>> {
         self.manifest()?
             .map(|manifest| {
-                let (snapshot, _, recovered_previous) = self.select(&manifest)?;
+                let (snapshot, selected, recovered_previous) = self.select(&manifest)?;
                 Ok(LoadedSnapshot {
                     snapshot,
                     recovered_previous,
+                    selected_generation: selected.number,
+                    selected_sha256: selected.sha256,
                 })
             })
             .transpose()
@@ -2108,6 +2148,90 @@ impl SnapshotStore {
 
     pub fn save(&mut self, snapshot: &WorldSnapshot) -> Result<SaveReceipt> {
         self.save_with_writer(snapshot, atomic_write)
+    }
+
+    pub(crate) fn readback_private_leave(
+        &self,
+        receipt: &SaveReceipt,
+        selection: crate::leave_runtime_proof::ProofWriteSelection,
+    ) -> std::result::Result<(), crate::leave_runtime_proof::ProofError> {
+        use crate::leave_runtime_proof::{GENERATION_CAP, ProofFailure};
+        let result = (|| -> Result<()> {
+            use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
+            let fd = openat2(
+                CWD,
+                &self.root,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            )?;
+            let directory = File::from(fd);
+            let manifest_bytes = read_private_proof_file(&directory, "manifest.json", 16 * 1024)?;
+            let manifest = serde_json::from_slice::<JsonObject<Manifest>>(&manifest_bytes)?.0;
+            ensure!(
+                manifest.schema_version == 1 && manifest.current.number == receipt.generation,
+                "proof current generation differs"
+            );
+            manifest.current.validate_checksum()?;
+            let bytes =
+                read_private_proof_file(&directory, &manifest.current.filename(), GENERATION_CAP)?;
+            ensure!(
+                checksum(&bytes) == manifest.current.sha256,
+                "proof generation checksum differs"
+            );
+            let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(&bytes)?.0;
+            ensure!(
+                header.schema_version.as_u64() == Some(u64::from(SNAPSHOT_SCHEMA_PLAYERS)),
+                "proof schema shape"
+            );
+            let (snapshot, sidecar) = self.decode_generation(&bytes)?;
+            ensure!(
+                sidecar.is_none()
+                    && snapshot.schema_version == SNAPSHOT_SCHEMA_PLAYERS
+                    && snapshot.tick == receipt.tick,
+                "proof generation shape differs"
+            );
+            selection.observed(
+                &snapshot,
+                receipt,
+                &manifest.current.sha256,
+                &manifest_bytes,
+                &bytes,
+            )?;
+            Ok(())
+        })();
+        result.map_err(|_| selection.fail(ProofFailure::Mismatch))
+    }
+
+    pub(crate) fn private_exit_generations(
+        &self,
+        directory: &File,
+    ) -> Result<(Vec<u8>, Vec<PrivateGeneration>)> {
+        let manifest_bytes = read_private_proof_file(directory, "manifest.json", 16 * 1024)?;
+        let manifest = serde_json::from_slice::<JsonObject<Manifest>>(&manifest_bytes)?.0;
+        ensure!(manifest.schema_version == 1, "proof manifest shape");
+        let mut generations = Vec::new();
+        for generation in std::iter::once(&manifest.current).chain(manifest.previous.as_ref()) {
+            generation.validate_checksum()?;
+            let bytes = read_private_proof_file(
+                directory,
+                &generation.filename(),
+                crate::leave_runtime_proof::GENERATION_CAP,
+            )?;
+            ensure!(checksum(&bytes) == generation.sha256, "proof exit checksum");
+            let header = serde_json::from_slice::<JsonObject<SnapshotHeader>>(&bytes)?.0;
+            ensure!(
+                header.schema_version.as_u64() == Some(u64::from(SNAPSHOT_SCHEMA_PLAYERS)),
+                "proof schema shape"
+            );
+            let (snapshot, sidecar) = self.decode_generation(&bytes)?;
+            ensure!(
+                sidecar.is_none() && snapshot.schema_version == SNAPSHOT_SCHEMA_PLAYERS,
+                "proof exit shape"
+            );
+            generations.push((generation.number, generation.sha256.clone(), bytes));
+        }
+        Ok((manifest_bytes, generations))
     }
 
     /// Publish exactly one durable initial generation. Existing committed
@@ -2466,9 +2590,13 @@ mod durability_probe {
 
 /// One in-flight save; owned snapshots never borrow the live ECS world.
 pub struct SaveWorker {
-    sender: SyncSender<WorldSnapshot>,
+    sender: SyncSender<SaveRequest>,
     receiver: Receiver<Result<SaveReceipt>>,
     busy: bool,
+}
+struct SaveRequest {
+    snapshot: WorldSnapshot,
+    proof: Option<crate::leave_runtime_proof::ProofWriteSelection>,
 }
 
 /// Terminal failure: this worker cannot accept or acknowledge another save.
@@ -2485,13 +2613,19 @@ impl std::error::Error for SaveWorkerDisconnected {}
 
 impl SaveWorker {
     pub fn spawn(mut store: SnapshotStore) -> Result<Self> {
-        let (sender, requests) = mpsc::sync_channel::<WorldSnapshot>(1);
+        let (sender, requests) = mpsc::sync_channel::<SaveRequest>(1);
         let (results, receiver) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("snapshot-writer".into())
             .spawn(move || {
-                while let Ok(snapshot) = requests.recv() {
-                    if results.send(store.save(&snapshot)).is_err() {
+                while let Ok(request) = requests.recv() {
+                    let saved = store.save(&request.snapshot);
+                    if let (Ok(receipt), Some(proof)) = (&saved, request.proof) {
+                        // Proof failure is latched separately: the successful
+                        // durable save receipt still reaches its original owner.
+                        let _ = store.readback_private_leave(receipt, proof);
+                    }
+                    if results.send(saved).is_err() {
                         break;
                     }
                 }
@@ -2509,9 +2643,16 @@ impl SaveWorker {
     }
 
     pub fn submit(&mut self, snapshot: WorldSnapshot) -> Result<()> {
+        self.submit_private(snapshot, None)
+    }
+    pub(crate) fn submit_private(
+        &mut self,
+        snapshot: WorldSnapshot,
+        proof: Option<crate::leave_runtime_proof::ProofWriteSelection>,
+    ) -> Result<()> {
         ensure!(!self.busy, "snapshot worker busy");
         self.sender
-            .try_send(snapshot)
+            .try_send(SaveRequest { snapshot, proof })
             .map_err(|error| match error {
                 mpsc::TrySendError::Disconnected(_) => anyhow::Error::new(SaveWorkerDisconnected),
                 mpsc::TrySendError::Full(_) => anyhow::anyhow!("snapshot request queue full"),
@@ -2589,7 +2730,7 @@ mod worker_failure_tests {
 
     fn controlled_worker() -> (
         SaveWorker,
-        Receiver<WorldSnapshot>,
+        Receiver<SaveRequest>,
         SyncSender<Result<SaveReceipt>>,
     ) {
         let (sender, requests) = mpsc::sync_channel(1);
@@ -2667,7 +2808,7 @@ mod worker_failure_tests {
         assert!(settled.is_err());
         assert!(!worker.is_busy());
         worker.submit(WorldSnapshot::default()).unwrap();
-        assert_eq!(requests.recv().unwrap().tick, 0);
+        assert_eq!(requests.recv().unwrap().snapshot.tick, 0);
     }
 
     #[test]
@@ -2709,7 +2850,7 @@ mod worker_failure_tests {
             )
             .unwrap();
         assert!(worker.is_busy());
-        assert_eq!(requests.recv().unwrap().tick, 0);
+        assert_eq!(requests.recv().unwrap().snapshot.tick, 0);
     }
 
     #[test]

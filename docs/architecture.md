@@ -172,19 +172,25 @@ coalesces unsent revisions; enqueue is neither client ACK nor disk publication.
 Placement changes only the next pawn open. Disconnect/revocation detaches but
 retains committed state.
 
-[Authored leave](runbooks/authored-survival.md#checkpoint-leave) uses
-`CheckpointWriter` through shutdown: only the pinned attempt's exact submission
-can establish durability. The separate authored adapter waits for that result
-before reliable completion and its prefix ACK before detach. Pre-admission cancellation
-retains the frozen obligation and suppresses completion. Default-false
-`network.authored_controller_leave` separately enables the policy only with
-checkpoints, authenticated online hosting and matching codec/controller plans.
-`check-config` checks shape; pure offline preparation verifies binding before
-storage/services. Opt-in status/stopped `player_leave` reports cutoff, durability/
-failure gauges and last global generation/tick; `sessions.controller_leave`
-reports intent/cancel/admission/prefix-ACK totals. These survive teardown;
-aggregates or ACK cannot prove exact private record equality or menu success.
-No full player-save/client qualification follows.
+[Authored leave](runbooks/authored-survival.md#checkpoint-leave) pins the exact
+writer submission before reliable completion and fixed-prefix ACK/detach.
+Pre-admission Cancel suppresses completion but retains the frozen save obligation;
+detached pending/failed barriers remain. Default-false
+`network.authored_controller_leave` requires authenticated checkpoints and
+codec/controller/checksum binding before state/services; `check-config` is
+shape-only. Opt-in `player_leave` cutoff/durable/failure/generation/tick and
+`sessions.controller_leave` intent/cancel/admission/ACK totals survive teardown;
+aggregates/ACK grant no record/menu proof.
+
+Default-off Run-only `--private-leave-proof` binds case/manager identity and one
+admission under protected one-player hosting, oxygen/water/food rates 0/0/1 and
+fresh food 1..100 with valid max. Typed private receipts check exact cutoff/
+committed readback, raw growth-row identity, sealed-current restart load and
+actual pawn composition/admission before activation. State-free `prepare`
+checks parsed inputs; `observe` needs Ready plus a separate owner menu report.
+Successful owned exit/resource release and `seal-exit` precede restart. Sink
+failure is terminal; committed save receipts stand. Schema/default config stay
+unchanged; no OnRep, terrain, full-save or stock-client qualification follows.
 
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried

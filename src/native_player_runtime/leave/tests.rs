@@ -487,6 +487,26 @@ fn elapsed_operation_deadline_rejects_its_own_successful_write_receipt() {
 }
 
 #[test]
+fn expired_writer_deadline_fails_pending_leave_without_enqueueing() {
+    let mut app = app();
+    request(&mut app, 1, 1);
+    let before = app.world().resource::<PlayerRegistry>().snapshot();
+    let (directory, mut writer) = writer();
+    let error = writer
+        .submit_before(app.world_mut(), Instant::now())
+        .unwrap_err();
+    assert_eq!(error.to_string(), "snapshot shutdown deadline exceeded");
+    assert_eq!(
+        phase(&app, 1, 1),
+        LeavePhase::Failed(LeaveFailure::Deadline)
+    );
+    assert_eq!(app.world().resource::<PlayerRegistry>().snapshot(), before);
+    assert!(!writer.is_busy());
+    assert!(writer.poll(app.world_mut()).unwrap().is_none());
+    assert!(!directory.path().join("manifest.json").exists());
+}
+
+#[test]
 fn shutdown_teardown_keeps_cutoff_for_final_associated_save_without_destination() {
     let mut app = app();
     request(&mut app, 1, 1);

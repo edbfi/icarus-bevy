@@ -116,6 +116,7 @@ impl PlayerRegistry {
         now: Instant,
         timeout: Duration,
     ) -> Result<LeaveStatus, PlayerError> {
+        self.proof_health()?;
         if let Some(op) = self.leaves.get(&key) {
             return if op.epoch == epoch && op.record.revision == expected_revision {
                 Ok(op.status())
@@ -162,6 +163,12 @@ impl PlayerRegistry {
             .get_mut(&epoch)
             .expect("validated attachment")
             .activated = false;
+        if let Some(proof) = &self.private_leave_proof {
+            let op = self.leaves.get(&key).expect("inserted cutoff");
+            proof
+                .cutoff(epoch, op.attempt, &op.record, self.snapshot.context())
+                .map_err(|_| PlayerError::InvalidState)?;
+        }
         Ok(status)
     }
 
@@ -186,6 +193,11 @@ impl PlayerRegistry {
         now: Instant,
         timeout: Duration,
     ) -> Result<LeaveStatus, PlayerError> {
+        self.proof_health()?;
+        if let Some(proof) = &self.private_leave_proof {
+            proof.fail(crate::leave_runtime_proof::ProofFailure::Order);
+            return Err(PlayerError::InvalidState);
+        }
         let deadline = attempt_deadline(now, timeout)?;
         if self.writer_failed {
             return Err(PlayerError::InvalidState);
@@ -240,6 +252,9 @@ impl PlayerRegistry {
             if op.phase == LeavePhase::Pending && now >= op.deadline {
                 op.phase = LeavePhase::Failed(LeaveFailure::Deadline);
                 self.leave_counts.failure(LeaveFailure::Deadline);
+                if let Some(proof) = &self.private_leave_proof {
+                    proof.fail(crate::leave_runtime_proof::ProofFailure::Order);
+                }
             }
         }
     }
@@ -259,6 +274,9 @@ impl PlayerRegistry {
             if op.phase == LeavePhase::Pending {
                 op.phase = LeavePhase::Failed(failure);
                 self.leave_counts.failure(failure);
+                if let Some(proof) = &self.private_leave_proof {
+                    proof.fail(crate::leave_runtime_proof::ProofFailure::Mismatch);
+                }
             }
         }
     }
@@ -341,6 +359,16 @@ impl Submission {
                     LeavePhase::Failed(failure) => registry.leave_counts.failure(failure),
                     LeavePhase::Pending => (),
                 }
+                if let Some(proof) = &registry.private_leave_proof {
+                    match result {
+                        Ok(receipt) => {
+                            let _ = proof.durable(included.epoch, included.attempt, receipt);
+                        }
+                        Err(_) => {
+                            proof.fail(crate::leave_runtime_proof::ProofFailure::Mismatch);
+                        }
+                    }
+                }
             }
         }
     }
@@ -388,9 +416,26 @@ impl CheckpointWriter {
                 return Err(error);
             }
         };
-        let result = match deadline {
-            Some(deadline) => self.worker.submit_before(snapshot, deadline),
-            None => self.worker.submit(snapshot),
+        let proof_selection = world.get_resource::<PlayerRegistry>().and_then(|registry| {
+            let proof = registry.private_leave_proof.as_ref()?;
+            if proof.health().is_err() || submission.0.is_empty() {
+                return None;
+            }
+            if submission.0.len() != 1 {
+                proof.fail(crate::leave_runtime_proof::ProofFailure::Mismatch);
+                return None;
+            }
+            let included = &submission.0[0];
+            snapshot.native_players.as_ref().and_then(|players| {
+                proof
+                    .writer_selection(included.epoch, included.attempt, &included.record, players)
+                    .ok()
+            })
+        });
+        let result = if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            Err(anyhow::anyhow!("snapshot shutdown deadline exceeded"))
+        } else {
+            self.worker.submit_private(snapshot, proof_selection)
         };
         if let Err(error) = result {
             let failure = if error.is::<SaveWorkerDisconnected>() {

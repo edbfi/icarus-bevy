@@ -225,6 +225,9 @@ impl PlayerContext {
         }
         Ok(())
     }
+    pub(crate) fn growth_row_name(&self, index: u8) -> Option<&str> {
+        self.growth_rows.get(usize::from(index)).map(String::as_str)
+    }
     /// A checkpoint's row references must name rows this context lists.
     pub(crate) fn check_rows(&self, checkpoint: &PlayerCheckpoint) -> Result<(), PlayerError> {
         if usize::from(checkpoint.vitals.growth_row) >= self.growth_rows.len() {
