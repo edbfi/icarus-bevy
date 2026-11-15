@@ -1395,3 +1395,172 @@ function declarationEntriesImpl(reader, options) {
 
 Object.assign(module.exports, {DECLARATION_ENTRY_PROFILE, DECLARATION_ENTRY_CAPS,
     inspectSelectedDeclarationEntries});
+
+// Separate raw-envelope API. The 79744-byte source prefix and all earlier
+// profiles remain unchanged. This profile applies the supported v80 header
+// and outer framing grammar only; a u16 leaf never admits payload semantics.
+const RAW_TYPE_RECORD_PROFILE = 'tpi_v80_exact_raw_type_records_v1';
+const RAW_TYPE_RECORD_CAPS = Object.freeze({
+    stream_bytes: 512 * 1024 * 1024, records: 6000000, selectors: 1,
+    record_bytes: 65536, selected_record_bytes: 65536, read_bytes: 65536,
+    logical_read_bytes: 32 * 1024 * 1024, read_calls: 6000002,
+    retained_bytes: 1024 * 1024, transient_bytes: 2 * 65536 + 64,
+    hex_bytes: 4 * 65536, serialization_bytes: 512 * 1024,
+    output_bytes: 256 * 1024,
+});
+
+function inspectSelectedRawTypeRecords(reader, options) {
+    // Atomic refusal: neither caller exceptions nor a partially selected result
+    // escape. Codes identify source-reader phases, not target diagnoses.
+    const state = {phase: 'OPTIONS'};
+    try { return rawTypeRecordsImpl(reader, options, state); }
+    catch {
+        const error = Error('invalid or unsupported raw TPI records');
+        error.code = 'TPI_RAW_' + state.phase;
+        throw error;
+    }
+}
+function rawTypeRecordsImpl(reader, options, state) {
+    const {isProxy} = require('node:util').types;
+    const {createHash} = require('node:crypto');
+    const requireRaw = ok => { if (!ok) throw Error('raw TPI refusal'); };
+    function snapshot(value, allowed, array = false) {
+        requireRaw(value !== null && typeof value === 'object' && !isProxy(value));
+        requireRaw(array ? Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
+            : plain(value));
+        const keys = Reflect.ownKeys(value);
+        requireRaw(keys.length <= allowed.length && keys.every(key => typeof key === 'string' && allowed.includes(key)));
+        const copy = Object.create(null);
+        for (const key of keys) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            requireRaw(descriptor && Object.hasOwn(descriptor, 'value')
+                && (descriptor.enumerable || (array && key === 'length')));
+            copy[key] = descriptor.value;
+        }
+        return copy;
+    }
+    const opt = snapshot(options, ['profile', 'type_indices', 'limits']);
+    requireRaw(opt.profile === RAW_TYPE_RECORD_PROFILE && Object.hasOwn(opt, 'type_indices'));
+    const limits = {...RAW_TYPE_RECORD_CAPS};
+    if (Object.hasOwn(opt, 'limits')) {
+        const values = snapshot(opt.limits, Object.keys(limits));
+        for (const key of Object.keys(values)) {
+            requireRaw(Number.isSafeInteger(values[key]) && values[key] >= 0 && values[key] <= limits[key]);
+            limits[key] = values[key];
+        }
+    }
+    const indices = snapshot(opt.type_indices, ['0', 'length'], true);
+    requireRaw(indices.length === 1 && Object.hasOwn(indices, '0') && limits.selectors === 1);
+    const selectedIndex = indices[0];
+    requireRaw(Number.isSafeInteger(selectedIndex) && selectedIndex >= 0x1000 && selectedIndex < 0x80000000);
+    const input = snapshot(reader, ['size', 'read']);
+    const streamSize = input.size, readCallback = input.read;
+    requireRaw(Number.isSafeInteger(streamSize) && streamSize >= 60 && streamSize <= limits.stream_bytes
+        && typeof readCallback === 'function' && !isProxy(readCallback));
+    // Independent conservative logical charges, not an RSS or callback-memory
+    // guarantee. Fixed 8KiB covers small objects/descriptors/header/prefix.
+    // Retention includes one raw snapshot plus worst-case UTF-16 hex (5L).
+    // Transients reserve borrowed + copied reads and header/prefix slack.
+    // Serialization reserves UTF-16 for an ASCII output bound of 8KiB + 2L;
+    // the exact UTF-8 size is checked as well. No per-record array/cache exists.
+    const fixedBytes = 8192;
+    const transientCharge = 2 * limits.read_bytes + 64;
+    function charges(length) {
+        const hex = 4 * length, retained = fixedBytes + length + hex;
+        const output = fixedBytes + 2 * length, serialization = 2 * output;
+        requireRaw(retained <= limits.retained_bytes && hex <= limits.hex_bytes
+            && output <= limits.output_bytes && serialization <= limits.serialization_bytes);
+        return {hex, retained, output, serialization};
+    }
+    requireRaw(limits.record_bytes >= 4 && limits.selected_record_bytes >= 4 && limits.read_bytes >= 56
+        && limits.records >= 1 && limits.read_calls >= 3 && limits.logical_read_bytes >= 64
+        && transientCharge <= limits.transient_bytes);
+    charges(4); // refuse impossible minimum budgets before any callback
+    let readCalls = 0, logicalReadBytes = 0;
+    // Native typed-array accessors avoid executable shadow getters on borrowed
+    // Buffers. Native set copies internal bytes, without a custom iterator.
+    const typedArray = Object.getPrototypeOf(Uint8Array.prototype);
+    const byteLength = Object.getOwnPropertyDescriptor(typedArray, 'byteLength').get;
+    const arrayBuffer = Object.getOwnPropertyDescriptor(typedArray, 'buffer').get;
+    function exact(offset, length) {
+        requireRaw(Number.isSafeInteger(offset) && offset >= 0 && Number.isSafeInteger(length) && length > 0
+            && length <= limits.read_bytes && offset + length <= streamSize
+            && readCalls + 1 <= limits.read_calls && logicalReadBytes + length <= limits.logical_read_bytes);
+        readCalls++; logicalReadBytes += length;
+        const borrowed = Reflect.apply(readCallback, reader, [offset, length]);
+        requireRaw(!isProxy(borrowed) && Buffer.isBuffer(borrowed)
+            && Reflect.apply(byteLength, borrowed, []) === length
+            && !isSharedArrayBuffer(Reflect.apply(arrayBuffer, borrowed, [])));
+        const copy = Buffer.alloc(length);
+        Uint8Array.prototype.set.call(copy, borrowed);
+        return copy;
+    }
+    state.phase = 'HEADER';
+    const header = exact(0, 56), begin = header.readUInt32LE(8), end = header.readUInt32LE(12);
+    const recordBytes = header.readUInt32LE(16), count = end - begin;
+    requireRaw(header.readUInt32LE(0) === 20040203 && header.readUInt32LE(4) === 56
+        && begin === 0x1000 && end >= begin && end < 0x80000000 && count <= limits.records
+        && count * 4 <= recordBytes && recordBytes % 4 === 0 && 56 + recordBytes === streamSize);
+    requireRaw(header.readUInt16LE(22) === 0xffff && header.readUInt32LE(24) === 4
+        && header.readUInt32LE(28) >= 0x1000 && header.readUInt32LE(28) <= 0x40000);
+    const hashBytes = header.readUInt32LE(36), indexBytes = header.readUInt32LE(44);
+    requireRaw((hashBytes === 0 || hashBytes === count * 4) && indexBytes % 8 === 0 && header.readUInt32LE(52) === 0);
+    for (const offset of [32, 40, 48]) requireRaw(header.readInt32LE(offset) >= 0);
+    if (header.readUInt16LE(20) === 0xffff) requireRaw(hashBytes === 0 && indexBytes === 0);
+    state.phase = 'SELECTOR_RANGE';
+    requireRaw(selectedIndex >= begin && selectedIndex < end);
+    state.phase = 'FRAMING';
+    // Header count determines the minimum remaining reads/bytes. Reserve them
+    // before scanning; the selected body's actual length is checked at prefix.
+    requireRaw(count + 2 <= limits.read_calls && 56 + count * 4 + 4 <= limits.logical_read_bytes);
+    let at = 56, selected = null, selectedCharges = null;
+    for (let ordinal = 0; ordinal < count; ordinal++) {
+        state.phase = 'FRAMING';
+        const prefix = exact(at, 4), length = prefix.readUInt16LE() + 2;
+        requireRaw(length >= 4 && length % 4 === 0 && length <= limits.record_bytes
+            && at + length <= streamSize);
+        if (begin + ordinal === selectedIndex) {
+            state.phase = 'SELECTED_RECORD';
+            requireRaw(length <= limits.selected_record_bytes && length <= limits.read_bytes
+                && 56 + count * 4 + length <= limits.logical_read_bytes);
+            selectedCharges = charges(length); // before full selected-body read
+            const bytes = exact(at, length);
+            requireRaw(bytes.subarray(0, 4).equals(prefix));
+            selected = {type_index: selectedIndex, record_offset: at, record_bytes: length,
+                leaf: prefix.readUInt16LE(2), record_hex: bytes.toString('hex'),
+                record_sha256: createHash('sha256').update(bytes).digest('hex')};
+        }
+        at += length;
+    }
+    state.phase = 'FRAMING';
+    requireRaw(at === streamSize && selected !== null);
+    state.phase = 'OUTPUT';
+    const result = {profile: RAW_TYPE_RECORD_PROFILE, selection_mode: 'exact_type_indices',
+        version: 20040203, header_bytes: 56, type_index_begin: begin, type_index_end: end,
+        header_hex: header.toString('hex'), header_sha256: createHash('sha256').update(header).digest('hex'),
+        records_framed: count, record_bytes: recordBytes, selected: [selected],
+        complete_outer_record_framing: true, selected_payload_validated: false,
+        unselected_payloads_validated: false, hash_tables_validated: false, references_resolved: false,
+        storage_layout_complete: false, occupied_storage_qualified: false, native_owner_qualified: false,
+        native_receiver_qualified: false, original_layout_qualified: false, runtime_behavior_proven: false,
+        compatibility_qualified: false, save_import_qualified: false, wire_qualified: false,
+        caller_provenance_verified: false, release_qualified: false,
+        logical_read_bytes: logicalReadBytes, read_calls: readCalls,
+        selected_body_reads: 1, unselected_body_reads: 0, prefix_reads: count,
+        charged_retained_bytes: selectedCharges.retained, charged_transient_bytes: transientCharge,
+        charged_hex_bytes: selectedCharges.hex, charged_serialization_bytes: selectedCharges.serialization,
+        output_bytes_upper_bound: selectedCharges.output,
+        limitations: [
+            'Caller binds immutable logical TPI reads, container routing/identity, hashes, confinement and provenance.',
+            'Only the v80 header and all outer record frames are validated; payload and padding meaning are unvalidated.',
+            'Leaf and raw bytes convey no decoded names, references, storage widths, fields or native/runtime semantics.',
+            'Read counters describe logical callbacks only; physical reads, caching and callback resources belong to the caller.',
+        ]};
+    // All strings are bounded ASCII; output expansion is only raw hex. Check
+    // the conservative bound before constructing the serialization snapshot.
+    const serialized = JSON.stringify(result);
+    requireRaw(serialized.length * 2 <= selectedCharges.serialization
+        && Buffer.byteLength(serialized, 'utf8') <= limits.output_bytes);
+    return result;
+}
+Object.assign(module.exports, {RAW_TYPE_RECORD_PROFILE, RAW_TYPE_RECORD_CAPS, inspectSelectedRawTypeRecords});
