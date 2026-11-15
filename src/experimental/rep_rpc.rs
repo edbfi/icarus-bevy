@@ -370,6 +370,134 @@ pub const BP_TAME_BASE_FIELD_INDEX_BOUND: u32 = 86;
 /// for `BP_IcarusPlayerControllerSurvival_C`
 /// (`10 + 4 + 74 + 13 + 29 + 25 + 27 + 1 = 183`).
 pub const BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND: u32 = 183;
+
+/// Conditional selected-controller ordinary cache indices. Recognition requires
+/// a [`super::release::ControllerLeavePlan`]; these are not property handles.
+pub const SERVER_CANCEL_LEAVE_PROSPECT_SESSION_FIELD_INDEX: u32 = 148;
+pub const SERVER_LEAVE_PROSPECT_SESSION_FIELD_INDEX: u32 = 149;
+pub const SERVER_LEAVE_PROSPECT_SESSION_WITHOUT_SAVE_FIELD_INDEX: u32 = 150;
+
+/// The six declared leave values (F-1197; M-1488, M-1492). A declaration is not
+/// evidence that any value completed, saved player state or caused a
+/// stock-client menu transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LeaveProspectSessionType {
+    None = 0,
+    Quit = 1,
+    ReturnToCharacterSelect = 2,
+    LeaveByDropship = 3,
+    ReturnToTitlescreen = 4,
+    Disconnected = 5,
+}
+
+impl TryFrom<u8> for LeaveProspectSessionType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        Ok(match value {
+            0 => Self::None,
+            1 => Self::Quit,
+            2 => Self::ReturnToCharacterSelect,
+            3 => Self::LeaveByDropship,
+            4 => Self::ReturnToTitlescreen,
+            5 => Self::Disconnected,
+            _ => anyhow::bail!("invalid leave prospect session type {value}"),
+        })
+    }
+}
+
+/// A decoded request only, without authority, persistence or completion policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerLeaveRequest {
+    Cancel,
+    /// `None` preserves a clear parameter presence bit (`RpcArgument::NotSent`).
+    /// It does not invent the receiver's initialized enum value.
+    Normal(Option<LeaveProspectSessionType>),
+    WithoutSave,
+}
+
+fn leave_session_parameters() -> Vec<RpcParameter> {
+    // Keep the selected request width independent of the inherited completion
+    // layout's max-value helper: this revision binds three bits (F-1197; M-1492).
+    vec![RpcParameter::Value(vec![RepCommand::Enum { bits: 3 }])]
+}
+
+/// Parse an already framed field on the qualified ordinary controller path.
+/// Unknown identities stay unrecognized, including the separately bound but
+/// uninspected field 169. Generic RPC presence framing and exact consumption
+/// apply; three enum bits alone are not a complete present parameter payload.
+pub fn parse_controller_leave_request(
+    field: &FieldHeader,
+    plan: &super::release::ControllerLeavePlan,
+    codec: &RepLayoutCodec,
+) -> Result<Option<ControllerLeaveRequest>> {
+    plan.validate_codec(codec)?;
+    ensure!(
+        field.index < plan.field_index_bound(),
+        "controller field index exceeds its qualified bound"
+    );
+    let request = match field.index {
+        SERVER_CANCEL_LEAVE_PROSPECT_SESSION_FIELD_INDEX => {
+            parse_rpc_payload(&field.payload, &[], codec)?;
+            ControllerLeaveRequest::Cancel
+        }
+        SERVER_LEAVE_PROSPECT_SESSION_WITHOUT_SAVE_FIELD_INDEX => {
+            parse_rpc_payload(&field.payload, &[], codec)?;
+            ControllerLeaveRequest::WithoutSave
+        }
+        SERVER_LEAVE_PROSPECT_SESSION_FIELD_INDEX => {
+            let arguments = parse_rpc_payload(&field.payload, &leave_session_parameters(), codec)?;
+            let session_type = match arguments.as_slice() {
+                [RpcArgument::NotSent] => None,
+                [RpcArgument::Sent(items)] => match items.as_slice() {
+                    [RpcItem::Value(RepValue::Enum(value))] => {
+                        Some(LeaveProspectSessionType::try_from(u8::try_from(*value)?)?)
+                    }
+                    _ => anyhow::bail!("leave request parameter does not match its enum layout"),
+                },
+                _ => anyhow::bail!("leave request arguments do not match their layout"),
+            };
+            ControllerLeaveRequest::Normal(session_type)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(request))
+}
+
+/// Encode a request for authored codec tests; this does not enqueue or dispatch.
+pub fn encode_controller_leave_request(
+    request: ControllerLeaveRequest,
+    plan: &super::release::ControllerLeavePlan,
+    codec: &RepLayoutCodec,
+) -> Result<FieldHeader> {
+    plan.validate_codec(codec)?;
+    let (index, payload) = match request {
+        ControllerLeaveRequest::Cancel => (
+            SERVER_CANCEL_LEAVE_PROSPECT_SESSION_FIELD_INDEX,
+            encode_rpc_payload(&[], &[], codec)?,
+        ),
+        ControllerLeaveRequest::WithoutSave => (
+            SERVER_LEAVE_PROSPECT_SESSION_WITHOUT_SAVE_FIELD_INDEX,
+            encode_rpc_payload(&[], &[], codec)?,
+        ),
+        ControllerLeaveRequest::Normal(value) => (
+            SERVER_LEAVE_PROSPECT_SESSION_FIELD_INDEX,
+            encode_rpc_payload(
+                &leave_session_parameters(),
+                &[match value {
+                    None => RpcArgument::NotSent,
+                    Some(value) => RpcArgument::Sent(vec![RpcItem::Value(RepValue::Enum(
+                        u32::from(value as u8),
+                    ))]),
+                }],
+                codec,
+            )?,
+        ),
+    };
+    Ok(FieldHeader { index, payload })
+}
+
 /// `SerializeInt` field-index bound (`FieldsBase + Fields.Num() + 1`, F-708)
 /// for `BP_IcarusPlayerCharacterSurvival_C` (`10 + 3 + 27 + 14 + 24 + 9 + 41
 /// + 1 = 129`, from the public server's reflection, F-1105).

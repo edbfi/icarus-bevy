@@ -400,6 +400,143 @@ fn historical_capability_declarations_are_explicit_and_bound() {
 }
 
 #[test]
+fn controller_leave_capability_requires_an_explicit_complete_binding() {
+    for name in [
+        "3.0.31",
+        "3.0.31-client-25793767",
+        "3.0.32",
+        "3.0.34",
+        "3.0.35",
+        "3.0.36",
+    ] {
+        assert!(
+            ReleaseProfile::fixture(name)
+                .controller_leave_plan()
+                .unwrap()
+                .is_none(),
+            "{name} must not be qualified by its build id"
+        );
+    }
+    let text =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
+            .unwrap();
+    let mut table = release_table(&text);
+    assert!(
+        ReleaseProfile::parse(&text)
+            .unwrap()
+            .controller_leave_plan()
+            .unwrap()
+            .is_none()
+    );
+    // Authored declaration exercises the codec gate; it is not evidence that
+    // the selected original class/cache was instantiated or a client left.
+    let mut leave = toml::Table::new();
+    leave.insert("revision".into(), "selected_controller_v1".into());
+    leave.insert(
+        "player_controller".into(),
+        table["player_controller"].clone(),
+    );
+    let mut qualification = toml::Table::new();
+    qualification.insert("pin".into(), table["release"].clone());
+    qualification.insert("engine_network_version".into(), 17.into());
+    qualification.insert("game_network_version".into(), 0.into());
+    qualification.insert("class_net_cache".into(), table["class_net_cache"].clone());
+    qualification.insert("controller_leave".into(), leave.into());
+    table.insert("qualifications".into(), qualification.into());
+    let parse = |table: &toml::Table| ReleaseProfile::parse(&toml::to_string(table).unwrap());
+    let qualified = parse(&table).unwrap();
+    let plan = qualified.controller_leave_plan().unwrap().unwrap();
+    assert_eq!(plan.engine_net_version(), 17);
+    assert_eq!(plan.actor_layout().len(), 30);
+    assert_eq!(
+        plan.actor_layout()[25],
+        icarus_bevy::experimental::rep_layout::RepCommand::Enum { bits: 3 }
+    );
+
+    let mut without_revision = table.clone();
+    without_revision["qualifications"]
+        .as_table_mut()
+        .unwrap()
+        .remove("controller_leave");
+    assert!(
+        parse(&without_revision)
+            .unwrap()
+            .controller_leave_plan()
+            .unwrap()
+            .is_none()
+    );
+    for value in [toml::Value::from("future_v2"), true.into()] {
+        let mut bad = table.clone();
+        bad["qualifications"]["controller_leave"]["revision"] = value;
+        assert!(parse(&bad).is_err());
+    }
+    for key in ["app_id", "build_id", "project_version", "network_checksum"] {
+        let mut bad = table.clone();
+        bad["qualifications"]["pin"][key] = if key == "project_version" {
+            "different".into()
+        } else {
+            1.into()
+        };
+        assert!(parse(&bad).is_err(), "pin {key}");
+    }
+    for key in ["engine_network_version", "game_network_version"] {
+        let mut bad = table.clone();
+        bad["qualifications"][key] = 999.into();
+        assert!(parse(&bad).is_err(), "{key}");
+    }
+    for key in table["class_net_cache"].as_table().unwrap().keys() {
+        let mut bad = table.clone();
+        bad["class_net_cache"][key] = 999.into();
+        assert!(parse(&bad).is_err(), "bound {key}");
+    }
+    // Even changing both class-bound snapshots cannot select another framing
+    // bound for this revision.
+    let mut bad_bound = table.clone();
+    bad_bound["class_net_cache"]["bp_icarus_player_controller_survival"] = 156.into();
+    bad_bound["qualifications"]["class_net_cache"]["bp_icarus_player_controller_survival"] =
+        156.into();
+    assert!(parse(&bad_bound).is_err());
+    for target in ["player_controller", "qualified_controller"] {
+        for segment_key in ["path", "checksum", "no_load"] {
+            let mut bad = table.clone();
+            let controller = if target == "player_controller" {
+                &mut bad["player_controller"]
+            } else {
+                &mut bad["qualifications"]["controller_leave"]["player_controller"]
+            };
+            let segment = &mut controller["archetype"].as_array_mut().unwrap()[0];
+            segment[segment_key] = match segment_key {
+                "path" => "OtherController".into(),
+                "checksum" => 123.into(),
+                _ => true.into(),
+            };
+            assert!(parse(&bad).is_err(), "{target} {segment_key}");
+        }
+        for component_key in ["name", "checksum"] {
+            let mut bad = table.clone();
+            let controller = if target == "player_controller" {
+                &mut bad["player_controller"]
+            } else {
+                &mut bad["qualifications"]["controller_leave"]["player_controller"]
+            };
+            let component = &mut controller["components"].as_array_mut().unwrap()[0];
+            component[component_key] = if component_key == "name" {
+                "OtherComponent".into()
+            } else {
+                123.into()
+            };
+            assert!(parse(&bad).is_err(), "{target} {component_key}");
+        }
+    }
+    let mut missing_controller = qualified.clone();
+    missing_controller.player_controller = None;
+    assert!(missing_controller.controller_leave_plan().is_err());
+    let mut wrong_profile = ReleaseProfile::fixture("3.0.35");
+    wrong_profile.qualifications = qualified.qualifications;
+    assert!(wrong_profile.controller_leave_plan().is_err());
+}
+
+#[test]
 fn release_3_0_34_pin_selects_qualified_tags_and_pawn_schema() {
     use icarus_bevy::experimental::rep_layout::PawnLayoutVersion;
     let profile = ReleaseProfile::fixture("3.0.34");

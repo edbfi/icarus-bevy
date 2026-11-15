@@ -771,3 +771,73 @@ fn controller_possession_update_names_the_pawn_as_handles_17_and_20() {
         }
     }
 }
+
+#[test]
+fn controller_leave_completed_update_contains_exactly_property_26() {
+    use icarus_bevy::experimental::{
+        actor_channel::{BlockTarget, read_actor_bunch_body},
+        packet::{BitWriter, Payload},
+        rep_layout::{RepLayoutCodec, RepValue, parse_rep_properties},
+        rep_rpc::LeaveProspectSessionType,
+        session_open::{
+            CONTROLLER_HANDLE_LEFT_PROSPECT_SESSION, compose_controller_leave_completed_update,
+        },
+    };
+    let plan = super::rep_rpc::authored_leave_plan();
+    assert_eq!(CONTROLLER_HANDLE_LEFT_PROSPECT_SESSION, 26);
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let rep = RepLayoutCodec {
+            actor: ActorChannelCodec { order, ..codec() },
+            checksums: false,
+            limits: Default::default(),
+        };
+        for raw in 0..=5 {
+            let value = LeaveProspectSessionType::try_from(raw).unwrap();
+            let payload = compose_controller_leave_completed_update(&plan, value, &rep).unwrap();
+            let mut reader = payload.reader();
+            let body = read_actor_bunch_body(&mut reader, false, &rep.actor).unwrap();
+            assert!(reader.at_end());
+            assert!(body.spawn.is_none());
+            let [block] = body.blocks.as_slice() else {
+                panic!("exactly one completed-state actor block");
+            };
+            assert!(block.has_rep_layout);
+            assert_eq!(block.target, BlockTarget::Actor);
+            // Fixed authored framing: checksum flag, packed handle26 (52),
+            // three enum bits, then packed terminator0. No RPC presence bit.
+            let mut expected = BitWriter::new();
+            expected.write_bit(false);
+            expected.write_bits(52, 8);
+            expected.write_bits(u32::from(raw), 3);
+            expected.write_bits(0, 8);
+            assert_eq!(block.payload, Payload::from_writer(expected));
+            let stream = parse_rep_properties(&block.payload, plan.actor_layout(), &rep).unwrap();
+            assert_eq!(stream.entries.len(), 1);
+            assert_eq!(stream.entries[0].handle, 26);
+            assert_eq!(stream.entries[0].value, RepValue::Enum(u32::from(raw)));
+            assert_eq!(stream.terminator_checksum, None);
+        }
+        let mut wrong = rep;
+        wrong.actor.engine_net_version += 1;
+        assert!(
+            compose_controller_leave_completed_update(
+                &plan,
+                LeaveProspectSessionType::Quit,
+                &wrong
+            )
+            .is_err()
+        );
+        // Unsupported checksums must fail rather than emitting incomplete
+        // checksum fields. The qualified plan cannot change this codec rule.
+        let mut checksum = rep;
+        checksum.checksums = true;
+        assert!(
+            compose_controller_leave_completed_update(
+                &plan,
+                LeaveProspectSessionType::Quit,
+                &checksum,
+            )
+            .is_err()
+        );
+    }
+}

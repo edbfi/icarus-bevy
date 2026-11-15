@@ -15,43 +15,72 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 
 ## Confirmed
 
-- Connected restart/profile/backend boundaries: F-1036/F-1039/F-1041/F-1048.
-  Begin queues query118; callback126 F-1051; fields66/86 F-1052 (no visibility
-  ACK). Receive/content framing F-1046; constructed partial defaults/config
-  64/128 KiB F-1047, followed natively F-1043. Public phase/private-header
-  observation boundaries F-1045/F-1042.
+- Restart/profile/backend F-1036/F-1039/F-1041/F-1048; query118/callback126
+  F-1051; fields66/86 F-1052 (no visibility ACK). Framing/partial bounds
+  F-1043/F-1046/F-1047; observation limits F-1042/F-1045.
 
 - 3.0.36 pin/tags F-1176, selected class semantics F-1177 and row widths
   F-1178 remain static only. Connected behavior, level-actor identities and
   legacy row-index transfer remain unqualified.
-- Build 26613688 (F-1193): 39 exact controller locations; 19 disjoint,
-  file-backed, 8-byte-aligned 68-byte descriptor spans in an RW/NX section;
-  19 complete 47-byte factories with direct descriptor/callee/singleton operands
-  and finite caller flow (M-1459/ev_423d954d3a24, M-1459/ev_3ceb9b9b7732).
-  Descriptor/singleton values, initialization, immutability, cached-path use,
-  native counts/cache semantics unqualified. Complete 72-byte FFunctionParams:
-  12 members/14 opaque refs (M-1459/ev_dc84ad5d8171, M-1459/ev_3bf00dd12847);
-  declared offsets prove no widths, storage or entry binding. Header/source private.
-- Controller (F-1197): 122 bytes/34 instructions/126 p-code
-  operations/two opaque edges (M-1460/ev_a40bde4cc914). Root
-  copies/loads/tests only (M-1460/M-1461); root types/entry arguments,
-  calls/clobbers, alias/reentry effects and successors opaque; flow,
-  whole-function and native-flow closure all false. Unique S_GPROC32 there
-  declares 908 bytes, `[0x1421935d0, 0x14219395c)` (M-1462); adds no
-  coverage/closure. TPI 32738: 16-byte `LF_PROCEDURE`, return 3,
-  convention/options 0, count 2, arglist 32737 (M-1477/M-1478, M-1481).
-  Retained 32737: 16-byte `LF_ARGLIST`, matching count 2, ordered 32735/32736
-  (M-1479/M-1480, M-1481). Exact 12-byte pointer records (M-1482)
-  declare attributes 65580, kind 12, mode 1, referents 8904/15137 respectively
-  (M-1483; M-1481/ev_cfcf35f9a2d5). Referents: exact 12-byte records
-  (M-1484; M-1481/ev_d302ebd48249). Retained: 8904 pointer attributes
-  65548, kind 12, mode 0 -> opaque TPI 8902; 15137 modifier mask 1 -> opaque
-  TPI 15135 (M-1485; M-1481/ev_053054206971). Grammar inherits framing;
-  no original replay. Declaration codes only: no widths, names, complete
-  definitions, ownership, ABI/entry-register binding or native counts/cache/wire
-  149/169 proof. Return reference opaque; normal leave fails F-1186;
-  F-1177 active. Future: exact TPI 8902/15135 identities
-  before ABI, entry-binding and consumer/count work; both referents remain opaque.
+- Build 26613688: F-1193 retains exact controller locations, descriptor/factory
+  spans and complete FFunctionParams declaration; its original evidence limits
+  stand. Later selected type/construction/cache qualifications are F-1197.
+- Controller (F-1197): the older trace remains 122 bytes/34 instructions/
+  126 p-code operations/two opaque edges (M-1460/ev_a40bde4cc914,
+  M-1461), with calls/clobbers, alias/reentry effects and successors opaque;
+  its flow, whole-function and native-flow closures remain false. New listings
+  cover M-1462's independent 908-byte S_GPROC32 extent through return, without
+  expanding the older trace (M-1488/ev_2a71799cb7ec, M-1488/ev_601449ecca14).
+  Exact forward identities and inherited type chain declare ordered
+  `UFunction*&`, `FFunctionParams const&` arguments (M-1477 to M-1485;
+  M-1488/ev_8018de4b3bea); no runtime object state or storage follows.
+- Selected construction arguments and cached-singleton bypass are F-1197;
+  creation consumes property descriptors, not source arguments/cache indices.
+  The selected enum constructor is qualified below. General ABI, immutability,
+  traversal direction and callee/reentry effects stay open
+  (M-1488/ev_2a71799cb7ec).
+- Native registration counts and initial super-function/property dimensions
+  remain F-1197's physical statistics, which alone prove no runtime bound
+  (F-1197; M-1488/ev_9deb9b5f9475, M-1488/ev_601449ecca14).
+- On cache miss only, the consumer calls the runtime-list producer; hits
+  bypass it. The producer copies inherited ClassReps, selects locally owned
+  Net properties and non-overriding Net functions, and sorts local functions
+  by ascending case-insensitive FName string. Properties precede functions in
+  each cache layer. The selected build-26613688 public-server ancestry ends in
+  `BP_IcarusPlayerControllerSurvival_C`, derived directly from the native
+  survival controller. Its conditional cache has 155 native fields plus
+  5 cooked properties and 22 cooked functions: 182 total, ordinary bound 183
+  (parent start+own count+1). Export-group framing is separate (F-1197;
+  M-1492/ev_e687899447b7, M-1492/ev_0415b46141fb,
+  M-1492/ev_b571dc207b36, M-1492/ev_8b1024fed268; M-1493, M-1494).
+- Under that selected ancestry and ordinary cache/header path, fields 148/149/
+  150 are `ServerCancelLeaveProspectSession`, `ServerLeaveProspectSession`,
+  `ServerLeaveProspectSessionWithoutSave`; 169 is `OnServer_ReturnFocus`,
+  whose effects were not inspected. Producer ready/null-PropertyLink paths,
+  editor/global/CDO callbacks, external mutation and initialized cache state
+  remain unobserved. No live controller class/cache or completion effect for
+  169 follows. Illustrative native property ordering is not newly proved;
+  these function indices depend on property counts, not their permutation
+  (F-1197; M-1492/ev_8b1024fed268, M-1493, M-1494).
+- Selected listing verification covers 24 starts/2,834 instructions/11,427
+  instruction bytes. The two reported escapes cover direct absolute jumps
+  only, excluding unresolved indirect jumps; the getter target is forward
+  out-of-window. No exhaustive flow, live dispatch or whole-function behavior
+  follows (F-1197; M-1488/ev_601449ecca14, M-1489 to M-1491).
+  New selected listings likewise leave calls/indirect dispatch and branch
+  escapes open; predominantly one-byte imported function bodies do not prove
+  function coverage (M-1493, M-1494).
+- Normal request 149 has one `ELeaveProspectSessionType` parameter; its byte
+  child is not a second argument. Current enum construction/vtable/codec
+  evidence derives a 3-bit value for registered maxima 5 or 6. This does not
+  fix total RPC payload size: inherited generic RPC framing does not prove the
+  complete current path. Completed `ReplicatedLeftProspectSession` uses that
+  enum at native +0x95b. Flattened property handle 26 is supported by
+  inherited F-846/F-1120 rules, current M-1405 ancestry/type/offset equality
+  and selected current command-builder evidence; it is neither RPC 26 nor a
+  freshly proved entire layout (F-1197; M-1492/ev_a0a995ccf9d1,
+  M-1492/ev_9867ef330866, M-1492/ev_2851c7038d64,
+  M-1492/ev_8645af881a57, M-1493, M-1494).
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
@@ -65,16 +94,9 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 - Dynamic GUIDs assign on first serialization, by open or reference (F-794);
   components keep one GUID across connections.
 - Export repetition: F-796 (`experimental::session_open::ConnectionExports`).
-- Actor opens with components (F-854): GUIDs and exports follow serialization
-  order (actor/spawn, actor-block references by handle, component blocks,
-  runtime subobject blocks naming their exported class), resolving each block's
-  references after its header (`experimental::actor_open`).
-- Pawn open contents (F-854): component blocks carry `bIsActive` alone or
-  nothing; `UIcarusStatContainer::ReplicatedStatArray` (2) and
-  `UInventory::Slots` (4) use custom-delta fast arrays with all items new
-  (struct-delta bit, base key 0, no deletes, IDs from 1); empty slots send
-  handles 2 and 10..18 (`experimental::pawn_open`). Vitals and inventories:
-  F-836 (`network::pawn_content`); stats: F-839 (`pawn_stats`).
+- Component opens/GUID ordering and pawn initial arrays F-854
+  (`experimental::actor_open`, `pawn_open`); vitals/inventories F-836
+  (`network::pawn_content`); stats F-839 (`pawn_stats`).
 - Frozen movement (F-1100): the client pawn has no movement mode while
   replicated `bServerFrozenMovement` or its own terrain-anchor flag is set;
   the native opens it true and, at F-1099's revision, never clears it.
@@ -91,68 +113,34 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   only for connected members); `SessionFlags` 47 (F-830);
   `LockedMissions` 50 (F-1060); `bIsOpenWorldProspect` 48 and
   `bIsOutpostProspect` 49 (F-911); `RichPresenceGUID` 24 (F-912).
-- Gameplay-tag net index (F-702; U-065 resolved): `ConstructGameplayTagTree`
-  and `ConstructNetIndex` sort by `GetAllNodes` + `FName::LexicalLess`, set
-  `InvalidTagNetIndex = N + 1`, `total_bits = 12`, clamped `first_segment = 12`,
-  and log `NetworkGameplayTagNodeIndexHash` (chained lowercase UTF-16 CRC-32;
-  `experimental::tag_dictionary`).
+- Gameplay-tag indices/hash F-702 (U-065 resolved): lexical ordering,
+  invalid=N+1, 12-bit total/first segment; `experimental::tag_dictionary`.
 - Exports, partial bunches and must-be-mapped prefixes (F-709 to F-711):
-  `UChannel::SendBunch` / `UActorChannel::SendBunch` caps at `NetMaxConstructedPartialBunchSizeBytes`,
-  uses `MAX_SINGLE_BUNCH_SIZE_BITS = 7,625` and `MAX_PARTIAL_BUNCH_SIZE_BITS = 7,624`
-  (`953` B at `MaxPacket = 1024`, `MaxPacketHandlerBits = 2`), calls
-  `AppendExportBunches` (F-711) and
-  `AppendMustBeMappedGuids`, and flags part 0 `bPartialInitial` + `bOpen`, the
-  last `bPartialFinal` + `bClose` (`experimental::sequencing`, `actor_channel`).
-  `ReceivedRawBunch` runs `ReceiveNetGUIDBunch` on `bHasPackageMapExports` before `InRec`
-  ordering; export-only bunches (`ExportNetGUIDHeader`, `ExportNetGUID`) carry
-  `bHasRepLayoutExport` (`0` for GUID exports), count and `InternalLoadObject` refs; `ReceivedNextBunch`
-  reassembles `InPartialBunch`; `UActorChannel::ReceivedBunch` reads `bHasMustBeMappedGUIDs` before `ProcessBunch`.
+  single/partial limits 7,625/7,624 bits at packet 1024/handler 2 bits;
+  constructed size has a separate cap. First/last parts carry initial+open/
+  final+close. Receive processes exports before reliable ordering, reassembles
+  partials, then reads must-be-mapped GUIDs before content. Export framing and
+  sender ordering: F-711; `experimental::sequencing`, `actor_channel`.
 - Open bunch, actor hook and dormancy (F-709 to F-711, F-751, F-845, F-849):
-  `UPackageMapClient::SerializeNewActor` frames F-845's fields with
-  `bQuantized = 1` for Location/Velocity and `0` for Scale3D (client
-  `SerializeOptionalValue<FVector>`, `FRotator::NetSerialize`,
-  `SerializeCompressedShort`).
-  `ProcessBunch` and `UActorChannel::ReplicateActor` call
-  `OnActorChannelOpen` / `OnSerializeNewActor`: empty on `AActor`,
-  1-B `uint8 NetPlayerIndex` (`+0x3d4`) on `APlayerController`.
-  ReplicateActor matches across builds (F-761); dormant CleanUp F-710;
-  StartBecomingDormant and flag detail: M-748.
-- Content blocks (F-644, F-703 to F-709, F-846, F-849): a client's sub-object
-  block carries no stably-named bit or class after its reference (F-972).
-  F-849 framing feeds
-  `FObjectReplicator::ReplicateProperties`.
-  `FRepLayout::ReceiveProperties` reads `bDoChecksum`, the F-846
-  handle stream and field headers (`SerializeInt` below
-  `FClassNetCache::GetMaxIndex() + 1`, packed bit count, payload;
-  `experimental::rep_rpc`). Handle order follows F-846 (native `ConstructUClass`
-  descriptors; cooked `UBlueprintGeneratedClass` exports keep `ChildProperties` order;
-  `experimental::rep_layout`: 64 schemas). Custom-delta fast arrays carry a
-  1-bit header, packed static index, four 4-B words, 4-B delete IDs and changed
-  elements.
-- Spawn vectors and property serializers (F-588, F-589, F-593, F-597, F-639,
-  F-673 to F-675, F-704 to F-709, F-762, F-843, F-845 to F-848; U-064, U-066
-  resolved): spawn vectors/rotators follow F-845 (`<= 24` quantized bits).
-  `FRepLayout::ReceiveCustomProperty` dispatches F-847 item
-  types (`_MAX = max_explicit + 1`), `FNumericProperty` (1/2/4/8 B), 12-bit tags,
-  network Names, archive Strings/soft paths and v522 `FText` histories
-  (`experimental::rep_text`). Of `3,960` `TCppStructOps` (`StructFlags & 0x400`),
-  `3,637` return `0` and recurse; `323` define
-  `NetSerialize` (`293` `F*RowHandle`, `FRowHandle`, `FVector`, `FVector2D`,
-  `FQuat`, `FPlane`, `FDateTime`, `FTimespan`, `FRotator`, `FUniqueNetIdRepl`,
-  `FStatPairRepState`, `FVector_NetQuantize*`, `FRepMovement`, `FHitResult`).
-- Older-build relevancy/priority/tick/replication stages: F-761 and selected
-  server bindings F-745/F-748/F-749/F-751; actor classes retain distinct
-  relevancy/priority policies. Readiness, consideration and prioritization
-  checks are static; RelevantTime/force-frame F-788/F-851. Saturation,
-  startup-level initialization and tear-off affect replication/close;
-  runtime relevancy/priority remains unqualified (U-038). Thresholds/defaults:
+  location/velocity quantized, scale unquantized; actor hook empty on AActor,
+  one-byte player index on APlayerController. ReplicateActor correspondence
+  F-761; dormant cleanup F-710; dormancy transition/flags M-748.
+- Content framing/handle order/fast arrays F-644/F-703 to F-709/F-846/F-849
+  (`experimental::rep_rpc`, `rep_layout`: 64 schemas). Client subobjects omit
+  stably-named bit/class after their reference (F-972). Ordinary field bounds
+  depend on the actual class cache, as F-1197 qualifies above.
+- Spawn vectors/rotators F-845 (at most 24 quantized bits); property dispatch,
+  enum maxima, numeric widths, names/strings/text and struct serializers
+  F-847/F-848 (U-064/U-066 resolved). Of 3,960 struct operations, 3,637 recurse
+  and 323 serialize directly, including 293 row handles. Earlier codec
+  evidence: F-588/F-589/F-593/F-597/F-639/F-673 to F-675/F-704 to F-709/
+  F-762/F-843; `experimental::rep_text`.
+- Older-build scheduling/relevancy F-745/F-748/F-749/F-751/F-761;
+  force-frame F-788/F-851. Static readiness/priority and saturation/tear-off
+  rules give no runtime qualification (U-038). Thresholds/defaults:
   [actor_channel.rs](../../../src/experimental/actor_channel.rs).
-- GameState updates (F-1057, F-807): ~30 Hz unreliable actor blocks (component
-  blocks may follow) carry changed `TimeOfDay` (38), 0.1 s
-  `ReplicatedWorldTimeSeconds` (19), whole-second `LevelTimeElapsedSec` (46),
-  2 s `ServerFPS` (82) and changed `NetworkingStatus` (68..79; F-810, F-1057,
-  F-1058). Multi-bunch updates split as unreliable partials on consecutive
-  packets (F-825; `LabPeer::actor_update_datagrams`).
+- GameState update fields/timing F-807/F-810/F-1057/F-1058; unreliable partial
+  splitting F-825 (`LabPeer::actor_update_datagrams`).
 - `ConnectedPlayers` records (F-1072 to F-1075): a reliable GameState bunch
   carries each class-named `UReplicatedConnectedPlayer` block, then handle 3
   listing their GUIDs; native: F-1077.
@@ -173,19 +161,29 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 
 ## Candidate
 
+- Normal leave (F-1197): state-notification completion candidate; no new bound
+  completion RPC. The save-intending request takes one native byte; two
+  descriptor properties do not mean two arguments. No-save selects declared
+  value 4 and finalises. The byte enum spans 0..5; its value codec is qualified
+  above (M-1488/ev_9deb9b5f9475). The checker tests authority,
+  cancellation and pending work. Finalisation writes the completed byte,
+  emits the local event/delegate path only on change, then clears pending/
+  cancel. Cancellation can retain 0 without a changed-state event. The
+  selected replication notification reads that byte and calls the same path.
+  Finalisation/completion descriptors lack Net. Physical vtable candidates
+  prove no live dispatch; callback/timer effects, persistence policy, durable
+  writes and client outcome stay open (M-1488/ev_7386f0c70678,
+  M-1488/ev_7481920a03ac, M-1490, M-1491). Failed normal leave F-1186 and
+  authored-only checkpoint barriers F-1188 stand; F-1177 is not superseded.
+
 Native modifier and temperature updates share reliable delivery (F-995, F-998).
 Explicit temperature/modifier ticks retain connection-local timing (F-1000). No automatic climate,
 scheduling or stock-client qualification.
 
-- Authored native refresh transport (F-936): `PeerLab::refresh_active_prospect`
-  validates complete handles 51..67 and the current dynamic open in both byte
-  orders before publishing; joined peers receive deltas after open ACK and
-  future joins use the latest template. Calls remain explicit; original trigger
-  timing and stock-client behavior remain unqualified (U-070, U-038).
-- `experimental::actor_channel`, `sequencing` and `rep_layout` replay captured
-  bunches (F-709 to F-711), `PackageMapState` mappings and scheduling policies;
-  fixtures and randomized checks: F-763, F-764 (F-577, F-604, F-673, F-761,
-  F-845).
+- Authored prospect refresh transport F-936: explicit calls; original trigger
+  timing/client behavior remain unqualified (U-070/U-038).
+- Replay/scheduling fixtures and randomized checks F-763/F-764; underlying
+  framing F-709 to F-711. These qualify authored models only.
 - Records: staged updates as fields fill, null controller references on other
   connections, removal without a destroy (F-1073, F-1077; U-038).
 - Unfreeze: S2 replicates `bServerFrozenMovement` false once, near its last
@@ -199,6 +197,9 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
+- F-1197: native leave integration/persistence policy; complete current-path,
+  live controller/cache/dispatch, remaining layout dependencies, durability
+  and stock-client completion qualification remain open.
 - U-079: live visibility bindings/effects and client profile execution remain
   unqualified (F-1034, F-1042, F-1051).
 
@@ -208,4 +209,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1197; M-1459 to M-1462, M-1477 to M-1485.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1197; M-1459 to M-1462, M-1477 to M-1485, M-1488 to M-1494.

@@ -983,6 +983,41 @@ pub fn compose_controller_possession_update(
     )
 }
 
+/// The completed-state flattened property handle, distinct from RPC/cache
+/// indices. Static provenance inherits F-846/F-1120's layout expansion and
+/// current metadata equality; it is not a newly observed live layout.
+pub const CONTROLLER_HANDLE_LEFT_PROSPECT_SESSION: u32 = 26;
+
+/// Compose only the qualified completed-state property update. The caller owns
+/// all authority, durability and success decisions. This function sends nothing
+/// and synthesizes no completion RPC, callback, save receipt or session teardown.
+pub fn compose_controller_leave_completed_update(
+    plan: &super::release::ControllerLeavePlan,
+    value: super::rep_rpc::LeaveProspectSessionType,
+    codec: &RepLayoutCodec,
+) -> Result<Payload> {
+    use super::actor_channel::{ActorBunchBody, encode_actor_bunch_body};
+    plan.validate_codec(codec)?;
+    let stream = PropertyStream {
+        entries: vec![entry(
+            CONTROLLER_HANDLE_LEFT_PROSPECT_SESSION,
+            RepValue::Enum(u32::from(value as u8)),
+        )],
+        terminator_checksum: None,
+    };
+    encode_actor_bunch_body(
+        &ActorBunchBody {
+            spawn: None,
+            blocks: vec![ContentBlock {
+                has_rep_layout: true,
+                target: BlockTarget::Actor,
+                payload: encode_rep_properties(&stream, plan.actor_layout(), codec)?,
+            }],
+        },
+        &codec.actor,
+    )
+}
+
 /// The PlayerState actor block's handles in the original's first open (F-784):
 /// `RemoteRole`, `Owner`, `Role`, `PlayerId`, `UniqueId`, `PlayerNamePrivate`
 /// and `AIcarusPlayerState::bIsHost`.
