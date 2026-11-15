@@ -41,7 +41,7 @@ JAVA_HOME="$SCOPED_JDK" "$SCOPED_GHIDRA/support/analyzeHeadless" <arguments>
 
 `tools/pdb_public_symbols.cjs` and `tools/pe_function_ranges.cjs` bind symbols and
 exception entries; neither proves ownership, instruction boundaries or whole functions.
-`tools/pdb_procedure_ranges.cjs` optionally retains 32 unresolved TPI/IPI references.
+`tools/pdb_procedure_ranges.cjs` optionally retains up to 32 unresolved TPI/IPI references.
 `tools/pdb_selected_types.cjs` separates raw-record, header/signature and
 declaration-entry profiles. `inspectSelectedRawTypeRecords` (M-1442) selects
 one numeric TPI index and validates outer framing; its leaf/raw envelope
