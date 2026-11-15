@@ -458,3 +458,45 @@ fn shutdown_teardown_keeps_cutoff_for_final_associated_save_without_destination(
         .settle_leave(key(1), 1)
         .unwrap();
 }
+
+#[test]
+fn detached_settlement_requires_exact_durability_and_retains_live_or_failed_cutoffs() {
+    let mut app = app();
+    request(&mut app, 1, 1);
+    request(&mut app, 2, 2);
+    let (_directory, mut writer) = writer();
+    writer.submit(app.world_mut()).unwrap();
+    {
+        let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
+        registry.detach(1);
+        assert_eq!(registry.settle_detached_durable_leaves(), 0);
+        assert!(registry.leave_status(key(1), 1).is_some());
+    }
+    finish(&mut writer, &mut app);
+    let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
+    let snapshot = registry.snapshot();
+    assert_eq!(registry.settle_detached_durable_leaves(), 1);
+    assert!(registry.leave_status(key(1), 1).is_none());
+    assert!(registry.leave_status(key(2), 2).is_some());
+    assert_eq!(registry.settle_detached_durable_leaves(), 0);
+    attach(&mut registry, 3, 3);
+    registry
+        .request_leave(key(3), 3, 1, Instant::now(), MAX_ATTEMPT)
+        .unwrap();
+    registry.detach(3);
+    assert!(!registry.checkpoint_save_needed(Instant::now() + MAX_ATTEMPT));
+    assert_eq!(registry.settle_detached_durable_leaves(), 0);
+    assert_eq!(
+        registry.leave_status(key(3), 3).unwrap().phase,
+        LeavePhase::Failed(LeaveFailure::Deadline)
+    );
+    assert!(
+        registry
+            .reserve(key(3), 4, snapshot.projection(key(1)).unwrap().checkpoint)
+            .is_err()
+    );
+    registry.detach(2);
+    assert_eq!(registry.settle_detached_durable_leaves(), 1);
+    assert!(registry.leave_status(key(2), 2).is_none());
+    assert!(registry.leave_status(key(3), 3).is_some());
+}

@@ -200,6 +200,8 @@ use bevy::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+mod controller_leave;
+
 use crate::{
     authored_world_bootstrap::AuthoredClockPlan,
     native_player_runtime::PlayerRegistry,
@@ -2631,6 +2633,7 @@ pub struct ControllerReceiveDiagnostics {
 }
 
 struct PeerEntry {
+    controller_leave: Option<controller_leave::Operation>,
     checkpoint_epoch: Option<u64>,
     checkpoint_projection: Option<PlayerProjection>,
     checkpoint_enqueued_revision: Option<u64>,
@@ -3053,6 +3056,7 @@ struct RegisteredPlayer {
 }
 
 enum ControllerCall {
+    Leave(super::rep_rpc::ControllerLeaveRequest),
     Begin(i32),
     ShortTimeout,
     /// A decoded field-82 report (F-1021), dispatched only with
@@ -3098,7 +3102,7 @@ fn controller_initialisation_calls(
         order,
         components,
         None,
-        None,
+        (None, None),
         &mut [diagnostics],
     )
     .map(|staged| (staged.calls, staged.ignored))
@@ -3126,9 +3130,13 @@ fn controller_calls(
     order: super::archive::ByteOrder,
     components: [Option<u32>; 3],
     component_mapping: Option<&ControllerComponentMapping>,
-    level_visibility: Option<&VisibilityDecodeProfile>,
+    profiles: (
+        Option<&VisibilityDecodeProfile>,
+        Option<&super::release::ControllerLeavePlan>,
+    ),
     diagnostics: &mut [&mut ControllerFieldDiagnostics],
 ) -> Result<StagedControllerCalls> {
+    let (level_visibility, controller_leave) = profiles;
     let actor = actor_codec(engine_net_version, order);
     let body = match read_client_actor_bunch_body(&mut payload.reader(), &actor) {
         Ok(body) => body,
@@ -3254,6 +3262,12 @@ fn controller_calls(
             }
             let parsed = (|| -> Result<()> {
                 if component.is_none()
+                    && let Some(plan) = controller_leave
+                    && let Some(request) =
+                        super::rep_rpc::parse_controller_leave_request(&field, plan, &codec)?
+                {
+                    calls.push(ControllerCall::Leave(request));
+                } else if component.is_none()
                     && field.index == SERVER_BEGIN_PLAYER_INITIALISATION_FIELD_INDEX
                 {
                     calls.push(ControllerCall::Begin(parse_begin_player_initialisation(
@@ -3461,6 +3475,7 @@ impl SessionSocket {
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
+    authored_controller_leave: Option<super::release::ControllerLeavePlan>,
     /// Authored checkpoint experiment; absent keeps the qualified ordering.
     checkpoint_initial_vitals: Option<super::pawn_open::CharacterVitals>,
     next_checkpoint_epoch: u64,
@@ -4081,6 +4096,7 @@ impl PeerLab {
     ) -> Self {
         Self {
             authored_map_url: None,
+            authored_controller_leave: None,
             checkpoint_initial_vitals: None,
             next_checkpoint_epoch: 1,
             private_rpc82_capture: None,
@@ -7666,6 +7682,7 @@ impl PeerLab {
                 self.peers.insert(
                     address,
                     PeerEntry {
+                        controller_leave: None,
                         checkpoint_epoch: None,
                         checkpoint_projection: None,
                         checkpoint_enqueued_revision: None,
@@ -7829,6 +7846,12 @@ impl PeerLab {
                         // Observe before inbound calls or retries can enqueue
                         // more traffic. NAKs and close ACKs cannot settle opens.
                         if !summary.acked.is_empty() {
+                            if let Some(operation) = &mut entry.controller_leave {
+                                operation.receipt.observe_positive_ack(
+                                    &entry.peer,
+                                    &summary.released_actor_channels,
+                                );
+                            }
                             entry.initialisation_request_receipt.observe_positive_ack(
                                 &entry.peer,
                                 &summary.released_actor_channels,
@@ -7965,6 +7988,9 @@ impl PeerLab {
                         entry.last_seen = now;
                         entry.ack_pending = true;
                         if !summary.acked.is_empty() || !summary.naked.is_empty() {
+                            if let Some(operation) = &mut entry.controller_leave {
+                                operation.retry_ready = true;
+                            }
                             entry.delivery_progress_at = Some(now);
                             if entry.controller_startup_next.is_some() {
                                 entry.controller_startup_retry_ready = true;
@@ -8255,7 +8281,7 @@ impl PeerLab {
                                 order,
                                 [entry.backend_proxy, entry.player_data, entry.bestiary],
                                 Some(&entry.controller_component_mapping),
-                                level_visibility,
+                                (level_visibility, self.authored_controller_leave.as_ref()),
                                 &mut [
                                     &mut entry.controller_field_diagnostics,
                                     &mut self.lifetime_controller_fields,
@@ -8532,6 +8558,9 @@ impl PeerLab {
             return;
         };
         match call {
+            ControllerCall::Leave(request) => {
+                self.stage_authored_controller_leave(address, request);
+            }
             // The bounded field diagnostics retain recognition. Timeout policy
             // and the original callback's effects are not qualified here.
             ControllerCall::ShortTimeout => {}
@@ -11811,6 +11840,11 @@ fn poll_peer_lab(world: &mut bevy::prelude::World) {
             lab.refresh_checkpoint_projections(registry);
         }
         lab.poll();
+        if lab.authored_controller_leave.is_some()
+            && let Some(mut registry) = world.get_resource_mut::<PlayerRegistry>()
+        {
+            lab.bridge_controller_leaves(&mut registry);
+        }
         if !consuming
             && lab.checkpoint_initial_vitals.is_some()
             && let Some(mut registry) = world.get_resource_mut::<PlayerRegistry>()
@@ -20573,7 +20607,7 @@ mod tests {
                     lab.config.packet.codec.order,
                     [None; 3],
                     Some(&mapping),
-                    None,
+                    (None, None),
                     &mut [&mut diagnostics],
                 )
                 .unwrap();

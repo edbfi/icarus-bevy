@@ -23,8 +23,9 @@ Authored player checkpoints retain explicit server vital edits and next-open
 placement through reconnect/save/reload (F-1172, measured on schema 13; schema 14
 drops its release binding). Accepted account/slot bindings
 and reliable-pressure retries are authored-tested only; delayed-pawn stock-client
-continuation remains unqualified (U-038). Authored leave pins a revision until
-its exact writer submission succeeds; disconnects retain the barrier (F-1188).
+continuation remains unqualified (U-038). F-1188: authored leave cuts off before
+ticks; exact-writer durability precedes reliable completion/ACK detach. Pending
+cancellation suppresses completion; production dispatch remains disabled.
 
 Schema-14 authored survival resumes fractional debit and day phase from committed
 ticks, excludes inactive attachments and latches owner/timestep failures before

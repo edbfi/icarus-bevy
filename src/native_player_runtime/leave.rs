@@ -168,6 +168,18 @@ impl PlayerRegistry {
         Ok(())
     }
 
+    /// Release durable cutoffs whose original attachment has gone away. No
+    /// response destination remains for these operations; pending and failed
+    /// writes continue to protect their player keys.
+    pub fn settle_detached_durable_leaves(&mut self) -> usize {
+        let before = self.leaves.len();
+        self.leaves.retain(|_, op| {
+            !matches!(op.phase, LeavePhase::Durable { .. })
+                || self.attachments.contains_key(&op.epoch)
+        });
+        before - self.leaves.len()
+    }
+
     fn expire_leaves(&mut self, now: Instant) {
         for op in self.leaves.values_mut() {
             if op.phase == LeavePhase::Pending && now >= op.deadline {

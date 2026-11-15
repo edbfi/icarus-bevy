@@ -22,6 +22,9 @@ use crate::{
 
 const ACCOUNT: u64 = 76_561_197_960_265_770;
 
+#[path = "controller_leave.rs"]
+mod controller_leave_tests;
+
 fn vitals() -> CharacterVitals {
     CharacterVitals {
         health: 100,
