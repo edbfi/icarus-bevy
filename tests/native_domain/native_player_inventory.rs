@@ -741,6 +741,67 @@ fn durable_cli_applied_receipt_reopen_and_nonwrites() {
         assert_eq!(disk(&root), after);
     }
 }
+#[test]
+fn positional_inventory_requests_are_rejected_without_publication() {
+    let _lock = CLI_LOCK.lock().unwrap();
+    let mut app = app();
+    let player = attach(&mut app, 1, 1);
+    let state = snapshot(&mut app);
+    let request = consume(&state, player, 1);
+    let named = serde_json::to_value(&request).unwrap();
+    let positional = json!([
+        request.player_id,
+        request.expected_player_revision,
+        request.expected_bag_revision,
+        named["action"]
+    ]);
+    let mut positional_owner = named.clone();
+    positional_owner["action"]["source"]["owner"] = json!([player, 1]);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("state");
+    let path = dir.path().join("request.json");
+    SnapshotStore::open(&root).unwrap().save(&state).unwrap();
+    let before = disk(&root);
+    for malformed in [positional, positional_owner] {
+        fs::write(&path, serde_json::to_vec(&malformed).unwrap()).unwrap();
+        let output = execute(&root, &path, false);
+        assert!(!output.status.success(), "positional request was published");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("receipt"));
+        assert_eq!(disk(&root), before);
+        assert!(serde_json::from_value::<PlayerInventoryRequestV1>(malformed).is_err());
+    }
+    // The same named request remains valid at the unchanged revisions.
+    fs::write(&path, serde_json::to_vec(&named).unwrap()).unwrap();
+    assert!(execute(&root, &path, false).status.success());
+    let loaded = SnapshotStore::open_existing(&root)
+        .unwrap()
+        .load()
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    assert_eq!(bag(&loaded, player).consumed[0].count, 1);
+}
+
+#[test]
+fn positional_saved_inventory_owner_is_rejected() {
+    let mut app = app();
+    let player = attach(&mut app, 1, 1);
+    let state = snapshot(&mut app);
+    let dir = tempfile::tempdir().unwrap();
+    SnapshotStore::open(dir.path())
+        .unwrap()
+        .save(&state)
+        .unwrap();
+    let mut malformed = serde_json::to_value(&state).unwrap();
+    malformed["player_inventory"]["bags"][0]["owner"] = json!([player, 1]);
+    replace_current(dir.path(), &malformed);
+    let before = disk(dir.path());
+    let store = SnapshotStore::open_existing(dir.path()).unwrap();
+    assert!(store.load().is_err(), "positional saved owner was admitted");
+    assert_eq!(disk(dir.path()), before);
+    assert!(serde_json::from_value::<WorldSnapshot>(malformed).is_err());
+}
+
 fn request_for_noop(state: &WorldSnapshot, a: u64) -> PlayerInventoryRequestV1 {
     request(
         state,

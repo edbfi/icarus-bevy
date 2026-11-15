@@ -373,13 +373,33 @@ impl PlayerInventorySnapshotV1 {
         Ok((next, outcome))
     }
 }
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct PlayerInventoryRequestV1 {
     pub player_id: u64,
     pub expected_player_revision: u64,
     pub expected_bag_revision: u64,
     pub action: PlayerInventoryActionV1,
+}
+impl<'de> Deserialize<'de> for PlayerInventoryRequestV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            player_id: u64,
+            expected_player_revision: u64,
+            expected_bag_revision: u64,
+            action: PlayerInventoryActionV1,
+        }
+        let fields: Fields = crate::json::object(d).map_err(|_| {
+            <D::Error as serde::de::Error>::custom("player inventory request invalid")
+        })?;
+        Ok(Self {
+            player_id: fields.player_id,
+            expected_player_revision: fields.expected_player_revision,
+            expected_bag_revision: fields.expected_bag_revision,
+            action: fields.action,
+        })
+    }
 }
 impl std::fmt::Debug for PlayerInventoryRequestV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

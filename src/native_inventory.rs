@@ -401,11 +401,26 @@ dto!(InventoryLiveOwnersV1,1,{pub owners:Vec<OwnerHandle>});
 dto!(InitialInventoryItemsV1,1,{pub items:Vec<InitialInventoryItemV1>});
 dto!(InventoryInitialTotalsV1,1,{pub items:Vec<ItemTotalV1>});
 // Separate durable namespace: these handles never name spatial lifecycle owners.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct PlayerInventoryOwnerV1 {
     pub player_id: u64,
     pub incarnation: u64,
+}
+impl<'de> Deserialize<'de> for PlayerInventoryOwnerV1 {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            player_id: u64,
+            incarnation: u64,
+        }
+        let fields: Fields = crate::json::object(d)
+            .map_err(|_| <D::Error as de::Error>::custom("player inventory owner invalid"))?;
+        Ok(Self {
+            player_id: fields.player_id,
+            incarnation: fields.incarnation,
+        })
+    }
 }
 leaf!(PlayerInventoryOwnerV1, 4096);
 dto!(PlayerStarterItemV1,65536,{pub inventory:String,pub requested_slot:u16,pub item:String,pub count:u32});
