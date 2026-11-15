@@ -38,7 +38,10 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   Cache misses inherit ClassReps and append local Net properties before
   non-overriding functions sorted by folded FName. Function indices need counts,
   not a proved property permutation; export framing is separate (M-1492 to M-1494).
-- Ordinary 149: one enum argument, presence bit + 3 value bits if present;
+- Selected listings: 24 starts/2,834 instructions/11,427 instruction bytes;
+  no exhaustive flow or live dispatch (M-1493, M-1494).
+- Ordinary 149: one enum argument, presence bit + 3 value bits if present
+  (registered maxima 5 or 6; declared byte enum 0..5);
   148/150 are empty. ReceivedRPC requires no error/exact consumption before
   dispatch; permission/hooks/GUID/reliable deferral remain
   (M-1498/ev_8fb379f7c758). Enum cast-bit 17 clear, named `memset` and RET

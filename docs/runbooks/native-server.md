@@ -52,12 +52,11 @@ Presence/listing/empty saves: F-1171/F-1004/F-1170. CM IDs omitted from logs/Deb
 [Stall limits](controller-receive.md): F-1181/F-1184; populated saves unqualified (U-038).
 CM deadlines: F-1180.
 
-`network.authored_controller_leave` defaults false; [binding/proof
-contracts](../architecture.md#persistence) precede state/services. Counters prove
-no record/menu equality. Run-only `--private-leave-proof DESCRIPTOR`
-requires protected one-player hosting, manager `INVOCATION_ID`, owned 0700 CWD
-and confined 0600 files. Observation requires exact readback/restart/
-composition and separate owner confirmation. ACK proves transport only.
+`network.authored_controller_leave` defaults false ([binding](../architecture.md#persistence)).
+Run-only `--private-leave-proof DESCRIPTOR` requires protected one-player hosting,
+manager `INVOCATION_ID`, owned 0700 CWD and 0600 files. The typed observer's
+`prepare` is state-free; `observe` needs Ready plus the owner's menu report.
+Successful exit/resource release and `seal-exit` precede restart. ACK is transport only.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
@@ -112,10 +111,10 @@ All actions must settle without failure under the
 | `join_password` | unset; never printed ([rules](network-readiness.md#join-password)) |
 
 
-Pure plans precede state; mismatched Hello → Upgrade. Poll ≤32 datagrams before
-fixed ticks. Signals close/drain/save. `network_listening`: address/version;
+Pure plans precede state; wrong Hello → Upgrade. Poll ≤32 datagrams before
+ticks. Signals close/drain/save. `network_listening`: address/`version_check`;
 `status`/`stopped`: counts. Prospect/mode F-804; data F-993. No ACK/NAK progress
-causes `closed_by_delivery_stall`/`peers_delivery_stalled`, distinct from idle
+despite traffic causes `closed_by_delivery_stall`/`peers_delivery_stalled`, unlike idle
 (F-1013). Unanswered query: `closed_by_friends_query_timeout` despite ACKs
 (F-1115, N-019). Controller/possession/pawn ACKs precede records; abandonment
 closes via `closed_by_possession_abandoned` (F-1116). GUIDs never reuse (F-1083).
