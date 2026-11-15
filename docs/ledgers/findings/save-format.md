@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-14
+Last reconciled: 2026-11-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -60,4 +60,5 @@ Last reconciled: 2026-11-14
 | F-937 | Removal uses UID/last match; calls right then left precede pointed-u64 equality | observed | pcode, metadata, authored-test; M-1035..M-1037, M-1046/ev_89fc8bd4555c, M-1046/ev_aac6fe0fbfe0, M-1047, M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071 | high; paired builds; server callee: F-940; row/subclass effects open | U-025, U-045 | active |
 | F-940 | Server comparator helper span is a straight-line accessor: copies receiver u64 at +8 to the hidden return slot, returns it | observed | static-disasm, authored-test; M-1046/ev_89fc8bd4555c call target, M-1071, M-1072, M-1074/ev_b00d459327ea; M-1073 failed launch | high; 25621760 only; 11 declared bytes; client, field meaning, runtime unqualified | U-025, U-045 | active |
 | F-1187 | Declaration replay matches three row handles and 84 references; selected +8 member names FName only through a forward type | derived | static-metadata/authored-test; M-1425 to M-1428; afeddecd | server 25621760; no complete storage layout; width, component owner and F-940 accessor association remain unqualified | U-025, U-045 | active |
-| F-1189 | GetModifierStateData procedure metadata links LF_MFUNCTION to a forward UModifierStateComponent header | observed | static-metadata; M-1430, M-1432 to M-1434; 7044dcd6 | 25621760; full TPI framing; no complete class, member layout, row binding, native owner or compatibility claim | U-025, U-045 | active |
+| F-1189 | GetModifierStateData procedure metadata links LF_MFUNCTION to a forward UModifierStateComponent header | observed | static-metadata; M-1430, M-1432 to M-1434; 7044dcd6 | 25621760; full TPI framing; no complete class, member layout, row binding, native owner or compatibility claim | U-025, U-045 | superseded-by F-1190 |
+| F-1190 | Modifier method metadata links to complete component header; FName header declares 8 bytes | observed | static-metadata; M-1436/ev_107dd05a847c, M-1432 to M-1434; cc1c70b7 | 25621760; exact forward joins; declared sizes/counts only, no member layout, row/native-owner or compatibility binding | U-025, U-045 | active |

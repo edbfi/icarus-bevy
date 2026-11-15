@@ -1,8 +1,7 @@
 # REA tooling and reference environments
 
-How to restore and check the project-local reverse-engineering runtime and the
-three reference environments. Rules for when to use REA are in
-[`.agents/rules/project.md`](../../.agents/rules/project.md).
+Restore REA and the three reference environments. Usage rules:
+[project rules](../../.agents/rules/project.md).
 
 ## REA runtime
 
@@ -26,76 +25,77 @@ on `unsupported_version`. `rea.sh` prefers
 declared minimum JDK, unversioned Homebrew JDK, or closest installed newer
 `openjdk@N`, in that order; explicit `JAVA_HOME` takes precedence.
 
-Ghidra byte reads return loader-adjusted analysis memory and require default
-auto-analysis through REA. Exact physical metadata needs a reviewed bounded
-fallback and independent input hashes. A legacy bundle's current-reader refusal
-does not prove corruption; preserve its bytes and producing-version evidence
-(M-975). Never repair identifiers or overwrite frozen bundles.
+Ghidra bytes are loader-adjusted; REA requires default auto-analysis. Physical
+metadata needs a reviewed bounded fallback and independent input hashes.
+Current-reader refusal does not prove legacy-bundle corruption: preserve bytes
+and producing-version evidence (M-975). Never repair identifiers or overwrite
+frozen bundles.
 
-Use the installed Homebrew tools recorded in `Brewfile`: radare2, headless Ghidra
-and Wireshark CLI utilities. Check `tshark --version` separately. A GUI failure
-does not mean headless Ghidra is broken. For a justified direct Ghidra fallback,
-resolve the matching JDK and tool paths in its scope before running:
+Use `Brewfile`'s installed Homebrew radare2, headless Ghidra and Wireshark CLI.
+Check `tshark --version` separately; GUI failure does not rule out headless use.
+For a justified direct fallback, resolve `rea.sh`'s JDK/Ghidra paths in scope:
 
 ```bash
 JAVA_HOME="$SCOPED_JDK" "$SCOPED_GHIDRA/support/analyzeHeadless" <arguments>
 ```
 
-Bind symbols with `tools/pdb_public_symbols.cjs` and exception entries with
-`tools/pe_function_ranges.cjs`; neither proves ownership, instruction boundaries or whole functions.
+`tools/pdb_public_symbols.cjs` and `tools/pe_function_ranges.cjs` bind symbols and
+exception entries; neither proves ownership, instruction boundaries or whole functions.
 `tools/pdb_procedure_ranges.cjs` optionally retains up to 32 unresolved TPI/IPI
-references. `tools/pdb_selected_types.cjs` reads exact UDT headers or member-function
-signatures through separate APIs; numeric selectors never follow referents.
-All retain record provenance. Header identity and declared size prove no layout;
-legacy layout readers keep their strict member and overlap checks.
+references. `tools/pdb_selected_types.cjs` keeps header/signature APIs separate.
+Its `inspectSelectedDeclarationEntries`
+(`tpi_v80_exact_udt_declaration_entries_v1`, M-1438) binds numeric complete owners
+by index, raw header, SHA and FIELDLIST index. Only bounded FIELDLIST chains
+are followed; cycles, shared roots/tails refuse and weighted counts must match
+the header. Vshape, derived, type and METHODLIST references stay opaque.
+Record provenance is retained; no layout, width or signature closure is inferred.
+Legacy layout readers retain strict member and overlap checks. Header identity
+and declared size prove no layout. Authored qualification admits no original entries.
 Run `tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`
 with `-noanalysis`. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, physical-byte
 checks and inspected statuses. Pseudocode and listing installation are disabled;
 userops, overrides and noncanonical context refuse admission (M-977, M-979).
 
-For a separate raw program, supply only the hashed physical fragment with
-`-loader BinaryLoader -processor x86:LE:64:default -cspec windows`, explicit
-original VA and positive hexadecimal length. Provider hashing reads its whole
-input. Preserve PE metadata and prior partial traces; the raw block establishes
-no function extent (M-985).
+For a separate raw program, use only the hashed physical fragment with
+`-loader BinaryLoader -processor x86:LE:64:default -cspec windows`, its original
+VA and positive hexadecimal length. Provider hashing reads the whole input.
+Retain PE metadata/prior partial traces; the raw block proves no extent (M-985).
 
-The older `DecompileFlowFunctions.java` and `ListFlowInstructions.java` use
-forward windows; their completion flags do not prove whole-function coverage.
-`struct_ops_methods` selects inline `TCppStructOps` symbols in the PDB helper.
+`DecompileFlowFunctions.java` and `ListFlowInstructions.java` use forward
+windows; completion proves no whole-function coverage. `struct_ops_methods`
+selects inline `TCppStructOps` PDB symbols.
 
 ## Evidence at session close
 
-The exported bundle is the canonical record of a session; the repository holds
-only its index row and citations (rules in
-[`.agents/rules/docs.md`](../../.agents/rules/docs.md)).
+The session bundle is canonical; Git holds its index and citations
+([rules](../../.agents/rules/docs.md)).
 
 1. Call the MCP `export_evidence_bundle` tool with an absolute `path` ending in
    `work/<case>/rea-bundle.json`. It reports the record and unknown counts.
-2. Allocate an ID with `python3 tools/docs_lint.py --next-id M` and append one
-   record to the highest-numbered shard of its category folder in `evidence/`:
-   `kind` `rea-bundle`, the file's `sha256sum`, `records` from the export, and
-   in `ev` and `unk` only the IDs that rows cite.
+2. Allocate with `python3 tools/docs_lint.py --next-id M`; append to the area's
+   highest-numbered `evidence/` shard: `kind` `rea-bundle`, file SHA256,
+   exported `records`, and only cited IDs in `ev`/`unk`.
 3. Cite `M-NNN/ev_<12 hex>` in finding Evidence cells and `M-NNN/unk_<12 hex>`
    in U- rows; never paste a full identifier.
 4. Run `python3 tools/docs_lint.py --local`; it checks the digest and that every
    listed ID is a member of the bundle (export layout: F-494).
 
-Read a bundle by summary and exact filter, never whole. Take the full ID from
-the row (`grep -rhw --include='*.jsonl' M-NNN evidence/`), then:
+Read summary/exact filters, never whole bundles. Get the full ID from its row
+(`grep -rhw --include='*.jsonl' M-NNN evidence/`):
 
 ```bash
 .agents/rea/rea.sh inspect-evidence-bundle \
   '{"path":"/abs/work/<case>/rea-bundle.json","detail":"summary","filters":{"evidence_id":"ev_<64 hex>"}}'
 ```
 
-Inside a live session, `get_evidence_bundle` with `detail: "summary"` and the
-same filters does the same without exporting.
+In a live session, use `get_evidence_bundle`, `detail: "summary"` and the same
+filters without exporting.
 
 ## Private evidence backup
 
-`local-private` evidence exists only on the analyst machine; Git holds its index
-rows, not its bytes. Back up every active path to storage outside the repository
-named by `ICARUS_EVIDENCE_BACKUP`, then prove a restore into a scratch clone:
+Git indexes `local-private` evidence; its bytes stay on the analyst machine.
+Back up every active path outside the repository to `ICARUS_EVIDENCE_BACKUP`,
+then prove a scratch-clone restore:
 
 ```bash
 (set -o pipefail; python3 tools/docs_lint.py --list-local |
@@ -104,10 +104,9 @@ git clone -q . "$RESTORE_CHECK" && rsync -a "$ICARUS_EVIDENCE_BACKUP/" "$RESTORE
 python3 tools/docs_lint.py --local --root "$RESTORE_CHECK"
 ```
 
-`--files-from` disables recursion unless `-r` is given. A non-zero exit means
-the backup is incomplete: every listed file that exists was copied, but stderr
-names missing files or unreadable manifests to fix first. Back up after each
-session that adds rows; retire an artifact's row before deletion.
+`--files-from` needs `-r` for recursion. Nonzero exit means incomplete backup:
+listed existing files were copied; fix missing files/unreadable manifests named
+on stderr. Back up after every session adding rows; retire rows before deletion.
 
 ## Reference environments
 
@@ -118,7 +117,7 @@ Maintain three environments:
 2. Official Windows server using the user's home machine for behavior and fault attribution.
 3. Native replacement on Linux with matched workloads and resource limits.
 
-The inspected Pelican egg uses `xvfb-run` and Proton, installation app ID 2089300,
-runtime game ID 1149460, and persistent data under `Icarus/Saved`. Pin container
-digest, Proton version, official build and configuration; disable automatic
-updates in experiments. Do not run its container installer unchanged on the host.
+The inspected Pelican egg uses `xvfb-run`/Proton, install app 2089300, runtime
+game 1149460 and `Icarus/Saved`. Pin container digest, Proton version, official
+build and configuration; disable automatic updates in experiments. Never run its container
+installer unchanged on the host.
