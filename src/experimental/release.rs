@@ -764,6 +764,56 @@ pub enum InboundControllerRevision {
     FixedComponentBoundsV1,
 }
 
+/// Conditional static binding for the selected survival controller's ordinary
+/// field-header path. This grants codecs only, never dispatch or leave success.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerLeaveRevision {
+    SelectedControllerV1,
+}
+
+/// The selected controller identity is part of the leave binding, in addition
+/// to the enclosing qualification's complete pin, versions and class bounds.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerLeaveQualification {
+    pub revision: ControllerLeaveRevision,
+    pub player_controller: ReleasePlayerControllerProfile,
+}
+
+/// An explicitly qualified controller codec plan. Its construction is private
+/// so a caller cannot turn an arbitrary controller open into a leave binding.
+/// Handle 26 inherits F-846/F-1120's flattening rules with current metadata
+/// equality; it is a supported static derivation, not a runtime observation.
+#[derive(Clone, Debug)]
+pub struct ControllerLeavePlan {
+    actor_layout: Vec<super::rep_layout::RepCommand>,
+    engine_net_version: u32,
+}
+
+impl ControllerLeavePlan {
+    /// Exclusive bound for the qualified ordinary field-header reader.
+    pub fn field_index_bound(&self) -> u32 {
+        super::rep_rpc::BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND
+    }
+
+    pub fn actor_layout(&self) -> &[super::rep_layout::RepCommand] {
+        &self.actor_layout
+    }
+
+    pub fn engine_net_version(&self) -> u32 {
+        self.engine_net_version
+    }
+
+    pub(super) fn validate_codec(&self, codec: &super::rep_layout::RepLayoutCodec) -> Result<()> {
+        ensure!(
+            codec.actor.engine_net_version == self.engine_net_version,
+            "controller leave codec requires its qualified engine version"
+        );
+        Ok(())
+    }
+}
+
 /// Optional reviewed capabilities and their complete identity/framing binding.
 /// Absence of each revision means disabled; unknown revisions fail parsing.
 /// This snapshot replaces runtime build lists and reads of test fixtures.
@@ -779,6 +829,7 @@ pub struct ReleaseQualifications {
     pub quest_catalog: Option<QuestCatalogRevision>,
     pub visibility_decode: Option<VisibilityDecodeRevision>,
     pub inbound_controller: Option<InboundControllerRevision>,
+    pub controller_leave: Option<ControllerLeaveQualification>,
 }
 
 impl ReleaseQualifications {
@@ -793,6 +844,14 @@ impl ReleaseQualifications {
                 && self.class_net_cache == release.class_net_cache,
             "capability qualification requires its bound release identity, engine/game versions and class bounds"
         );
+        if let Some(leave) = &self.controller_leave {
+            ensure!(
+                release.player_controller.as_ref() == Some(&leave.player_controller)
+                    && self.class_net_cache.bp_icarus_player_controller_survival
+                        == super::rep_rpc::BP_ICARUS_PLAYER_CONTROLLER_SURVIVAL_FIELD_INDEX_BOUND,
+                "controller leave qualification requires its selected controller identity and field bound"
+            );
+        }
         Ok(())
     }
 }
@@ -1139,6 +1198,32 @@ impl ReleaseProfile {
             engine_net_version: self.engine_network_version,
             spawn_location,
             channel_index: PLAYER_CONTROLLER_CHANNEL_INDEX,
+        }))
+    }
+
+    /// The conditional leave codecs, disabled without an explicit declaration.
+    /// No build id selects this capability automatically. The plan installs no
+    /// dispatch and proves no persistence or stock-client completion behavior.
+    pub fn controller_leave_plan(&self) -> Result<Option<ControllerLeavePlan>> {
+        self.validate()?;
+        let Some(qualification) = self
+            .qualifications
+            .as_ref()
+            .and_then(|q| q.controller_leave.as_ref())
+        else {
+            return Ok(None);
+        };
+        match qualification.revision {
+            ControllerLeaveRevision::SelectedControllerV1 => {}
+        }
+        Ok(Some(ControllerLeavePlan {
+            actor_layout: self.row_layout(icarus_player_controller_survival_rep_layout(
+                MovementLevel::Whole,
+                MovementLevel::Whole,
+                RotationLevel::Bytes,
+                self.tags.tag_encoding(),
+            ))?,
+            engine_net_version: self.engine_network_version,
         }))
     }
 

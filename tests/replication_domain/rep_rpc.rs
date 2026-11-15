@@ -47,6 +47,210 @@ fn byte(enum_bits: Option<u8>) -> RepCommand {
     RepCommand::Byte { enum_bits }
 }
 
+pub(super) fn authored_leave_plan() -> icarus_bevy::experimental::release::ControllerLeavePlan {
+    use icarus_bevy::experimental::release::{
+        ControllerLeaveQualification, ControllerLeaveRevision, ReleaseProfile,
+        ReleaseQualifications,
+    };
+    // Authored declaration for codec testing, not a runtime qualification.
+    let mut release = ReleaseProfile::fixture("3.0.36");
+    release.qualifications = Some(ReleaseQualifications {
+        pin: release.pin.clone(),
+        engine_network_version: release.engine_network_version,
+        game_network_version: release.game_network_version,
+        class_net_cache: release.class_net_cache,
+        quest_catalog: None,
+        visibility_decode: None,
+        inbound_controller: None,
+        controller_leave: Some(ControllerLeaveQualification {
+            revision: ControllerLeaveRevision::SelectedControllerV1,
+            player_controller: release.player_controller.clone().unwrap(),
+        }),
+    });
+    release.controller_leave_plan().unwrap().unwrap()
+}
+
+#[test]
+fn controller_leave_uses_presence_framed_enum_and_preserves_absence() {
+    use icarus_bevy::experimental::rep_rpc::{
+        ControllerLeaveRequest, LeaveProspectSessionType, encode_controller_leave_request,
+        parse_controller_leave_request,
+    };
+    let plan = authored_leave_plan();
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let codec = codec(order);
+        // Fixed LSB-first fixtures include the non-bool presence bit. These
+        // bytes are authored independently of the request encoder.
+        for (bits, value) in [
+            (0b0001, LeaveProspectSessionType::None),
+            (0b0011, LeaveProspectSessionType::Quit),
+            (0b0101, LeaveProspectSessionType::ReturnToCharacterSelect),
+            (0b0111, LeaveProspectSessionType::LeaveByDropship),
+            (0b1001, LeaveProspectSessionType::ReturnToTitlescreen),
+            (0b1011, LeaveProspectSessionType::Disconnected),
+        ] {
+            let field = FieldHeader {
+                index: 149,
+                payload: payload(|writer| writer.write_bits(bits, 4)),
+            };
+            let request = ControllerLeaveRequest::Normal(Some(value));
+            assert_eq!(
+                parse_controller_leave_request(&field, &plan, &codec).unwrap(),
+                Some(request)
+            );
+            assert_eq!(
+                encode_controller_leave_request(request, &plan, &codec).unwrap(),
+                field
+            );
+            assert_eq!(field.payload.bytes(), &[bits as u8]);
+        }
+        let absent = FieldHeader {
+            index: 149,
+            payload: payload(|writer| writer.write_bit(false)),
+        };
+        assert_eq!(
+            parse_controller_leave_request(&absent, &plan, &codec).unwrap(),
+            Some(ControllerLeaveRequest::Normal(None))
+        );
+        assert_eq!(
+            encode_controller_leave_request(ControllerLeaveRequest::Normal(None), &plan, &codec)
+                .unwrap(),
+            absent
+        );
+        for (index, request) in [
+            (148, ControllerLeaveRequest::Cancel),
+            (150, ControllerLeaveRequest::WithoutSave),
+        ] {
+            let field = FieldHeader {
+                index,
+                payload: payload(|_| {}),
+            };
+            assert_eq!(
+                parse_controller_leave_request(&field, &plan, &codec).unwrap(),
+                Some(request)
+            );
+            assert_eq!(
+                encode_controller_leave_request(request, &plan, &codec).unwrap(),
+                field
+            );
+        }
+    }
+}
+
+#[test]
+fn controller_leave_rejects_invalid_truncated_and_trailing_parameters() {
+    use icarus_bevy::experimental::rep_rpc::{
+        LeaveProspectSessionType, parse_controller_leave_request,
+    };
+    let plan = authored_leave_plan();
+    let codec = codec(ByteOrder::Little);
+    // No presence, present but missing enum bits, a raw three-bit enum,
+    // invalid values 6/7, trailing bits after present/absent parameters.
+    for (bits, count) in [
+        (0, 0),
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (0b011, 3),
+        (0b1101, 4),
+        (0b1111, 4),
+        (0b00011, 5),
+        (0, 2),
+    ] {
+        let field = FieldHeader {
+            index: 149,
+            payload: payload(|writer| writer.write_bits(bits, count)),
+        };
+        assert!(parse_controller_leave_request(&field, &plan, &codec).is_err());
+    }
+    for index in [148, 150] {
+        for bit in [false, true] {
+            let field = FieldHeader {
+                index,
+                payload: payload(|writer| writer.write_bit(bit)),
+            };
+            assert!(parse_controller_leave_request(&field, &plan, &codec).is_err());
+        }
+    }
+    for index in [0, 26, 147, 151, 169, 182] {
+        let field = FieldHeader {
+            index,
+            payload: payload(|writer| writer.write_bits(0xff, 8)),
+        };
+        assert!(
+            parse_controller_leave_request(&field, &plan, &codec)
+                .unwrap()
+                .is_none()
+        );
+    }
+    for value in [6, 7, 255] {
+        assert!(LeaveProspectSessionType::try_from(value).is_err());
+    }
+    for index in [183, 999] {
+        assert!(
+            parse_controller_leave_request(
+                &FieldHeader {
+                    index,
+                    payload: payload(|_| {}),
+                },
+                &plan,
+                &codec,
+            )
+            .is_err()
+        );
+    }
+    let mut wrong_version = codec;
+    wrong_version.actor.engine_net_version -= 1;
+    assert!(
+        parse_controller_leave_request(
+            &FieldHeader {
+                index: 148,
+                payload: payload(|_| {}),
+            },
+            &plan,
+            &wrong_version,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn controller_leave_field_headers_keep_the_next_field_aligned() {
+    use icarus_bevy::experimental::rep_rpc::{
+        ControllerLeaveRequest, LeaveProspectSessionType, parse_controller_leave_request,
+    };
+    let plan = authored_leave_plan();
+    let codec = codec(ByteOrder::Little);
+    assert_eq!(plan.field_index_bound(), 183);
+    // These selected indices take eight LSB-first bits at bound183. Each
+    // packed length precedes its exact payload, including presence for149.
+    let framed = payload(|writer| {
+        writer.write_bits(148, 8);
+        writer.write_bits(0, 8);
+        writer.write_bits(149, 8);
+        writer.write_bits(8, 8); // Packed payload bit count4.
+        writer.write_bits(0b0101, 4); // Present, ReturnToCharacterSelect2.
+        writer.write_bits(150, 8);
+        writer.write_bits(0, 8);
+    });
+    let mut reader = framed.reader();
+    let mut roundtrip = BitWriter::new();
+    for expected in [
+        ControllerLeaveRequest::Cancel,
+        ControllerLeaveRequest::Normal(Some(LeaveProspectSessionType::ReturnToCharacterSelect)),
+        ControllerLeaveRequest::WithoutSave,
+    ] {
+        let field = read_field_header(&mut reader, plan.field_index_bound(), 64).unwrap();
+        assert_eq!(
+            parse_controller_leave_request(&field, &plan, &codec).unwrap(),
+            Some(expected)
+        );
+        write_field_header(&mut roundtrip, &field, plan.field_index_bound()).unwrap();
+    }
+    assert!(reader.at_end());
+    assert_eq!(Payload::from_writer(roundtrip), framed);
+}
+
 #[test]
 fn field_headers_carry_a_bounded_index_a_packed_bit_count_and_the_payload() {
     let body = payload(|writer| writer.write_bits(0b1_0110, 5));

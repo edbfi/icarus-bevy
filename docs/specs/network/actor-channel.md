@@ -22,57 +22,65 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 - 3.0.36 pin/tags F-1176, selected class semantics F-1177 and row widths
   F-1178 remain static only. Connected behavior, level-actor identities and
   legacy row-index transfer remain unqualified.
-- Build 26613688 (F-1193): 39 exact controller locations; 19 disjoint,
-  file-backed, 8-byte-aligned 68-byte descriptor spans in an RW/NX section;
-  19 complete 47-byte factories with direct descriptor/callee/singleton operands
-  and finite caller flow (M-1459/ev_423d954d3a24, M-1459/ev_3ceb9b9b7732).
-  That evidence leaves values, initialization, immutability, cached-path use
-  and counts/cache semantics unqualified. Complete 72-byte FFunctionParams:
-  12 members/14 opaque refs (M-1459/ev_dc84ad5d8171, M-1459/ev_3bf00dd12847);
-  declared offsets prove no widths, storage or entry binding. Header/source private.
+- Build 26613688: F-1193 retains exact controller locations, descriptor/factory
+  spans and complete FFunctionParams declaration; its original evidence limits
+  stand. Later selected type/construction/cache qualifications are F-1197.
 - Controller (F-1197): the older trace remains 122 bytes/34 instructions/
   126 p-code operations/two opaque edges (M-1460/ev_a40bde4cc914,
   M-1461), with calls/clobbers, alias/reentry effects and successors opaque;
   its flow, whole-function and native-flow closures remain false. New listings
   cover M-1462's independent 908-byte S_GPROC32 extent through return, without
   expanding the older trace (M-1488/ev_2a71799cb7ec, M-1488/ev_601449ecca14).
-  Exact TPI 8902/15135 forward identities are UFunction/FFunctionParams;
-  the latter matches the retained complete definition by name, unique name,
-  leaf and forward-header digest. The inherited procedure/arglist/pointer/
-  modifier chain declares ordered `UFunction*&`, `FFunctionParams const&`
-  arguments (M-1477 to M-1485; M-1488/ev_8018de4b3bea); no runtime object
-  state or storage follows from forward declarations.
-- Selected construction calls bind RCX to the singleton output reference and
-  RDX to the descriptor; the consumer preserves them in R13/RSI. Optional
-  factories at descriptor +0/+8 run before the singleton test. A cached
-  singleton skips creation, descriptor flag/property reads and linking.
-  Creation reads dword flags +64, qword size +40, qword property array +48 and
-  dword count +56, sets cursor=array+8*count and calls the property constructor
-  until mutable count is zero, copies words +68/+70 and links. That callee is
-  unanalysed; traversal direction stays open. Count means property descriptors,
-  not source arguments/cache indices.
-  General ABI, immutability and callee/reentry effects stay open (F-1197;
-  M-1488/ev_2a71799cb7ec).
-- Seven native ancestry registrations contain 479 distinct function descriptors;
-  initial Net-bit counts are 0/0/2/72/13/23/20 in their retained ancestry order,
-  each with initial super-function zero. There are 25 Net-bit property
-  descriptors, each dimension 1. These are physical registration statistics,
-  not a runtime field bound or instantiated/cooked ancestry/order (F-1197;
-  M-1488/ev_9deb9b5f9475, M-1488/ev_601449ecca14).
-- On cache miss only, the cache consumer calls the unresolved runtime-list
-  producer before constructing the cache; hits bypass it. It inherits parent
-  start+count, appends selected properties, then functions from the runtime
-  class array in its order. Ordinary field-header decoding uses
-  start+own-count+1 as its integer bound, searches parent caches and slices
-  the packed-bit-count payload; the export-group branch is separate. Producer
-  selection, overrides, sorting and actual class ancestry remain open, so no
-  concrete width or wire 149/169 binding follows (F-1197;
-  M-1488/ev_7481920a03ac, M-1490, M-1491).
+  Exact forward identities and inherited type chain declare ordered
+  `UFunction*&`, `FFunctionParams const&` arguments (M-1477 to M-1485;
+  M-1488/ev_8018de4b3bea); no runtime object state or storage follows.
+- Selected construction arguments and cached-singleton bypass are F-1197;
+  creation consumes property descriptors, not source arguments/cache indices.
+  The selected enum constructor is qualified below. General ABI, immutability,
+  traversal direction and callee/reentry effects stay open
+  (M-1488/ev_2a71799cb7ec).
+- Native registration counts and initial super-function/property dimensions
+  remain F-1197's physical statistics, which alone prove no runtime bound
+  (F-1197; M-1488/ev_9deb9b5f9475, M-1488/ev_601449ecca14).
+- On cache miss only, the consumer calls the runtime-list producer; hits
+  bypass it. The producer copies inherited ClassReps, selects locally owned
+  Net properties and non-overriding Net functions, and sorts local functions
+  by ascending case-insensitive FName string. Properties precede functions in
+  each cache layer. The selected build-26613688 public-server ancestry ends in
+  `BP_IcarusPlayerControllerSurvival_C`, derived directly from the native survival
+  controller. Its conditional cache has 155 native fields plus 5 cooked
+  properties and 22 cooked functions: 182 total, ordinary integer bound 183
+  (parent start+own count+1). Export-group framing is separate (F-1197;
+  M-1492/ev_e687899447b7, M-1492/ev_0415b46141fb,
+  M-1492/ev_b571dc207b36, M-1492/ev_8b1024fed268; M-1493, M-1494).
+- Under that selected ancestry and ordinary cache/header path, fields 148/149/
+  150 are `ServerCancelLeaveProspectSession`, `ServerLeaveProspectSession`,
+  `ServerLeaveProspectSessionWithoutSave`; 169 is `OnServer_ReturnFocus`,
+  whose effects were not inspected. Producer ready/null-PropertyLink paths,
+  editor/global/CDO callbacks, external mutation and initialized cache state
+  remain unobserved. No live controller class/cache or completion effect for
+  169 follows. Illustrative native property ordering is not newly proved;
+  these function indices depend on property counts, not their permutation
+  (F-1197; M-1492/ev_8b1024fed268, M-1493, M-1494).
 - Selected listing verification covers 24 starts/2,834 instructions/11,427
   instruction bytes. The two reported escapes cover direct absolute jumps
   only, excluding unresolved indirect jumps; the getter target is forward
   out-of-window. No exhaustive flow, live dispatch or whole-function behavior
   follows (F-1197; M-1488/ev_601449ecca14, M-1489 to M-1491).
+  New selected listings likewise leave calls/indirect dispatch and branch
+  escapes open; predominantly one-byte imported function bodies do not prove
+  function coverage (M-1493, M-1494).
+- Normal request 149 has one `ELeaveProspectSessionType` parameter; its byte
+  child is not a second argument. Current enum construction/vtable/codec
+  evidence derives a 3-bit value for registered maxima 5 or 6. This does not
+  fix total RPC payload size: inherited generic RPC framing does not prove the
+  complete current path. Completed `ReplicatedLeftProspectSession` uses that enum
+  at native +0x95b. Flattened property handle 26 is supported by inherited
+  F-846/F-1120 rules, current M-1405 ancestry/type/offset equality and selected
+  current command-builder evidence; it is neither RPC 26 nor a freshly proved
+  entire layout (F-1197; M-1492/ev_a0a995ccf9d1,
+  M-1492/ev_9867ef330866, M-1492/ev_2851c7038d64,
+  M-1492/ev_8645af881a57, M-1493, M-1494).
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
@@ -156,8 +164,8 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
 - Normal leave (F-1197): state-notification completion candidate; no new bound
   completion RPC. The save-intending request takes one native byte; two
   descriptor properties do not mean two arguments. No-save selects declared
-  value 4 and finalises. The byte enum spans 0..5; request codec/wire width
-  remain unbound (M-1488/ev_9deb9b5f9475). The checker tests authority,
+  value 4 and finalises. The byte enum spans 0..5; its value codec is qualified
+  above (M-1488/ev_9deb9b5f9475). The checker tests authority,
   cancellation and pending work. Finalisation writes the completed byte,
   emits the local event/delegate path only on change, then clears pending/
   cancel. Cancellation can retain 0 without a changed-state event. The
@@ -189,9 +197,9 @@ scheduling or stock-client qualification.
 
 ## Open questions
 
-- F-1197: bind the runtime field-list producer, actual controller class ancestry
-  and cache order before wire 149/169, request codec and live leave dispatch;
-  then qualify persistence policy/durability and stock-client completion.
+- F-1197: native leave integration/persistence policy; complete current-path,
+  live controller/cache/dispatch, remaining layout dependencies, durability
+  and stock-client completion qualification remain open.
 - U-079: live visibility bindings/effects and client profile execution remain
   unqualified (F-1034, F-1042, F-1051).
 
@@ -201,4 +209,4 @@ scheduling or stock-client qualification.
 
 M-707, M-708, M-813, M-819, M-832, M-841, M-844..M-848, M-1056,
 M-1126..M-1129, M-1147..M-1149, M-1197, M-1198, M-1215, M-1217,
-M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1197; M-1459 to M-1462, M-1477 to M-1485, M-1488 to M-1491.
+M-1219, M-1221, M-1223 to M-1232, M-1327 to M-1330, M-1338 to M-1340, M-1354 to M-1358, M-1371 to M-1374; earlier observations: cited findings. F-1197; M-1459 to M-1462, M-1477 to M-1485, M-1488 to M-1494.
