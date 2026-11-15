@@ -128,42 +128,41 @@ addresses retain helper names or stand alone.
   restore cached multiplier, clear any old timer, select setup for finite
   positive remaining time, and call `OnRep` (`u16` tenths match; unordered
   guards differ). Role-`3` expiration wrappers issue reason-`0` `+0x3c0`. On
-  primary `UModifierStateComponent` (`0x144a263a8`/`0x144b94c08`;
-  `experimental::modifier_lifecycle`), `+0x278`
-  `Activate`, `+0x280` `Deactivate`, `+0x338` `BeginPlay`, `+0x340` `EndPlay`,
-  `+0x3c0` `DestroyComponent`, `+0x408` `UpdateStats`, `+0x410`/`+0x418`
-  `Applied`/`Removed_Implementation`, `GetModifierStateData`
-  (`0x1416e2e90`/`0x1416f4960`) and `+0x430` `InitComponent_Implementation`
-  (`0x1416e88f0`/`0x1416fa330`, M-1027/ev_51aa536d68b6) match across builds:
-  `ScaleStatsHelper` (`0x1416b6710`/`0x1416ce2f0`, M-1027/ev_c40e7a02c708)
-  skips `stat_enum == 0xff` and computes `ceil(|((i32[+0x128] as f32) + 100.0f) *
-  (raw as f32) * f32::from_bits(0x3c23d70a)|) * sgn`; `InitComponent_Implementation`
-  skips empty `+0x1b0`, constructs/attaches `TSoftClassPtr<USceneComponent>`
-  (`+0x1a0`) at `+0x100` with `KeepRelative` `0x0002_0202` (crashing on
-  unresolved/non-`USceneComponent` classes), starts a `0.1f` looping
-  `HighFrequencyTick` timer (`+0x3c0`) when `[+0x300] != 0` and runs
-  `ModifierTick(this, 0.0f)` when `[+0x301] != 0 && CheckTickConditions(this)`;
-  `Applied_Implementation` sets `+0xe0..+0xf0`, `+0xf8 = Execute_GetNextUID`,
-  `RefreshLifetime` and `+0x320` tags, while `Removed_Implementation` subtracts
-  `+0x320` tags still covered by sibling `GrantedTags`; `OnStatContainerUpdated`
-  (`0x1416efd80`/`0x1417012a0`, M-1027/ev_3681a1228c84) updates `+0x10c` on
-  ordered change, clears/restarts looping `+0x3a8` `AutoDestroy` (rescaling
-  `+0x110` when `base_lifetime (+0x108) > 0`, `!(remaining > base * old_mult)`
-  and `old_mult > 0`), and sums `+0x230` stat values plus `+0x114` into `+0x128`
-  (broadcasting `+0x130` on role `3` and dispatching `+0x408` on change);
-  `FixModifierActivation` (`0x1414a0fc0`/`0x1414db100`,
-  M-1027/ev_9785b53a7a36) `LowerBound`-inserts live (`+0x8b & 2 == 0`) modifiers
-  matching `target_row_name` by `uid_f8` (`+0xf8`), calling `+0x278`
-  `Activate(false)` on the first `bAutoActivate` (`+0x8b & 1`) match and `+0x280`
-  `Deactivate()` on the rest. Subclass/Blueprint overrides, downstream callee
+  primary `UModifierStateComponent`, matched slots, state data, stat scaling,
+  scene attachment/ticks, tags/UIDs, lifetime rescaling and ordered activation
+  follow F-930 and `experimental::modifier_lifecycle`
+  (M-1027/ev_51aa536d68b6, M-1027/ev_c40e7a02c708,
+  M-1027/ev_3681a1228c84, M-1027/ev_9785b53a7a36).
+  Unresolved/non-`USceneComponent` attachment classes crash.
+  Subclass/Blueprint overrides, downstream callee
   effects, owner/row binding and live execution remain unqualified.
   `DataRowHandleNew +0xb4` joins FRowHandle and `RowName +8`/FName
-  (F-1191). FName declares `ComparisonIndex +0`/FNameEntryId and `Number +4`.
+  (F-1192). FName declares `ComparisonIndex +0`/FNameEntryId and `Number +4`.
   FNameEntryId forward `0x28d8` joins complete `0x310dd` (declared size 4):
   16 declaration entries have weight 17, including `Value +0`. Number and
   Value declare direct unsigned32 (`0x75`). Method identities and the empty
   argument list agree. Occupied/inherited storage, return/this definitions,
   aggregate ABI, comparator associations and native ownership remain open.
+- Server 25621760 `RemoveModifierState` metadata (F-1192): procedure `0x1414b5950`,
+  declared extent 1059 bytes, selects only TPI `2050973`
+  (M-1452, M-1454/ev_892924c04bd4); this step alone establishes no signature
+  semantics. Exact envelope: 28 bytes, leaf `0x1009`
+  (M-1453, M-1454/ev_b213265d962e). Its retained `LF_MFUNCTION` header declares
+  return `48`, class `2050923`, this `0`, calling convention `0`, attributes
+  `0`, argument count `3`, argument-list reference `2050972`, this adjustment
+  `0` (M-1455, M-1456/ev_86dc4a8fa781). Framing/fixity are inherited here,
+  without original replay. These are numeric declarations;
+  return/this definitions, pointer types and static ABI are not inferred.
+  Class `2050923` has a 76-byte forward record for `UIcarusFunctionLibrary`,
+  leaf `0x1504`, flags
+  `640`, declared size/member count/field-list reference all `0`; no definition
+  is followed (M-1458/ev_e9e2faf6b771). Argument reference `2050972` has a
+  20-byte envelope, leaf `0x1201`; its payload stays uninterpreted. Two complete
+  framing passes and full pre/post fixity cover these reads, with 3150352684
+  physical bytes and independent owned-unit/cgroup cleanup (M-1457,
+  M-1458/ev_800189c44abc); host-wide cleanup is not claimed. Argument-count
+  equality, reference definitions, storage, ABI, comparator associations,
+  native owner/receiver, runtime, import and compatibility remain unqualified.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
   match (`-1` disables), else last opaque-comparison match; request virtual
@@ -191,5 +190,5 @@ addresses retain helper names or stand alone.
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937, F-940, F-1191; M-1431 to M-1451; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+F-750, F-897, F-930, F-937, F-940, F-1192; M-1425 to M-1428, M-1431 to M-1458; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
 M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.

@@ -4,7 +4,7 @@ Rows retired from [the active ledger](../save-format.md): superseded by a summar
 execution receipts, or historical session state. Full text is kept and IDs stay
 permanent; cite the superseding row where one exists.
 
-Last reconciled: 2026-10-22
+Last reconciled: 2026-11-15
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -97,3 +97,4 @@ Last reconciled: 2026-10-22
 | F-1187 | Declaration replay matches three row handles and 84 references; selected +8 member names FName only through a forward type | derived | static-metadata/authored-test; M-1425 to M-1428; afeddecd | server 25621760; no complete storage layout; width, component owner and F-940 accessor association remain unqualified | U-025, U-045 | superseded-by F-1191 |
 | F-1189 | GetModifierStateData procedure metadata links LF_MFUNCTION to a forward UModifierStateComponent header | observed | static-metadata; M-1430, M-1432 to M-1434; 7044dcd6 | 25621760; full TPI framing; no complete class, member layout, row binding, native owner or compatibility claim | U-025, U-045 | superseded-by F-1191 |
 | F-1190 | Modifier method metadata links to complete component header; FName header declares 8 bytes | observed | static-metadata; M-1436/ev_107dd05a847c, M-1432 to M-1434; cc1c70b7 | 25621760; exact forward joins; declared sizes/counts only, no member layout, row/native-owner or compatibility binding | U-025, U-045 | superseded-by F-1191 |
+| F-1191 | Modifier row declarations join FName/FNameEntryId; Number and Value declare direct unsigned32 | derived | static-metadata; M-1425..M-1428, M-1432..M-1451, M-1449/ev_72be5f2c2935; 99b14702 | 25621760; declarations/primitive meaning only; occupied storage, aggregate ABI, comparator associations, runtime ownership and import open | U-025, U-045 | superseded-by F-1192 |
