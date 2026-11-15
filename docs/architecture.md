@@ -173,18 +173,24 @@ Placement changes only the next pawn open. Disconnect/revocation detaches but
 retains committed state.
 
 [Authored leave](runbooks/authored-survival.md#checkpoint-leave) uses
-`CheckpointWriter` through shutdown: only the pinned attempt's exact submission
-can establish durability. The separate authored adapter waits for that result
-before reliable completion and its prefix ACK before detach. Pre-admission cancellation
-retains the frozen obligation and suppresses completion. Default-false
+`CheckpointWriter` through shutdown. Durability requires the pinned attempt's
+exact submission before completion, then prefix ACK before detach. Pre-admission
+cancellation retains the frozen obligation and suppresses completion. Default-false
 `network.authored_controller_leave` separately enables the policy only with
 checkpoints, authenticated online hosting and matching codec/controller plans.
-`check-config` checks shape; pure offline preparation verifies binding before
-storage/services. Opt-in status/stopped `player_leave` reports cutoff, durability/
+`check-config` checks shape; offline preparation binds before storage/services.
+Opt-in status/stopped `player_leave` reports cutoff, durability/
 failure gauges and last global generation/tick; `sessions.controller_leave`
 reports intent/cancel/admission/prefix-ACK totals. These survive teardown;
 aggregates or ACK cannot prove exact private record equality or menu success.
 No full player-save/client qualification follows.
+
+Default-off Run-only `--private-leave-proof` binds confined private receipts to a
+case/manager InvocationID and one admission. Exact cutoff/readback, restart load
+and first pawn admission guard activation. A typed observer requires ordered
+receipts and owner menu confirmation; successful exit/sealing separately gates
+restart. Failure is terminal; schema/configuration stay unchanged. This grants no
+OnRep, terrain or stock-client qualification.
 
 Supplied-save state may ride along as one lossless, value-opaque preserved
 section that reconstructs the verified payload byte-identically, is carried

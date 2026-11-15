@@ -8,6 +8,7 @@ pub mod gameplay_profile;
 pub mod import_candidate;
 pub mod import_plan;
 mod json;
+pub mod leave_runtime_proof;
 pub mod metrics;
 pub mod native_c001_inventory_owners;
 pub mod native_c001_owners;

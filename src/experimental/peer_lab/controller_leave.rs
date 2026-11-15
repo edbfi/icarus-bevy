@@ -18,7 +18,7 @@ pub struct ControllerLeaveCounts {
 }
 
 pub(super) struct Operation {
-    connection: CheckpointConnection,
+    pub(super) connection: CheckpointConnection,
     key: PlayerKey,
     session_type: LeaveProspectSessionType,
     cutoff: bool,
@@ -67,6 +67,9 @@ impl PeerLab {
         address: SocketAddrV4,
         request: ControllerLeaveRequest,
     ) {
+        if !self.private_proof_ready() {
+            return;
+        }
         if self.authored_controller_leave.is_none() {
             return;
         }
@@ -81,6 +84,11 @@ impl PeerLab {
             return;
         }
         if let Some(operation) = &mut entry.controller_leave {
+            if request != ControllerLeaveRequest::Normal(Some(operation.session_type))
+                && let Some(proof) = &self.private_leave_proof
+            {
+                let _ = proof.fail(crate::leave_runtime_proof::ProofFailure::Abandoned);
+            }
             if request == ControllerLeaveRequest::Cancel
                 && operation.receipt.channel.is_none()
                 && !operation.suppressed
@@ -98,6 +106,9 @@ impl PeerLab {
             | LeaveProspectSessionType::ReturnToTitlescreen),
         )) = request
         else {
+            if let Some(proof) = &self.private_leave_proof {
+                let _ = proof.fail(crate::leave_runtime_proof::ProofFailure::Mismatch);
+            }
             return;
         };
         let (Some(connection_id), Some(epoch), Some(account), Some(slot)) = (
@@ -114,6 +125,14 @@ impl PeerLab {
         let Ok(key) = PlayerKey::new(account, slot) else {
             return;
         };
+        if let Some(proof) = &self.private_leave_proof
+            && proof
+                .normal_intent(connection_id, key, epoch, session_type)
+                .is_err()
+        {
+            self.admitting = false;
+            return;
+        }
         entry.controller_leave = Some(Operation {
             connection: CheckpointConnection {
                 address,
@@ -135,15 +154,24 @@ impl PeerLab {
     /// receipt alone establish durability; reliable admission and ACK are
     /// separate stages. Bounded by the admitted peer count, one operation each.
     pub fn bridge_controller_leaves(&mut self, registry: &mut PlayerRegistry) {
+        if !self.private_proof_ready() {
+            return;
+        }
         if self.authored_controller_leave.is_none() {
             return;
         }
         self.reconcile_player_authority(registry);
+        if !self.private_proof_ready() {
+            return;
+        }
         let mut addresses: Vec<_> = self.peers.keys().copied().collect();
         addresses.sort_unstable();
         let mut departing = Vec::new();
         let mut outgoing = Vec::new();
         for address in addresses {
+            if !self.private_proof_ready() {
+                return;
+            }
             let Some(entry) = self.peers.get_mut(&address) else {
                 continue;
             };
@@ -160,6 +188,9 @@ impl PeerLab {
                 && entry.auth_identity == Some(operation.key.account)
                 && entry.profiles.character_slot == Some(operation.key.slot);
             if !eligible {
+                if let Some(proof) = &self.private_leave_proof {
+                    let _ = proof.abandoned(epoch);
+                }
                 registry.detach(epoch);
                 continue;
             }
@@ -177,12 +208,19 @@ impl PeerLab {
                     )
                     .is_err()
                 {
+                    if let Some(proof) = &self.private_leave_proof {
+                        let _ = proof.fail(crate::leave_runtime_proof::ProofFailure::Mismatch);
+                    }
                     continue;
                 }
                 operation.cutoff = true;
             }
             if operation.receipt.settled || operation.receipt.abandoned {
-                departing.push((address, epoch));
+                let success = operation.receipt.settled && !operation.receipt.abandoned;
+                if !success && let Some(proof) = &self.private_leave_proof {
+                    let _ = proof.abandoned(epoch);
+                }
+                departing.push((address, epoch, success));
                 continue;
             }
             let durable = registry
@@ -226,24 +264,53 @@ impl PeerLab {
                         // until the whole prefix through completion settles.
                         operation.receipt = InitialisationReceipt::through(&entry.peer, channel)
                             .expect("committed leave controller channel");
+                        if let Some(proof) = &self.private_leave_proof
+                            && proof
+                                .completion_admitted(
+                                    epoch,
+                                    channel,
+                                    operation.receipt.first,
+                                    operation.receipt.last,
+                                )
+                                .is_err()
+                        {
+                            entry.controller_leave = Some(operation);
+                            self.admitting = false;
+                            return;
+                        }
                         bump(&mut self.stats.controller_leave.completions_admitted);
                         entry.ack_pending = false;
                         outgoing.push((address, sent));
                     }
                     Err(error) if transport_capacity_can_drain(entry, &error, channel) => (),
                     Err(_) => {
-                        departing.push((address, epoch));
+                        if let Some(proof) = &self.private_leave_proof {
+                            let _ = proof.abandoned(epoch);
+                        }
+                        departing.push((address, epoch, false));
                     }
                 }
             }
             entry.controller_leave = Some(operation);
         }
         for (address, sent) in outgoing {
+            if !self.private_proof_ready() {
+                return;
+            }
             self.send_all(&sent, address);
         }
-        for (address, epoch) in departing {
+        for (address, epoch, success) in departing {
             registry.detach(epoch);
+            self.private_expected_detach = success.then_some(epoch);
             self.remove_peer(address);
+            self.private_expected_detach = None;
+            if success && let Some(proof) = &self.private_leave_proof {
+                let _ = proof.detached(
+                    epoch,
+                    !registry.active_epochs().contains(&epoch),
+                    !self.peers.contains_key(&address),
+                );
+            }
         }
         // A lost completion destination suppresses delivery, never durability.
         // Pending/failed obligations survive and continue to block reattachment.

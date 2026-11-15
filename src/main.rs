@@ -14,12 +14,16 @@ use bevy::time::TimeUpdateStrategy;
 use clap::{Parser, Subcommand};
 use icarus_bevy::{
     config::ConfigOptions,
+    leave_runtime_proof::PrivateLeaveProof,
     native_player_runtime::CheckpointWriter,
     network,
     persistence::{SaveReceipt, SaveWorkerDisconnected, SnapshotStore},
     simulation::{RunClock, SimulationClock, TickMetrics, build_app, capture},
 };
 use serde_json::json;
+
+#[path = "main/private_leave_proof_config.rs"]
+mod private_leave_proof_config;
 
 #[derive(Parser)]
 #[command(
@@ -46,6 +50,11 @@ enum Command {
         /// simulated seconds and a due autosave awaits one still in flight.
         #[arg(long, requires = "max_ticks")]
         compressed: bool,
+        /// Private, case-bound leave/restart experiment. The descriptor must
+        /// be confined beneath the owned current directory; INVOCATION_ID is
+        /// supplied by the service manager. Disabled unless explicitly set.
+        #[arg(long, conflicts_with = "compressed")]
+        private_leave_proof: Option<PathBuf>,
     },
     /// Fetch the basic data the server needs from the free official ICARUS
     /// dedicated server (Steam app 2089300) anonymously, without steamcmd,
@@ -268,12 +277,46 @@ enum Command {
 }
 
 fn main() -> std::process::ExitCode {
-    match execute(Cli::parse()) {
+    // Clap can echo a rejected value. A private proof request redacts parse
+    // failures too, before any descriptor or configuration can be opened.
+    let proof_requested = std::env::args_os().any(|arg| {
+        arg == "--private-leave-proof"
+            || arg
+                .to_str()
+                .is_some_and(|value| value.starts_with("--private-leave-proof="))
+    });
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if proof_requested
+                && !matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ) =>
+        {
+            eprintln!(
+                "{}",
+                json!({"event": "fatal", "error": "private leave proof failed"})
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+        Err(error) => error.exit(),
+    };
+    let private_proof = matches!(
+        &cli.command,
+        Command::Run {
+            private_leave_proof: Some(_),
+            ..
+        }
+    );
+    match execute(cli) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!(
                 "{}",
-                json!({"event": "fatal", "error": format!("{error:#}")})
+                json!({"event": "fatal", "error": if private_proof {
+                    "private leave proof failed".to_owned()
+                } else { format!("{error:#}") }})
             );
             std::process::ExitCode::FAILURE
         }
@@ -802,7 +845,8 @@ fn execute(cli: Cli) -> Result<()> {
             options,
             max_ticks,
             compressed,
-        } => run(options, max_ticks, compressed),
+            private_leave_proof,
+        } => run(options, max_ticks, compressed, private_leave_proof),
     }
 }
 
@@ -1062,6 +1106,15 @@ fn write_run_record(record: serde_json::Value) -> Result<()> {
     writeln!(std::io::stderr().lock(), "{record}").context("write native run status")
 }
 
+fn write_private_proof_ready() -> Result<()> {
+    use std::io::Write;
+    writeln!(
+        std::io::stdout().lock(),
+        "{{\"event\":\"private_proof_ready\",\"private_proof_ready\":true}}"
+    )
+    .context("write private proof readiness")
+}
+
 fn saved(receipt: SaveReceipt, submitted: Option<Instant>) -> Result<()> {
     write_run_record(
         json!({"event": "save_committed", "generation": receipt.generation, "tick": receipt.tick,
@@ -1074,6 +1127,7 @@ struct Autosave {
     submitted: Option<Instant>,
     last_commit: Option<Duration>,
     failures: u64,
+    private_proof: bool,
 }
 
 impl Autosave {
@@ -1092,7 +1146,11 @@ impl Autosave {
                 }
                 self.submitted = None;
                 self.failures += 1;
-                write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))?;
+                write_run_record(
+                    json!({"event": "save_failed", "error": if self.private_proof {
+                    "private proof save failed".to_owned()
+                } else { format!("{error:#}") }}),
+                )?;
                 Ok(true)
             }
         }
@@ -1153,8 +1211,17 @@ fn with_native_replication_counts(
     record
 }
 
-fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Result<()> {
+fn run(
+    options: ConfigOptions,
+    max_ticks: Option<u64>,
+    compressed: bool,
+    private_leave_proof: Option<PathBuf>,
+) -> Result<()> {
     let mut config = options.resolve()?;
+    if private_leave_proof.is_some() {
+        ensure!(!compressed, "private proof requires real-time simulation");
+        private_leave_proof_config::validate_config(&config)?;
+    }
     // An installed pak supplies protocol row identities when no catalog is
     // configured. bind still requires independently authored gameplay input.
     let mut data_pak_source = config.network.data_pak.as_ref().map(|_| "configured");
@@ -1186,6 +1253,22 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if let Some(prepared) = &mut prepared {
         prepared.prepare_runtime(config.autosave_seconds)?;
     }
+    // Resolve the actual recipe and bound its journal cost before consuming an
+    // exclusive sink. The manager binds this CWD to the reviewed owned case;
+    // never derive root authority from the supplied descriptor pathname.
+    let proof = private_leave_proof
+        .as_ref()
+        .map(|descriptor| {
+            private_leave_proof_config::validate_initial_vitals(
+                players
+                    .as_ref()
+                    .context("private proof player plan missing")?
+                    .initial_vitals,
+            )?;
+            PrivateLeaveProof::open(descriptor, &std::env::current_dir()?)
+                .map_err(anyhow::Error::from)
+        })
+        .transpose()?;
     let pinned_build = prepared.as_mut().and_then(|prepared| {
         prepared
             .session_mut()
@@ -1241,6 +1324,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         SnapshotStore::open(&config.data_dir)?
     };
     let loaded = store.load()?;
+    if let Some(proof) = &proof {
+        proof.observe_load(loaded.as_ref())?;
+    }
     ensure!(
         fresh_app.is_none() || loaded.is_none(),
         "state appeared during fresh-session preflight; restart to load it"
@@ -1259,18 +1345,25 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         .map(|loaded| loaded.snapshot)
         .unwrap_or_else(|| network::fresh_player_snapshot(players.as_ref()));
     let last_release = network::open_player_snapshot(&mut snapshot, players.as_ref())?;
+    if let Some(proof) = &proof {
+        proof.observe_opened(&snapshot)?;
+    }
     if let (true, Some(players)) = (reopened, &players) {
         // Provenance only: a store reopens under any release.
-        eprintln!(
-            "{}",
-            json!({
-                "event": "player_store_reopened",
-                "last_written_build_id": last_release.as_ref().map(|pin| pin.build_id),
-                "last_written_project_version": last_release.as_ref().map(|pin| pin.project_version.as_str()),
-                "build_id": players.release.build_id,
-                "project_version": players.release.project_version,
-            })
-        );
+        if proof.is_some() {
+            write_run_record(json!({"event": "player_store_reopened", "reopened": true}))?;
+        } else {
+            eprintln!(
+                "{}",
+                json!({
+                    "event": "player_store_reopened",
+                    "last_written_build_id": last_release.as_ref().map(|pin| pin.build_id),
+                    "last_written_project_version": last_release.as_ref().map(|pin| pin.project_version.as_str()),
+                    "build_id": players.release.build_id,
+                    "project_version": players.release.project_version,
+                })
+            );
+        }
     }
     ensure!(
         config.network.hosting.is_none() || snapshot.preserved_prospect.is_none(),
@@ -1392,6 +1485,19 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
     if let Some(prepared) = &mut prepared {
         prepared.prepare_app(&mut app)?;
     }
+    if let Some(proof) = &proof {
+        app.world_mut()
+            .get_resource_mut::<icarus_bevy::native_player_runtime::PlayerRegistry>()
+            .context("private proof player owner missing")?
+            .enable_private_leave_proof(proof.clone())?;
+        prepared
+            .as_mut()
+            .context("private proof network owner missing")?
+            .session_mut()
+            .lab
+            .enable_private_leave_proof(proof.clone())?;
+        proof.health()?;
+    }
     let mut hosting = config
         .network
         .hosting
@@ -1436,9 +1542,11 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         submitted: None,
         last_commit: None,
         failures: 0,
+        private_proof: proof.is_some(),
     };
     let mut clamped_frames = 0_u64;
     let mut previous_frame = Instant::now();
+    let mut proof_ready_reported = false;
     let interval = config.tick_interval();
     let run_result = (|| -> Result<()> {
         activation_result?;
@@ -1470,9 +1578,22 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
                     "auth_request_budget": icarus_bevy::steam_service::ServiceLimits::default().max_requests,
                     "query_port": hosting.query_port});
             }
+            if proof.is_some() {
+                // Proof-mode public startup output is an explicit count/bool
+                // allowlist. Keep paths, addresses and configured values out.
+                record = json!({"event": "network_listening", "experimental": true,
+                    "max_players": config.network.max_players,
+                    "release_build_id": pinned_build,
+                    "spawn_points": config.network.spawn.points.len(),
+                    "private_leave_proof": true,
+                    "icarus_compatible": false, "gameplay_ready": false});
+            }
             write_run_record(with_native_replication_counts(record, app.world()))?;
         }
         loop {
+            if let Some(proof) = &proof {
+                proof.health()?;
+            }
             if stopping.load(Ordering::SeqCst)
                 || hosting.as_ref().is_some_and(|hosting| hosting.stopped())
             {
@@ -1488,12 +1609,24 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
             previous_frame = frame;
             // Manual runner still executes Bevy's complete app schedules and clocks.
             app.update();
+            if let Some(proof) = &proof {
+                proof.health()?;
+            }
             icarus_bevy::native_lifecycle_runtime::modifier_runtime_health(app.world())?;
             icarus_bevy::native_player_runtime::consumption_runtime_health(app.world())?;
             network::authored_clock_runtime_health(app.world())?;
             let tick = app.world().resource::<SimulationClock>().tick;
             let now = clock.elapsed(tick);
             autosave.observe(writer.poll(app.world_mut()), now)?;
+            if let Some(proof) = &proof {
+                proof.health()?;
+                // This synchronizes the terminal receipt only after the core's
+                // exact chain is complete. Menu confirmation stays external.
+                if proof.phase_ready()? && !proof_ready_reported {
+                    write_private_proof_ready()?;
+                    proof_ready_reported = true;
+                }
+            }
             if let Some(hosting) = &hosting {
                 let membership = app
                     .world_mut()
@@ -1601,7 +1734,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         let shutdown_output = match writer.settle_before(app.world_mut(), deadline)? {
             Some(Ok(receipt)) => saved(receipt, autosave.submitted.take()),
             Some(Err(error)) => {
-                write_run_record(json!({"event": "save_failed", "error": format!("{error:#}")}))
+                write_run_record(json!({"event": "save_failed", "error": if proof.is_some() {
+                    "private proof save failed".to_owned()
+                } else { format!("{error:#}") }}))
             }
             None => Ok(()),
         };
@@ -1624,6 +1759,9 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         shutdown_output?;
         final_output?;
         stopped_output?;
+        if let Some(proof) = &proof {
+            proof.finish()?;
+        }
         Ok(())
     })();
     // Keep final aggregate leave failures visible even when writer drain or
@@ -1640,13 +1778,13 @@ fn run(options: ConfigOptions, max_ticks: Option<u64>, compressed: bool) -> Resu
         && let Err(error) = &hosting_result
     {
         let _ = write_run_record(json!({"event": "shutdown_failed", "phase": "hosting",
-            "error": format!("{error:#}")}));
+            "error": if proof.is_some() { "private proof hosting failed".to_owned() } else { format!("{error:#}") }}));
     }
     if (run_result.is_err() || hosting_result.is_err())
         && let Err(error) = &finalization_result
     {
         let _ = write_run_record(json!({"event": "shutdown_failed", "phase": "finalization",
-            "error": format!("{error:#}")}));
+            "error": if proof.is_some() { "private proof finalization failed".to_owned() } else { format!("{error:#}") }}));
     }
     run_result?;
     hosting_result?;
