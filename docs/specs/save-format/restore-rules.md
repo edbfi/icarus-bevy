@@ -157,12 +157,12 @@ addresses retain helper names or stand alone.
   `Activate(false)` on the first `bAutoActivate` (`+0x8b & 1`) match and `+0x280`
   `Deactivate()` on the rest. Subclass/Blueprint overrides, downstream callee
   effects, owner/row binding and live execution remain unqualified.
-  Method metadata reaches the complete component header through its forward
-  (F-1190): `0x20195b`, declared size 968, count 112, FIELDLIST `0x20195a`,
-  vshape `0x1fdd9d`. FName forward `0x1d6a` matches complete `0x2ac3`
-  (declared size 8, count 79, FIELDLIST `0x2abf`). Members, storage, row
-  binding and native ownership remain unqualified. Return, receiver and
-  argument-list references stay opaque.
+  Component declarations link `DataRowHandleNew +0xb4` through the retained
+  row-handle/FRowHandle chain to `RowName +8`/FName (F-1191). FName declares
+  `ComparisonIndex +0`/type `0x28d8` and `Number +4`/simple type `0x75`.
+  Method, procedure and class identities agree; the existing empty argument
+  list matches. Return/this definitions, widths, inherited storage and
+  comparator operand/receiver associations remain unqualified.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
   match (`-1` disables), else last opaque-comparison match; request virtual
@@ -190,5 +190,5 @@ addresses retain helper names or stand alone.
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937, F-940, F-1190; M-1431 to M-1438; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+F-750, F-897, F-930, F-937, F-940, F-1191; M-1431 to M-1441; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
 M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.
