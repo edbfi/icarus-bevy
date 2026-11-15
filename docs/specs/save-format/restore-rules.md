@@ -157,13 +157,13 @@ addresses retain helper names or stand alone.
   `Activate(false)` on the first `bAutoActivate` (`+0x8b & 1`) match and `+0x280`
   `Deactivate()` on the rest. Subclass/Blueprint overrides, downstream callee
   effects, owner/row binding and live execution remain unqualified.
-  `DataRowHandleNew +0xb4` joins the row-handle/FRowHandle chain and
-  `RowName +8`/FName (F-1191), which declares
-  `ComparisonIndex +0`/FNameEntryId and `Number +4`/simple type `0x75`.
-  FNameEntryId forward `0x28d8` joins complete `0x310dd`: declared size 4,
-  17 members, opaque FIELDLIST `0x310c3`; this proves no storage layout.
-  Method identities and the empty argument list match; return/this types, member
-  widths, inherited storage and comparator receiver bindings remain open.
+  `DataRowHandleNew +0xb4` joins FRowHandle and `RowName +8`/FName
+  (F-1191). FName declares `ComparisonIndex +0`/FNameEntryId and `Number +4`.
+  FNameEntryId forward `0x28d8` joins complete `0x310dd` (declared size 4):
+  16 declaration entries have weight 17, including `Value +0`. Number and
+  Value declare direct unsigned32 (`0x75`). Method identities and the empty
+  argument list agree. Occupied/inherited storage, return/this definitions,
+  aggregate ABI, comparator associations and native ownership remain open.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection matches in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
   match (`-1` disables), else last opaque-comparison match; request virtual
@@ -191,5 +191,5 @@ addresses retain helper names or stand alone.
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937, F-940, F-1191; M-1431 to M-1448; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+F-750, F-897, F-930, F-937, F-940, F-1191; M-1431 to M-1451; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
 M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.
