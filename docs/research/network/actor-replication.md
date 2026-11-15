@@ -11,9 +11,13 @@ Actor opens, codecs, relevancy and readiness after admission.
 ## Current answer
 
 Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034; lifetime F-1182; entry F-1185.
-Controller declarations F-1193/F-1197: matching counts, pointer/modifier codes;
-122-byte coverage unchanged. TPI 8902/15135 opaque; ABI/entry binding,
-counts/cache and wire 149/169 unqualified; F-1177 active.
+Controller F-1197 qualifies exact forward types, selected construction
+arguments and a 908-byte listing within M-1462's declared extent; the older
+122-byte trace retains its limits. Physical registration counts, cache-miss
+consumer and leave state-notification candidate are static only. F-1193
+retains its earlier evidence scope. General ABI/flow, actual cache ancestry/
+order, wire 149/169, request codec, durability and client outcome remain
+unqualified; F-1177 active.
 
 [Visibility](../../specs/network/visibility-state.md): wire/staging/capture,
 conditional consumer and inert models F-1020 to F-1024; replay F-1034;
@@ -52,9 +56,11 @@ UID/membership F-1061/F-945/F-946/F-949 to F-951; loadout/backend F-1062/F-958.
 - Stat UI and movement fidelity (U-080), spawn placement and normal leave (U-038);
   listing L_s only with
   a join password, enforced as the original does (F-1161 to F-1163).
+- F-1197: runtime field-list producer and actual class ancestry/cache order
+  first, then leave request/notification binding and persistence policy.
 - Quest exclusions (U-076) and saved-container gaps/unreferenced-container
   nulling: [world-manager open questions](../../specs/network/world-managers.md#open-questions).
 
 ## Artifacts
 
-F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407; M-1415; M-1421 to M-1423. M-1459 to M-1462, M-1477 to M-1485.
+F-762/F-1015 to F-1024/F-1027/F-1028 index artifacts; M-1299 to M-1330, M-1335 to M-1352, M-1354 to M-1358, M-1363 to M-1374, M-1376 to M-1382; M-1403 to M-1407; M-1415; M-1421 to M-1423. M-1459 to M-1462, M-1477 to M-1485, M-1488 to M-1491.
