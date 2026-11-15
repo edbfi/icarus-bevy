@@ -27,6 +27,7 @@ pub struct PlayerRegistry {
     leaves: BTreeMap<PlayerKey, leave::LeaveOperation>,
     writer_failed: bool,
     leave_counts: PlayerLeaveCounts,
+    private_leave_proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
 }
 impl std::fmt::Debug for PlayerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,10 +59,34 @@ impl PlayerRegistry {
             leaves: BTreeMap::new(),
             writer_failed: false,
             leave_counts: PlayerLeaveCounts::default(),
+            private_leave_proof: None,
         })
     }
     pub fn snapshot(&self) -> PlayerSnapshot {
         self.snapshot.clone()
+    }
+    pub fn enable_private_leave_proof(
+        &mut self,
+        proof: crate::leave_runtime_proof::PrivateLeaveProof,
+    ) -> Result<(), crate::leave_runtime_proof::ProofError> {
+        proof.health()?;
+        if self.private_leave_proof.is_some()
+            || !self.attachments.is_empty()
+            || !self.leaves.is_empty()
+        {
+            return Err(proof.fail(crate::leave_runtime_proof::ProofFailure::Order));
+        }
+        proof.registry_context(&self.snapshot)?;
+        self.private_leave_proof = Some(proof);
+        Ok(())
+    }
+    pub fn is_activated(&self, epoch: u64) -> bool {
+        self.attachments.get(&epoch).is_some_and(|a| a.activated)
+    }
+    fn proof_health(&self) -> Result<(), PlayerError> {
+        self.private_leave_proof.as_ref().map_or(Ok(()), |p| {
+            p.health().map_err(|_| PlayerError::InvalidState)
+        })
     }
     pub fn reserve(
         &mut self,
@@ -69,6 +94,7 @@ impl PlayerRegistry {
         epoch: u64,
         initial: PlayerCheckpoint,
     ) -> Result<PlayerProjection, PlayerError> {
+        self.proof_health()?;
         if epoch == 0 {
             return Err(PlayerError::InvalidIdentity);
         }
@@ -146,9 +172,21 @@ impl PlayerRegistry {
                 activated: false,
             },
         );
-        self.projection(epoch).ok_or(PlayerError::Missing)
+        let projection = self.projection(epoch).ok_or(PlayerError::Missing)?;
+        if let Some(proof) = &self.private_leave_proof {
+            proof
+                .reserved(key, epoch, projection, self.snapshot.context())
+                .map_err(|_| PlayerError::InvalidState)?;
+        }
+        Ok(projection)
     }
     pub fn activate(&mut self, epoch: u64) -> Result<PlayerProjection, PlayerError> {
+        self.proof_health()?;
+        if let Some(proof) = &self.private_leave_proof
+            && !proof.first_pawn_admitted(epoch)
+        {
+            return Err(PlayerError::InvalidState);
+        }
         if self.is_leaving(epoch) {
             return Err(PlayerError::Conflict);
         }
@@ -163,6 +201,13 @@ impl PlayerRegistry {
                 .records
                 .try_reserve(1)
                 .map_err(|_| PlayerError::Limit)?;
+        }
+        if !self.is_activated(epoch)
+            && let Some(proof) = &self.private_leave_proof
+        {
+            proof
+                .activated(epoch)
+                .map_err(|_| PlayerError::InvalidState)?;
         }
         let held = self
             .attachments
@@ -230,6 +275,7 @@ impl PlayerRegistry {
     /// Returns changed records; zero currents do not consume revisions. Detached
     /// records and reservations remain unchanged, with no offline catch-up.
     pub fn consume_activated(&mut self, rates: ConsumptionRates) -> Result<usize, PlayerError> {
+        self.proof_health()?;
         if !(1..=64).contains(&self.max_live) || self.attachments.len() > self.max_live {
             return Err(PlayerError::Limit);
         }
@@ -267,10 +313,31 @@ impl PlayerRegistry {
             }
         }
         let changed = edits.len();
+        let proof_context = self
+            .private_leave_proof
+            .as_ref()
+            .map(|_| self.snapshot.context().clone());
         for (index, _, revision, checkpoint) in edits {
             let record = &mut self.snapshot.records[index];
+            let before = self.private_leave_proof.as_ref().map(|_| record.clone());
             record.checkpoint = checkpoint;
             record.revision = revision;
+            if let (Some(proof), Some(before)) = (&self.private_leave_proof, before) {
+                let epoch = self
+                    .attachments
+                    .iter()
+                    .find(|(_, a)| a.key == record.key)
+                    .map(|(epoch, _)| *epoch)
+                    .ok_or(PlayerError::Missing)?;
+                proof
+                    .consumed(
+                        epoch,
+                        &before,
+                        record,
+                        proof_context.as_ref().expect("proof context"),
+                    )
+                    .map_err(|_| PlayerError::InvalidState)?;
+            }
         }
         Ok(changed)
     }

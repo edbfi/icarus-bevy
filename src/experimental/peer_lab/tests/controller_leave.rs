@@ -21,6 +21,9 @@ use crate::{
 };
 use bevy::{prelude::App, time::TimeUpdateStrategy};
 
+#[path = "private_leave_proof.rs"]
+mod private_proof_tests;
+
 fn plan() -> ControllerLeavePlan {
     let mut release = ReleaseProfile::fixture("3.0.36");
     release.qualifications = Some(ReleaseQualifications {
@@ -52,6 +55,13 @@ struct Fixture {
 
 impl Fixture {
     fn new(enabled: bool) -> Self {
+        Self::with_proof(enabled, None)
+    }
+
+    fn with_proof(
+        enabled: bool,
+        proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
+    ) -> Self {
         let (mut lab, mut registry) = (lab(), registry());
         lab.config.packet.sent_capacity = 16;
         // Retain the checkpoint fixture's authored opens, selecting the
@@ -65,11 +75,25 @@ impl Fixture {
         if enabled {
             lab.enable_authored_controller_leave(plan.clone()).unwrap();
         }
+        if let Some(proof) = proof {
+            registry.enable_private_leave_proof(proof.clone()).unwrap();
+            lab.enable_private_leave_proof(proof.clone()).unwrap();
+            // Composition fixtures begin at synthetic accepted authentication;
+            // the separate admission tests exercise actual wire Join handling.
+            proof
+                .joined(1, crate::leave_runtime_proof::ProofJoinKind::Join)
+                .unwrap();
+        }
         let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
         identify(&mut lab, &socket, &mut client, address, 3, 3);
         lab.bridge_player_checkpoints(&mut registry);
         deliver_bunches(&mut lab, &socket, &mut client, |_| true);
         finish(&mut lab, &mut registry, &socket, &mut client, address);
+        if lab.private_leave_proof.is_some() {
+            registry
+                .consume_activated(ConsumptionRates::new(0, 0, 1).unwrap())
+                .unwrap();
+        }
         let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
         let raw = client.initial_reliable().1 + 1;
         let snapshot = WorldSnapshot {
@@ -222,6 +246,13 @@ impl Fixture {
 
     fn writer(&self) -> (tempfile::TempDir, CheckpointWriter) {
         let directory = tempfile::tempdir().unwrap();
+        if self.lab.private_leave_proof.is_some() {
+            use std::os::unix::fs::PermissionsExt;
+            // The proof reader deliberately refuses a publicly traversable
+            // store; tempfile's directory mode is otherwise umask-dependent.
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
         let writer =
             CheckpointWriter::spawn(SnapshotStore::open(directory.path()).unwrap()).unwrap();
         (directory, writer)
@@ -786,11 +817,29 @@ fn real_poll_plugin_freezes_before_zero_or_multiple_consumption_ticks() {
 
 #[test]
 fn completion_ack_waits_for_earlier_reliable_bunch_but_not_later_traffic() {
-    let mut f = Fixture::new(true);
+    check_completion_gap(Fixture::new(true));
+}
+
+fn check_completion_gap(mut f: Fixture) {
     let (_directory, mut writer) = f.writer();
-    f.send(Request::Normal(Some(Kind::Quit)));
+    let kind = if f.lab.private_leave_proof.is_some() {
+        Kind::ReturnToCharacterSelect
+    } else {
+        Kind::Quit
+    };
+    f.send(Request::Normal(Some(kind)));
     f.bridge();
+    if let Some(proof) = &f.lab.private_leave_proof {
+        proof
+            .health()
+            .expect("exact registry cutoff before gap test");
+    }
     f.save(&mut writer);
+    if let Some(proof) = &f.lab.private_leave_proof {
+        proof
+            .health()
+            .expect("exact writer readback before gap test");
+    }
     let channel = f.lab.peers[&f.address].player_controller_channel.unwrap();
     let payload = encode_actor_bunch_body(
         &ActorBunchBody {
@@ -811,7 +860,7 @@ fn completion_ack_waits_for_earlier_reliable_bunch_but_not_later_traffic() {
     assert!(f.lab.send(&predecessor, f.address));
     f.bridge();
     let received = deliver_bunches(&mut f.lab, &f.socket, &mut f.client, |index| index != 0);
-    assert_eq!(f.completions(&received), vec![Kind::Quit as u32]);
+    assert_eq!(f.completions(&received), vec![kind as u32]);
     f.bridge();
     assert!(
         f.lab.peers.contains_key(&f.address),

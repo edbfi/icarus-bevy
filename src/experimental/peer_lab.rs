@@ -3480,6 +3480,10 @@ impl SessionSocket {
 /// The loopback peer lab. `Debug` reports only the peer count and counters.
 #[derive(Resource)]
 pub struct PeerLab {
+    private_leave_proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
+    private_join_remaining: Option<u8>,
+    private_join_failed: bool,
+    private_expected_detach: Option<u64>,
     authored_controller_leave: Option<super::release::ControllerLeavePlan>,
     /// Authored checkpoint experiment; absent keeps the qualified ordering.
     checkpoint_initial_vitals: Option<super::pawn_open::CharacterVitals>,
@@ -3609,6 +3613,85 @@ pub struct CheckpointConnection {
 }
 
 impl PeerLab {
+    /// One successful admission for the lifetime of this explicit private case,
+    /// shared by primary and split joins, independently of current occupancy.
+    pub fn enable_private_join_budget(&mut self, budget: u8) -> Result<()> {
+        ensure!(
+            budget == 1
+                && self.peers.is_empty()
+                && self.peak_peers == 0
+                && self.private_join_remaining.is_none(),
+            "private join budget requires one admission before peers"
+        );
+        self.private_join_remaining = Some(budget);
+        Ok(())
+    }
+
+    pub fn enable_private_leave_proof(
+        &mut self,
+        proof: crate::leave_runtime_proof::PrivateLeaveProof,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty()
+                && self.peak_peers == 0
+                && self.private_leave_proof.is_none()
+                && self.authored_controller_leave.is_some()
+                && self.checkpoint_initial_vitals.is_some(),
+            "private leave proof requires authored checkpoints/leave before peers"
+        );
+        proof.health()?;
+        if self.private_join_remaining.is_none() {
+            self.enable_private_join_budget(1)?;
+        }
+        ensure!(
+            self.private_join_remaining == Some(1),
+            "private leave admission budget differs"
+        );
+        self.private_leave_proof = Some(proof);
+        Ok(())
+    }
+
+    fn private_proof_ready(&mut self) -> bool {
+        let healthy = !self.private_join_failed
+            && self
+                .private_leave_proof
+                .as_ref()
+                .is_none_or(|proof| proof.health().is_ok());
+        if !healthy {
+            self.admitting = false;
+        }
+        healthy
+    }
+
+    fn private_join_available(&mut self) -> bool {
+        if self.private_join_remaining == Some(0) {
+            self.private_join_failed = true;
+            self.admitting = false;
+            if let Some(proof) = &self.private_leave_proof {
+                let _ = proof.fail(crate::leave_runtime_proof::ProofFailure::Mismatch);
+            }
+            return false;
+        }
+        self.private_proof_ready()
+    }
+
+    fn private_join_committed(&mut self, connection: u32, split: bool) -> bool {
+        if let Some(remaining) = &mut self.private_join_remaining {
+            *remaining -= 1;
+        }
+        if let Some(proof) = &self.private_leave_proof {
+            let kind = if split {
+                crate::leave_runtime_proof::ProofJoinKind::SplitJoin
+            } else {
+                crate::leave_runtime_proof::ProofJoinKind::Join
+            };
+            if proof.joined(connection, kind).is_err() {
+                self.admitting = false;
+                return false;
+            }
+        }
+        true
+    }
     /// Authored control/test boundary only; no inbound field dispatch invokes
     /// this API. Resolve current authenticated identity and exact connection
     /// epoch before taking the synchronous registry cutoff. An address alone
@@ -3749,11 +3832,17 @@ impl PeerLab {
     /// Bounded synchronous bridge, sequenced after packet/auth polling and
     /// before simulation/capture. Registry ownership outlives the lab.
     pub fn bridge_player_checkpoints(&mut self, registry: &mut PlayerRegistry) {
+        if !self.private_proof_ready() {
+            return;
+        }
         let Some(initial_vitals) = self.checkpoint_initial_vitals else {
             return;
         };
         // Share the narrow eligibility cut with fixed-step consumption.
         self.reconcile_player_authority(registry);
+        if !self.private_proof_ready() {
+            return;
+        }
         self.refresh_checkpoint_projections(registry);
         let live: BTreeSet<u64> = self
             .peers
@@ -3772,6 +3861,9 @@ impl PeerLab {
         let mut addresses: Vec<_> = self.peers.keys().copied().collect();
         addresses.sort_unstable();
         for address in addresses {
+            if !self.private_proof_ready() {
+                return;
+            }
             let Some(entry) = self.peers.get(&address) else {
                 continue;
             };
@@ -3821,6 +3913,26 @@ impl PeerLab {
                         continue;
                     }
                 };
+                if let Some(proof) = &self.private_leave_proof {
+                    let connection = self
+                        .peers
+                        .get(&address)
+                        .and_then(|entry| entry.connection_id)
+                        .unwrap_or(0);
+                    if proof
+                        .bind_reservation(
+                            connection,
+                            key,
+                            epoch,
+                            projection,
+                            registry.is_activated(epoch),
+                        )
+                        .is_err()
+                    {
+                        self.admitting = false;
+                        return;
+                    }
+                }
                 if projection.is_new {
                     self.spawn.commit(&resolution);
                     count_placement(&mut self.stats, &resolution);
@@ -3842,6 +3954,9 @@ impl PeerLab {
                     }
                 }
                 self.continue_initial_opens(address);
+                if !self.private_proof_ready() {
+                    return;
+                }
             }
             let Some(entry) = self.peers.get(&address) else {
                 continue;
@@ -3849,7 +3964,13 @@ impl PeerLab {
             let Some(epoch) = entry.checkpoint_epoch else {
                 continue;
             };
-            let activate = entry.profiles.completed && friends_ready && !registry.is_leaving(epoch);
+            let activate = entry.profiles.completed
+                && friends_ready
+                && !registry.is_leaving(epoch)
+                && self
+                    .private_leave_proof
+                    .as_ref()
+                    .is_none_or(|proof| proof.first_pawn_admitted(epoch));
             let projection = if activate {
                 registry.activate(epoch).ok()
             } else {
@@ -4101,6 +4222,10 @@ impl PeerLab {
     ) -> Self {
         Self {
             authored_map_url: None,
+            private_leave_proof: None,
+            private_join_remaining: None,
+            private_join_failed: false,
+            private_expected_detach: None,
             authored_controller_leave: None,
             checkpoint_initial_vitals: None,
             next_checkpoint_epoch: 1,
@@ -5766,6 +5891,17 @@ impl PeerLab {
     // original's FreeUniqueID call timing has not been established.
     fn remove_peer(&mut self, address: SocketAddrV4) -> Option<PeerEntry> {
         let entry = self.peers.remove(&address)?;
+        if let Some(proof) = &self.private_leave_proof
+            && entry.connection_id.is_some()
+            && (self.private_expected_detach.is_none()
+                || entry.checkpoint_epoch != self.private_expected_detach)
+        {
+            if let Some(epoch) = entry.checkpoint_epoch {
+                let _ = proof.abandoned(epoch);
+            } else {
+                let _ = proof.fail(crate::leave_runtime_proof::ProofFailure::Abandoned);
+            }
+        }
         if let Some(record) = &entry.connected_player {
             // `RemoveConnectedPlayer` drops the record from the array; the
             // remaining connections that listed it get the shrunk array at the
@@ -7798,6 +7934,9 @@ impl PeerLab {
     }
 
     fn data(&mut self, address: SocketAddrV4, length: usize, now: Instant) {
+        if !self.private_proof_ready() {
+            return;
+        }
         if self.authenticator.is_some()
             && !self
                 .peers
@@ -7852,6 +7991,20 @@ impl PeerLab {
                 let summary = received.summary();
                 match summary.disposition {
                     PacketDisposition::Accepted { .. } => {
+                        if let Some(proof) = &self.private_leave_proof
+                            && entry.connection_id.is_some()
+                            && summary.released_actor_channels.iter().any(|channel| {
+                                Some(*channel) == entry.player_controller_channel
+                                    || self
+                                        .pawn_open
+                                        .as_ref()
+                                        .is_some_and(|(_, pawn, _)| pawn == channel)
+                            })
+                        {
+                            let _ = proof.abandoned(entry.checkpoint_epoch.unwrap_or(0));
+                            self.admitting = false;
+                            return;
+                        }
                         // Observe before inbound calls or retries can enqueue
                         // more traffic. NAKs and close ACKs cannot settle opens.
                         if !summary.acked.is_empty() {
@@ -7863,7 +8016,31 @@ impl PeerLab {
                                 );
                                 if operation.receipt.settled && !settled {
                                     bump(&mut self.stats.controller_leave.completion_prefix_acked);
+                                    if let Some(proof) = &self.private_leave_proof {
+                                        let _ = proof.prefix_acked(
+                                            operation.connection.epoch,
+                                            operation
+                                                .receipt
+                                                .channel
+                                                .expect("settled leave channel"),
+                                            operation.receipt.first,
+                                            operation.receipt.last,
+                                        );
+                                    }
                                 }
+                                if operation.receipt.abandoned
+                                    && let Some(proof) = &self.private_leave_proof
+                                {
+                                    let _ = proof.abandoned(operation.connection.epoch);
+                                }
+                            }
+                            if self
+                                .private_leave_proof
+                                .as_ref()
+                                .is_some_and(|proof| proof.health().is_err())
+                            {
+                                self.admitting = false;
+                                return;
                             }
                             entry.initialisation_request_receipt.observe_positive_ack(
                                 &entry.peer,
@@ -8567,6 +8744,9 @@ impl PeerLab {
     }
 
     fn controller_call(&mut self, address: SocketAddrV4, call: ControllerCall) {
+        if !self.private_proof_ready() {
+            return;
+        }
         let Some(entry) = self.peers.get_mut(&address) else {
             return;
         };
@@ -8955,6 +9135,9 @@ impl PeerLab {
     /// finalises; then each completed player finalises once, which restores
     /// a returning pawn and adds a new player to History.
     fn finalise_connected_players(&mut self) {
+        if !self.private_proof_ready() {
+            return;
+        }
         if self.peers.values().any(|entry| {
             entry.player.is_some()
                 && (entry.friends_query_pending || !entry.profiles.friend_ids_ready)
@@ -10160,6 +10343,9 @@ impl PeerLab {
     /// Apply the reply policy (module docs) to delivered messages in order,
     /// stopping after a reply that closes the peer.
     fn answer(&mut self, address: SocketAddrV4, messages: &[Decoded]) {
+        if !self.private_proof_ready() {
+            return;
+        }
         // The admission transition has not committed while its reply waits.
         // Suppress additional dispatch rather than retaining arbitrary client
         // payloads or repeating PreLogin. Packet notifications still run above.
@@ -10171,6 +10357,9 @@ impl PeerLab {
             return;
         }
         for decoded in messages {
+            if !self.private_proof_ready() {
+                return;
+            }
             let message = match decoded {
                 Decoded::Message(message) => message,
                 Decoded::Fallback(fallback) => {
@@ -10258,6 +10447,9 @@ impl PeerLab {
     }
 
     fn reply_for(&mut self, address: SocketAddrV4, message: &ControlMessage) -> Option<Reply> {
+        if !self.private_proof_ready() {
+            return None;
+        }
         match message {
             ControlMessage::Hello { version, token, .. } => {
                 match self.config.local_network_version {
@@ -10350,6 +10542,13 @@ impl PeerLab {
             ControlMessage::Join => {
                 let admission = self.config.admission?;
                 let occupancy = self.occupancy(Some(address));
+                if self.peers.get(&address)?.admission.has_player_controller {
+                    bump(&mut self.stats.duplicate_joins_ignored);
+                    return None;
+                }
+                if !self.private_join_available() {
+                    return None;
+                }
                 let entry = self.peers.get_mut(&address)?;
                 if !entry.admission.on_join_spawned() {
                     bump(&mut self.stats.duplicate_joins_ignored);
@@ -10373,6 +10572,9 @@ impl PeerLab {
                 match result {
                     Ok(outcome) => {
                         let connection_id = self.next_connection_id;
+                        if !self.private_join_committed(connection_id, false) {
+                            return None;
+                        }
                         self.next_connection_id = self.next_connection_id.wrapping_add(1).max(1);
                         if let Some(entry) = self.peers.get_mut(&address) {
                             entry.player = Some(RegisteredPlayer {
@@ -10391,6 +10593,9 @@ impl PeerLab {
             }
             ControlMessage::SplitJoin { url, .. } => {
                 let admission = self.config.admission?;
+                if !self.private_join_available() {
+                    return None;
+                }
                 let occupancy = self.occupancy(None);
                 let entry = self.peers.get(&address)?;
                 let next_split = entry.splitscreen_count.saturating_add(1);
@@ -10411,6 +10616,10 @@ impl PeerLab {
                 self.consume_player_id(&result);
                 match result {
                     Ok(_) => {
+                        let connection = self.peers.get(&address)?.connection_id.unwrap_or(0);
+                        if !self.private_join_committed(connection, true) {
+                            return None;
+                        }
                         if let Some(entry) = self.peers.get_mut(&address) {
                             entry.splitscreen_count = next_split;
                         }
@@ -10453,6 +10662,9 @@ impl PeerLab {
     /// Build and send one reply; a closing reply then removes the peer.
     /// Returns `false` when the peer is gone or the reply could not be built.
     fn send_reply(&mut self, address: SocketAddrV4, reply: &Reply) -> bool {
+        if !self.private_proof_ready() {
+            return false;
+        }
         let message = match reply {
             Reply::OpenPlayerController => return self.send_player_controller_open(address),
             Reply::Challenge => lab_challenge().map(|token| ControlMessage::Challenge { token }),
@@ -10568,6 +10780,9 @@ impl PeerLab {
     /// Start the bounded initial-open sequence once for this Join. Duplicate
     /// Join is rejected by admission; a committed controller is never reopened.
     fn send_player_controller_open(&mut self, address: SocketAddrV4) -> bool {
+        if !self.private_proof_ready() {
+            return false;
+        }
         if self.player_controller_open.is_none() {
             return false;
         }
@@ -10733,6 +10948,9 @@ impl PeerLab {
     }
 
     fn continue_initial_opens(&mut self, address: SocketAddrV4) {
+        if !self.private_proof_ready() {
+            return;
+        }
         loop {
             let Some(pending) = self
                 .peers
@@ -10957,6 +11175,9 @@ impl PeerLab {
         controller: u32,
         player_state: u32,
     ) -> InitialOpenOutcome {
+        if !self.private_proof_ready() {
+            return InitialOpenOutcome::Failed;
+        }
         let (Some((plan, channel, content)), Some(controller_plan)) =
             (&self.pawn_open, &self.player_controller_open)
         else {
@@ -11034,10 +11255,56 @@ impl PeerLab {
                     *channel,
                     entry.peer.connection_byte_order(),
                 )?;
+                if let Some(proof) = &self.private_leave_proof {
+                    let epoch = entry
+                        .checkpoint_epoch
+                        .context("private pawn epoch missing")?;
+                    let projection = entry
+                        .checkpoint_projection
+                        .context("private pawn projection missing")?;
+                    if projection
+                        .checkpoint
+                        .vitals
+                        .values()
+                        .iter()
+                        .any(|(handle, value)| {
+                            state.content.character_state.get(handle) != Some(value)
+                        })
+                    {
+                        return Err(proof
+                            .fail(crate::leave_runtime_proof::ProofFailure::Mismatch)
+                            .into());
+                    }
+                    proof.pawn_composed(
+                        epoch,
+                        projection,
+                        state.location,
+                        projection.checkpoint.vitals,
+                        *channel,
+                        cache.actor_guid(state.key)?,
+                        &open.bunch.payload,
+                        plan,
+                        entry.peer.connection_byte_order(),
+                    )?;
+                }
                 let export_payloads: Vec<Payload> = open.exports.into_iter().collect();
                 let sent = entry
                     .peer
                     .reliable_actor_open_datagrams(&open.bunch, &export_payloads)?;
+                if let Some(proof) = &self.private_leave_proof {
+                    let epoch = entry
+                        .checkpoint_epoch
+                        .context("private pawn epoch missing")?;
+                    let receipt = InitialisationReceipt::through(&entry.peer, *channel)
+                        .context("private pawn receipt missing")?;
+                    proof.pawn_admitted(
+                        epoch,
+                        *channel,
+                        cache.actor_guid(state.key)?,
+                        receipt.first,
+                        receipt.last,
+                    )?;
+                }
                 Ok((sent, temperature))
             },
         );
@@ -11427,6 +11694,9 @@ impl PeerLab {
     }
 
     fn send(&mut self, datagram: &[u8], address: SocketAddrV4) -> bool {
+        if !self.private_proof_ready() {
+            return false;
+        }
         match self.socket.send_to(datagram, address) {
             Ok(sent) if sent == datagram.len() => true,
             _ => {
@@ -11545,13 +11815,22 @@ impl PeerLab {
     /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks. The
     /// [`PeerLabPlugin`] runs this once per app update.
     pub fn poll(&mut self) {
+        if !self.private_proof_ready() {
+            return;
+        }
         self.poll_authentication();
+        if !self.private_proof_ready() {
+            return;
+        }
         let now = Instant::now();
         self.expire_idle(now);
         self.expire_stalled_delivery(now);
         self.expire_friends_queries(now);
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
+            if !self.private_proof_ready() {
+                return;
+            }
             let (length, source) = match self.socket.recv_from(&mut self.buffer) {
                 Ok(received) => received,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -11591,10 +11870,22 @@ impl PeerLab {
                 self.data(address, length, now);
             }
         }
+        if !self.private_proof_ready() {
+            return;
+        }
         self.retry_control_replies();
+        if !self.private_proof_ready() {
+            return;
+        }
         self.retry_initial_opens();
+        if !self.private_proof_ready() {
+            return;
+        }
         self.retry_controller_possession();
         self.close_abandoned_possessions();
+        if !self.private_proof_ready() {
+            return;
+        }
         self.retry_controller_startup();
         self.retry_friends_queries();
         self.retry_pending_profile_exchanges();
@@ -21505,6 +21796,7 @@ mod tests {
     mod move_acks;
     mod pawn_capture;
     mod player_checkpoints;
+    mod private_join_budget;
     mod record_ack_gating;
     mod spawn_placement;
     mod authored_clock_integration {

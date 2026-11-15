@@ -41,6 +41,8 @@ mod modifier_tick;
 mod pak_writer;
 #[path = "network/player_checkpoints.rs"]
 mod player_checkpoints;
+#[path = "network/private_leave_proof_cli.rs"]
+mod private_leave_proof_cli;
 #[path = "common/profile_pressure.rs"]
 mod profile_pressure;
 #[path = "common/profiles.rs"]
