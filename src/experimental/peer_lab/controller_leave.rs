@@ -30,9 +30,11 @@ pub(super) struct Operation {
 }
 
 impl PeerLab {
+    /// Whether an authored leave policy is installed.
     pub fn has_authored_controller_leave(&self) -> bool {
         self.authored_controller_leave.is_some()
     }
+
     /// Install an explicit authored policy separately from codec qualification.
     /// A caller must opt in separately from static codec qualification; no
     /// active pin or default grants dispatch or client qualification.

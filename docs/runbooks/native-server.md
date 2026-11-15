@@ -112,10 +112,10 @@ All actions must settle without failure under the
 | `join_password` | unset; never printed ([rules](network-readiness.md#join-password)) |
 
 
-Pure plans precede state; mismatched Hello → Upgrade. Poll ≤32 datagrams before
-fixed ticks. Signals close/drain/save. `network_listening`: address/version;
-`status`/`stopped`: counts. Prospect/mode F-804; data F-993. No ACK/NAK progress
-causes `closed_by_delivery_stall`/`peers_delivery_stalled`, distinct from idle
+Pure plans precede state; wrong Hello → Upgrade. Poll ≤32 datagrams before
+fixed ticks. Signals close/drain/save. `network_listening`: address/`version_check`;
+`status`/`stopped`: counts. Prospect/mode F-804; data F-993. No ACK progress
+despite traffic causes `closed_by_delivery_stall`/`peers_delivery_stalled`, unlike idle
 (F-1013). Unanswered query: `closed_by_friends_query_timeout` despite ACKs
 (F-1115, N-019). Controller/possession/pawn ACKs precede records; abandonment
 closes via `closed_by_possession_abandoned` (F-1116). GUIDs never reuse (F-1083).
