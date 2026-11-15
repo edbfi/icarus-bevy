@@ -51,7 +51,7 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   definitions, ownership, ABI/entry-register binding or native counts/cache/wire
   149/169 proof. Return reference opaque; normal leave fails F-1186;
   F-1177 active. Future: exact TPI 8902/15135 identities
-  before ABI, entry-binding and consumer/count work; neither was followed.
+  before ABI, entry-binding and consumer/count work; both referents remain opaque.
 - Visibility wire, callback/cache contract and inert model: [visibility state](visibility-state.md)
   (F-1020 to F-1024).
 - 3.0.32 PlayerData/Bestiary field bounds: 27/8; registered counts: 26/7
