@@ -41,8 +41,8 @@ opens (F-671). `check-config` creates no state.
 ## Network sessions (experimental)
 
 Loopback without hosting. Hosting: [example](../../config/server.example.toml),
-fresh storage and reachable game/query UDP ports. Run `check-config` first;
-passing validates configuration, not a playable world or client compatibility.
+fresh storage and reachable UDP ports. `check-config` checks shape, not
+release/controller-file binding, playability or client compatibility.
 `seconds`: 1–86400; bounded auth requests/queues; no compressed/preserved worlds.
 Exit/deadline attempts teardown/final save.
 [Connected-run gates](../gates.md#before-any-original-server-or-client-run) apply,
@@ -52,8 +52,12 @@ Presence/listing/empty saves: F-1171/F-1004/F-1170. CM IDs omitted from logs/Deb
 [Stall limits](controller-receive.md): F-1181/F-1184; populated saves unqualified (U-038).
 CM deadlines: F-1180.
 
-Checkpoints: [setup](../architecture.md#persistence);
-[authored survival options](authored-survival.md). Stock-client continuation is unqualified.
+`network.authored_controller_leave` defaults false; true requires
+[checkpoints, codec binding and hosting](../architecture.md#persistence). Metadata
+grants no dispatch/client proof. Pure offline `prepare_run_with_tick_hz` checks
+binding before state/services. Opt-in status/stopped counters
+`player_leave`/`sessions.controller_leave` survive teardown; generation/tick or
+prefix ACK proves neither exact private record equality nor menu success.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
@@ -108,17 +112,14 @@ All actions must settle without failure under the
 | `join_password` | unset; never printed ([rules](network-readiness.md#join-password)) |
 
 
-Pure profile/plan checks precede state creation; mismatched Hello → Upgrade.
-Poll ≤32 datagrams before fixed ticks. SIGINT/SIGTERM closes/drains/saves.
-`network_listening`: address/`version_check`; `status`/`stopped`: session counts.
-Prospect/mode F-804; data F-993. Monotonic delivery timeout: sent records lack
-ACK/NAK progress despite traffic; `closed_by_delivery_stall`/`peers_delivery_stalled`
-separate from idle expiry (F-1013). A friends query unanswered for that timeout
-closes its peer despite ACKs, so others finalise: `closed_by_friends_query_timeout`
-(F-1115, N-019). A player's record waits for the client's ACK of its controller,
-possession update and pawn; an abandoned update closes the session instead:
-`closed_by_possession_abandoned` (F-1116).
-Removal releases a session's GUID identities; GUIDs are never reused (F-1083).
+Pure plans precede state; mismatched Hello → Upgrade. Poll ≤32 datagrams before
+fixed ticks. Signals close/drain/save. `network_listening`: address/version;
+`status`/`stopped`: counts. Prospect/mode F-804; data F-993. No ACK/NAK progress
+causes `closed_by_delivery_stall`/`peers_delivery_stalled`, distinct from idle
+(F-1013). Unanswered query: `closed_by_friends_query_timeout` despite ACKs
+(F-1115, N-019). Controller/possession/pawn ACKs precede records; abandonment
+closes via `closed_by_possession_abandoned` (F-1116). GUIDs never reuse (F-1083).
+
 
 `authored_gameplay`: regular JSON ≤8 MiB. Schema 1: full catalog counts/names/order.
 Schema 2: sparse named rows in any order; [binding](../architecture.md#persistence).

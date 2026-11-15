@@ -161,3 +161,44 @@ actor_state_checksum = 455559420
 
 # [level_actors] is absent: F-1177 compares class metadata, not level-actor
 # instance names, so level visibility actors are off for this build.
+
+
+# Selected current ordinary leave codecs only; dispatch requires an explicit opt-in.
+# This grants no visibility, generic inbound-controller or quest capability.
+[qualifications]
+engine_network_version = 17
+game_network_version = 0
+
+[qualifications.pin]
+app_id = 2089300
+build_id = 26613688
+project_version = "3.0.36.159996-rel-DangerousHorizons"
+network_checksum = 3984737729
+
+[qualifications.class_net_cache]
+stat_container = 5
+inventory = 11
+ui_projection_mount_status = 7
+bp_icarus_player_state = 38
+bp_mount_base = 84
+bp_mount_horse = 85
+bp_tame_base = 86
+bp_icarus_player_controller_survival = 183
+
+[qualifications.controller_leave]
+revision = "selected_controller_v1"
+
+[qualifications.controller_leave.player_controller]
+archetype = [
+    { path = "Default__BP_IcarusPlayerControllerSurvival_C", checksum = 3911321073, no_load = false },
+    { path = "/Game/BP/Player/BP_IcarusPlayerControllerSurvival", checksum = 0, no_load = false },
+]
+components = [
+    { name = "BackendProxyComponent", checksum = 4100406609, block = "rep_bools", rep_bools = [[2, true]] },
+    { name = "PlayerDataComponent", checksum = 3400199742, block = "none", rep_bools = [] },
+    { name = "BestiaryManagerComponent", checksum = 2451266650, block = "create", rep_bools = [] },
+    { name = "ResourceNetworkDataRequesterComponent", checksum = 3500113941, block = "create", rep_bools = [] },
+    { name = "BP_CriticalHitComponent", checksum = 1900637040, block = "create", rep_bools = [] },
+    { name = "BP_HuntingManager", checksum = 2334391351, block = "create", rep_bools = [] },
+    { name = "BP_NetworkProxyComponent", checksum = 997381320, block = "rep_bools", rep_bools = [[2, true]] },
+]

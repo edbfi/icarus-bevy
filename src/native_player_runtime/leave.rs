@@ -11,6 +11,42 @@ use std::time::{Duration, Instant};
 const MAX_LEAVES: usize = 64;
 const MAX_ATTEMPT: Duration = Duration::from_secs(60);
 
+/// Process-local aggregate transitions and current obligations. No player
+/// identity, checkpoint contents or per-player revision is exposed or saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlayerLeaveCounts {
+    pub cutoffs_accepted: u64,
+    pub retries_accepted: u64,
+    pub durable: u64,
+    pub capture_failed: u64,
+    pub storage_failed: u64,
+    pub worker_failed: u64,
+    pub deadline_failed: u64,
+    pub detached_settled: u64,
+    pub pending: usize,
+    pub failed: usize,
+    pub durable_unsettled: usize,
+    pub last_durable: Option<DurableLeaveReceipt>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct DurableLeaveReceipt {
+    pub generation: u64,
+    pub tick: u64,
+}
+
+impl PlayerLeaveCounts {
+    fn failure(&mut self, failure: LeaveFailure) {
+        let count = match failure {
+            LeaveFailure::Capture => &mut self.capture_failed,
+            LeaveFailure::Storage => &mut self.storage_failed,
+            LeaveFailure::Worker => &mut self.worker_failed,
+            LeaveFailure::Deadline => &mut self.deadline_failed,
+        };
+        *count = count.saturating_add(1);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaveFailure {
     Capture,
@@ -56,6 +92,17 @@ impl LeaveOperation {
 }
 
 impl PlayerRegistry {
+    pub fn leave_counts(&self) -> PlayerLeaveCounts {
+        let mut counts = self.leave_counts;
+        for operation in self.leaves.values() {
+            match operation.phase {
+                LeavePhase::Pending => counts.pending += 1,
+                LeavePhase::Failed(_) => counts.failed += 1,
+                LeavePhase::Durable { .. } => counts.durable_unsettled += 1,
+            }
+        }
+        counts
+    }
     /// Synchronous exclusive ECS boundary: validate an activated attachment and
     /// freeze its exact current revision before returning. No queued intent can
     /// slip past a zero-fixed-tick frame. Duplicate identity/revision reuses the
@@ -110,6 +157,7 @@ impl PlayerRegistry {
         };
         let status = op.status();
         self.leaves.insert(key, op);
+        self.leave_counts.cutoffs_accepted = self.leave_counts.cutoffs_accepted.saturating_add(1);
         self.attachments
             .get_mut(&epoch)
             .expect("validated attachment")
@@ -150,6 +198,7 @@ impl PlayerRegistry {
         op.attempt = attempt;
         op.deadline = deadline;
         op.phase = LeavePhase::Pending;
+        self.leave_counts.retries_accepted = self.leave_counts.retries_accepted.saturating_add(1);
         Ok(op.status())
     }
 
@@ -165,6 +214,7 @@ impl PlayerRegistry {
             return Err(PlayerError::Conflict);
         }
         self.leaves.remove(&key);
+        self.leave_counts.detached_settled = self.leave_counts.detached_settled.saturating_add(1);
         Ok(())
     }
 
@@ -177,13 +227,19 @@ impl PlayerRegistry {
             !matches!(op.phase, LeavePhase::Durable { .. })
                 || self.attachments.contains_key(&op.epoch)
         });
-        before - self.leaves.len()
+        let settled = before - self.leaves.len();
+        self.leave_counts.detached_settled = self
+            .leave_counts
+            .detached_settled
+            .saturating_add(settled as u64);
+        settled
     }
 
     fn expire_leaves(&mut self, now: Instant) {
         for op in self.leaves.values_mut() {
             if op.phase == LeavePhase::Pending && now >= op.deadline {
                 op.phase = LeavePhase::Failed(LeaveFailure::Deadline);
+                self.leave_counts.failure(LeaveFailure::Deadline);
             }
         }
     }
@@ -202,6 +258,7 @@ impl PlayerRegistry {
         for op in self.leaves.values_mut() {
             if op.phase == LeavePhase::Pending {
                 op.phase = LeavePhase::Failed(failure);
+                self.leave_counts.failure(failure);
             }
         }
     }
@@ -266,13 +323,24 @@ impl Submission {
                 && op.record == included.record
                 && op.phase == LeavePhase::Pending
             {
-                op.phase = match result {
+                let phase = match result {
                     Ok(receipt) => LeavePhase::Durable {
                         generation: receipt.generation,
                         tick: receipt.tick,
                     },
                     Err(failure) => LeavePhase::Failed(failure),
                 };
+                op.phase = phase;
+                match phase {
+                    LeavePhase::Durable { generation, tick } => {
+                        registry.leave_counts.durable =
+                            registry.leave_counts.durable.saturating_add(1);
+                        registry.leave_counts.last_durable =
+                            Some(DurableLeaveReceipt { generation, tick });
+                    }
+                    LeavePhase::Failed(failure) => registry.leave_counts.failure(failure),
+                    LeavePhase::Pending => (),
+                }
             }
         }
     }

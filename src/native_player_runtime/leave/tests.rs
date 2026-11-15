@@ -70,6 +70,20 @@ fn older_inflight_equal_tick_and_duplicate_cutoff_do_not_ack_later_leave() {
     );
     let older = finish(&mut writer, &mut app);
     assert_eq!(phase(&app, 1, 1), LeavePhase::Pending);
+    assert_eq!(
+        app.world()
+            .resource::<PlayerRegistry>()
+            .leave_counts()
+            .cutoffs_accepted,
+        1
+    );
+    assert_eq!(
+        app.world()
+            .resource::<PlayerRegistry>()
+            .leave_counts()
+            .durable,
+        0
+    );
     assert!(
         app.world_mut()
             .resource_mut::<PlayerRegistry>()
@@ -106,6 +120,19 @@ fn older_inflight_equal_tick_and_duplicate_cutoff_do_not_ack_later_leave() {
         !app.world_mut()
             .resource_mut::<PlayerRegistry>()
             .checkpoint_save_needed(Instant::now())
+    );
+    let counts = app.world().resource::<PlayerRegistry>().leave_counts();
+    assert_eq!(
+        (
+            counts.cutoffs_accepted,
+            counts.durable,
+            counts.durable_unsettled
+        ),
+        (2, 2, 2)
+    );
+    assert_eq!(
+        counts.last_durable.unwrap().generation,
+        second_save.generation
     );
 }
 
@@ -256,6 +283,16 @@ fn busy_capture_fault_and_explicit_retry_preserve_cutoff() {
     writer.submit(app.world_mut()).unwrap();
     finish(&mut writer, &mut app);
     assert!(matches!(phase(&app, 1, 1), LeavePhase::Durable { .. }));
+    let counts = app.world().resource::<PlayerRegistry>().leave_counts();
+    assert_eq!(
+        (
+            counts.cutoffs_accepted,
+            counts.retries_accepted,
+            counts.capture_failed,
+            counts.durable
+        ),
+        (1, 1, 1, 1)
+    );
 }
 
 #[test]
@@ -310,6 +347,15 @@ fn timeout_cannot_cancel_write_or_allow_old_attempt_receipt_to_finish_retry() {
     finish(&mut writer, &mut app);
     assert_eq!(phase(&app, 1, 1), LeavePhase::Pending);
     // Separate request deadline expiry also suppresses a late successful result.
+    let counts = app.world().resource::<PlayerRegistry>().leave_counts();
+    assert_eq!(
+        (
+            counts.deadline_failed,
+            counts.retries_accepted,
+            counts.durable
+        ),
+        (1, 1, 0)
+    );
     let now = Instant::now();
     app.world_mut()
         .resource_mut::<PlayerRegistry>()
@@ -352,6 +398,13 @@ fn terminal_worker_loss_fails_submitted_and_waiting_obligations_and_refuses_new_
             LeavePhase::Failed(LeaveFailure::Worker)
         );
     }
+    assert_eq!(
+        app.world()
+            .resource::<PlayerRegistry>()
+            .leave_counts()
+            .worker_failed,
+        2
+    );
     {
         let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
         assert!(
@@ -371,6 +424,13 @@ fn terminal_worker_loss_fails_submitted_and_waiting_obligations_and_refuses_new_
     // its physical success cannot undo the injected terminal failure either.
     finish(&mut writer, &mut app);
     assert_eq!(phase(&app, 1, 1), LeavePhase::Failed(LeaveFailure::Worker));
+    assert_eq!(
+        app.world()
+            .resource::<PlayerRegistry>()
+            .leave_counts()
+            .worker_failed,
+        2
+    );
 }
 
 #[test]
@@ -457,6 +517,15 @@ fn shutdown_teardown_keeps_cutoff_for_final_associated_save_without_destination(
         .resource_mut::<PlayerRegistry>()
         .settle_leave(key(1), 1)
         .unwrap();
+    let counts = app.world().resource::<PlayerRegistry>().leave_counts();
+    assert_eq!(
+        (
+            counts.durable,
+            counts.detached_settled,
+            counts.durable_unsettled
+        ),
+        (1, 1, 0)
+    );
 }
 
 #[test]

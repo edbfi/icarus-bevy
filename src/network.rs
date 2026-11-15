@@ -1977,6 +1977,10 @@ pub fn prepare_session(
     network: &NetworkConfig,
     config: PeerLabConfig,
 ) -> Result<Option<PreparedSession>> {
+    ensure!(
+        !network.authored_controller_leave,
+        "network.authored_controller_leave requires prepare_run with player checkpoints"
+    );
     if !network.enabled {
         return Ok(None);
     }
@@ -2237,6 +2241,9 @@ pub fn prepare_run(
     network: &NetworkConfig,
     config: PeerLabConfig,
 ) -> Result<(Option<PreparedSession>, Option<PreparedPlayers>)> {
+    if network.authored_controller_leave {
+        network.validate()?;
+    }
     ensure!(
         network.player_consumption.is_none()
             && network
@@ -2283,6 +2290,25 @@ pub fn prepare_run_with_tick_hz(
     let release_context = || format!("load network.release_profile {}", release_path.display());
     let release_text = read_configuration(release_path).with_context(release_context)?;
     let profile = ReleaseProfile::parse(&release_text).with_context(release_context)?;
+    // Validate the requested protocol binding even for offline store reopen.
+    // No codec declaration implicitly enables dispatch, and no storage,
+    // listener or Steam service is acquired during this preparation.
+    let controller_leave = if network.authored_controller_leave {
+        let leave = profile
+            .controller_leave_plan()?
+            .context("network.authored_controller_leave requires qualified controller codecs")?;
+        let players = network
+            .player_persistence
+            .as_ref()
+            .context("player context missing")?;
+        let controller = profile
+            .player_controller_open_plan(&players.map_url, SPAWN_LOCATION)?
+            .context("network.authored_controller_leave requires a controller open plan")?;
+        leave.validate_controller_open(&controller)?;
+        Some(leave)
+    } else {
+        None
+    };
     let gameplay_path = network
         .authored_gameplay
         .as_deref()
@@ -2365,6 +2391,9 @@ pub fn prepare_run_with_tick_hz(
             .bound
             .lab
             .enable_player_checkpoints(initial_vitals)?;
+        if let Some(plan) = controller_leave {
+            session.bound.lab.enable_authored_controller_leave(plan)?;
+        }
         session.player_context = Some(players.context.clone());
         Some(session)
     } else {

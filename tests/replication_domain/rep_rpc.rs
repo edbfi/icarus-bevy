@@ -103,6 +103,7 @@ fn controller_leave_uses_presence_framed_enum_and_preserves_absence() {
                 field
             );
             assert_eq!(field.payload.bytes(), &[bits as u8]);
+            assert_eq!(field.payload.bit_len(), 4);
         }
         let absent = FieldHeader {
             index: 149,
@@ -117,6 +118,8 @@ fn controller_leave_uses_presence_framed_enum_and_preserves_absence() {
                 .unwrap(),
             absent
         );
+        assert_eq!(absent.payload.bit_len(), 1);
+        assert_eq!(absent.payload.bytes(), &[0]);
         for (index, request) in [
             (148, ControllerLeaveRequest::Cancel),
             (150, ControllerLeaveRequest::WithoutSave),
