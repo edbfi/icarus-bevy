@@ -1,0 +1,11 @@
+{
+  "format": 2,
+  "items": [{"key": "authored-water", "stack_limit": 10}],
+  "inventories": [{
+    "key": "bag", "initial_slots": 1,
+    "slot_rules": [{"allowed_items": ["authored-water"]}],
+    "force_add_when_zero": false, "overflow_limit": 0
+  }],
+  "starter": [{"inventory": "bag", "requested_slot": 0, "item": "authored-water", "count": 3}],
+  "consumables": [{"item": "authored-water", "oxygen": 0, "water": 25, "food": 0}]
+}

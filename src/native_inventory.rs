@@ -226,7 +226,9 @@ fn finish_decode<T: Serialize + Graph, E: de::Error>(
     let limit = match name {
         "InventoryContractsV1" | "InventoryContractsSnapshotV1" => MAX_INVENTORY_CONTRACT_BYTES,
         "InventoryStateSnapshotV1" | "PlayerInventorySnapshotV1" => MAX_INVENTORY_STATE_BYTES,
-        "PlayerInventoryRecipeV1" => MAX_INVENTORY_CONTRACT_BYTES,
+        "PlayerInventoryRecipeV1" | "PlayerInventoryRecipeV2" | "PlayerInventoryRecipe" => {
+            MAX_INVENTORY_CONTRACT_BYTES
+        }
         "InitialInventoryItemsV1"
         | "InventoryRestoreRequestV1"
         | "AuthoredInventoryAuthorityV1" => MAX_INVENTORY_GRAPH_BYTES,
@@ -425,8 +427,135 @@ impl<'de> Deserialize<'de> for PlayerInventoryOwnerV1 {
 leaf!(PlayerInventoryOwnerV1, 4096);
 dto!(PlayerStarterItemV1,65536,{pub inventory:String,pub requested_slot:u16,pub item:String,pub count:u32});
 dto!(PlayerInventoryRecipeV1,1,{pub format:u32,pub items:Vec<ItemDefinitionV1>,pub inventories:Vec<InventoryDefinitionV1>,pub starter:Vec<PlayerStarterItemV1>});
+dto!(PlayerConsumableV2,1024,{pub item:String,pub oxygen:u32,pub water:u32,pub food:u32});
+dto!(PlayerInventoryRecipeV2,1,{pub format:u32,pub items:Vec<ItemDefinitionV1>,pub inventories:Vec<InventoryDefinitionV1>,pub starter:Vec<PlayerStarterItemV1>,pub consumables:Vec<PlayerConsumableV2>});
+
+/// V2's additional storage is isolated so V1 retains its admission layout.
+/// JSON is the selected recipe object, without an enum wrapper.
+#[derive(Clone, PartialEq, Debug)]
+pub enum PlayerInventoryRecipe {
+    V1(PlayerInventoryRecipeV1),
+    V2(Box<PlayerInventoryRecipeV2>),
+}
+impl From<PlayerInventoryRecipeV1> for PlayerInventoryRecipe {
+    fn from(value: PlayerInventoryRecipeV1) -> Self {
+        Self::V1(value)
+    }
+}
+impl From<PlayerInventoryRecipeV2> for PlayerInventoryRecipe {
+    fn from(value: PlayerInventoryRecipeV2) -> Self {
+        Self::V2(Box::new(value))
+    }
+}
+impl Serialize for PlayerInventoryRecipe {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::V1(v) => v.serialize(s),
+            Self::V2(v) => v.serialize(s),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for PlayerInventoryRecipe {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let _scope = InventoryDecodeScope::enter();
+        // A named, order-independent map visitor. Each value uses the shared
+        // bounded decoder; unknown/duplicate members never buffer raw Content.
+        #[derive(Default)]
+        struct Effects(Option<Vec<PlayerConsumableV2>>);
+        impl<'de> Deserialize<'de> for Effects {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+                Vec::field(d).map(|v| Self(Some(v)))
+            }
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            #[serde(deserialize_with = "field")]
+            format: u32,
+            #[serde(deserialize_with = "field")]
+            items: Vec<ItemDefinitionV1>,
+            #[serde(deserialize_with = "field")]
+            inventories: Vec<InventoryDefinitionV1>,
+            #[serde(deserialize_with = "field")]
+            starter: Vec<PlayerStarterItemV1>,
+            #[serde(default)]
+            consumables: Effects,
+        }
+        let f: Fields = crate::json::object(d)?;
+        let value = match (f.format, f.consumables.0) {
+            (1, None) => PlayerInventoryRecipeV1 {
+                format: f.format,
+                items: f.items,
+                inventories: f.inventories,
+                starter: f.starter,
+            }
+            .into(),
+            (2, Some(consumables)) => {
+                charge::<D::Error>(size_of::<PlayerInventoryRecipeV2>())?;
+                PlayerInventoryRecipeV2 {
+                    format: f.format,
+                    items: f.items,
+                    inventories: f.inventories,
+                    starter: f.starter,
+                    consumables,
+                }
+                .into()
+            }
+            _ => {
+                return Err(de::Error::custom(
+                    "player inventory recipe version or fields invalid",
+                ));
+            }
+        };
+        finish_decode::<Self, D::Error>("PlayerInventoryRecipe", &value)?;
+        Ok(value)
+    }
+}
+impl Field for PlayerInventoryRecipe {
+    fn field<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        Self::deserialize(d)
+    }
+}
+impl Graph for PlayerInventoryRecipe {
+    const LIMIT: usize = 1;
+    fn walk(&self, b: &mut Budget) -> Result<()> {
+        match self {
+            Self::V1(v) => v.walk(b),
+            Self::V2(v) => {
+                b.add(size_of::<PlayerInventoryRecipeV2>())?;
+                v.walk(b)
+            }
+        }
+    }
+}
+impl PlayerInventoryRecipe {
+    pub(crate) fn items(&self) -> &Vec<ItemDefinitionV1> {
+        match self {
+            Self::V1(v) => &v.items,
+            Self::V2(v) => &v.items,
+        }
+    }
+    pub(crate) fn inventories(&self) -> &Vec<InventoryDefinitionV1> {
+        match self {
+            Self::V1(v) => &v.inventories,
+            Self::V2(v) => &v.inventories,
+        }
+    }
+    pub(crate) fn starter(&self) -> &Vec<PlayerStarterItemV1> {
+        match self {
+            Self::V1(v) => &v.starter,
+            Self::V2(v) => &v.starter,
+        }
+    }
+    pub(crate) fn effect(&self, item: &str) -> Option<&PlayerConsumableV2> {
+        match self {
+            Self::V1(_) => None,
+            Self::V2(v) => v.consumables.iter().find(|e| e.item == item),
+        }
+    }
+}
 dto!(PlayerBagV1,4096,{pub owner:PlayerInventoryOwnerV1,pub revision:u64,pub consumed:Vec<ItemTotalV1>,pub inventories:Vec<InventoryStateV1>});
-dto!(PlayerInventorySnapshotV1,1,{pub format:u32,pub recipe_id:String,pub recipe:PlayerInventoryRecipeV1,pub baseline:InventoryInitialTotalsV1,pub revision:u64,pub next_stack_id:u64,pub bags:Vec<PlayerBagV1>});
+dto!(PlayerInventorySnapshotV1,1,{pub format:u32,pub recipe_id:String,pub recipe:PlayerInventoryRecipe,pub baseline:InventoryInitialTotalsV1,pub revision:u64,pub next_stack_id:u64,pub bags:Vec<PlayerBagV1>});
 dto!(PlayerStackEndpointV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub stack_id:StackId});
 dto!(PlayerSlotEndpointV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub slot:u16});
 dto!(PlayerOverflowDestinationV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub slot:Option<u16>});
@@ -459,7 +588,7 @@ pub(crate) fn player_inventory_charge(
     encoded(value, MAX_INVENTORY_STATE_BYTES)?;
     Ok(())
 }
-pub(crate) fn player_recipe_charge(value: &PlayerInventoryRecipeV1) -> Result<()> {
+pub(crate) fn player_recipe_charge(value: &PlayerInventoryRecipe) -> Result<()> {
     graph(value)?;
     encoded(value, MAX_INVENTORY_CONTRACT_BYTES)?;
     Ok(())
@@ -611,6 +740,133 @@ impl<'de> Deserialize<'de> for InventoryActionV1 {
                 Ok(Self::PlaceOverflow {
                     source,
                     destination: InventoryOverflowDestinationV1 {
+                        owner: d.owner,
+                        inventory: d.inventory,
+                        slot: d.slot.0.ok_or_else(invalid)?,
+                    },
+                })
+            }
+            _ => Err(invalid()),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for crate::native_player_inventory::PlayerInventoryActionV1 {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let _scope = InventoryDecodeScope::enter();
+        // A derived internally tagged enum buffers arbitrary Content before
+        // endpoint admission. Decode the named fields directly instead, and
+        // check the variant's exact field set without buffering unknown data.
+        struct Arg<T>(Option<T>);
+        impl<T> Default for Arg<T> {
+            fn default() -> Self {
+                Self(None)
+            }
+        }
+        impl<'de, T: Field> Deserialize<'de> for Arg<T> {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+                T::field(d).map(|v| Self(Some(v)))
+            }
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Destination {
+            owner: PlayerInventoryOwnerV1,
+            #[serde(deserialize_with = "field")]
+            inventory: String,
+            #[serde(default)]
+            slot: Arg<Option<u16>>,
+            #[serde(default)]
+            stack_id: Arg<StackId>,
+        }
+        impl Field for Destination {
+            fn field<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+                crate::json::object(d)
+            }
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            #[serde(rename = "type", deserialize_with = "field")]
+            kind: String,
+            source: PlayerStackEndpointV1,
+            #[serde(default)]
+            destination: Arg<Destination>,
+            #[serde(default)]
+            amount: Arg<u32>,
+        }
+        let f: Fields = crate::json::object(d)
+            .map_err(|_| <D::Error as de::Error>::custom("inventory action invalid"))?;
+        let invalid = || <D::Error as de::Error>::custom("inventory action invalid");
+        let source = f.source;
+        match f.kind.as_str() {
+            "move" | "split" => {
+                let d = f.destination.0.ok_or_else(invalid)?;
+                if d.stack_id.0.is_some() {
+                    return Err(invalid());
+                }
+                let destination = PlayerSlotEndpointV1 {
+                    owner: d.owner,
+                    inventory: d.inventory,
+                    slot: d.slot.0.flatten().ok_or_else(invalid)?,
+                };
+                if f.kind == "move" {
+                    if f.amount.0.is_some() {
+                        return Err(invalid());
+                    }
+                    Ok(Self::Move {
+                        source,
+                        destination,
+                    })
+                } else {
+                    Ok(Self::Split {
+                        source,
+                        destination,
+                        amount: f.amount.0.ok_or_else(invalid)?,
+                    })
+                }
+            }
+            "merge" => {
+                let d = f.destination.0.ok_or_else(invalid)?;
+                if d.slot.0.is_some() {
+                    return Err(invalid());
+                }
+                let destination = PlayerStackEndpointV1 {
+                    owner: d.owner,
+                    inventory: d.inventory,
+                    stack_id: d.stack_id.0.ok_or_else(invalid)?,
+                };
+                Ok(Self::Merge {
+                    source,
+                    destination,
+                    amount: f.amount.0.ok_or_else(invalid)?,
+                })
+            }
+            "use" => {
+                if f.destination.0.is_some() || f.amount.0.is_some() {
+                    return Err(invalid());
+                }
+                Ok(Self::Use { source })
+            }
+            "consume" => {
+                if f.destination.0.is_some() {
+                    return Err(invalid());
+                }
+                Ok(Self::Consume {
+                    source,
+                    amount: f.amount.0.ok_or_else(invalid)?,
+                })
+            }
+            "place_overflow" => {
+                if f.amount.0.is_some() {
+                    return Err(invalid());
+                }
+                let d = f.destination.0.ok_or_else(invalid)?;
+                if d.stack_id.0.is_some() {
+                    return Err(invalid());
+                }
+                Ok(Self::PlaceOverflow {
+                    source,
+                    destination: PlayerOverflowDestinationV1 {
                         owner: d.owner,
                         inventory: d.inventory,
                         slot: d.slot.0.ok_or_else(invalid)?,
@@ -953,23 +1209,23 @@ impl CompiledInventoryContractsV1 {
         Ok(Self { snapshot, bindings })
     }
     pub(crate) fn player_bound(
-        recipe: &PlayerInventoryRecipeV1,
+        recipe: &PlayerInventoryRecipe,
         ids: impl Iterator<Item = u64>,
         identity: &str,
     ) -> Result<Self> {
         player_recipe_charge(recipe)?;
         ensure!(
-            recipe.format == 1 && !recipe.inventories.is_empty(),
+            !recipe.inventories().is_empty(),
             "player inventory recipe invalid"
         );
         let definition = InventoryContractsV1 {
             format: 1,
             native_catalog_id: identity.to_owned(),
             native_map: "player".into(),
-            items: recipe.items.clone(),
+            items: recipe.items().clone(),
             classes: vec![InventoryOwnerClassV1 {
                 native_class: "player".into(),
-                inventories: recipe.inventories.clone(),
+                inventories: recipe.inventories().clone(),
             }],
         };
         validate_inventory_rules(&definition, &BTreeSet::from(["player"]))?;
@@ -2185,5 +2441,145 @@ mod authored_authority_budget_tests {
             .items
             .reserve(2 * MAX_INVENTORY_STACKS + 5);
         assert!(spare.allocation_bytes().is_err());
+    }
+}
+
+#[cfg(test)]
+mod player_recipe_layout_tests {
+    use super::*;
+
+    // Same field types and order as the pre-versioned retained section.
+    #[derive(Serialize)]
+    struct LegacySection {
+        format: u32,
+        recipe_id: String,
+        recipe: PlayerInventoryRecipeV1,
+        baseline: InventoryInitialTotalsV1,
+        revision: u64,
+        next_stack_id: u64,
+        bags: Vec<PlayerBagV1>,
+    }
+    impl Graph for LegacySection {
+        const LIMIT: usize = 1;
+        fn walk(&self, b: &mut Budget) -> Result<()> {
+            self.recipe_id.walk(b)?;
+            self.recipe.walk(b)?;
+            self.baseline.walk(b)?;
+            self.bags.walk(b)
+        }
+    }
+    #[test]
+    fn v2_shared_decode_budget_and_retained_spare_capacity_are_charged() {
+        let text = r#"{"format":2,"items":[],"inventories":[],"starter":[],"consumables":[{"item":"i","oxygen":1,"water":0,"food":0}]}"#;
+        {
+            let _scope = InventoryDecodeScope::enter();
+            charge::<serde::de::value::Error>(MAX_INVENTORY_GRAPH_BYTES - 100).unwrap();
+            assert!(serde_json::from_str::<PlayerInventoryRecipe>(text).is_err());
+        }
+        let mut versioned: PlayerInventoryRecipe = serde_json::from_str(text).unwrap();
+        let base = graph(&versioned).unwrap();
+        let PlayerInventoryRecipe::V2(v) = &mut versioned else {
+            unreachable!()
+        };
+        v.consumables.reserve_exact(1023);
+        let capacity = v.consumables.capacity();
+        assert_eq!(
+            graph(&versioned).unwrap() - base,
+            (capacity - 4) * size_of::<PlayerConsumableV2>()
+        );
+        assert_eq!(size_of::<PlayerInventoryRecipeV2>(), 104);
+    }
+    #[test]
+    fn versioned_recipe_layout_and_near_limit_v1_admission_match_legacy() {
+        assert_eq!(
+            size_of::<PlayerInventoryRecipe>(),
+            size_of::<PlayerInventoryRecipeV1>()
+        );
+        assert_eq!(
+            size_of::<PlayerInventorySnapshotV1>(),
+            size_of::<LegacySection>()
+        );
+        let recipe = PlayerInventoryRecipeV1 {
+            format: 1,
+            items: vec![],
+            inventories: vec![],
+            starter: vec![],
+        };
+        let mut section = PlayerInventorySnapshotV1 {
+            format: 1,
+            recipe_id: "a".repeat(64),
+            recipe: recipe.clone().into(),
+            baseline: InventoryInitialTotalsV1 { items: vec![] },
+            revision: 1,
+            next_stack_id: 65537,
+            bags: vec![],
+        };
+        // Fill a structural legacy graph to within one bag of its eight-copy
+        // envelope. Semantic near-limit admission is covered in domain tests.
+        for id in 1..=256 {
+            let bag = PlayerBagV1 {
+                owner: PlayerInventoryOwnerV1 {
+                    player_id: id,
+                    incarnation: 1,
+                },
+                revision: 1,
+                consumed: vec![],
+                inventories: vec![InventoryStateV1 {
+                    key: "bag".into(),
+                    overflow: vec![],
+                    slots: (0..256)
+                        .map(|slot| {
+                            let mut item = String::with_capacity(96);
+                            item.push_str(&"i".repeat(64));
+                            Some(StackV1 {
+                                id: StackId::new((id - 1) * 256 + slot + 1).unwrap(),
+                                item,
+                                count: 1,
+                            })
+                        })
+                        .collect(),
+                }],
+            };
+            section.bags.push(bag);
+            if player_inventory_charge(&section, 8).is_err() {
+                section.bags.pop();
+                break;
+            }
+        }
+        let legacy = LegacySection {
+            format: section.format,
+            recipe_id: section.recipe_id.clone(),
+            recipe,
+            baseline: section.baseline.clone(),
+            revision: section.revision,
+            next_stack_id: section.next_stack_id,
+            bags: section.bags.clone(),
+        };
+        // Clone truncates string spare capacity: compare both the original
+        // capacities and the reload capacities through the same legacy walk.
+        let mut old_budget = Budget::default();
+        old_budget.add(size_of::<LegacySection>()).unwrap();
+        section.recipe_id.walk(&mut old_budget).unwrap();
+        if let PlayerInventoryRecipe::V1(v) = &section.recipe {
+            v.walk(&mut old_budget).unwrap();
+        }
+        section.baseline.walk(&mut old_budget).unwrap();
+        section.bags.walk(&mut old_budget).unwrap();
+        assert_eq!(graph(&section).unwrap(), old_budget.0);
+        assert!(graph(&section).unwrap() * 8 > MAX_INVENTORY_GRAPH_BYTES * 99 / 100);
+        player_inventory_charge(&section, 8).unwrap();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        let decoded: PlayerInventorySnapshotV1 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+        assert_eq!(graph(&decoded).unwrap(), graph(&legacy).unwrap());
+        player_inventory_charge(&decoded, 8).unwrap();
+        eprintln!(
+            "V1 DTO/enum={} section={} near-limit-charge={} reloaded={} bags={}",
+            size_of::<PlayerInventoryRecipe>(),
+            size_of::<LegacySection>(),
+            graph(&section).unwrap(),
+            graph(&decoded).unwrap(),
+            section.bags.len()
+        );
     }
 }
