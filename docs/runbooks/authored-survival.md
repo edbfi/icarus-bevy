@@ -76,8 +76,8 @@ Transport ACK and authored tests prove neither full player-save nor client menus
 
 Set `network.player_inventory` before store creation; omission keeps schema 14.
 `check-config` checks shape; `run` loads the recipe. Recipe changes refuse reopen;
-use a fresh store, with no migration. Format 1 requires `format`, `items`,
-`inventories`, owner-free `starter`. Format 2 adds nonempty `consumables`:
+use a fresh store, with no migration. V1 requires `format`, `items`,
+`inventories`, owner-free `starter`. V2 adds nonempty `consumables`:
 item/oxygen/water/food are required. Gains are authored integers 0..=10000000,
 at least one positive per item; unknown/duplicate items refuse.
 Example: `config/player-inventory-consumables.example.json`.
@@ -101,6 +101,7 @@ Endpoints: matching `owner: {"player_id": ID, "incarnation": 1}`, inventory,
 stack_id or slot. Overflow slot null appends. Use consumes one item and caps
 oxygen/water/food at their maxima atomically. All-full Use checks source/CAS,
 then returns NoChange without consumption/revisions; raw consume has no vital effect.
+Health does not gate Use.
 
 Regular requests: ≤64 KiB, no symlink components. The lock spans load/save;
 only Applied saves. Dry-run/NoChange/rejection preserve bytes. Success prints
