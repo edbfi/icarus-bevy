@@ -2073,6 +2073,40 @@ mod consumables {
         let (mut app, id) = setup(v2());
         let other = attach(&mut app, 2, 2);
         depleted(&mut app, id);
+        let old = app
+            .world()
+            .resource::<PlayerRegistry>()
+            .projection(1)
+            .unwrap();
+        let mut next = old.checkpoint;
+        next.vitals.health = 90;
+        icarus_bevy::native_player_runtime::edit_player_checkpoint(
+            app.world_mut(),
+            key(1),
+            1,
+            old.revision,
+            next,
+        )
+        .unwrap();
+        assert_eq!(
+            icarus_bevy::native_player_runtime::advance_player_survival(
+                app.world_mut(),
+                icarus_bevy::native_player_runtime::ConsumptionRates::ZERO,
+                icarus_bevy::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap()
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            app.world()
+                .resource::<PlayerRegistry>()
+                .projection(1)
+                .unwrap()
+                .checkpoint
+                .vitals
+                .health,
+            83
+        );
         let before = snapshot(&mut app);
         let req = use_item(&before, id);
         for (key, epoch) in [(key(2), 1), (key(1), 2), (key(1), 0), (key(1), 999)] {
@@ -2090,6 +2124,32 @@ mod consumables {
         assert_eq!(snapshot(&mut app), before);
         activate_player(app.world_mut(), 3).unwrap();
         apply(&mut app, 1, 3, &req);
+        assert_eq!(
+            icarus_bevy::native_player_runtime::advance_player_survival(
+                app.world_mut(),
+                icarus_bevy::native_player_runtime::ConsumptionRates::ZERO,
+                icarus_bevy::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap()
+            )
+            .unwrap(),
+            0
+        );
+        // Re-empty this source after proving Use prevents its damage. Any
+        // accidental survival on a frozen/failed/retried leave would now hurt.
+        let used = app
+            .world()
+            .resource::<PlayerRegistry>()
+            .projection(3)
+            .unwrap();
+        let mut next = used.checkpoint;
+        next.vitals.oxygen = 0;
+        icarus_bevy::native_player_runtime::edit_player_checkpoint(
+            app.world_mut(),
+            key(1),
+            3,
+            used.revision,
+            next,
+        )
+        .unwrap();
         let cutoff = snapshot(&mut app);
         let revision = cutoff
             .native_players
@@ -2108,6 +2168,12 @@ mod consumables {
         icarus_bevy::native_player_runtime::consume_player_vitals(
             app.world_mut(),
             icarus_bevy::native_player_runtime::ConsumptionRates::new(1, 1, 1).unwrap(),
+        )
+        .unwrap();
+        icarus_bevy::native_player_runtime::advance_player_survival(
+            app.world_mut(),
+            icarus_bevy::native_player_runtime::ConsumptionRates::ZERO,
+            icarus_bevy::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap(),
         )
         .unwrap();
         let state = snapshot(&mut app);
@@ -2135,6 +2201,13 @@ mod consumables {
             LeavePhase::Failed(_)
         ));
         assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+        icarus_bevy::native_player_runtime::advance_player_survival(
+            app.world_mut(),
+            icarus_bevy::native_player_runtime::ConsumptionRates::ZERO,
+            icarus_bevy::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot(&mut app), pinned);
         app.world_mut()
             .resource_mut::<PlayerRegistry>()
             .retry_leave(key(1), 3, Instant::now(), Duration::from_secs(30))
@@ -2150,6 +2223,13 @@ mod consumables {
                 .phase,
             LeavePhase::Pending
         );
+        icarus_bevy::native_player_runtime::advance_player_survival(
+            app.world_mut(),
+            icarus_bevy::native_player_runtime::ConsumptionRates::ZERO,
+            icarus_bevy::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot(&mut app), pinned);
         writer.submit(app.world_mut()).unwrap();
         app.world_mut().resource_mut::<PlayerRegistry>().detach(3);
         assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
@@ -2517,5 +2597,307 @@ mod consumables {
         let before = snapshot(&mut app);
         assert!(apply_player_inventory_action(app.world_mut(), key(1), 10, &req).is_err());
         assert_eq!(snapshot(&mut app), before);
+    }
+}
+
+mod depletion_damage {
+    use super::*;
+    use icarus_bevy::{
+        native_player_runtime::{
+            ConsumptionConfig, ConsumptionRates, DepletionDamageConfig, DepletionDamageRates,
+            advance_player_survival, edit_player_checkpoint,
+        },
+        simulation::SimulationClock,
+    };
+    fn survival_network() -> icarus_bevy::config::NetworkConfig {
+        icarus_bevy::config::NetworkConfig {
+            player_persistence: Some(icarus_bevy::config::PlayerPersistenceConfig {
+                prospect_id: "authored-bag-world".into(),
+                map_url: "/Authored/Bags".into(),
+                prospect_row: "AuthoredBags".into(),
+                difficulty: 2,
+            }),
+            release_profile: Some("unused-authored-release.toml".into()),
+            authored_gameplay: Some("unused-authored-gameplay.json".into()),
+            data_pak: Some("unused-authored-catalog.pak".into()),
+            authored_world: Some(
+                icarus_bevy::authored_world_bootstrap::AuthoredWorldBootstrap {
+                    seed: 1,
+                    seed_initialised: true,
+                    flod_tile_count: 0,
+                    clock: None,
+                },
+            ),
+            ..Default::default()
+        }
+    }
+    fn hurt(app: &mut bevy::prelude::App) -> usize {
+        advance_player_survival(
+            app.world_mut(),
+            ConsumptionRates::ZERO,
+            DepletionDamageRates::new(2, 3, 4).unwrap(),
+        )
+        .unwrap()
+    }
+    fn emptied(app: &mut bevy::prelude::App, id: u64) {
+        let projection = app
+            .world()
+            .resource::<PlayerRegistry>()
+            .snapshot()
+            .projection_by_id(id)
+            .unwrap();
+        let mut next = projection.checkpoint;
+        next.vitals.oxygen = 0;
+        next.vitals.water = 0;
+        next.vitals.food = 0;
+        edit_player_checkpoint(app.world_mut(), key(1), 1, projection.revision, next).unwrap();
+    }
+    #[test]
+    fn depletion_damage_health_only_preserves_bags_allocator_and_one_revision() {
+        let mut app = app();
+        let id = attach(&mut app, 1, 1);
+        emptied(&mut app, id);
+        let before = snapshot(&mut app);
+        assert_eq!(hurt(&mut app), 1);
+        let after = snapshot(&mut app);
+        let a = after
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(id)
+            .unwrap();
+        let b = before
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(id)
+            .unwrap();
+        assert_eq!(a.checkpoint.vitals.health, 91);
+        assert_eq!(a.revision, b.revision + 1);
+        assert_eq!(after.player_inventory, before.player_inventory);
+        assert_eq!(after.tick, before.tick);
+        assert_eq!(reload(&after), after);
+    }
+    #[test]
+    fn depletion_damage_restart_resumes_saved_phase_schema15() {
+        let mut app = app();
+        let id = attach(&mut app, 1, 1);
+        emptied(&mut app, id);
+        let mut state = snapshot(&mut app);
+        state.tick = 3;
+        drop(app);
+        let config = ServerConfig {
+            tick_hz: 7,
+            network: icarus_bevy::config::NetworkConfig {
+                player_consumption: Some(ConsumptionConfig {
+                    oxygen: 0,
+                    water: 0,
+                    food: 1,
+                }),
+                player_depletion_damage: Some(DepletionDamageConfig {
+                    oxygen: 2,
+                    water: 3,
+                    food: 4,
+                }),
+                ..survival_network()
+            },
+            ..Default::default()
+        };
+        let root = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(root.path()).unwrap();
+        store.save(&state).unwrap();
+        let mut app = build_app(&config, &state).unwrap();
+        attach(&mut app, 1, 10);
+        app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
+        let next = snapshot(&mut app);
+        assert_eq!(next.tick, 4);
+        assert_eq!(
+            next.native_players
+                .as_ref()
+                .unwrap()
+                .projection_by_id(id)
+                .unwrap()
+                .checkpoint
+                .vitals
+                .health,
+            98
+        );
+        store.save(&next).unwrap();
+        let current = store.load().unwrap().unwrap().snapshot;
+        let mut resumed = build_app(&config, &current).unwrap();
+        attach(&mut resumed, 1, 11);
+        resumed.world_mut().run_schedule(bevy::prelude::FixedUpdate);
+        app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
+        assert_eq!(snapshot(&mut resumed), snapshot(&mut app));
+        drop(store);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("manifest.json")).unwrap()).unwrap();
+        let current = manifest["current"]["number"].as_u64().unwrap();
+        fs::write(
+            root.path().join(format!("snapshot-{current}.json")),
+            b"authored corruption",
+        )
+        .unwrap();
+        let recovered = SnapshotStore::open_existing(root.path())
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap()
+            .snapshot;
+        assert_eq!(recovered, state);
+        let mut previous = build_app(&config, &recovered).unwrap();
+        attach(&mut previous, 1, 12);
+        previous
+            .world_mut()
+            .run_schedule(bevy::prelude::FixedUpdate);
+        assert_eq!(snapshot(&mut previous), next);
+        let mut reopened = build_app(&config, &recovered).unwrap();
+        reopened
+            .world_mut()
+            .run_schedule(bevy::prelude::FixedUpdate);
+        reopened
+            .world_mut()
+            .run_schedule(bevy::prelude::FixedUpdate);
+        assert_eq!(
+            snapshot(&mut reopened).native_players,
+            recovered.native_players
+        );
+        attach(&mut reopened, 1, 20);
+        assert_eq!(reopened.world().resource::<SimulationClock>().tick, 5);
+        reopened
+            .world_mut()
+            .run_schedule(bevy::prelude::FixedUpdate);
+        // t=5: oxygen 0, water 0, food 1; only global tick phase determines loss.
+        let after = snapshot(&mut reopened);
+        assert_eq!(
+            after
+                .native_players
+                .as_ref()
+                .unwrap()
+                .projection_by_id(id)
+                .unwrap()
+                .checkpoint
+                .vitals
+                .health,
+            99
+        );
+        assert_eq!(after.player_inventory, state.player_inventory);
+    }
+
+    #[test]
+    fn depletion_damage_batch_rejection_is_atomic_at_completed_tick_size_boundary() {
+        let mut app = app();
+        let id = attach(&mut app, 1, 1);
+        emptied(&mut app, id);
+        let mut state = snapshot(&mut app);
+        state.tick = 9;
+        drop(app);
+        // A health-only 100 -> 99 edit shortens one byte; 9 -> 10 revision adds
+        // one. At current tick 9 it fits exactly; completed tick 10 cannot fit.
+        let mut players = serde_json::to_value(state.native_players.as_ref().unwrap()).unwrap();
+        players["records"][0]["revision"] = json!(9);
+        state.native_players = Some(serde_json::from_value(players).unwrap());
+        let limit = 64 * 1024 * 1024;
+        let mut length = serde_json::to_vec(&state).unwrap().len();
+        for entity_id in 1.. {
+            let entity = EntityRecord {
+                id: DomainId(entity_id),
+                position: Position([0.; 3]),
+            };
+            let delta = serde_json::to_vec(&entity).unwrap().len()
+                + usize::from(!state.entities.is_empty());
+            if length + delta > limit {
+                break;
+            }
+            length += delta;
+            state.entities.push(entity);
+        }
+        let mut remaining = limit - serde_json::to_vec(&state).unwrap().len();
+        for entity in state.entities.iter_mut().take(20) {
+            for coordinate in &mut entity.position.0 {
+                let mut best = (0, 0.0);
+                for digits in 1..=17 {
+                    let value = format!("0.{}", "1".repeat(digits)).parse::<f32>().unwrap();
+                    let gain = serde_json::to_string(&value).unwrap().len() - 3;
+                    if gain <= remaining && gain > best.0 {
+                        best = (gain, value);
+                    }
+                }
+                *coordinate = best.1;
+                remaining -= best.0;
+            }
+        }
+        assert_eq!(remaining, 0);
+        SnapshotStore::preflight(&state).unwrap();
+        let config = ServerConfig {
+            tick_hz: 1,
+            network: icarus_bevy::config::NetworkConfig {
+                player_consumption: Some(ConsumptionConfig {
+                    oxygen: 0,
+                    water: 0,
+                    food: 1,
+                }),
+                player_depletion_damage: Some(DepletionDamageConfig {
+                    oxygen: 1,
+                    water: 0,
+                    food: 0,
+                }),
+                ..survival_network()
+            },
+            ..Default::default()
+        };
+        let mut direct = build_app(&ServerConfig::default(), &state).unwrap();
+        attach(&mut direct, 1, 10);
+        assert_eq!(
+            advance_player_survival(
+                direct.world_mut(),
+                ConsumptionRates::ZERO,
+                DepletionDamageRates::new(1, 0, 0).unwrap()
+            )
+            .unwrap(),
+            1
+        );
+        let mut direct_after = snapshot(&mut direct);
+        assert_eq!(direct_after.tick, 9);
+        assert_eq!(direct_after.player_inventory, state.player_inventory);
+        SnapshotStore::preflight(&direct_after).unwrap();
+        direct_after.tick = 10;
+        assert!(SnapshotStore::preflight(&direct_after).is_err());
+        drop(direct_after);
+        drop(direct);
+        let mut scheduled = build_app(&config, &state).unwrap();
+        attach(&mut scheduled, 1, 10);
+        let before = scheduled.world().resource::<PlayerRegistry>().snapshot();
+        let bags = scheduled
+            .world()
+            .resource::<PlayerRegistry>()
+            .inventory_snapshot();
+        scheduled
+            .world_mut()
+            .run_schedule(bevy::prelude::FixedUpdate);
+        assert!(
+            icarus_bevy::native_player_runtime::consumption_runtime_health(scheduled.world())
+                .is_err()
+        );
+        assert_eq!(
+            scheduled.world().resource::<PlayerRegistry>().snapshot(),
+            before
+        );
+        assert_eq!(
+            scheduled
+                .world()
+                .resource::<PlayerRegistry>()
+                .inventory_snapshot(),
+            bags
+        );
+        assert_eq!(scheduled.world().resource::<SimulationClock>().tick, 9);
+        assert!(capture(scheduled.world_mut()).is_err());
+        scheduled
+            .world_mut()
+            .run_schedule(bevy::prelude::FixedUpdate);
+        assert_eq!(
+            scheduled.world().resource::<PlayerRegistry>().snapshot(),
+            before
+        );
     }
 }

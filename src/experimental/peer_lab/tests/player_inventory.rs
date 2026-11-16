@@ -272,7 +272,7 @@ fn canceled_controller_completion_keeps_schema15_inventory_cutoff() {
         max_health: 100,
         stamina: 100,
         max_stamina: 100,
-        oxygen: 100,
+        oxygen: 0,
         max_oxygen: 100,
         water: 100,
         max_water: 100,
@@ -310,7 +310,19 @@ fn canceled_controller_completion_keeps_schema15_inventory_cutoff() {
             },
         )
         .unwrap();
-    let projection = activate_player(app.world_mut(), 1).unwrap();
+    activate_player(app.world_mut(), 1).unwrap();
+    crate::native_player_runtime::advance_player_survival(
+        app.world_mut(),
+        crate::native_player_runtime::ConsumptionRates::ZERO,
+        crate::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap(),
+    )
+    .unwrap();
+    let projection = app
+        .world()
+        .resource::<PlayerRegistry>()
+        .projection(1)
+        .unwrap();
+    assert_eq!(projection.checkpoint.vitals.health, 93);
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12345);
     let mut entry = post_pawn_peer(lab.config.packet);
     entry.connection_id = Some(1);
@@ -334,6 +346,17 @@ fn canceled_controller_completion_keeps_schema15_inventory_cutoff() {
             .suppressed
     );
     let before = capture(app.world_mut()).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            crate::native_player_runtime::advance_player_survival(
+                app.world_mut(),
+                crate::native_player_runtime::ConsumptionRates::ZERO,
+                crate::native_player_runtime::DepletionDamageRates::new(7, 0, 0).unwrap()
+            )
+            .unwrap(),
+            0
+        );
+    }
     let dir = tempfile::tempdir().unwrap();
     let mut writer = CheckpointWriter::spawn(SnapshotStore::open(dir.path()).unwrap()).unwrap();
     writer.submit(app.world_mut()).unwrap();
@@ -419,14 +442,36 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
         .resource_mut::<PlayerRegistry>()
         .reserve(key, 1, checkpoint)
         .unwrap();
-    let initial = activate_player(app.world_mut(), 1).unwrap();
+    let before_damage = activate_player(app.world_mut(), 1).unwrap();
+    crate::native_player_runtime::advance_player_survival(
+        app.world_mut(),
+        crate::native_player_runtime::ConsumptionRates::ZERO,
+        crate::native_player_runtime::DepletionDamageRates::new(2, 3, 4).unwrap(),
+    )
+    .unwrap();
+    let initial = app
+        .world()
+        .resource::<PlayerRegistry>()
+        .projection(1)
+        .unwrap();
+    assert_eq!(initial.checkpoint.vitals.health, 91);
     let mut lab = PeerLab::prepare(PeerLabConfig::default()).unwrap();
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12345);
     let mut entry = post_pawn_peer(lab.config.packet);
     entry.checkpoint_active = true;
-    entry.checkpoint_projection = Some(initial);
-    entry.checkpoint_enqueued_revision = Some(initial.revision);
+    entry.checkpoint_projection = Some(before_damage);
+    entry.checkpoint_enqueued_revision = Some(before_damage.revision);
     lab.peers.insert(address, entry);
+    let damaged = capture(app.world_mut()).unwrap();
+    for _ in 0..4 {
+        lab.peers
+            .get_mut(&address)
+            .unwrap()
+            .pawn_restore_retry_ready = true;
+        lab.refresh_checkpoint_projections(app.world().resource::<PlayerRegistry>());
+        assert_eq!(capture(app.world_mut()).unwrap(), damaged);
+    }
+    assert_eq!(lab.peers[&address].checkpoint_projection, Some(initial));
     for _ in 0..2 {
         let before = capture(app.world_mut()).unwrap();
         let bag = &before.player_inventory.as_ref().unwrap().bags[0];
@@ -449,13 +494,22 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
             },
         };
         apply_player_inventory_action(app.world_mut(), key, 1, &request).unwrap();
+        assert_eq!(
+            crate::native_player_runtime::advance_player_survival(
+                app.world_mut(),
+                crate::native_player_runtime::ConsumptionRates::ZERO,
+                crate::native_player_runtime::DepletionDamageRates::new(2, 3, 4).unwrap()
+            )
+            .unwrap(),
+            0
+        );
         let after = capture(app.world_mut()).unwrap();
         for _ in 0..4 {
             lab.refresh_checkpoint_projections(app.world().resource::<PlayerRegistry>());
         }
         assert_eq!(
             lab.peers[&address].checkpoint_enqueued_revision,
-            Some(initial.revision)
+            Some(before_damage.revision)
         );
         assert_eq!(
             lab.peers[&address].checkpoint_projection,
@@ -477,4 +531,93 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
             .oxygen,
         30
     );
+}
+
+#[test]
+fn depletion_damage_queued_revocation_wins_before_scheduled_health_loss() {
+    use crate::native_player_runtime::{
+        ConsumptionConfig, DepletionDamageConfig, activate_player, install_survival,
+    };
+    let state = inventory_state();
+    let mut app = build_app(
+        &ServerConfig {
+            tick_hz: 1,
+            ..Default::default()
+        },
+        &state,
+    )
+    .unwrap();
+    let key = PlayerKey::new(1234, 0).unwrap();
+    let vitals = crate::experimental::pawn_open::CharacterVitals {
+        health: 100,
+        max_health: 100,
+        stamina: 100,
+        max_stamina: 100,
+        oxygen: 0,
+        max_oxygen: 100,
+        water: 0,
+        max_water: 100,
+        food: 0,
+        max_food: 100,
+        biome_row: 0,
+        growth_row: 0,
+    };
+    app.world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(
+            key,
+            1,
+            PlayerCheckpoint {
+                location_cm: [0.; 3],
+                vitals,
+            },
+        )
+        .unwrap();
+    let projection = activate_player(app.world_mut(), 1).unwrap();
+    let mut lab = PeerLab::prepare(PeerLabConfig::default()).unwrap();
+    lab.checkpoint_initial_vitals = Some(vitals);
+    let (auth, backend) = AuthClient::test_bridge(8);
+    lab.authenticator = Some(auth);
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12345);
+    let mut entry = post_pawn_peer(lab.config.packet);
+    entry.checkpoint_active = true;
+    entry.checkpoint_projection = Some(projection);
+    entry.checkpoint_enqueued_revision = Some(projection.revision);
+    lab.peers.insert(address, entry);
+    app.insert_resource(lab);
+    install_survival(
+        &mut app,
+        ConsumptionConfig {
+            oxygen: 0,
+            water: 0,
+            food: 1,
+        },
+        Some(DepletionDamageConfig {
+            oxygen: 2,
+            water: 3,
+            food: 4,
+        }),
+        1,
+    )
+    .unwrap();
+    let before = capture(app.world_mut()).unwrap();
+    backend
+        .event(crate::steam_auth::AuthEvent {
+            request_id: 1,
+            outcome: AuthOutcome::Revoked,
+        })
+        .unwrap();
+    app.world_mut().run_schedule(bevy::prelude::FixedUpdate);
+    let after = capture(app.world_mut()).unwrap();
+    assert_eq!(after.native_players, before.native_players);
+    assert_eq!(after.player_inventory, before.player_inventory);
+    assert_eq!(after.tick, before.tick + 1);
+    assert!(
+        app.world()
+            .resource::<PlayerRegistry>()
+            .active_epochs()
+            .is_empty()
+    );
+    assert!(!app.world().resource::<PeerLab>().has_peer(address));
+    assert!(app.world().resource::<PeerLab>().socket.0.is_none());
 }

@@ -893,13 +893,31 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         "authored clock requires schema 14"
     );
     crate::network::install_authored_clock_runtime(&mut app, authored_clock, config.tick_hz)?;
+    ensure!(
+        config.network.player_depletion_damage.is_none()
+            || config.network.player_consumption.is_some(),
+        "player depletion damage requires player consumption"
+    );
     if let Some(consumption) = config.network.player_consumption {
         consumption.validate()?;
         ensure!(
             snapshot.native_players.is_some(),
             "player consumption requires schema 14"
         );
-        crate::native_player_runtime::install_consumption(&mut app, consumption, config.tick_hz)?;
+        if let Some(damage) = config.network.player_depletion_damage {
+            crate::native_player_runtime::install_survival(
+                &mut app,
+                consumption,
+                Some(damage),
+                config.tick_hz,
+            )?;
+        } else {
+            crate::native_player_runtime::install_consumption(
+                &mut app,
+                consumption,
+                config.tick_hz,
+            )?;
+        }
     }
     for entity in &snapshot.entities {
         app.world_mut().spawn((entity.id, entity.position));

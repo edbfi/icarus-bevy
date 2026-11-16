@@ -2284,12 +2284,13 @@ pub fn prepare_run(
     }
     ensure!(
         network.player_consumption.is_none()
+            && network.player_depletion_damage.is_none()
             && network
                 .authored_world
                 .as_ref()
                 .and_then(|world| world.clock.as_ref())
                 .is_none(),
-        "authored clock or consumption requires explicit simulation rate preparation"
+        "authored clock, consumption or depletion damage requires explicit simulation rate preparation"
     );
     if network.player_persistence.is_none() {
         return Ok((prepare_session(network, config)?, None));
@@ -2408,9 +2409,10 @@ pub fn prepare_run_with_tick_hz(
         authored_gameplay: digest(bytes),
         spawn: digest(serde_json::to_vec(&network.spawn)?),
         authored_world: digest(serde_json::to_vec(&network.authored_world)?),
-        declaration: crate::native_player_runtime::player_declaration_digest(
+        declaration: crate::native_player_runtime::player_survival_declaration_digest(
             declaration,
             network.player_consumption,
+            network.player_depletion_damage,
             tick_hz,
         )?,
         initial_values: digest(serde_json::to_vec(&resolved_values)?),

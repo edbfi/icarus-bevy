@@ -324,7 +324,15 @@ impl PlayerRegistry {
     /// Returns changed records; zero currents do not consume revisions. Detached
     /// records and reservations remain unchanged, with no offline catch-up.
     pub fn consume_activated(&mut self, rates: ConsumptionRates) -> Result<usize, PlayerError> {
-        if self.inventory.is_some() {
+        self.advance_activated(rates, DepletionDamageRates::ZERO)
+    }
+
+    fn advance_activated(
+        &mut self,
+        rates: ConsumptionRates,
+        damage: DepletionDamageRates,
+    ) -> Result<usize, PlayerError> {
+        if self.inventory.is_some() || (self.private_leave_proof.is_some() && !damage.is_zero()) {
             return Err(PlayerError::InvalidState);
         }
         self.proof_health()?;
@@ -349,6 +357,17 @@ impl PlayerRegistry {
                 return Err(PlayerError::Duplicate);
             }
             let mut next = record.checkpoint;
+            // Sample needs before any debit; becoming empty starts damage next batch.
+            let loss = [
+                (next.vitals.oxygen, damage.oxygen),
+                (next.vitals.water, damage.water),
+                (next.vitals.food, damage.food),
+            ]
+            .into_iter()
+            .filter(|(need, _)| *need == 0)
+            .map(|(_, delta)| i64::from(delta))
+            .sum::<i64>();
+            next.vitals.health = (i64::from(next.vitals.health) - loss).max(0) as i32;
             next.vitals.oxygen = next.vitals.oxygen.saturating_sub(rates.oxygen).max(0);
             next.vitals.water = next.vitals.water.saturating_sub(rates.water).max(0);
             next.vitals.food = next.vitals.food.saturating_sub(rates.food).max(0);
@@ -424,6 +443,11 @@ pub struct ConsumptionRates {
     food: i32,
 }
 impl ConsumptionRates {
+    pub const ZERO: Self = Self {
+        oxygen: 0,
+        water: 0,
+        food: 0,
+    };
     pub fn new(oxygen: i32, water: i32, food: i32) -> Result<Self, PlayerError> {
         if [oxygen, water, food]
             .iter()
@@ -437,6 +461,37 @@ impl ConsumptionRates {
             water,
             food,
         })
+    }
+}
+
+/// Validated independent health deltas for one authoritative batch.
+#[derive(Clone, Copy, Debug)]
+pub struct DepletionDamageRates {
+    oxygen: i32,
+    water: i32,
+    food: i32,
+}
+impl DepletionDamageRates {
+    pub const ZERO: Self = Self {
+        oxygen: 0,
+        water: 0,
+        food: 0,
+    };
+    pub fn new(oxygen: i32, water: i32, food: i32) -> Result<Self, PlayerError> {
+        if [oxygen, water, food]
+            .iter()
+            .any(|rate| !(0..=10_000_000).contains(rate))
+        {
+            return Err(PlayerError::InvalidState);
+        }
+        Ok(Self {
+            oxygen,
+            water,
+            food,
+        })
+    }
+    fn is_zero(self) -> bool {
+        self.oxygen == 0 && self.water == 0 && self.food == 0
     }
 }
 
@@ -1140,8 +1195,8 @@ mod consumption_tests {
     }
 }
 
-/// Independently authored integer units per simulated second. No depletion
-/// damage, regeneration, temperature, or original gameplay rates are inferred.
+/// Independently authored integer units per simulated second. No regeneration,
+/// temperature, or original gameplay rates are inferred.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumptionConfig {
@@ -1181,6 +1236,47 @@ impl ConsumptionConfig {
     }
 }
 
+/// Explicit opt-in authored health units per second for pre-batch empty needs.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DepletionDamageConfig {
+    pub oxygen: i32,
+    pub water: i32,
+    pub food: i32,
+}
+impl DepletionDamageConfig {
+    pub fn validate(self) -> anyhow::Result<()> {
+        for (field, rate) in [
+            ("oxygen", self.oxygen),
+            ("water", self.water),
+            ("food", self.food),
+        ] {
+            anyhow::ensure!(
+                (0..=10_000_000).contains(&rate),
+                "network.player_depletion_damage.{field} must be 0..=10000000"
+            );
+        }
+        anyhow::ensure!(
+            self.oxygen != 0 || self.water != 0 || self.food != 0,
+            "network.player_depletion_damage requires at least one positive rate"
+        );
+        Ok(())
+    }
+    fn for_tick(self, tick: u64, tick_hz: u32) -> DepletionDamageRates {
+        let rates = ConsumptionConfig {
+            oxygen: self.oxygen,
+            water: self.water,
+            food: self.food,
+        }
+        .for_tick(tick, tick_hz);
+        DepletionDamageRates {
+            oxygen: rates.oxygen,
+            water: rates.water,
+            food: rates.food,
+        }
+    }
+}
+
 /// Reuse schema14's existing declaration fingerprint. With no enabled rules,
 /// retain the exact legacy JSON bytes; all enabled rules bind the actual rate.
 pub(crate) fn player_declaration_digest(
@@ -1206,6 +1302,35 @@ pub(crate) fn player_declaration_digest(
         }
     };
     Ok(sha2::Sha256::digest(bytes).into())
+}
+
+pub(crate) fn player_survival_declaration_digest(
+    declaration: &crate::config::PlayerPersistenceConfig,
+    consumption: Option<ConsumptionConfig>,
+    damage: Option<DepletionDamageConfig>,
+    actual_tick_hz: u32,
+) -> anyhow::Result<[u8; 32]> {
+    use sha2::Digest;
+    if let Some(damage) = damage {
+        damage.validate()?;
+        let consumption = consumption.ok_or_else(|| {
+            anyhow::anyhow!("player depletion damage requires player consumption")
+        })?;
+        consumption.validate()?;
+        anyhow::ensure!(
+            (1..=240).contains(&actual_tick_hz),
+            "invalid survival simulation rate"
+        );
+        return Ok(sha2::Sha256::digest(serde_json::to_vec(&(
+            "authored_player_depletion_damage_v1",
+            declaration,
+            consumption,
+            damage,
+            actual_tick_hz,
+        ))?)
+        .into());
+    }
+    player_declaration_digest(declaration, consumption, actual_tick_hz)
 }
 
 #[derive(Resource)]
@@ -1277,8 +1402,28 @@ pub(crate) fn install_consumption(
     config: ConsumptionConfig,
     tick_hz: u32,
 ) -> anyhow::Result<()> {
+    install_survival(app, config, None, tick_hz)
+}
+
+pub(crate) fn install_survival(
+    app: &mut bevy::prelude::App,
+    config: ConsumptionConfig,
+    damage: Option<DepletionDamageConfig>,
+    tick_hz: u32,
+) -> anyhow::Result<()> {
     use bevy::prelude::{FixedUpdate, IntoScheduleConfigs};
     config.validate()?;
+    if let Some(damage) = damage {
+        damage.validate()?;
+    }
+    anyhow::ensure!(
+        damage.is_none()
+            || app
+                .world()
+                .get_resource::<PlayerRegistry>()
+                .is_none_or(|registry| registry.private_leave_proof.is_none()),
+        "private leave proof refuses depletion damage"
+    );
     anyhow::ensure!(
         (1..=240).contains(&tick_hz),
         "invalid consumption simulation rate"
@@ -1321,8 +1466,15 @@ pub(crate) fn install_consumption(
                     .map_err(|_| PlayerError::InvalidIdentity)?;
                 // The phase is the saved simulation tick, so restart neither loses
                 // fractions nor charges elapsed wall time. A missing owner fails closed.
-                consume_player_vitals(world, config.for_tick(tick, tick_hz))
-                    .map_err(|_| PlayerError::InvalidState)?;
+                advance_player_survival_boundary(
+                    world,
+                    config.for_tick(tick, tick_hz),
+                    damage.map_or(DepletionDamageRates::ZERO, |rule| {
+                        rule.for_tick(tick, tick_hz)
+                    }),
+                    Some(tick.checked_add(1).ok_or(PlayerError::Exhausted)?),
+                )
+                .map_err(|_| PlayerError::InvalidState)?;
                 Ok(())
             })();
             if result.is_err() {
@@ -1884,18 +2036,41 @@ pub(crate) fn drain_inventory_activations(world: &mut World) -> Vec<u64> {
 /// Schema 15 keeps survival in the same exclusive full-generation admission
 /// boundary. Schema 14 retains its original registry and proof behavior.
 pub fn consume_player_vitals(world: &mut World, rates: ConsumptionRates) -> anyhow::Result<usize> {
+    advance_player_survival(world, rates, DepletionDamageRates::ZERO)
+}
+
+/// Direct batches preserve the current simulation tick. Scheduled batches use
+/// the completed tick for full-generation preflight before committing players.
+pub fn advance_player_survival(
+    world: &mut World,
+    rates: ConsumptionRates,
+    damage: DepletionDamageRates,
+) -> anyhow::Result<usize> {
+    advance_player_survival_boundary(world, rates, damage, None)
+}
+
+fn advance_player_survival_boundary(
+    world: &mut World,
+    rates: ConsumptionRates,
+    damage: DepletionDamageRates,
+    completed_tick: Option<u64>,
+) -> anyhow::Result<usize> {
     let registry = world
         .get_resource::<PlayerRegistry>()
         .ok_or(PlayerError::Missing)?;
+    anyhow::ensure!(
+        registry.private_leave_proof.is_none() || damage.is_zero(),
+        "private leave proof refuses depletion damage"
+    );
     if !registry.has_inventory() {
         return Ok(world
             .resource_mut::<PlayerRegistry>()
-            .consume_activated(rates)?);
+            .advance_activated(rates, damage)?);
     }
     registry.proof_health()?;
     crate::network::authored_clock_runtime_health(world)?;
     consumption_runtime_health(world)?;
-    if (rates.oxygen == 0 && rates.water == 0 && rates.food == 0)
+    if ((rates.oxygen == 0 && rates.water == 0 && rates.food == 0) && damage.is_zero())
         || !registry.attachments.values().any(|held| held.activated)
     {
         return Ok(0);
@@ -1906,10 +2081,13 @@ pub fn consume_player_vitals(world: &mut World, rates: ConsumptionRates) -> anyh
         registry.max_live,
     )?;
     staged.attachments = registry.attachments.clone();
-    let changed = staged.consume_activated(rates)?;
+    let changed = staged.advance_activated(rates, damage)?;
     if changed > 0 {
         let mut generation = crate::simulation::capture(world)?;
         generation.native_players = Some(staged.snapshot);
+        if let Some(tick) = completed_tick {
+            generation.tick = tick;
+        }
         crate::persistence::SnapshotStore::preflight(&generation)?;
         world.resource_mut::<PlayerRegistry>().snapshot =
             generation.native_players.expect("preflight players");
@@ -1960,4 +2138,488 @@ pub fn edit_player_checkpoint(
     world.resource_mut::<PlayerRegistry>().snapshot =
         generation.native_players.expect("preflight players");
     Ok(projection)
+}
+
+#[cfg(test)]
+mod depletion_damage_tests {
+    use super::*;
+    use crate::{
+        config::{PlayerPersistenceConfig, ServerConfig},
+        persistence::SnapshotStore,
+        simulation::{SNAPSHOT_SCHEMA_PLAYERS, SimulationClock, WorldSnapshot, build_app, capture},
+    };
+    use bevy::prelude::FixedUpdate;
+
+    fn damage() -> DepletionDamageRates {
+        DepletionDamageRates::new(2, 3, 4).unwrap()
+    }
+    fn activated() -> PlayerRegistry {
+        let mut registry = super::consumption_tests::registry();
+        super::consumption_tests::attach(&mut registry, 1, 1);
+        registry
+    }
+    fn empty_needs(registry: &mut PlayerRegistry) {
+        for record in &mut registry.snapshot.records {
+            record.checkpoint.vitals.oxygen = 0;
+            record.checkpoint.vitals.water = 0;
+            record.checkpoint.vitals.food = 0;
+        }
+    }
+    #[test]
+    fn depletion_damage_samples_predebit_and_combines_one_revision() {
+        let mut registry = activated();
+        let initial = registry.projection(1).unwrap();
+        registry.snapshot.records[0].checkpoint.vitals.oxygen = 0;
+        registry.snapshot.records[0].checkpoint.vitals.water = 1;
+        registry.snapshot.records[0].checkpoint.vitals.food = 0;
+        assert_eq!(
+            registry
+                .advance_activated(ConsumptionRates::new(1, 1, 1).unwrap(), damage())
+                .unwrap(),
+            1
+        );
+        let first = registry.projection(1).unwrap();
+        assert_eq!(
+            first.checkpoint.vitals.health,
+            initial.checkpoint.vitals.health - 6
+        );
+        assert_eq!(first.checkpoint.vitals.water, 0);
+        assert_eq!(first.revision, initial.revision + 1);
+        // Damage-only batches work even on zero-debit ticks.
+        assert_eq!(
+            registry
+                .advance_activated(ConsumptionRates::ZERO, damage())
+                .unwrap(),
+            1
+        );
+        assert_eq!(registry.projection(1).unwrap().checkpoint.vitals.health, 75);
+        assert_eq!(registry.projection(1).unwrap().revision, first.revision + 1);
+        registry
+            .advance_activated(
+                ConsumptionRates::ZERO,
+                DepletionDamageRates::new(10_000_000, 10_000_000, 10_000_000).unwrap(),
+            )
+            .unwrap();
+        registry.snapshot.records[0].revision = u64::MAX;
+        let exhausted = registry.snapshot();
+        assert_eq!(
+            registry
+                .advance_activated(ConsumptionRates::ZERO, damage())
+                .unwrap(),
+            0
+        );
+        assert_eq!(registry.snapshot(), exhausted);
+        for values in [(-1, 0, 0), (0, 10_000_001, 0), (0, 0, i32::MAX)] {
+            assert!(DepletionDamageRates::new(values.0, values.1, values.2).is_err());
+        }
+    }
+    #[test]
+    fn depletion_damage_batch_rejection_is_atomic() {
+        for failure in ["revision", "invalid", "missing", "pending"] {
+            let mut registry = activated();
+            super::consumption_tests::attach(&mut registry, 2, 2);
+            empty_needs(&mut registry);
+            match failure {
+                "revision" => registry.snapshot.records[1].revision = u64::MAX,
+                "invalid" => registry.snapshot.records[1].checkpoint.vitals.health = -1,
+                "missing" => {
+                    registry.snapshot.records.pop();
+                }
+                "pending" => {
+                    registry.attachments.get_mut(&2).unwrap().pending =
+                        Some(registry.snapshot.records[1].clone())
+                }
+                _ => unreachable!(),
+            }
+            let before = registry.snapshot();
+            assert!(
+                registry
+                    .advance_activated(ConsumptionRates::ZERO, damage())
+                    .is_err(),
+                "{failure}"
+            );
+            assert_eq!(registry.snapshot(), before, "{failure}");
+        }
+        // An overflowed scheduled tick fails before a health-only mutation and Finish.
+        // At 30 Hz, oxygen damage 30 guarantees a nonzero delta on this tick.
+        let mut registry = activated();
+        empty_needs(&mut registry);
+        let state = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+            tick: u64::MAX,
+            native_players: Some(registry.snapshot()),
+            ..Default::default()
+        };
+        let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+        super::consumption_tests::attach(
+            &mut app.world_mut().resource_mut::<PlayerRegistry>(),
+            1,
+            1,
+        );
+        install_survival(
+            &mut app,
+            ConsumptionConfig {
+                oxygen: 0,
+                water: 0,
+                food: 1,
+            },
+            Some(DepletionDamageConfig {
+                oxygen: 30,
+                water: 1,
+                food: 1,
+            }),
+            30,
+        )
+        .unwrap();
+        let before = app.world().resource::<PlayerRegistry>().snapshot();
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(consumption_runtime_health(app.world()).is_err());
+        assert!(capture(app.world_mut()).is_err());
+        assert_eq!(app.world().resource::<SimulationClock>().tick, u64::MAX);
+        assert_eq!(app.world().resource::<PlayerRegistry>().snapshot(), before);
+    }
+    #[test]
+    fn depletion_damage_authority_excludes_pending_and_detached() {
+        let mut registry = activated();
+        super::consumption_tests::attach(&mut registry, 2, 2);
+        empty_needs(&mut registry);
+        registry.detach(2);
+        let key = registry.snapshot.records[1].key;
+        registry
+            .reserve(key, 3, registry.snapshot.records[1].checkpoint)
+            .unwrap();
+        let before = registry.snapshot.records[1].clone();
+        assert_eq!(
+            registry
+                .advance_activated(ConsumptionRates::ZERO, damage())
+                .unwrap(),
+            1
+        );
+        assert!(registry.snapshot.records[1] == before);
+        registry.detach(1);
+        assert_eq!(
+            registry
+                .advance_activated(ConsumptionRates::ZERO, damage())
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn depletion_damage_optin_preserves_legacy_digests() {
+        use sha2::{Digest, Sha256};
+        let declaration = PlayerPersistenceConfig {
+            prospect_id: "authored".into(),
+            map_url: "/Authored/Map".into(),
+            prospect_row: "AuthoredRow".into(),
+            difficulty: 2,
+        };
+        let consumption = ConsumptionConfig {
+            oxygen: 0,
+            water: 0,
+            food: 1,
+        };
+        let rule = DepletionDamageConfig {
+            oxygen: 2,
+            water: 3,
+            food: 4,
+        };
+        let plain = br#"{"prospect_id":"authored","map_url":"/Authored/Map","prospect_row":"AuthoredRow","difficulty":2}"#;
+        let legacy = br#"["authored_player_rules_v1",{"prospect_id":"authored","map_url":"/Authored/Map","prospect_row":"AuthoredRow","difficulty":2},{"oxygen":0,"water":0,"food":1},7]"#;
+        for (rates, golden) in [
+            (None, plain.as_slice()),
+            (Some(consumption), legacy.as_slice()),
+        ] {
+            assert_eq!(
+                player_survival_declaration_digest(&declaration, rates, None, 7).unwrap(),
+                <[u8; 32]>::from(Sha256::digest(golden))
+            );
+        }
+        let enabled =
+            player_survival_declaration_digest(&declaration, Some(consumption), Some(rule), 7)
+                .unwrap();
+        let expected = serde_json::to_vec(&(
+            "authored_player_depletion_damage_v1",
+            &declaration,
+            consumption,
+            rule,
+            7u32,
+        ))
+        .unwrap();
+        assert_eq!(enabled, <[u8; 32]>::from(Sha256::digest(expected)));
+        for changed in [
+            DepletionDamageConfig { oxygen: 3, ..rule },
+            DepletionDamageConfig { water: 4, ..rule },
+            DepletionDamageConfig { food: 5, ..rule },
+        ] {
+            assert_ne!(
+                enabled,
+                player_survival_declaration_digest(
+                    &declaration,
+                    Some(consumption),
+                    Some(changed),
+                    7
+                )
+                .unwrap()
+            );
+        }
+        for changed in [
+            ConsumptionConfig {
+                oxygen: 1,
+                ..consumption
+            },
+            ConsumptionConfig {
+                water: 1,
+                ..consumption
+            },
+            ConsumptionConfig {
+                food: 2,
+                ..consumption
+            },
+        ] {
+            assert_ne!(
+                enabled,
+                player_survival_declaration_digest(&declaration, Some(changed), Some(rule), 7)
+                    .unwrap()
+            );
+        }
+        assert_ne!(
+            enabled,
+            player_survival_declaration_digest(&declaration, Some(consumption), Some(rule), 8)
+                .unwrap()
+        );
+        assert!(player_survival_declaration_digest(&declaration, None, Some(rule), 7).is_err());
+        for document in [
+            "oxygen=0\nwater=0\nfood=0",
+            "oxygen=-1\nwater=0\nfood=1",
+            "oxygen=1\nwater=10000001\nfood=0",
+        ] {
+            assert!(
+                toml::from_str::<DepletionDamageConfig>(document)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        for document in [
+            "oxygen=1\nwater=2",
+            "oxygen=1\nwater=2\nfood=3\nextra=1",
+            "oxygen=1.5\nwater=2\nfood=3",
+        ] {
+            assert!(toml::from_str::<DepletionDamageConfig>(document).is_err());
+        }
+        let defaults = serde_json::to_value(crate::config::NetworkConfig::default()).unwrap();
+        assert!(defaults.get("player_depletion_damage").is_none());
+        for hz in [1, 7, 30, 240] {
+            let sum: i64 = (0..hz)
+                .map(|t| i64::from(rule.for_tick(u64::from(t), hz).food))
+                .sum();
+            assert_eq!(sum, 4);
+            let extreme = rule.for_tick(u64::MAX, hz);
+            assert!((0..=4).contains(&extreme.food));
+        }
+    }
+    #[test]
+    fn depletion_damage_restart_resumes_saved_phase_schema14() {
+        let mut registry = activated();
+        empty_needs(&mut registry);
+        let state = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+            native_players: Some(registry.snapshot()),
+            ..Default::default()
+        };
+        let config = ServerConfig {
+            tick_hz: 7,
+            ..Default::default()
+        };
+        let rates = ConsumptionConfig {
+            oxygen: 1,
+            water: 0,
+            food: 0,
+        };
+        let rule = DepletionDamageConfig {
+            oxygen: 2,
+            water: 3,
+            food: 4,
+        };
+        let mut app = build_app(&config, &state).unwrap();
+        super::consumption_tests::attach(
+            &mut app.world_mut().resource_mut::<PlayerRegistry>(),
+            1,
+            1,
+        );
+        install_survival(&mut app, rates, Some(rule), 7).unwrap();
+        for _ in 0..3 {
+            app.world_mut().run_schedule(FixedUpdate);
+        }
+        let saved = capture(app.world_mut()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(root.path()).unwrap();
+        store.save(&saved).unwrap();
+        app.world_mut().run_schedule(FixedUpdate);
+        let later = capture(app.world_mut()).unwrap();
+        store.save(&later).unwrap();
+        let current_state = store.load().unwrap().unwrap().snapshot;
+        let mut current = build_app(&config, &current_state).unwrap();
+        install_survival(&mut current, rates, Some(rule), 7).unwrap();
+        super::consumption_tests::attach(
+            &mut current.world_mut().resource_mut::<PlayerRegistry>(),
+            1,
+            20,
+        );
+        current.world_mut().run_schedule(FixedUpdate);
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(
+            capture(current.world_mut()).unwrap(),
+            capture(app.world_mut()).unwrap()
+        );
+        drop(store);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("manifest.json")).unwrap())
+                .unwrap();
+        let current = manifest["current"]["number"].as_u64().unwrap();
+        std::fs::write(
+            root.path().join(format!("snapshot-{current}.json")),
+            b"corrupt authored current",
+        )
+        .unwrap();
+        let loaded = SnapshotStore::open_existing(root.path())
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap()
+            .snapshot;
+        assert_eq!(loaded, saved);
+        let mut previous = build_app(&config, &loaded).unwrap();
+        install_survival(&mut previous, rates, Some(rule), 7).unwrap();
+        super::consumption_tests::attach(
+            &mut previous.world_mut().resource_mut::<PlayerRegistry>(),
+            1,
+            30,
+        );
+        previous.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(capture(previous.world_mut()).unwrap(), later);
+        let mut reopened = build_app(&config, &loaded).unwrap();
+        install_survival(&mut reopened, rates, Some(rule), 7).unwrap();
+        // Offline fixed ticks have no attachment, even though the global phase advances.
+        for _ in 0..2 {
+            reopened.world_mut().run_schedule(FixedUpdate);
+        }
+        assert_eq!(
+            reopened.world().resource::<PlayerRegistry>().snapshot(),
+            saved.native_players.clone().unwrap()
+        );
+        super::consumption_tests::attach(
+            &mut reopened.world_mut().resource_mut::<PlayerRegistry>(),
+            1,
+            10,
+        );
+        let tick = reopened.world().resource::<SimulationClock>().tick;
+        let before = reopened
+            .world()
+            .resource::<PlayerRegistry>()
+            .projection(10)
+            .unwrap();
+        reopened.world_mut().run_schedule(FixedUpdate);
+        let delta = rule.for_tick(tick, 7);
+        assert_eq!(
+            reopened
+                .world()
+                .resource::<PlayerRegistry>()
+                .projection(10)
+                .unwrap()
+                .checkpoint
+                .vitals
+                .health,
+            before.checkpoint.vitals.health - delta.oxygen - delta.water - delta.food
+        );
+        assert_eq!(
+            reopened.world().resource::<SimulationClock>().tick,
+            tick + 1
+        );
+    }
+    #[test]
+    fn depletion_damage_direct_proof_refusal_precedes_any_staging() {
+        use std::{
+            io::Write,
+            os::unix::fs::{OpenOptionsExt, PermissionsExt},
+        };
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let descriptor = root.path().join("worker-descriptor.json");
+        let value = serde_json::json!({"format":1,"case_id":root.path().file_name().unwrap().to_str().unwrap(),
+            "phase":1,"output":"worker-proof.jsonl","predecessor":null,"exit_seal":null});
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&descriptor)
+            .unwrap();
+        file.write_all(&serde_json::to_vec(&value).unwrap())
+            .unwrap();
+        drop(file);
+        let proof = crate::leave_runtime_proof::PrivateLeaveProof::open_authored_fixture(
+            &descriptor,
+            root.path(),
+            "11111111111111111111111111111111",
+        )
+        .unwrap();
+        let mut registry = super::consumption_tests::registry();
+        let snapshot = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+            native_players: Some(registry.snapshot()),
+            ..Default::default()
+        };
+        proof.observe_load(None).unwrap();
+        proof.observe_opened(&snapshot).unwrap();
+        registry.enable_private_leave_proof(proof.clone()).unwrap();
+        // Inject an activated authored record after proof installation so a missing
+        // early guard would reach the health-changing planner, not a no-op.
+        let mut selected = activated();
+        empty_needs(&mut selected);
+        registry.snapshot = selected.snapshot;
+        registry.attachments = selected.attachments;
+        let before = registry.snapshot();
+        let journal = std::fs::read(root.path().join("worker-proof.jsonl")).unwrap();
+        assert!(
+            registry
+                .advance_activated(ConsumptionRates::ZERO, damage())
+                .is_err()
+        );
+        let mut world = World::new();
+        world.insert_resource(registry);
+        assert!(advance_player_survival(&mut world, ConsumptionRates::ZERO, damage()).is_err());
+        assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+        assert_eq!(
+            std::fs::read(root.path().join("worker-proof.jsonl")).unwrap(),
+            journal
+        );
+        proof.health().unwrap();
+        assert_eq!(
+            consume_player_vitals(&mut world, ConsumptionRates::ZERO).unwrap(),
+            0
+        );
+        let mut app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .enable_private_leave_proof(proof)
+            .unwrap();
+        assert!(
+            install_survival(
+                &mut app,
+                ConsumptionConfig {
+                    oxygen: 0,
+                    water: 0,
+                    food: 1
+                },
+                Some(DepletionDamageConfig {
+                    oxygen: 1,
+                    water: 0,
+                    food: 0
+                }),
+                30
+            )
+            .is_err()
+        );
+        assert!(!app.world().contains_resource::<ConsumptionRuntime>());
+    }
 }

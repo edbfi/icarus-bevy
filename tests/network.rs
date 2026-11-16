@@ -9835,6 +9835,99 @@ mod authored_progression {
     }
 
     #[test]
+    fn depletion_damage_optin_preserves_legacy_digests_and_reopen() {
+        use icarus_bevy::native_player_runtime::DepletionDamageConfig;
+        use sha2::{Digest, Sha256};
+        for inventory_format in [None, Some(1), Some(2)] {
+            let (directory, mut config) = inputs();
+            if let Some(format) = inventory_format {
+                let recipe = directory.path().join("worker-inventory.json");
+                let mut value: serde_json::Value = serde_json::from_str(include_str!(
+                    "../config/player-inventory-consumables.example.json"
+                ))
+                .unwrap();
+                value["format"] = serde_json::json!(format);
+                if format == 1 {
+                    value.as_object_mut().unwrap().remove("consumables");
+                }
+                fs::write(&recipe, serde_json::to_vec(&value).unwrap()).unwrap();
+                config.player_inventory = Some(recipe);
+            }
+            let declaration = config.player_persistence.as_ref().unwrap().clone();
+            for consumption in [None, Some(rules())] {
+                config.player_consumption = consumption;
+                let prepared = prepare(&config, 7);
+                let snapshot = network::fresh_player_snapshot(Some(&prepared));
+                let context =
+                    serde_json::to_value(snapshot.native_players.as_ref().unwrap()).unwrap();
+                let bytes = match consumption {
+                    None => serde_json::to_vec(&declaration).unwrap(),
+                    Some(rates) => {
+                        serde_json::to_vec(&("authored_player_rules_v1", &declaration, rates, 7u32))
+                            .unwrap()
+                    }
+                };
+                assert_eq!(
+                    context["context"]["inputs"]["declaration"],
+                    serde_json::json!(<[u8; 32]>::from(Sha256::digest(bytes)))
+                );
+            }
+            let plain = network::fresh_player_snapshot(Some(&prepare(&config, 7)));
+            config.player_depletion_damage = Some(DepletionDamageConfig {
+                oxygen: 2,
+                water: 3,
+                food: 4,
+            });
+            assert!(network::prepare_run(&config, network::peer_lab_config(&config)).is_err());
+            let prepared = prepare(&config, 7);
+            let enabled = network::fresh_player_snapshot(Some(&prepared));
+            let mut refused = plain.clone();
+            assert!(network::open_player_snapshot(&mut refused, Some(&prepared)).is_err());
+            assert_eq!(refused, plain);
+            let root = tempfile::tempdir().unwrap();
+            let mut store = SnapshotStore::open(root.path()).unwrap();
+            store.save(&enabled).unwrap();
+            let disk_before: Vec<_> = fs::read_dir(root.path())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (path.clone(), fs::read(path).unwrap())
+                })
+                .collect();
+            for variant in ["remove", "oxygen", "water", "food", "consumption", "hz"] {
+                let mut changed = config.clone();
+                let mut hz = 7;
+                match variant {
+                    "remove" => changed.player_depletion_damage = None,
+                    "oxygen" => changed.player_depletion_damage.as_mut().unwrap().oxygen += 1,
+                    "water" => changed.player_depletion_damage.as_mut().unwrap().water += 1,
+                    "food" => changed.player_depletion_damage.as_mut().unwrap().food += 1,
+                    "consumption" => changed.player_consumption.as_mut().unwrap().food += 1,
+                    "hz" => hz = 8,
+                    _ => unreachable!(),
+                }
+                let mut restored = store.load().unwrap().unwrap().snapshot;
+                let loaded_before = restored.clone();
+                assert!(
+                    network::open_player_snapshot(&mut restored, Some(&prepare(&changed, hz)))
+                        .is_err(),
+                    "{variant}"
+                );
+                assert_eq!(restored, loaded_before);
+                for (path, bytes) in &disk_before {
+                    assert_eq!(&fs::read(path).unwrap(), bytes);
+                }
+            }
+            config.player_consumption = None;
+            assert!(config.validate().is_err());
+            assert!(
+                network::prepare_run_with_tick_hz(&config, network::peer_lab_config(&config), 7)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn durable_seven_hz_resume_preserves_fractional_debit_and_clock_phase() {
         let (_directory, mut network) = inputs();
         network.player_consumption = Some(rules());
