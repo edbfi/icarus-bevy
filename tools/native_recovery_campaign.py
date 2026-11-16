@@ -204,6 +204,11 @@ BOUNDED_FIXTURES = (INVENTORY_FIXTURE, CONSUMABLE_FIXTURE)
 PLAYER_FIXTURES = {fixture.mode: fixture for fixture in (PLAYER_FIXTURE, *BOUNDED_FIXTURES)}
 
 
+def consumable_uses(tick: int) -> int:
+    """Completed Uses in the fixture's seven-tick schedule."""
+    return (tick + 2) // 7
+
+
 @dataclass(frozen=True)
 class PlayerState:
     generation: int
@@ -270,7 +275,7 @@ def validate_player_cycle(records: list[JsonObject], run_id: str, pid: int, code
             if state.generation != previous.generation + 1 or state.tick < previous.tick:
                 raise RuntimeError("acknowledged generation/tick sequence differs")
             acknowledgements.append(state)
-            if phase == "running" and (state.tick + 2) // 7 > (before.tick + 2) // 7:
+            if phase == "running" and consumable_uses(state.tick) > consumable_uses(before.tick):
                 use_covered = True
             if phase == "stopping":
                 shutdown_acknowledgements += 1
@@ -390,7 +395,7 @@ def player_child(binary: Path, output: Path, state: Path, label: str, command: l
                                     live_previous = state_ack
                                     # Each restart needs a newly acknowledged Use;
                                     # U(t) counts Uses completed through tick t.
-                                    if stop_at is None and (state_ack.tick + 2) // 7 > (before.tick + 2) // 7:
+                                    if stop_at is None and consumable_uses(state_ack.tick) > consumable_uses(before.tick):
                                         stop_at = time.monotonic() + (0.96, 0.99, 1.02, 1.05)[cycle % 4]
                                 elif event not in ("stopping", "completed"):
                                     raise RuntimeError(f"unexpected authored output: {event}")
@@ -550,8 +555,8 @@ def authored_campaign(args: Arguments) -> None:
                         or integer_field(verified[0], "schema") != fixture.schema):
                     raise RuntimeError("typed verifier final receipt differs")
                 if fixture == CONSUMABLE_FIXTURE:
-                    if (integer_field(verified[0], "uses") != (selected.tick + 2) // 7
-                            or integer_field(verified[0], "resumed_uses") != (selected.tick + 10) // 7
+                    if (integer_field(verified[0], "uses") != consumable_uses(selected.tick)
+                            or integer_field(verified[0], "resumed_uses") != consumable_uses(selected.tick + 8)
                             or not 0 <= integer_field(verified[0], "day_sample_bits") <= 0xFFFF_FFFF
                             or not 0 <= integer_field(verified[0], "resumed_day_sample_bits") <= 0xFFFF_FFFF):
                         raise RuntimeError("typed verifier consumable receipt differs")
