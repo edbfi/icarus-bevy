@@ -1199,12 +1199,8 @@ pub fn capture(world: &mut World) -> Result<WorldSnapshot> {
         &mode.players,
         world.get_resource::<crate::native_player_runtime::PlayerRegistry>(),
     ) {
-        (Some(expected), Some(registry)) => {
+        (Some(_), Some(registry)) => {
             let players = registry.snapshot();
-            ensure!(
-                players.context() == expected,
-                "player checkpoint context differs from activation"
-            );
             players.validate()?;
             Some(players)
         }

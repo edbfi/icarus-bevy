@@ -110,9 +110,9 @@ Declare stable `prospect_id`, `map_url`, `prospect_row` and `difficulty` in
 `[network.player_persistence]`, matching hosting.
 
 Online requires authenticated hosting; offline reopen disables networking,
-omits hosting and retains context/prepared inputs. Bind prospect id/map URL and
+omits hosting and retains context/prepared inputs. A store binds prospect id/map URL and
 digests of exact authored_gameplay bytes, spawn, authored_world, player_persistence
-and resolved initial maxima/growth row name. Changes refuse by input name;
+and resolved initial maxima/growth row name. Changes refuse by name;
 passwords/tickets/names are excluded. Survival omission keeps schema-14 bytes;
 enabled rates bind SHA-256 of
 `serde_json::to_vec(("authored_player_rules_v1", declaration, rates, actual_tick_hz))`.

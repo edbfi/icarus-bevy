@@ -27,12 +27,6 @@ pub enum PlayerInventoryMode {
     TransfersV2,
 }
 impl PlayerInventoryMode {
-    pub const fn section_format(self) -> u32 {
-        match self {
-            Self::LocalV1 => 1,
-            Self::TransfersV2 => 2,
-        }
-    }
     pub const fn snapshot_schema(self) -> u32 {
         match self {
             Self::LocalV1 => 15,
