@@ -225,7 +225,8 @@ fn finish_decode<T: Serialize + Graph, E: de::Error>(
     }
     let limit = match name {
         "InventoryContractsV1" | "InventoryContractsSnapshotV1" => MAX_INVENTORY_CONTRACT_BYTES,
-        "InventoryStateSnapshotV1" => MAX_INVENTORY_STATE_BYTES,
+        "InventoryStateSnapshotV1" | "PlayerInventorySnapshotV1" => MAX_INVENTORY_STATE_BYTES,
+        "PlayerInventoryRecipeV1" => MAX_INVENTORY_CONTRACT_BYTES,
         "InitialInventoryItemsV1"
         | "InventoryRestoreRequestV1"
         | "AuthoredInventoryAuthorityV1" => MAX_INVENTORY_GRAPH_BYTES,
@@ -399,6 +400,70 @@ dto!(InitialInventoryItemV1,65536,{pub owner:DomainId,pub inventory:String,pub r
 dto!(InventoryLiveOwnersV1,1,{pub owners:Vec<OwnerHandle>});
 dto!(InitialInventoryItemsV1,1,{pub items:Vec<InitialInventoryItemV1>});
 dto!(InventoryInitialTotalsV1,1,{pub items:Vec<ItemTotalV1>});
+// Separate durable namespace: these handles never name spatial lifecycle owners.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct PlayerInventoryOwnerV1 {
+    pub player_id: u64,
+    pub incarnation: u64,
+}
+impl<'de> Deserialize<'de> for PlayerInventoryOwnerV1 {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            player_id: u64,
+            incarnation: u64,
+        }
+        let fields: Fields = crate::json::object(d)
+            .map_err(|_| <D::Error as de::Error>::custom("player inventory owner invalid"))?;
+        Ok(Self {
+            player_id: fields.player_id,
+            incarnation: fields.incarnation,
+        })
+    }
+}
+leaf!(PlayerInventoryOwnerV1, 4096);
+dto!(PlayerStarterItemV1,65536,{pub inventory:String,pub requested_slot:u16,pub item:String,pub count:u32});
+dto!(PlayerInventoryRecipeV1,1,{pub format:u32,pub items:Vec<ItemDefinitionV1>,pub inventories:Vec<InventoryDefinitionV1>,pub starter:Vec<PlayerStarterItemV1>});
+dto!(PlayerBagV1,4096,{pub owner:PlayerInventoryOwnerV1,pub revision:u64,pub consumed:Vec<ItemTotalV1>,pub inventories:Vec<InventoryStateV1>});
+dto!(PlayerInventorySnapshotV1,1,{pub format:u32,pub recipe_id:String,pub recipe:PlayerInventoryRecipeV1,pub baseline:InventoryInitialTotalsV1,pub revision:u64,pub next_stack_id:u64,pub bags:Vec<PlayerBagV1>});
+dto!(PlayerStackEndpointV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub stack_id:StackId});
+dto!(PlayerSlotEndpointV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub slot:u16});
+dto!(PlayerOverflowDestinationV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub slot:Option<u16>});
+
+pub(crate) fn player_action_bounds(value: &impl Serialize) -> Result<()> {
+    encoded(value, 64 * 1024)?;
+    Ok(())
+}
+pub(crate) fn player_inventory_bytes(value: &PlayerInventorySnapshotV1) -> Result<usize> {
+    graph(value)
+}
+pub(crate) fn player_inventory_charge(
+    value: &PlayerInventorySnapshotV1,
+    copies: usize,
+) -> Result<()> {
+    let bytes = graph(value)?;
+    // Reserve both cutoff and in-flight submission pins for all 64 possible
+    // leaves, including their independently cloned baseline vectors. Bag
+    // contents themselves are covered by the retained aggregate copies.
+    let pins = graph(&value.baseline)?
+        .checked_add(64)
+        .and_then(|n| n.checked_mul(128));
+    ensure!(
+        bytes
+            .checked_mul(copies)
+            .and_then(|n| pins.and_then(|p| n.checked_add(p)))
+            .is_some_and(|n| n <= MAX_INVENTORY_GRAPH_BYTES),
+        "player inventory allocation limit"
+    );
+    encoded(value, MAX_INVENTORY_STATE_BYTES)?;
+    Ok(())
+}
+pub(crate) fn player_recipe_charge(value: &PlayerInventoryRecipeV1) -> Result<()> {
+    graph(value)?;
+    encoded(value, MAX_INVENTORY_CONTRACT_BYTES)?;
+    Ok(())
+}
 // Reproducible authored baseline, independent of preserved save provenance.
 dto!(AuthoredInventoryAuthorityV1,1,{pub format:u32,pub lifecycle_id:String,pub initial_owners:InventoryLiveOwnersV1,pub initial_items:InitialInventoryItemsV1,pub initial_state_digest:String,pub initial_next_stack_id:u64,pub initial_totals:InventoryInitialTotalsV1});
 dto!(InventoryStackEndpointV1,1,{pub owner:OwnerHandle,pub inventory:String,pub stack_id:StackId});
@@ -750,6 +815,55 @@ impl fmt::Debug for CompiledInventoryContractsV1 {
             .finish_non_exhaustive()
     }
 }
+fn validate_inventory_rules<'a>(
+    definition: &'a InventoryContractsV1,
+    used: &BTreeSet<&str>,
+) -> Result<(
+    BTreeSet<&'a str>,
+    BTreeMap<&'a str, &'a InventoryOwnerClassV1>,
+)> {
+    let mut items = BTreeSet::new();
+    for item in &definition.items {
+        ensure!(
+            items.insert(item.key.as_str())
+                && item.stack_limit > 0
+                && item.stack_limit <= MAX_INVENTORY_STACK_COUNT,
+            "inventory item definition invalid"
+        );
+    }
+    let mut classes = BTreeMap::new();
+    for c in &definition.classes {
+        ensure!(
+            used.contains(c.native_class.as_str())
+                && classes.insert(c.native_class.as_str(), c).is_none(),
+            "inventory class coverage invalid"
+        );
+        let mut inventories = BTreeSet::new();
+        for inv in &c.inventories {
+            ensure!(
+                inventories.insert(inv.key.as_str())
+                    && usize::from(inv.initial_slots) <= inv.slot_rules.len()
+                    && inv.overflow_limit <= 256,
+                "inventory recipe invalid"
+            );
+            for rule in &inv.slot_rules {
+                let mut eligibility = BTreeSet::new();
+                for item in &rule.allowed_items {
+                    ensure!(
+                        items.contains(item.as_str()) && eligibility.insert(item.as_str()),
+                        "inventory eligibility invalid"
+                    );
+                }
+            }
+        }
+    }
+    ensure!(
+        classes.len() == used.len(),
+        "inventory class coverage incomplete"
+    );
+    Ok((items, classes))
+}
+
 impl CompiledInventoryContractsV1 {
     pub fn compile(
         mut definition: InventoryContractsV1,
@@ -774,46 +888,8 @@ impl CompiledInventoryContractsV1 {
             map.placements.len() <= MAX_INVENTORY_OWNERS,
             "inventory owner limit"
         );
-        let mut items = BTreeSet::new();
-        for item in &definition.items {
-            ensure!(
-                items.insert(item.key.as_str())
-                    && item.stack_limit > 0
-                    && item.stack_limit <= MAX_INVENTORY_STACK_COUNT,
-                "inventory item definition invalid"
-            );
-        }
         let used: BTreeSet<_> = map.placements.iter().map(|p| p.class.as_str()).collect();
-        let mut classes = BTreeMap::new();
-        for c in &definition.classes {
-            ensure!(
-                used.contains(c.native_class.as_str())
-                    && classes.insert(c.native_class.as_str(), c).is_none(),
-                "inventory class coverage invalid"
-            );
-            let mut inventories = BTreeSet::new();
-            for inv in &c.inventories {
-                ensure!(
-                    inventories.insert(inv.key.as_str())
-                        && usize::from(inv.initial_slots) <= inv.slot_rules.len()
-                        && inv.overflow_limit <= 256,
-                    "inventory recipe invalid"
-                );
-                for rule in &inv.slot_rules {
-                    let mut eligibility = BTreeSet::new();
-                    for item in &rule.allowed_items {
-                        ensure!(
-                            items.contains(item.as_str()) && eligibility.insert(item.as_str()),
-                            "inventory eligibility invalid"
-                        );
-                    }
-                }
-            }
-        }
-        ensure!(
-            classes.len() == used.len(),
-            "inventory class coverage incomplete"
-        );
+        let (items, classes) = validate_inventory_rules(&definition, &used)?;
         // Bound recipe expansion before any owner inventory is materialized.
         let mut instances = 0;
         let mut bytes = Budget::default();
@@ -875,6 +951,54 @@ impl CompiledInventoryContractsV1 {
         graph(snapshot.as_ref())?;
         encoded(snapshot.as_ref(), MAX_INVENTORY_CONTRACT_BYTES)?;
         Ok(Self { snapshot, bindings })
+    }
+    pub(crate) fn player_bound(
+        recipe: &PlayerInventoryRecipeV1,
+        ids: impl Iterator<Item = u64>,
+        identity: &str,
+    ) -> Result<Self> {
+        player_recipe_charge(recipe)?;
+        ensure!(
+            recipe.format == 1 && !recipe.inventories.is_empty(),
+            "player inventory recipe invalid"
+        );
+        let definition = InventoryContractsV1 {
+            format: 1,
+            native_catalog_id: identity.to_owned(),
+            native_map: "player".into(),
+            items: recipe.items.clone(),
+            classes: vec![InventoryOwnerClassV1 {
+                native_class: "player".into(),
+                inventories: recipe.inventories.clone(),
+            }],
+        };
+        validate_inventory_rules(&definition, &BTreeSet::from(["player"]))?;
+        let mut bindings = BTreeMap::new();
+        for id in ids {
+            ensure!(
+                id > 0 && bindings.insert(DomainId(id), 0).is_none() && bindings.len() <= 4096,
+                "player owner binding invalid"
+            );
+        }
+        Ok(Self {
+            snapshot: Arc::new(InventoryContractsSnapshotV1 {
+                contract_id: identity.to_owned(),
+                definition,
+            }),
+            bindings,
+        })
+    }
+    /// Narrow a validated contract to one existing owner without recompiling
+    /// its immutable recipe. Live-owner validation still requires exact coverage.
+    pub(crate) fn for_owner(&self, id: DomainId) -> Result<Self> {
+        let class = *self
+            .bindings
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("inventory owner binding missing"))?;
+        Ok(Self {
+            snapshot: Arc::clone(&self.snapshot),
+            bindings: BTreeMap::from([(id, class)]),
+        })
     }
     /// Bounded JSON or TOML declarations through the same strict compiler.
     pub fn parse(text: &str, catalog: &CompiledNativeCatalog) -> Result<Self> {
@@ -1181,6 +1305,17 @@ fn prepare_initial_inventory_retaining(
     items: &InitialInventoryItemsV1,
     retained_bytes: usize,
 ) -> Result<PreparedInitialInventoryV1> {
+    prepare_initial_inventory_from(contracts, live, items, retained_bytes, 1)
+}
+
+pub(crate) fn prepare_initial_inventory_from(
+    contracts: &CompiledInventoryContractsV1,
+    live: &InventoryLiveOwnersV1,
+    items: &InitialInventoryItemsV1,
+    retained_bytes: usize,
+    start: u64,
+) -> Result<PreparedInitialInventoryV1> {
+    ensure!(start > 0, "inventory allocator invalid");
     input_budget(&[live, items])?;
     encoded(items, MAX_INVENTORY_GRAPH_BYTES)?;
     let handles = contracts.live(live)?;
@@ -1253,7 +1388,7 @@ fn prepare_initial_inventory_retaining(
         revision: 1,
         next_stack_id: u64::try_from(items.items.len())
             .ok()
-            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_add(start))
             .ok_or_else(|| anyhow::anyhow!("inventory allocator exhausted"))?,
         consumed: initial
             .keys()
@@ -1281,7 +1416,11 @@ fn prepare_initial_inventory_retaining(
     };
     for (index, item) in items.items.iter().enumerate() {
         let recipe = contracts.recipe(item.owner, &item.inventory)?;
-        let owner = &mut state.owners[(item.owner.0 - 1) as usize];
+        let owner_index = state
+            .owners
+            .binary_search_by_key(&item.owner, |o| o.owner.id)
+            .expect("validated owner");
+        let owner = &mut state.owners[owner_index];
         let inventory_index = owner
             .inventories
             .binary_search_by(|i| i.key.cmp(&item.inventory))
@@ -1291,7 +1430,7 @@ fn prepare_initial_inventory_retaining(
         let accepted =
             inv.slots.get(slot).is_some_and(Option::is_none) && eligible(recipe, slot, &item.item);
         let stack = StackV1 {
-            id: StackId(index as u64 + 1),
+            id: StackId(index as u64 + start),
             item: item.item.clone(),
             count: item.count,
         };

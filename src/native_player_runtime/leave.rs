@@ -77,9 +77,32 @@ pub struct LeaveStatus {
 pub(super) struct LeaveOperation {
     epoch: u64,
     record: PlayerRecord,
+    inventory: Option<PlayerInventoryPin>,
     attempt: u64,
     deadline: Instant,
     phase: LeavePhase,
+}
+#[derive(Clone, PartialEq)]
+struct PlayerInventoryPin {
+    recipe_id: String,
+    baseline: crate::native_inventory::InventoryInitialTotalsV1,
+    bag: crate::native_player_inventory::PlayerBagV1,
+}
+fn inventory_pin(
+    inventory: Option<&crate::native_player_inventory::PlayerInventorySnapshotV1>,
+    id: u64,
+) -> std::result::Result<Option<PlayerInventoryPin>, PlayerError> {
+    inventory
+        .map(|inventory| {
+            crate::native_inventory::player_inventory_charge(inventory, 8)
+                .map_err(|_| PlayerError::Limit)?;
+            Ok(PlayerInventoryPin {
+                recipe_id: inventory.recipe_id.clone(),
+                baseline: inventory.baseline.clone(),
+                bag: inventory.bag(id).ok_or(PlayerError::Missing)?.clone(),
+            })
+        })
+        .transpose()
 }
 impl LeaveOperation {
     fn status(&self) -> LeaveStatus {
@@ -152,6 +175,7 @@ impl PlayerRegistry {
         let op = LeaveOperation {
             epoch,
             record: record.clone(),
+            inventory: inventory_pin(self.inventory.as_ref(), record.id)?,
             attempt: 1,
             deadline,
             phase: LeavePhase::Pending,
@@ -296,11 +320,13 @@ struct IncludedLeave {
     epoch: u64,
     attempt: u64,
     record: PlayerRecord,
+    inventory: Option<PlayerInventoryPin>,
 }
 #[derive(Default)]
 struct Submission(Vec<IncludedLeave>);
 impl Submission {
     fn capture(world: &World, snapshot: &WorldSnapshot) -> Result<Self> {
+        snapshot.validate()?;
         let Some(registry) = world.get_resource::<PlayerRegistry>() else {
             return Ok(Self::default());
         };
@@ -314,7 +340,9 @@ impl Submission {
                     .map(|index| &players.records[index])
             });
             ensure!(
-                record == Some(&op.record),
+                record == Some(&op.record)
+                    && inventory_pin(snapshot.player_inventory.as_ref(), op.record.id)?
+                        == op.inventory,
                 "leave cutoff differs from captured player record"
             );
             if op.phase == LeavePhase::Pending {
@@ -323,6 +351,7 @@ impl Submission {
                     epoch: op.epoch,
                     attempt: op.attempt,
                     record: op.record.clone(),
+                    inventory: op.inventory.clone(),
                 });
             }
         }
@@ -339,6 +368,7 @@ impl Submission {
                 && op.epoch == included.epoch
                 && op.attempt == included.attempt
                 && op.record == included.record
+                && op.inventory == included.inventory
                 && op.phase == LeavePhase::Pending
             {
                 let phase = match result {

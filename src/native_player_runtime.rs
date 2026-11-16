@@ -21,6 +21,9 @@ struct Attachment {
 #[derive(Resource)]
 pub struct PlayerRegistry {
     snapshot: PlayerSnapshot,
+    capture_identity: std::sync::Arc<()>,
+    inventory: Option<crate::native_player_inventory::PlayerInventorySnapshotV1>,
+    activation_requests: std::collections::BTreeSet<u64>,
     attachments: BTreeMap<u64, Attachment>,
     max_live: usize,
     epoch_high_water: u64,
@@ -53,6 +56,9 @@ impl PlayerRegistry {
         snapshot.records.sort_unstable_by_key(|record| record.key);
         Ok(Self {
             snapshot,
+            capture_identity: std::sync::Arc::new(()),
+            inventory: None,
+            activation_requests: Default::default(),
             attachments: BTreeMap::new(),
             max_live,
             epoch_high_water: 0,
@@ -65,12 +71,48 @@ impl PlayerRegistry {
     pub fn snapshot(&self) -> PlayerSnapshot {
         self.snapshot.clone()
     }
+    pub fn new_with_inventory(
+        snapshot: PlayerSnapshot,
+        expected: &PlayerContext,
+        max_live: usize,
+        inventory: Option<crate::native_player_inventory::PlayerInventorySnapshotV1>,
+    ) -> anyhow::Result<Self> {
+        if let Some(i) = &inventory {
+            i.validate(&snapshot)?;
+        }
+        let mut registry = Self::new(snapshot, expected, max_live)?;
+        registry.inventory = inventory;
+        Ok(registry)
+    }
+    pub fn inventory_snapshot(
+        &self,
+    ) -> Option<crate::native_player_inventory::PlayerInventorySnapshotV1> {
+        self.inventory.clone()
+    }
+    pub fn has_inventory(&self) -> bool {
+        self.inventory.is_some()
+    }
+    pub(crate) fn inventory_recipe_id(&self) -> Option<&str> {
+        self.inventory
+            .as_ref()
+            .map(|inventory| inventory.recipe_id.as_str())
+    }
+    pub(crate) fn inventory_capture_identity(&self) -> Option<std::sync::Arc<()>> {
+        self.inventory
+            .as_ref()
+            .map(|_| std::sync::Arc::clone(&self.capture_identity))
+    }
+    /// Bridge requests are intents only. The exclusive world boundary admits them.
+    pub(crate) fn request_inventory_activation(&mut self, epoch: u64) {
+        self.activation_requests.insert(epoch);
+    }
     pub fn enable_private_leave_proof(
         &mut self,
         proof: crate::leave_runtime_proof::PrivateLeaveProof,
     ) -> Result<(), crate::leave_runtime_proof::ProofError> {
         proof.health()?;
-        if self.private_leave_proof.is_some()
+        if self.inventory.is_some()
+            || self.private_leave_proof.is_some()
             || !self.attachments.is_empty()
             || !self.leaves.is_empty()
         {
@@ -181,6 +223,9 @@ impl PlayerRegistry {
         Ok(projection)
     }
     pub fn activate(&mut self, epoch: u64) -> Result<PlayerProjection, PlayerError> {
+        if self.inventory.is_some() {
+            return Err(PlayerError::InvalidState);
+        }
         self.proof_health()?;
         if let Some(proof) = &self.private_leave_proof
             && !proof.first_pawn_admitted(epoch)
@@ -221,6 +266,7 @@ impl PlayerRegistry {
         self.projection(epoch).ok_or(PlayerError::Missing)
     }
     pub fn cancel(&mut self, epoch: u64) -> bool {
+        self.activation_requests.remove(&epoch);
         self.attachments.remove(&epoch).is_some()
     }
     pub fn detach(&mut self, epoch: u64) -> bool {
@@ -246,6 +292,9 @@ impl PlayerRegistry {
         expected_revision: u64,
         checkpoint: PlayerCheckpoint,
     ) -> Result<PlayerProjection, PlayerError> {
+        if self.inventory.is_some() {
+            return Err(PlayerError::InvalidState);
+        }
         if self.leaves.contains_key(&key) {
             return Err(PlayerError::Conflict);
         }
@@ -275,6 +324,9 @@ impl PlayerRegistry {
     /// Returns changed records; zero currents do not consume revisions. Detached
     /// records and reservations remain unchanged, with no offline catch-up.
     pub fn consume_activated(&mut self, rates: ConsumptionRates) -> Result<usize, PlayerError> {
+        if self.inventory.is_some() {
+            return Err(PlayerError::InvalidState);
+        }
         self.proof_health()?;
         if !(1..=64).contains(&self.max_live) || self.attachments.len() > self.max_live {
             return Err(PlayerError::Limit);
@@ -473,6 +525,63 @@ mod consumption_tests {
     pub(super) fn attach(registry: &mut PlayerRegistry, account: u64, epoch: u64) {
         registry.reserve(key(account), epoch, initial()).unwrap();
         registry.activate(epoch).unwrap();
+    }
+
+    #[test]
+    fn schema14_activation_does_not_require_full_world_capture() {
+        let mut registry = registry();
+        registry.reserve(key(1), 1, initial()).unwrap();
+        let mut world = World::new();
+        world.insert_resource(registry);
+        activate_player(&mut world, 1).unwrap();
+        assert_eq!(
+            world.resource::<PlayerRegistry>().activated_epochs(),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn inventory_survival_only_captures_a_generation_for_changed_vitals() {
+        use crate::native_player_inventory::CompiledPlayerInventoryRecipe;
+        let recipe = CompiledPlayerInventoryRecipe::parse(
+            r#"{"format":1,"items":[{"key":"token","stack_limit":10}],
+            "inventories":[{"key":"bag","initial_slots":1,
+              "slot_rules":[{"allowed_items":["token"]}],"overflow_limit":0,
+              "force_add_when_zero":false}],
+            "starter":[{"inventory":"bag","requested_slot":0,"item":"token","count":1}]}"#,
+        )
+        .unwrap();
+        let mut registry = registry();
+        attach(&mut registry, 1, 1);
+        registry.inventory = Some(recipe.empty().issue(1).unwrap());
+        let mut world = World::new();
+        world.insert_resource(registry);
+        let before = world.resource::<PlayerRegistry>().snapshot();
+        let zero = ConsumptionRates {
+            oxygen: 0,
+            water: 0,
+            food: 0,
+        };
+        assert_eq!(consume_player_vitals(&mut world, zero).unwrap(), 0);
+        // A real debit still requires the complete world and cannot commit when
+        // its simulation clock/capture contract is absent.
+        assert!(consume_player_vitals(&mut world, rates()).is_err());
+        assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+        {
+            let mut registry = world.resource_mut::<PlayerRegistry>();
+            let vitals = &mut registry.snapshot.records[0].checkpoint.vitals;
+            vitals.oxygen = 0;
+            vitals.water = 0;
+            vitals.food = 0;
+        }
+        assert_eq!(consume_player_vitals(&mut world, rates()).unwrap(), 0);
+        world.resource_mut::<PlayerRegistry>().detach(1);
+        assert_eq!(consume_player_vitals(&mut world, rates()).unwrap(), 0);
+        world.insert_resource(ConsumptionRuntime {
+            failed: true,
+            tick_hz: 7,
+        });
+        assert!(consume_player_vitals(&mut world, zero).is_err());
     }
 
     #[test]
@@ -1212,10 +1321,8 @@ pub(crate) fn install_consumption(
                     .map_err(|_| PlayerError::InvalidIdentity)?;
                 // The phase is the saved simulation tick, so restart neither loses
                 // fractions nor charges elapsed wall time. A missing owner fails closed.
-                world
-                    .get_resource_mut::<PlayerRegistry>()
-                    .ok_or(PlayerError::Missing)?
-                    .consume_activated(config.for_tick(tick, tick_hz))?;
+                consume_player_vitals(world, config.for_tick(tick, tick_hz))
+                    .map_err(|_| PlayerError::InvalidState)?;
                 Ok(())
             })();
             if result.is_err() {
@@ -1666,4 +1773,192 @@ mod authored_preloop_tests {
         assert!(capture(app.world_mut()).is_ok());
         assert!(!app.world().contains_resource::<ConsumptionRuntime>());
     }
+}
+
+/// Exclusive world boundary for atomic first issuance and returning activation.
+/// Preparation never exposes a token or an unchecked registry commit API.
+pub fn activate_player(world: &mut World, epoch: u64) -> anyhow::Result<PlayerProjection> {
+    let registry = world
+        .get_resource::<PlayerRegistry>()
+        .ok_or(PlayerError::Missing)?;
+    if !registry.has_inventory() {
+        return Ok(world.resource_mut::<PlayerRegistry>().activate(epoch)?);
+    }
+    let mut generation = crate::simulation::capture(world)?;
+    let registry = world.resource::<PlayerRegistry>();
+    registry.proof_health()?;
+    anyhow::ensure!(
+        !registry.is_leaving(epoch),
+        "player activation conflicts with leave"
+    );
+    let held = registry
+        .attachments
+        .get(&epoch)
+        .ok_or(PlayerError::Missing)?;
+    let projection = registry.projection(epoch).ok_or(PlayerError::Missing)?;
+    let mut players = registry.snapshot();
+    let mut inventory = registry.inventory.clone().ok_or(PlayerError::Missing)?;
+    if let Some(record) = &held.pending {
+        players
+            .records
+            .try_reserve(1)
+            .map_err(|_| PlayerError::Limit)?;
+        inventory = inventory.issue(record.id)?;
+        players.records.push(record.clone());
+        players.records.sort_by_key(|r| r.key);
+    } else {
+        anyhow::ensure!(
+            inventory.bag(projection.player_id).is_some(),
+            "returning player bag missing"
+        );
+    }
+    generation.native_players = Some(players.clone());
+    generation.player_inventory = Some(inventory.clone());
+    crate::persistence::SnapshotStore::preflight(&generation)?;
+    // No allocation, validation, callbacks or fallible work beyond this point.
+    let mut registry = world.resource_mut::<PlayerRegistry>();
+    registry.snapshot = players;
+    registry.inventory = Some(inventory);
+    let held = registry
+        .attachments
+        .get_mut(&epoch)
+        .expect("staged attachment");
+    held.pending = None;
+    held.activated = true;
+    Ok(projection)
+}
+
+pub fn apply_player_inventory_action(
+    world: &mut World,
+    key: PlayerKey,
+    epoch: u64,
+    request: &crate::native_player_inventory::PlayerInventoryRequestV1,
+) -> anyhow::Result<crate::native_inventory::InventoryActionOutcomeV1> {
+    let generation = crate::simulation::capture(world)?;
+    let registry = world
+        .get_resource::<PlayerRegistry>()
+        .ok_or(PlayerError::Missing)?;
+    registry.proof_health()?;
+    let held = registry
+        .attachments
+        .get(&epoch)
+        .ok_or(PlayerError::Missing)?;
+    anyhow::ensure!(
+        held.key == key
+            && held.activated
+            && held.pending.is_none()
+            && !registry.leaves.contains_key(&key),
+        "player inventory authority refused"
+    );
+    let projection = registry.projection(epoch).ok_or(PlayerError::Missing)?;
+    anyhow::ensure!(
+        projection.player_id == request.player_id,
+        "player inventory authority refused"
+    );
+    let (prepared, outcome) =
+        crate::native_player_inventory::prepare_offline(&generation, request)?;
+    if outcome == crate::native_inventory::InventoryActionOutcomeV1::Applied {
+        let players = prepared.native_players.expect("preflight players");
+        let inventory = prepared.player_inventory.expect("preflight inventory");
+        let mut registry = world.resource_mut::<PlayerRegistry>();
+        registry.snapshot = players;
+        registry.inventory = Some(inventory);
+    }
+    Ok(outcome)
+}
+
+pub(crate) fn drain_inventory_activations(world: &mut World) -> Vec<u64> {
+    let epochs = world
+        .get_resource_mut::<PlayerRegistry>()
+        .map(|mut r| std::mem::take(&mut r.activation_requests))
+        .unwrap_or_default();
+    let mut failed = Vec::new();
+    for epoch in epochs {
+        if activate_player(world, epoch).is_err() {
+            world.resource_mut::<PlayerRegistry>().detach(epoch);
+            failed.push(epoch);
+        }
+    }
+    failed
+}
+
+/// Schema 15 keeps survival in the same exclusive full-generation admission
+/// boundary. Schema 14 retains its original registry and proof behavior.
+pub fn consume_player_vitals(world: &mut World, rates: ConsumptionRates) -> anyhow::Result<usize> {
+    let registry = world
+        .get_resource::<PlayerRegistry>()
+        .ok_or(PlayerError::Missing)?;
+    if !registry.has_inventory() {
+        return Ok(world
+            .resource_mut::<PlayerRegistry>()
+            .consume_activated(rates)?);
+    }
+    registry.proof_health()?;
+    crate::network::authored_clock_runtime_health(world)?;
+    consumption_runtime_health(world)?;
+    if (rates.oxygen == 0 && rates.water == 0 && rates.food == 0)
+        || !registry.attachments.values().any(|held| held.activated)
+    {
+        return Ok(0);
+    }
+    let mut staged = PlayerRegistry::new(
+        registry.snapshot(),
+        registry.snapshot.context(),
+        registry.max_live,
+    )?;
+    staged.attachments = registry.attachments.clone();
+    let changed = staged.consume_activated(rates)?;
+    if changed > 0 {
+        let mut generation = crate::simulation::capture(world)?;
+        generation.native_players = Some(staged.snapshot);
+        crate::persistence::SnapshotStore::preflight(&generation)?;
+        world.resource_mut::<PlayerRegistry>().snapshot =
+            generation.native_players.expect("preflight players");
+    }
+    Ok(changed)
+}
+
+/// Authoritative checkpoint edits for an activated matching player. Inventory
+/// contents and both inventory revision domains remain unchanged.
+pub fn edit_player_checkpoint(
+    world: &mut World,
+    key: PlayerKey,
+    epoch: u64,
+    expected_revision: u64,
+    checkpoint: PlayerCheckpoint,
+) -> anyhow::Result<PlayerProjection> {
+    let mut generation = crate::simulation::capture(world)?;
+    let registry = world.resource::<PlayerRegistry>();
+    let held = registry
+        .attachments
+        .get(&epoch)
+        .ok_or(PlayerError::Missing)?;
+    anyhow::ensure!(
+        held.key == key
+            && held.activated
+            && held.pending.is_none()
+            && !registry.leaves.contains_key(&key),
+        "player checkpoint authority refused"
+    );
+    anyhow::ensure!(
+        registry.has_inventory(),
+        "world checkpoint edits require schema 15"
+    );
+    let players = generation
+        .native_players
+        .as_mut()
+        .ok_or(PlayerError::Missing)?;
+    let record = players
+        .records
+        .iter_mut()
+        .find(|r| r.key == key)
+        .ok_or(PlayerError::Missing)?;
+    let revision = prepare_checkpoint_edit(record, expected_revision, &checkpoint)?;
+    record.revision = revision;
+    record.checkpoint = checkpoint;
+    let projection = record.projection(false);
+    crate::persistence::SnapshotStore::preflight(&generation)?;
+    world.resource_mut::<PlayerRegistry>().snapshot =
+        generation.native_players.expect("preflight players");
+    Ok(projection)
 }

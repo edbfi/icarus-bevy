@@ -20,6 +20,7 @@ pub mod native_inventory_restore;
 pub mod native_lifecycle;
 pub mod native_lifecycle_runtime;
 pub mod native_modifiers;
+pub mod native_player_inventory;
 pub mod native_player_runtime;
 pub mod native_players;
 pub mod native_relationships;

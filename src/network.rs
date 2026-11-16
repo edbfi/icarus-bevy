@@ -2002,6 +2002,7 @@ pub fn prepare_session(
 pub struct PreparedPlayers {
     pub context: crate::native_players::PlayerContext,
     pub initial_vitals: CharacterVitals,
+    pub inventory: Option<crate::native_player_inventory::CompiledPlayerInventoryRecipe>,
     /// The active release, recorded in the store as provenance only.
     pub release: crate::experimental::release::ReleasePin,
 }
@@ -2011,7 +2012,12 @@ pub fn fresh_player_snapshot(
 ) -> crate::simulation::WorldSnapshot {
     match players {
         Some(players) => crate::simulation::WorldSnapshot {
-            schema_version: crate::simulation::SNAPSHOT_SCHEMA_PLAYERS,
+            schema_version: if players.inventory.is_some() {
+                crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+            } else {
+                crate::simulation::SNAPSHOT_SCHEMA_PLAYERS
+            },
+            player_inventory: players.inventory.as_ref().map(|i| i.empty()),
             // prepare_run validated this release; were it invalid, the missing
             // checkpoints would fail snapshot validation before any state opens.
             native_players: crate::native_players::PlayerSnapshot::fresh(
@@ -2034,7 +2040,23 @@ pub fn open_player_snapshot(
     snapshot: &mut crate::simulation::WorldSnapshot,
     players: Option<&PreparedPlayers>,
 ) -> Result<Option<crate::experimental::release::ReleasePin>> {
-    let schema = crate::simulation::SNAPSHOT_SCHEMA_PLAYERS;
+    let schema = if players.is_some_and(|p| p.inventory.is_some()) {
+        crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+    } else {
+        crate::simulation::SNAPSHOT_SCHEMA_PLAYERS
+    };
+    ensure!(
+        match (
+            players.and_then(|p| p.inventory.as_ref()),
+            snapshot.player_inventory.as_ref()
+        ) {
+            (None, None) => true,
+            (Some(recipe), Some(stored)) => recipe.identity() == stored.recipe_id,
+            _ => false,
+        },
+        "network.player_inventory differs from stored recipe"
+    );
+    snapshot.validate()?;
     match (players, snapshot.native_players.as_mut()) {
         (Some(prepared), Some(stored)) => {
             ensure!(
@@ -2070,6 +2092,14 @@ pub fn install_player_registry(
     network: &NetworkConfig,
 ) -> Result<()> {
     if let Some(players) = players {
+        let registry = world
+            .get_resource::<crate::native_player_runtime::PlayerRegistry>()
+            .context("player registry missing")?;
+        ensure!(
+            registry.inventory_recipe_id()
+                == players.inventory.as_ref().map(|recipe| recipe.identity()),
+            "network.player_inventory differs from registry activation"
+        );
         crate::native_player_runtime::install(
             world,
             &players.context,
@@ -2230,8 +2260,16 @@ pub fn drain_player_bridge(world: &mut World) {
         && world.contains_resource::<crate::native_player_runtime::PlayerRegistry>()
     {
         world.resource_scope(|world, mut lab: bevy::prelude::Mut<PeerLab>| {
-            let mut registry = world.resource_mut::<crate::native_player_runtime::PlayerRegistry>();
-            lab.bridge_player_checkpoints(&mut registry);
+            {
+                let mut registry =
+                    world.resource_mut::<crate::native_player_runtime::PlayerRegistry>();
+                lab.bridge_player_checkpoints(&mut registry);
+            }
+            let failed = crate::native_player_runtime::drain_inventory_activations(world);
+            lab.finish_inventory_activations(
+                world.resource::<crate::native_player_runtime::PlayerRegistry>(),
+                &failed,
+            );
         });
     }
 }
@@ -2270,6 +2308,11 @@ pub fn prepare_run_with_tick_hz(
         "invalid authored simulation rate"
     );
     network.validate()?;
+    let inventory = network
+        .player_inventory
+        .as_deref()
+        .map(crate::native_player_inventory::CompiledPlayerInventoryRecipe::load)
+        .transpose()?;
     if let Some(clock) = network
         .authored_world
         .as_ref()
@@ -2382,6 +2425,7 @@ pub fn prepare_run_with_tick_hz(
     let players = PreparedPlayers {
         context,
         initial_vitals,
+        inventory,
         release: profile.pin.clone(),
     };
     let session = if network.enabled {

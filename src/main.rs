@@ -112,6 +112,15 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
+    /// Apply one private same-player transaction to an exclusively locked schema-15 store.
+    ApplyPlayerInventory {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate and apply one inventory transaction to an existing authored world.
     ApplyNativeInventory {
         #[arg(long)]
@@ -466,6 +475,50 @@ fn execute(cli: Cli) -> Result<()> {
                 json!({"event": "native_modifier_applied", "receipt": receipt,
                     "world_imported": false, "gameplay_ready": false})
             );
+            Ok(())
+        }
+        Command::ApplyPlayerInventory {
+            request,
+            data_dir,
+            dry_run,
+        } => {
+            use icarus_bevy::native_inventory::InventoryActionOutcomeV1;
+            let request = read_native_action_request(&request, "player inventory")?;
+            let mut store = SnapshotStore::open_existing(&data_dir)
+                .map_err(|_| anyhow::anyhow!("open existing player inventory store failed"))?;
+            let loaded = store
+                .load()
+                .map_err(|_| anyhow::anyhow!("load player inventory store failed"))?
+                .context("player inventory command requires existing state")?;
+            let (snapshot, outcome) =
+                icarus_bevy::native_player_inventory::prepare_offline(&loaded.snapshot, &request)
+                    .map_err(|_| anyhow::anyhow!("player inventory request rejected"))?;
+            let inventory = snapshot
+                .player_inventory
+                .as_ref()
+                .context("player inventory missing")?;
+            let bag = inventory
+                .bag(request.player_id)
+                .context("player bag missing")?;
+            let player_revision = snapshot
+                .native_players
+                .as_ref()
+                .context("players missing")?
+                .projection_by_id(request.player_id)
+                .context("player missing")?
+                .revision;
+            let receipt = if !dry_run && outcome == InventoryActionOutcomeV1::Applied {
+                Some(store.save(&snapshot).map_err(|_| {
+                    anyhow::anyhow!("save player inventory failed; publication may be uncertain")
+                })?)
+            } else {
+                None
+            };
+            let mut report = json!({"event":"player_inventory_result","outcome":outcome,"dry_run":dry_run,"published":receipt.is_some(),"player_revision":player_revision,"bag_revision":bag.revision,"inventory_revision":inventory.revision});
+            if let Some(receipt) = receipt {
+                report["receipt"] = json!(receipt);
+            }
+            println!("{report}");
             Ok(())
         }
         Command::ApplyNativeInventory {

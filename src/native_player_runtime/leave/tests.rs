@@ -589,3 +589,84 @@ fn detached_settlement_requires_exact_durability_and_retains_live_or_failed_cuto
     assert!(registry.leave_status(key(2), 2).is_none());
     assert!(registry.leave_status(key(3), 3).is_some());
 }
+
+#[test]
+fn inventory_submission_requires_exact_player_local_pin_and_complete_validation() {
+    use crate::{
+        native_inventory::{InventoryDefinitionV1, ItemDefinitionV1, SlotRuleV1},
+        native_player_inventory::{
+            CompiledPlayerInventoryRecipe, PlayerInventoryRecipeV1, PlayerStarterItemV1,
+        },
+        simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
+    };
+    let recipe = CompiledPlayerInventoryRecipe::compile(PlayerInventoryRecipeV1 {
+        format: 1,
+        items: vec![ItemDefinitionV1 {
+            key: "authored".into(),
+            stack_limit: 10,
+        }],
+        inventories: vec![InventoryDefinitionV1 {
+            key: "bag".into(),
+            initial_slots: 1,
+            slot_rules: vec![SlotRuleV1 {
+                allowed_items: vec!["authored".into()],
+            }],
+            overflow_limit: 0,
+            force_add_when_zero: false,
+        }],
+        starter: vec![PlayerStarterItemV1 {
+            inventory: "bag".into(),
+            requested_slot: 0,
+            item: "authored".into(),
+            count: 3,
+        }],
+    })
+    .unwrap();
+    let mut old = registry();
+    attach(&mut old, 1, 1);
+    let initial = old.projection(1).unwrap().checkpoint;
+    let state = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
+        native_players: Some(PlayerSnapshot::empty(old.snapshot().context().clone())),
+        player_inventory: Some(recipe.empty()),
+        ..Default::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+    app.world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(key(1), 1, initial)
+        .unwrap();
+    super::super::activate_player(app.world_mut(), 1).unwrap();
+    request(&mut app, 1, 1);
+    let state = capture(app.world_mut()).unwrap();
+    assert!(matches!(
+        inventory_pin(state.player_inventory.as_ref(), u64::MAX),
+        Err(PlayerError::Missing)
+    ));
+    let mut wrong = state.clone();
+    let inventory = wrong.player_inventory.as_mut().unwrap();
+    let stack = inventory.bags[0].inventories[0].slots[0].as_mut().unwrap();
+    stack.count -= 1;
+    inventory.bags[0].consumed[0].count += 1;
+    wrong.validate().unwrap();
+    assert!(
+        Submission::capture(app.world(), &wrong).is_err(),
+        "a different valid bag cannot certify this cutoff"
+    );
+    let mut wrong = state.clone();
+    wrong.player_inventory.as_mut().unwrap().bags[0].inventories[0].slots[0]
+        .as_mut()
+        .unwrap()
+        .count += 1;
+    assert!(Submission::capture(app.world(), &wrong).is_err());
+    let submission = Submission::capture(app.world(), &state).unwrap();
+    let receipt = SaveReceipt {
+        generation: 99,
+        tick: state.tick,
+    };
+    submission.complete(app.world_mut(), Ok(&receipt), Instant::now());
+    assert!(matches!(
+        phase(&app, 1, 1),
+        LeavePhase::Durable { generation: 99, .. }
+    ));
+}

@@ -59,6 +59,9 @@ pub struct NetworkConfig {
     /// unqualified with stock clients; absence retains the ordinary path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_persistence: Option<PlayerPersistenceConfig>,
+    /// Independently authored schema-15 recipe; fresh stores only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_inventory: Option<PathBuf>,
     /// EXPERIMENTAL: explicitly dispatch the selected ordinary controller leave
     /// protocol against authored checkpoints. Codec qualification alone never
     /// enables this policy. Default false; stock-client completion is unqualified.
@@ -177,6 +180,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             player_persistence: None,
+            player_inventory: None,
             authored_controller_leave: false,
             player_consumption: None,
             hosting: None,
@@ -260,6 +264,10 @@ impl NetworkConfig {
                 "player consumption requires player persistence"
             );
         }
+        ensure!(
+            self.player_inventory.is_none() || self.player_persistence.is_some(),
+            "player inventory requires player persistence"
+        );
         if let Some(players) = &self.player_persistence {
             ensure!(
                 self.release_profile.is_some()
