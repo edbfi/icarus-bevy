@@ -21,47 +21,56 @@ use std::collections::BTreeSet;
 
 #[path = "consumables.rs"]
 mod consumables;
+#[path = "depletion.rs"]
+mod depletion;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum InventoryMode {
     Raw,
     Consumables,
+    Depletion,
 }
 impl InventoryMode {
     fn protocol(self) -> &'static str {
         match self {
             Self::Raw => PROTOCOL,
             Self::Consumables => consumables::PROTOCOL,
+            Self::Depletion => depletion::PROTOCOL,
         }
     }
     fn seed(self) -> Result<WorldSnapshot> {
         match self {
             Self::Raw => seed(),
             Self::Consumables => consumables::seed(),
+            Self::Depletion => depletion::seed(),
         }
     }
     fn expected(self, tick: u64) -> Result<WorldSnapshot> {
         match self {
             Self::Raw => expected(tick),
             Self::Consumables => consumables::expected(tick),
+            Self::Depletion => depletion::expected(tick),
         }
     }
     fn check(self, snapshot: &WorldSnapshot) -> Result<String> {
         match self {
             Self::Raw => check(snapshot),
             Self::Consumables => consumables::check(snapshot),
+            Self::Depletion => depletion::check(snapshot),
         }
     }
     fn open_app(self, snapshot: &WorldSnapshot) -> Result<App> {
         match self {
             Self::Raw => open_app(snapshot),
             Self::Consumables => consumables::open_app(snapshot),
+            Self::Depletion => depletion::open_app(snapshot),
         }
     }
     fn step(self, app: &mut App) -> Result<()> {
         match self {
             Self::Raw => step(app),
             Self::Consumables => consumables::step(app),
+            Self::Depletion => depletion::step(app),
         }
     }
 }
@@ -436,6 +445,13 @@ fn seed() -> Result<WorldSnapshot> {
     Ok(snapshot)
 }
 fn populate_seed(empty: WorldSnapshot, config: &ServerConfig) -> Result<WorldSnapshot> {
+    populate_seed_with_checkpoint(empty, config, initial())
+}
+fn populate_seed_with_checkpoint(
+    empty: WorldSnapshot,
+    config: &ServerConfig,
+    checkpoint: PlayerCheckpoint,
+) -> Result<WorldSnapshot> {
     let mut app = build_app(config, &empty)?;
     drop(empty);
     app.finish();
@@ -443,7 +459,7 @@ fn populate_seed(empty: WorldSnapshot, config: &ServerConfig) -> Result<WorldSna
     {
         let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
         ensure!(
-            registry.reserve(key(1)?, 1, initial())?.player_id == 1,
+            registry.reserve(key(1)?, 1, checkpoint)?.player_id == 1,
             "sparse reservation"
         );
         ensure!(registry.cancel(1), "sparse cancellation");
@@ -452,7 +468,7 @@ fn populate_seed(empty: WorldSnapshot, config: &ServerConfig) -> Result<WorldSna
         ensure!(
             app.world_mut()
                 .resource_mut::<PlayerRegistry>()
-                .reserve(key(id)?, id, initial())?
+                .reserve(key(id)?, id, checkpoint)?
                 .player_id
                 == id,
             "seed identity"
@@ -736,6 +752,14 @@ fn verify(
     if matches!(mode, InventoryMode::Consumables) {
         result["uses"] = json!(consumables::uses(selected_tick));
         result["resumed_uses"] = json!(consumables::uses(resumed.tick));
+        result["day_sample_bits"] = json!(consumables::check_day(selected_tick)?);
+        result["resumed_day_sample_bits"] = json!(consumables::check_day(resumed.tick)?);
+    }
+    if matches!(mode, InventoryMode::Depletion) {
+        result["health"] = json!(depletion::health(selected_tick));
+        result["resumed_health"] = json!(depletion::health(resumed.tick));
+        result["uses"] = json!(depletion::uses(selected_tick));
+        result["resumed_uses"] = json!(depletion::uses(resumed.tick));
         result["day_sample_bits"] = json!(consumables::check_day(selected_tick)?);
         result["resumed_day_sample_bits"] = json!(consumables::check_day(resumed.tick)?);
     }

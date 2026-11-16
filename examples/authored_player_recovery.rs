@@ -40,11 +40,14 @@ mod inventory;
 #[derive(Parser)]
 struct Invocation {
     /// Select the independent schema-15 inventory fixture on every invocation.
-    #[arg(long, conflicts_with = "consumables")]
+    #[arg(long, conflicts_with_all = ["consumables", "depletion"])]
     inventory: bool,
     /// Select the independent schema-15 consumable fixture on every invocation.
-    #[arg(long, conflicts_with = "inventory")]
+    #[arg(long, conflicts_with_all = ["inventory", "depletion"])]
     consumables: bool,
+    /// Select the independent schema-15 depletion fixture on every invocation.
+    #[arg(long, conflicts_with_all = ["inventory", "consumables"])]
+    depletion: bool,
     #[command(flatten)]
     options: Options,
 }
@@ -53,6 +56,7 @@ enum Fixture {
     Players,
     Inventory,
     Consumables,
+    Depletion,
 }
 
 #[derive(Parser)]
@@ -492,6 +496,8 @@ fn main() -> Result<()> {
         Fixture::Inventory
     } else if invocation.consumables {
         Fixture::Consumables
+    } else if invocation.depletion {
+        Fixture::Depletion
     } else {
         Fixture::Players
     };
@@ -509,6 +515,9 @@ fn main() -> Result<()> {
         }
         Fixture::Consumables => {
             return inventory::execute(&options, &stopping, inventory::InventoryMode::Consumables);
+        }
+        Fixture::Depletion => {
+            return inventory::execute(&options, &stopping, inventory::InventoryMode::Depletion);
         }
         Fixture::Players => {}
     }

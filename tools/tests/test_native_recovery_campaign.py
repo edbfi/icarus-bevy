@@ -15,9 +15,10 @@ from unittest.mock import patch
 from uuid import UUID
 
 from tools.native_recovery_campaign import (
-    Arguments, CONSUMABLE_FIXTURE, CONSUMABLE_PROTOCOL, INVENTORY_FIXTURE,
+    Arguments, CONSUMABLE_FIXTURE, CONSUMABLE_PROTOCOL, DEPLETION_FIXTURE, DEPLETION_PROTOCOL, INVENTORY_FIXTURE,
     PLAYER_FIXTURE, PLAYER_FIXTURES, PLAYER_PROTOCOL, PlayerFixture,
-    PlayerState, authored_campaign, main, player_child, player_guard, player_identity, player_preflight,
+    PlayerState, authored_campaign, depletion_day_sample_bits, depletion_health, depletion_uses,
+    main, player_child, player_guard, player_identity, player_preflight,
     strict_player_events, validate_player_cycle, validate_player_exits,
 )
 from tools.runtime_types import JsonObject, json_object, parse_json
@@ -236,7 +237,7 @@ signal.signal(signal.SIGTERM, stop)
             self.assertFalse(exit_record["signal_sent"])
 
 
-class InventoryCampaignTest(unittest.TestCase):
+class CampaignSimulation(unittest.TestCase):
     fixture: PlayerFixture = INVENTORY_FIXTURE
     before: PlayerState = PlayerState(1, 0, "a" * 64)
 
@@ -281,27 +282,6 @@ class InventoryCampaignTest(unittest.TestCase):
             _ = player_child(Path("unused"), output, output / "state", "cycle-000", ["run"], before, cycle,
                              fixture=self.fixture if fixture is None else fixture)
 
-    def test_inventory_protocol_isolation_and_old_drain_then_exact_final_receipt(self) -> None:
-        records = [self.record("started", 1, 0), self.record("save_committed", 2, 7), self.record("stopping", 2, 7),
-                   self.record("save_committed", 3, 8), self.record("save_committed", 4, 8),
-                   self.record("completed", 4, 8)]
-        acks = validate_player_cycle(records, "fixture", 123, 0, False, self.before, self.fixture)
-        self.assertEqual([(ack.generation, ack.tick) for ack in acks], [(2, 7), (3, 8), (4, 8)])
-        for fixture in PLAYER_FIXTURES.values():
-            for other in PLAYER_FIXTURES.values():
-                if fixture == other:
-                    continue
-                for event in ("initialized", "started", "save_committed", "stopping", "completed", "verified"):
-                    with self.subTest(mode=fixture.mode, other=other.mode, event=event), self.assertRaises(RuntimeError):
-                        _ = player_identity({**self.record(event), "protocol": other.protocol}, "fixture", 123, fixture)
-        for ending in ({**records[-1], "digest": "b" * 64}, self.record("completed", 3, 8)):
-            with self.subTest(ending=ending), self.assertRaises(RuntimeError):
-                _ = validate_player_cycle([*records[:-1], ending], "fixture", 123, 0, False, self.before, self.fixture)
-        for invalid in (records[:-1], records[1:], [*records[:3], records[-1]],
-                        [*records[:-1], self.record("save_committed", 5, 8), self.record("completed", 5, 8)]):
-            with self.subTest(records=invalid), self.assertRaises(RuntimeError):
-                _ = validate_player_cycle(invalid, "fixture", 123, 0, False, self.before, self.fixture)
-
     def simulate_campaign(self, output: Path, *, cycles: int = 4, overrides: JsonObject | None = None,
                           verify_exit: int = 0, journal_complete: bool = True,
                           mode: str | None = None, override_cycle: int | None = None,
@@ -337,7 +317,7 @@ class InventoryCampaignTest(unittest.TestCase):
                 assert before is not None
                 self.assertEqual(before, selected_before)
                 ack = PlayerState(before.generation + (2 if run_generation_gap else 1),
-                                  before.tick + (7 if fixture == CONSUMABLE_FIXTURE else 3), "a" * 64)
+                                  before.tick + (10 if fixture == DEPLETION_FIXTURE else 7 if fixture == CONSUMABLE_FIXTURE else 3), "a" * 64)
                 records = [emit("started", before), emit("save_committed", ack)]
                 expected_receipts.append(ack.receipt())
                 if cycle % 2:
@@ -359,6 +339,10 @@ class InventoryCampaignTest(unittest.TestCase):
                 if fixture == CONSUMABLE_FIXTURE:
                     consumable = {"uses": (selected.tick + 2) // 7, "resumed_uses": (selected.tick + 10) // 7,
                                   "day_sample_bits": 0, "resumed_day_sample_bits": 0xFFFF_FFFF}
+                if fixture == DEPLETION_FIXTURE:
+                    consumable = {prefix + key: value for prefix, tick in (("", selected.tick), ("resumed_", selected.tick + 8))
+                                  for key, value in (("health", depletion_health(tick)), ("uses", depletion_uses(tick)),
+                                                     ("day_sample_bits", depletion_day_sample_bits(tick)))}
                 fields = overrides if override_cycle is None or label == f"verify-{override_cycle:03}" else None
                 records = [{**emit("verified", selected), "resumed_tick": selected.tick + 8,
                     "acknowledgements": len(expected_receipts), "schema": fixture.schema, **consumable, **(fields or {})}]
@@ -375,6 +359,29 @@ class InventoryCampaignTest(unittest.TestCase):
             authored_campaign(args)
         self.assertEqual(preflight.call_count, int(fixture_expected != PLAYER_FIXTURE))
         self.assertEqual(calls, ["init", *[label for n in range(cycles) for label in (f"cycle-{n:03}", f"verify-{n:03}")]])
+
+
+class InventoryCampaignTest(CampaignSimulation):
+    def test_inventory_protocol_isolation_and_old_drain_then_exact_final_receipt(self) -> None:
+        records = [self.record("started", 1, 0), self.record("save_committed", 2, 7), self.record("stopping", 2, 7),
+                   self.record("save_committed", 3, 8), self.record("save_committed", 4, 8),
+                   self.record("completed", 4, 8)]
+        acks = validate_player_cycle(records, "fixture", 123, 0, False, self.before, self.fixture)
+        self.assertEqual([(ack.generation, ack.tick) for ack in acks], [(2, 7), (3, 8), (4, 8)])
+        for fixture in PLAYER_FIXTURES.values():
+            for other in PLAYER_FIXTURES.values():
+                if fixture == other:
+                    continue
+                for event in ("initialized", "started", "save_committed", "stopping", "completed", "verified"):
+                    with self.subTest(mode=fixture.mode, other=other.mode, event=event), self.assertRaises(RuntimeError):
+                        _ = player_identity({**self.record(event), "protocol": other.protocol}, "fixture", 123, fixture)
+        for ending in ({**records[-1], "digest": "b" * 64}, self.record("completed", 3, 8)):
+            with self.subTest(ending=ending), self.assertRaises(RuntimeError):
+                _ = validate_player_cycle([*records[:-1], ending], "fixture", 123, 0, False, self.before, self.fixture)
+        for invalid in (records[:-1], records[1:], [*records[:3], records[-1]],
+                        [*records[:-1], self.record("save_committed", 5, 8), self.record("completed", 5, 8)]):
+            with self.subTest(records=invalid), self.assertRaises(RuntimeError):
+                _ = validate_player_cycle(invalid, "fixture", 123, 0, False, self.before, self.fixture)
 
     def test_four_cycle_inventory_campaign_retains_all_receipts_and_nine_exits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -434,7 +441,7 @@ class InventoryCampaignTest(unittest.TestCase):
 
     def test_cli_keeps_old_cycle_limits_and_inventory_requires_one_to_four(self) -> None:
         for mode, cycles in (("entities", 120), ("authored-player", 120), ("authored-player-inventory", 4),
-                             ("authored-player-consumables", 4)):
+                             ("authored-player-consumables", 4), ("authored-player-depletion", 4)):
             with patch.object(sys, "argv", ["campaign", "--binary", "missing", "--output", "unused",
                                           "--mode", mode, "--cycles", str(cycles)]), patch(
                 "tools.native_recovery_campaign.authored_campaign"
@@ -450,6 +457,7 @@ class InventoryCampaignTest(unittest.TestCase):
                     campaign.assert_called_once()
         for mode, cycles in (("authored-player-inventory", 0), ("authored-player-inventory", 5),
                              ("authored-player-consumables", 0), ("authored-player-consumables", 5),
+                             ("authored-player-depletion", 0), ("authored-player-depletion", 5),
                              ("authored-player", 121), ("entities", 0)):
             with patch.object(sys, "argv", ["campaign", "--binary", "missing", "--output", "unused",
                                           "--mode", mode, "--cycles", str(cycles)]), patch(
@@ -468,7 +476,7 @@ class InventoryCampaignTest(unittest.TestCase):
             ):
                 main()
         self.assertEqual(defaults, [("authored-player", 24), ("authored-player-inventory", 4),
-                                    ("authored-player-consumables", 4)])
+                                    ("authored-player-consumables", 4), ("authored-player-depletion", 4)])
 
     def test_inventory_flags_on_every_child_and_nonzero_verifier_exit_is_recorded(self) -> None:
         nonce = UUID(int=1)
@@ -916,6 +924,266 @@ class ConsumableCampaignTest(InventoryCampaignTest):
                 controller = json_object(parse_json((args.output / "controller.json").read_text()))
                 self.assertFalse(controller["complete"])
                 self.assertEqual(controller["mode"], mode)
+
+
+class DepletionCampaignTest(CampaignSimulation):
+    fixture: PlayerFixture = DEPLETION_FIXTURE
+
+    def test_literal_witnesses_and_clock_wrap(self) -> None:
+        self.assertEqual((self.fixture.mode, self.fixture.protocol, self.fixture.schema, self.fixture.flags),
+                         ("authored-player-depletion", DEPLETION_PROTOCOL, 15, ("--depletion",)))
+        witnesses = [(0, 0, 1_000_000), (1, 0, 1_000_000), (2, 0, 1_000_000),
+                     (3, 0, 999_999), (4, 0, 999_998), (5, 0, 999_996), (6, 0, 999_995),
+                     (7, 0, 999_992), (8, 1, 999_992), (9, 1, 999_992), (10, 1, 999_991),
+                     (11, 1, 999_990), (12, 1, 999_988), (13, 1, 999_987), (14, 1, 999_984),
+                     (15, 2, 999_984), (100_000, 14_285, 885_716)]
+        for tick, uses, health in witnesses:
+            with self.subTest(tick=tick):
+                self.assertEqual((depletion_uses(tick), depletion_health(tick)), (uses, health))
+        # Literal f32 encodings include the first wrap (51 -> 52) and period.
+        for tick, bits in ((0, 0x43F0_0000), (3, 0x4406_06A6), (10, 0x4426_C0D5), (18, 0x444C_27E5),
+                           (51, 0x44B3_3885), (52, 0x4147_7B03), (76, 0x43E6_A63C), (77, 0x43F0_0000),
+                           (100_000, 0x4247_7B03)):
+            self.assertEqual(depletion_day_sample_bits(tick), bits)
+        for tick in range(155):
+            self.assertEqual(depletion_day_sample_bits(tick), depletion_day_sample_bits(tick % 77))
+        for tick in (-1, 100_001):
+            with self.assertRaisesRegex(RuntimeError, "tick bound"):
+                _ = depletion_day_sample_bits(tick)
+
+    def test_live_gate_waits_for_both_witnesses_relative_to_each_restart(self) -> None:
+        for cycle in range(4):
+            with self.subTest(cycle=cycle), tempfile.TemporaryDirectory() as directory:
+                before = PlayerState(10, 7 + 7 * cycle, "a" * 64)
+
+                def emit(event: str, generation: int, tick: int) -> JsonObject:
+                    return {**self.record(event, generation, tick), "run_id": UUID(int=1).hex}
+
+                tick = before.tick
+                offset = (0.96, 0.99, 1.02, 1.05)[cycle]
+                schedule: list[tuple[float, JsonObject | None, int]] = [
+                    (0., emit("started", 10, tick), 0),
+                    (0., emit("save_committed", 11, tick + 1), 0),  # Use only.
+                    (2., emit("save_committed", 12, tick + 2), 0),  # Still no health loss.
+                    (4., emit("save_committed", 13, tick + 3), 0),
+                    (4. + offset - 0.001, None, 0), (4. + offset + 0.001, None, 0),
+                ]
+                if cycle % 2:
+                    schedule.extend([(5.07, emit("stopping", 13, tick + 3), 1),
+                                     (5.08, emit("save_committed", 14, tick + 3), 1),
+                                     (5.09, emit("save_committed", 15, tick + 4), 1),
+                                     (5.10, emit("completed", 15, tick + 4), 1)])
+                schedule.append((5.11, {"event": "process_eof"}, 1))
+                child = MockChild(StringIO(), code=None)
+                output = Path(directory)
+                self.mock_run(output, child, before, schedule, cycle)
+                self.assertEqual(child.signals, [signal.SIGTERM if cycle % 2 else signal.SIGKILL])
+                journal = json_object(parse_json((output / "commands.jsonl").read_text()))
+                self.assertEqual(journal["argv"], ["unused", "--data-dir", str(output / "state"),
+                    "--run-id", UUID(int=1).hex, "--depletion", "run"])
+                receipt = json_object(parse_json((output / "exits.jsonl").read_text()))
+                self.assertTrue(receipt["complete"])
+                self.assertEqual(receipt["child_exit"], 0 if cycle % 2 else -signal.SIGKILL)
+
+    def test_both_half_gates_and_shutdown_only_coverage_refuse(self) -> None:
+        for start_tick, ack_tick in ((7, 8), (8, 10)):
+            with self.subTest(start=start_tick, ack=ack_tick), tempfile.TemporaryDirectory() as directory:
+                before = PlayerState(10, start_tick, "a" * 64)
+                records = [self.record("started", 10, start_tick), self.record("save_committed", 11, ack_tick)]
+                with self.assertRaisesRegex(RuntimeError, "incomplete authored cycle"):
+                    _ = validate_player_cycle(records, "fixture", 123, -signal.SIGKILL, True, before, self.fixture)
+                shutdown = [*records, self.record("stopping", 11, ack_tick),
+                            self.record("save_committed", 12, 17), self.record("completed", 12, 17)]
+                with self.assertRaisesRegex(RuntimeError, "incomplete authored cycle"):
+                    _ = validate_player_cycle(shutdown, "fixture", 123, 0, False, before, self.fixture)
+                schedule: list[tuple[float, JsonObject | None, int]] = [
+                    (float(i), {**record, "run_id": UUID(int=1).hex}, 0) for i, record in enumerate(records)]
+                schedule.extend([(3., None, 0), (21., None, 0)])
+                output = Path(directory)
+                child = MockChild(StringIO(), code=None)
+                with self.assertRaisesRegex(RuntimeError, "deadline"):
+                    self.mock_run(output, child, before, schedule)
+                self.assertEqual(child.signals, [])
+                self.assertTrue(child.killed)
+                receipt = json_object(parse_json((output / "exits.jsonl").read_text()))
+                self.assertFalse(receipt["complete"])
+                self.assertEqual(receipt["child_exit"], -signal.SIGKILL)
+
+    def test_invalid_live_ack_never_arms_and_cleanup_is_journaled(self) -> None:
+        before = PlayerState(10, 7, "a" * 64)
+        started = self.record("started", 10, 7)
+        ack = self.record("save_committed", 11, 10)
+        invalid: list[list[JsonObject]] = [
+            [started, {**ack, key: value}] for key, value in (
+                ("protocol", CONSUMABLE_PROTOCOL), ("run_id", "wrong"), ("pid", 124), ("pid", True),
+                ("generation", 12), ("generation", True), ("tick", 6), ("tick", True), ("tick", 100_001),
+                ("digest", "z" * 64), ("event", "stopping"), ("event", "completed"))]
+        invalid.extend([[ack], [started, started, ack], [started, {"event": "collector_error"}],
+                        [started, {**ack, "generation": 10}, ack]])
+        for records in invalid:
+            # Bind valid records to the mock's nonce, preserving intentional bad identity.
+            records = [{"run_id": UUID(int=1).hex, **{k: v for k, v in record.items()
+                        if k != "run_id" or v != "fixture"}} for record in records]
+            with self.subTest(records=records), tempfile.TemporaryDirectory() as directory:
+                schedule: list[tuple[float, JsonObject | None, int]] = [
+                    (float(i), record, 0) for i, record in enumerate(records)]
+                schedule.append((4., {"event": "process_eof"}, 0))
+                output = Path(directory)
+                child = MockChild(StringIO(), code=None)
+                with self.assertRaises((RuntimeError, ValueError)):
+                    self.mock_run(output, child, before, schedule)
+                self.assertEqual(child.signals, [])
+                receipt = json_object(parse_json((output / "exits.jsonl").read_text()))
+                self.assertFalse(receipt["complete"])
+                self.assertIsNotNone(receipt["error"])
+
+    def test_postrun_continuity_digest_identity_and_actual_exit_are_strict(self) -> None:
+        before = PlayerState(10, 7, "a" * 64)
+        started = self.record("started", 10, 7)
+        ack = self.record("save_committed", 11, 10)
+        good = [started, ack]
+        self.assertEqual(validate_player_cycle(good, "fixture", 123, -signal.SIGKILL, True, before, self.fixture),
+                         [PlayerState(11, 10, "a" * 64)])
+        invalid = [[started, ack, ack], [started, ack, self.record("save_committed", 12, 9)],
+                   [started, self.record("save_committed", 12, 10)], [ack],
+                   [started, {**ack, "protocol": CONSUMABLE_PROTOCOL}], [started, {**ack, "run_id": "wrong"}],
+                   [started, {**ack, "pid": 124}], [started, {**ack, "digest": "b"}]]
+        for records in invalid:
+            with self.subTest(records=records), self.assertRaises(RuntimeError):
+                _ = validate_player_cycle(records, "fixture", 123, -signal.SIGKILL, True, before, self.fixture)
+        for code in (0, 7, -signal.SIGTERM):
+            with self.subTest(code=code), self.assertRaises(RuntimeError):
+                _ = validate_player_cycle(good, "fixture", 123, code, True, before, self.fixture)
+        graceful = [*good, self.record("stopping", 11, 10), self.record("save_committed", 12, 10),
+                    self.record("save_committed", 13, 11), self.record("completed", 13, 11)]
+        self.assertEqual([ack.generation for ack in validate_player_cycle(
+            graceful, "fixture", 123, 0, False, before, self.fixture)], [11, 12, 13])
+        for ending in ({**graceful[-1], "digest": "b" * 64},
+                       {k: v for k, v in graceful[-1].items() if k != "digest"}):
+            with self.subTest(ending=ending), self.assertRaises((RuntimeError, KeyError)):
+                _ = validate_player_cycle([*graceful[:-1], ending], "fixture", 123, 0, False, before, self.fixture)
+
+    def test_exact_verified_witnesses_reject_missing_bool_and_wrong_values(self) -> None:
+        for field, correct in (("health", 999_991), ("resumed_health", 999_982), ("uses", 1),
+                               ("resumed_uses", 2), ("day_sample_bits", depletion_day_sample_bits(10)),
+                               ("resumed_day_sample_bits", depletion_day_sample_bits(18))):
+            for wrong in (True, False, None, str(correct), float(correct), -1, correct + 1):
+                with self.subTest(field=field, wrong=wrong), tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "campaign"
+                    with self.assertRaises((RuntimeError, ValueError)):
+                        self.simulate_campaign(output, cycles=1, overrides={field: wrong})
+                    self.assertFalse(json_object(parse_json((output / "controller.json").read_text()))["complete"])
+            with self.subTest(missing=field), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "campaign"
+                with self.assertRaises(KeyError):
+                    self.simulate_campaign(output, cycles=1, missing_verified=field)
+                self.assertFalse(json_object(parse_json((output / "controller.json").read_text()))["complete"])
+
+    def test_mock_campaign_preserves_complete_ack_history_across_two_lost_ack_gaps(self) -> None:
+        for crash_gaps, ticks in ((False, (0, 10, 20, 21, 21, 31, 41, 42, 42)),
+                                 (True, (0, 10, 21, 22, 22, 32, 43, 44, 44))):
+            with self.subTest(crash_gaps=crash_gaps), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "campaign"
+                self.simulate_campaign(output, crash_gaps=crash_gaps)
+                generations = (1, 2, 4, 5, 6, 7, 9, 10, 11) if crash_gaps else range(1, 10)
+                expected = [PlayerState(generation, tick, "a" * 64).receipt()
+                            for generation, tick in zip(generations, ticks, strict=True)]
+                self.assertEqual(parse_json((output / "receipts-003.json").read_text()), expected)
+                controller = json_object(parse_json((output / "controller.json").read_text()))
+                self.assertEqual((controller["complete"], controller["children"], controller["completed_cycles"]), (True, 9, 4))
+                provenance = json_object(parse_json((output / "provenance.json").read_text()))
+                self.assertEqual((provenance["mode"], provenance["protocol"], provenance["schema"]),
+                                 (self.fixture.mode, DEPLETION_PROTOCOL, 15))
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(RuntimeError, "generation/tick sequence"):
+            self.simulate_campaign(Path(directory) / "campaign", run_generation_gap=True)
+
+    def test_selected_receipt_and_exit_journal_failures_deny_campaign_success(self) -> None:
+        bad: list[JsonObject] = [{"generation": 4}, {"generation": True}, {"digest": "b" * 64},
+            {"tick": 85}, {"tick": True}, {"resumed_tick": 17}, {"resumed_tick": True},
+            {"acknowledgements": 1}, {"schema": 14}, {"schema": True}, {"protocol": CONSUMABLE_PROTOCOL},
+            {"pid": 0}, {"event": "completed"}]
+        scenarios = [(fields, 0, True) for fields in bad] + [({}, 7, True), ({}, -9, True), ({}, 0, False)]
+        for fields, code, journal in scenarios:
+            with self.subTest(fields=fields, code=code, journal=journal), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "campaign"
+                with self.assertRaises((RuntimeError, ValueError, FileNotFoundError)):
+                    self.simulate_campaign(output, cycles=1, overrides=fields, verify_exit=code, journal_complete=journal)
+                controller = json_object(parse_json((output / "controller.json").read_text()))
+                self.assertFalse(controller["complete"])
+                self.assertEqual(controller["controller_exit"], 1)
+        graceful_bad: list[JsonObject] = [{"generation": 6}, {"digest": "b" * 64}]
+        for fields in graceful_bad:
+            with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(RuntimeError, "verifier final receipt"):
+                self.simulate_campaign(Path(directory) / "campaign", cycles=2, overrides=fields, override_cycle=1)
+
+    def test_init_verify_flags_and_malformed_partial_or_failed_children_are_journaled(self) -> None:
+        nonce = UUID(int=1)
+        for command, event in ((["init"], "initialized"), (["verify", "--receipts", "RECEIPTS"], "verified")):
+            for fault in ("none", "exit", "malformed", "partial", "protocol"):
+                with self.subTest(command=command, fault=fault), tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory)
+                    receipts = output / "receipts.json"
+                    _ = receipts.write_text("[]\n")
+                    argv = [str(receipts) if arg == "RECEIPTS" else arg for arg in command]
+                    record = {**self.record(event, 1, 0), "run_id": nonce.hex}
+                    if fault == "protocol":
+                        record["protocol"] = CONSUMABLE_PROTOCOL
+                    raw = json.dumps(record) + "\n"
+                    if fault == "malformed":
+                        raw = "malformed\n"
+                    elif fault == "partial":
+                        raw = raw.rstrip("\n")
+                    code = 7 if fault == "exit" else 0
+                    child = MockChild(StringIO(raw), code=code)
+                    with patch("tools.native_recovery_campaign.uuid.uuid4", return_value=nonce), patch(
+                        "tools.native_recovery_campaign.subprocess.Popen", return_value=child
+                    ) as spawn, patch("tools.native_recovery_campaign.DISK_FLOOR", 0):
+                        if fault == "none":
+                            records, actual, pid = player_child(Path("unused"), output, output / "state", "mock", argv,
+                                                                fixture=self.fixture)
+                            self.assertEqual((records, actual, pid), ([record], 0, 123))
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                _ = player_child(Path("unused"), output, output / "state", "mock", argv, fixture=self.fixture)
+                    spawn.assert_called_once()
+                    journal = json_object(parse_json((output / "commands.jsonl").read_text()))
+                    self.assertEqual(journal["argv"], ["unused", "--data-dir", str(output / "state"),
+                        "--run-id", nonce.hex, "--depletion", *argv])
+                    receipt = json_object(parse_json((output / "exits.jsonl").read_text()))
+                    self.assertEqual(receipt["child_exit"], code)
+                    self.assertEqual(receipt["complete"], fault == "none")
+
+    def test_wrong_live_signal_exit_and_failed_exit_receipts_refuse(self) -> None:
+        class WrongExit(MockChild):
+            code: int | None
+
+            @override
+            def send_signal(self, signum: int) -> None:
+                super().send_signal(signum)
+                self.code = 7
+
+        records = [{**self.record(event, generation, tick), "run_id": UUID(int=1).hex}
+                   for event, generation, tick in (("started", 1, 0), ("save_committed", 2, 10))]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            child = WrongExit(StringIO(), code=None)
+            with self.assertRaisesRegex(RuntimeError, "unexpected child exit: 7"):
+                self.mock_run(output, child, self.before, [(0., records[0], 0), (0., records[1], 0),
+                              (2., None, 0), (2.1, {"event": "process_eof"}, 1)])
+            receipt = json_object(parse_json((output / "exits.jsonl").read_text()))
+            self.assertEqual(receipt["child_exit"], 7)
+            self.assertFalse(receipt["complete"])
+        failures: list[JsonObject] = [{"complete": False}, {"child_exit": True}, {"pid": True},
+            {"collection_complete": False}, {"cleanup_errors": ["close failed"]},
+            {"collection_errors": [{"event": "collector_error"}]}, {"error": "failed"}]
+        for fields in failures:
+            with self.subTest(fields=fields), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                journal_exit(output, "init", 0, 123)
+                path = output / "exits.jsonl"
+                _ = path.write_text(json.dumps({**json_object(parse_json(path.read_text())), **fields}) + "\n")
+                with self.assertRaises((RuntimeError, ValueError)):
+                    validate_player_exits(output, [("init", 0, 123)])
 
 
 if __name__ == "__main__":
