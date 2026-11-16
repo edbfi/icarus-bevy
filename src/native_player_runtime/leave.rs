@@ -5,7 +5,7 @@ use crate::{
     persistence::{SaveReceipt, SaveWorker, SaveWorkerDisconnected, SnapshotStore},
     simulation::{WorldSnapshot, capture},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use std::time::{Duration, Instant};
 
 const MAX_LEAVES: usize = 64;
@@ -91,17 +91,15 @@ struct PlayerInventoryPin {
 fn inventory_pin(
     inventory: Option<&crate::native_player_inventory::PlayerInventorySnapshotV1>,
     id: u64,
-) -> Result<Option<PlayerInventoryPin>> {
+) -> std::result::Result<Option<PlayerInventoryPin>, PlayerError> {
     inventory
         .map(|inventory| {
-            crate::native_inventory::player_inventory_charge(inventory, 8)?;
+            crate::native_inventory::player_inventory_charge(inventory, 8)
+                .map_err(|_| PlayerError::Limit)?;
             Ok(PlayerInventoryPin {
                 recipe_id: inventory.recipe_id.clone(),
                 baseline: inventory.baseline.clone(),
-                bag: inventory
-                    .bag(id)
-                    .context("leave player bag missing")?
-                    .clone(),
+                bag: inventory.bag(id).ok_or(PlayerError::Missing)?.clone(),
             })
         })
         .transpose()
@@ -177,8 +175,7 @@ impl PlayerRegistry {
         let op = LeaveOperation {
             epoch,
             record: record.clone(),
-            inventory: inventory_pin(self.inventory.as_ref(), record.id)
-                .map_err(|_| PlayerError::Limit)?,
+            inventory: inventory_pin(self.inventory.as_ref(), record.id)?,
             attempt: 1,
             deadline,
             phase: LeavePhase::Pending,

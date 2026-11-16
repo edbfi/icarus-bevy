@@ -1272,10 +1272,6 @@ fn run(
 ) -> Result<()> {
     let mut config = options.resolve()?;
     if private_leave_proof.is_some() {
-        ensure!(
-            config.network.player_inventory.is_none(),
-            "private leave proof requires schema 14; player inventory is unsupported"
-        );
         ensure!(!compressed, "private proof requires real-time simulation");
         private_leave_proof_config::validate_config(&config)?;
     }

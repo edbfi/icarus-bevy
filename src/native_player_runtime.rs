@@ -528,6 +528,63 @@ mod consumption_tests {
     }
 
     #[test]
+    fn schema14_activation_does_not_require_full_world_capture() {
+        let mut registry = registry();
+        registry.reserve(key(1), 1, initial()).unwrap();
+        let mut world = World::new();
+        world.insert_resource(registry);
+        activate_player(&mut world, 1).unwrap();
+        assert_eq!(
+            world.resource::<PlayerRegistry>().activated_epochs(),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn inventory_survival_only_captures_a_generation_for_changed_vitals() {
+        use crate::native_player_inventory::CompiledPlayerInventoryRecipe;
+        let recipe = CompiledPlayerInventoryRecipe::parse(
+            r#"{"format":1,"items":[{"key":"token","stack_limit":10}],
+            "inventories":[{"key":"bag","initial_slots":1,
+              "slot_rules":[{"allowed_items":["token"]}],"overflow_limit":0,
+              "force_add_when_zero":false}],
+            "starter":[{"inventory":"bag","requested_slot":0,"item":"token","count":1}]}"#,
+        )
+        .unwrap();
+        let mut registry = registry();
+        attach(&mut registry, 1, 1);
+        registry.inventory = Some(recipe.empty().issue(1).unwrap());
+        let mut world = World::new();
+        world.insert_resource(registry);
+        let before = world.resource::<PlayerRegistry>().snapshot();
+        let zero = ConsumptionRates {
+            oxygen: 0,
+            water: 0,
+            food: 0,
+        };
+        assert_eq!(consume_player_vitals(&mut world, zero).unwrap(), 0);
+        // A real debit still requires the complete world and cannot commit when
+        // its simulation clock/capture contract is absent.
+        assert!(consume_player_vitals(&mut world, rates()).is_err());
+        assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+        {
+            let mut registry = world.resource_mut::<PlayerRegistry>();
+            let vitals = &mut registry.snapshot.records[0].checkpoint.vitals;
+            vitals.oxygen = 0;
+            vitals.water = 0;
+            vitals.food = 0;
+        }
+        assert_eq!(consume_player_vitals(&mut world, rates()).unwrap(), 0);
+        world.resource_mut::<PlayerRegistry>().detach(1);
+        assert_eq!(consume_player_vitals(&mut world, rates()).unwrap(), 0);
+        world.insert_resource(ConsumptionRuntime {
+            failed: true,
+            tick_hz: 7,
+        });
+        assert!(consume_player_vitals(&mut world, zero).is_err());
+    }
+
+    #[test]
     fn pending_new_and_returning_attachments_never_consume_before_activation() {
         let mut registry = registry();
         registry.reserve(key(1), 1, initial()).unwrap();
@@ -1721,13 +1778,14 @@ mod authored_preloop_tests {
 /// Exclusive world boundary for atomic first issuance and returning activation.
 /// Preparation never exposes a token or an unchecked registry commit API.
 pub fn activate_player(world: &mut World, epoch: u64) -> anyhow::Result<PlayerProjection> {
-    let mut generation = crate::simulation::capture(world)?;
     let registry = world
         .get_resource::<PlayerRegistry>()
         .ok_or(PlayerError::Missing)?;
     if !registry.has_inventory() {
         return Ok(world.resource_mut::<PlayerRegistry>().activate(epoch)?);
     }
+    let mut generation = crate::simulation::capture(world)?;
+    let registry = world.resource::<PlayerRegistry>();
     registry.proof_health()?;
     anyhow::ensure!(
         !registry.is_leaving(epoch),
@@ -1835,8 +1893,14 @@ pub fn consume_player_vitals(world: &mut World, rates: ConsumptionRates) -> anyh
             .resource_mut::<PlayerRegistry>()
             .consume_activated(rates)?);
     }
-    let mut generation = crate::simulation::capture(world)?;
-    let registry = world.resource::<PlayerRegistry>();
+    registry.proof_health()?;
+    crate::network::authored_clock_runtime_health(world)?;
+    consumption_runtime_health(world)?;
+    if (rates.oxygen == 0 && rates.water == 0 && rates.food == 0)
+        || !registry.attachments.values().any(|held| held.activated)
+    {
+        return Ok(0);
+    }
     let mut staged = PlayerRegistry::new(
         registry.snapshot(),
         registry.snapshot.context(),
@@ -1845,6 +1909,7 @@ pub fn consume_player_vitals(world: &mut World, rates: ConsumptionRates) -> anyh
     staged.attachments = registry.attachments.clone();
     let changed = staged.consume_activated(rates)?;
     if changed > 0 {
+        let mut generation = crate::simulation::capture(world)?;
         generation.native_players = Some(staged.snapshot);
         crate::persistence::SnapshotStore::preflight(&generation)?;
         world.resource_mut::<PlayerRegistry>().snapshot =

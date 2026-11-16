@@ -18,7 +18,8 @@ tick_hz = 30
 ```
 
 Rates: integer vital units/second, each 0..=10000000, at least one positive.
-Oxygen/water/food clamp at zero; other vitals, maxima and placement stay.
+Oxygen/water/food clamp at zero; other vitals, maxima, placement, biome and growth
+stay unchanged.
 Clock: minute 0..=1439, positive i32 seconds/day, server-matching `tick_hz` 1..=240.
 Clock binds world input; rates/frequency bind the declaration
 ([contract](../architecture.md#persistence)). Changing/enabling/disabling bound
@@ -55,7 +56,8 @@ Timeout never cancels/rolls back I/O. Poll `leave_status`; `settle_leave` requir
 durability and original detachment.
 
 Default-false `network.authored_controller_leave` separately enables a qualified
-codec/controller/checksum plan with checkpoints. Quit (1), CharacterSelect (2)
+codec/controller/checksum plan with checkpoints. Codec declarations alone never
+enable dispatch. Quit (1), CharacterSelect (2)
 and Titlescreen (4) cut off before fixed ticks, including zero-tick updates.
 Missing/None, dropship, disconnected and no-save do nothing. Missing projection
 or refused cutoff drops intent without delayed retry. Duplicates keep the first
@@ -66,13 +68,14 @@ it. Entire-prefix ACK permits detach, excluding later traffic. Connection/epoch
 checks prevent redirection after revocation/reuse. Detached durable barriers settle
 automatically; pending/failed remain. Pre-admission Cancel suppresses completion,
 retaining the frozen obligation; admitted traffic cannot retract.
-Failed/suppressed leaves stay frozen until disconnect/revocation/expiry, with no
-automatic retry, failure-close or resume. Continued ACKs can keep them frozen.
+Failed/suppressed leaves stay connected and frozen until disconnect/revocation/expiry,
+with no automatic retry, failure-close or resume. Continued ACKs can keep them frozen.
 Transport ACK and authored tests prove neither full player-save nor client menus.
 
 ## Player inventory
 
 Set `network.player_inventory = "authored-bags.json"` before store creation.
+`check-config` is shape-only: it neither loads nor validates this recipe; `run` does.
 Omission retains schema 14; changed/enabled/removed recipes refuse mismatched
 stores. Strict JSON format 1: `items` (key/stack_limit), `inventories` (slot rules),
 owner-free `starter` (inventory/requested_slot/item/count). Use independent values.

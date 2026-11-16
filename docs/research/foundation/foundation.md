@@ -21,19 +21,16 @@ Schema-15 retained player bags, conservation,
 preflight, leave pins and durable CLI: F-1200;
 [operations](../../runbooks/authored-survival.md#player-inventory).
 
-F-1172: authored vitals/placement survive reconnect/save/reload; schema 14 removes
-release binding. Independent managers/quests precede the identity-gated Pawn;
-ordering/pressure repairs are authored-only. F-1188: pre-tick cutoffs, exact-writer
-durability, completion-prefix ACK/detach, pre-admission Cancel suppression.
-Default-off private receipts check committed readback/restart/first pawn before
-activation; client continuation U-038.
+Authored checkpoints/entry: F-1172; leave/private receipts: F-1188.
+[Contracts](../../architecture.md#persistence),
+[leave operations](../../runbooks/authored-survival.md#checkpoint-leave).
+Client continuation U-038.
 
 F-1183: authored fractional debit/day phase, active-only consumption,
 owner/timestep latching, bounded process recovery; no stock-client or physical-power-loss proof.
 
-Sparse gameplay schema 2 preserves authored recipes/checkpoints across unrelated
-catalog row changes (F-1179). Schema 1 binds the full catalog; bound-recipe
-conversion refuses. [Contracts](../../architecture.md#persistence).
+Sparse gameplay/catalog stability: F-1179;
+[binding contracts](../../architecture.md#persistence).
 Locomotion F-1185 does not qualify player persistence.
 
 Authored persistence/lifecycle: schemas 4–12 (F-919, F-922, F-923, F-927),
@@ -70,10 +67,8 @@ Loopback admission/cleanup/pins F-875; holds/limits F-833; metrics F-932;
 concurrency/partial-bunch sweeps F-877. Missing reruns M-898.
 Anonymous byte-matched server data.pak fetch: F-828, F-829, F-831;
 authored gameplay input: F-993.
-Protected hosting: CM deadline F-1180 and password retry F-1181. Lifetime receive
-metadata F-1182 observed another Geometry stall F-1184: no accepted Begin
-slots/profile requests despite settled opens/possession. A skipped subobject
-block leaves Begin absence inconclusive; owner/fields unknown.
+Protected hosting: CM deadline F-1180, password retry F-1181, lifetime receive
+metadata F-1182. Geometry stall/Begin limits: F-1184; skipped-block owner/fields unknown.
 Entry/locomotion F-1185; failed leave F-1186; checkpoint entry stalls F-1199.
 Next: checkpoint entry, then leave/restart; no client persistence proof.
 Operator-point candidate F-1198 remains terrain-unqualified.
