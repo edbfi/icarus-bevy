@@ -112,7 +112,16 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
-    /// Apply one private same-player transaction to an exclusively locked schema-15 store.
+    /// Apply one private transfer to an exclusively locked schema-16 store.
+    ApplyPlayerInventoryTransfer {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Apply one private local transaction to a locked schema-15/16 store.
     ApplyPlayerInventory {
         #[arg(long)]
         request: PathBuf,
@@ -477,6 +486,38 @@ fn execute(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
+        Command::ApplyPlayerInventoryTransfer {
+            request,
+            data_dir,
+            dry_run,
+        } => {
+            let request: icarus_bevy::native_player_inventory::PlayerInventoryTransferRequestV1 =
+                read_native_action_request(&request, "player inventory transfer")
+                    .map_err(|_| anyhow::anyhow!("invalid player inventory transfer request"))?;
+            let mut store = SnapshotStore::open_existing(&data_dir)
+                .map_err(|_| anyhow::anyhow!("open player inventory transfer store failed"))?;
+            let loaded = store
+                .load()
+                .map_err(|_| anyhow::anyhow!("load player inventory transfer store failed"))?
+                .context("player inventory transfer requires existing state")?;
+            let (snapshot, result) =
+                icarus_bevy::native_player_inventory::prepare_transfer_offline(
+                    &loaded.snapshot,
+                    &request,
+                )
+                .map_err(|_| anyhow::anyhow!("player inventory transfer request rejected"))?;
+            let receipt = if dry_run {
+                None
+            } else {
+                Some(store.save(&snapshot).map_err(|_|anyhow::anyhow!("save player inventory transfer failed; publication may be uncertain; reopen before retry"))?)
+            };
+            let mut report = json!({"event":"player_inventory_transfer_result","outcome":"applied","dry_run":dry_run,"published":receipt.is_some(),"source_player_revision":result.source_player_revision,"source_bag_revision":result.source_bag_revision,"destination_player_revision":result.destination_player_revision,"destination_bag_revision":result.destination_bag_revision,"inventory_revision":result.inventory_revision});
+            if let Some(receipt) = receipt {
+                report["receipt"] = json!(receipt);
+            }
+            println!("{report}");
+            Ok(())
+        }
         Command::ApplyPlayerInventory {
             request,
             data_dir,
@@ -514,7 +555,7 @@ fn execute(cli: Cli) -> Result<()> {
             } else {
                 None
             };
-            let mut report = json!({"event":"player_inventory_result","outcome":outcome,"dry_run":dry_run,"published":receipt.is_some(),"player_revision":player_revision,"bag_revision":bag.revision,"inventory_revision":inventory.revision});
+            let mut report = json!({"event":"player_inventory_result","outcome":outcome,"dry_run":dry_run,"published":receipt.is_some(),"player_revision":player_revision,"bag_revision":bag.revision,"inventory_revision":inventory.revision()});
             if let Some(receipt) = receipt {
                 report["receipt"] = json!(receipt);
             }

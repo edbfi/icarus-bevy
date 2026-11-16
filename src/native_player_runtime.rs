@@ -22,7 +22,7 @@ struct Attachment {
 pub struct PlayerRegistry {
     snapshot: PlayerSnapshot,
     capture_identity: std::sync::Arc<()>,
-    inventory: Option<crate::native_player_inventory::PlayerInventorySnapshotV1>,
+    inventory: Option<crate::native_player_inventory::PlayerInventorySnapshot>,
     activation_requests: std::collections::BTreeSet<u64>,
     attachments: BTreeMap<u64, Attachment>,
     max_live: usize,
@@ -75,7 +75,7 @@ impl PlayerRegistry {
         snapshot: PlayerSnapshot,
         expected: &PlayerContext,
         max_live: usize,
-        inventory: Option<crate::native_player_inventory::PlayerInventorySnapshotV1>,
+        inventory: Option<crate::native_player_inventory::PlayerInventorySnapshot>,
     ) -> anyhow::Result<Self> {
         if let Some(i) = &inventory {
             i.validate(&snapshot)?;
@@ -86,16 +86,33 @@ impl PlayerRegistry {
     }
     pub fn inventory_snapshot(
         &self,
-    ) -> Option<crate::native_player_inventory::PlayerInventorySnapshotV1> {
+    ) -> Option<crate::native_player_inventory::PlayerInventorySnapshot> {
         self.inventory.clone()
     }
     pub fn has_inventory(&self) -> bool {
         self.inventory.is_some()
     }
+    pub(crate) fn context_matches(&self, expected: &PlayerContext) -> bool {
+        self.snapshot.context() == expected
+    }
+    pub(crate) fn inventory_binding(&self) -> Option<crate::simulation::PlayerInventoryBinding> {
+        self.inventory
+            .as_ref()
+            .map(|i| crate::simulation::PlayerInventoryBinding {
+                recipe_id: i.recipe_id().to_owned(),
+                mode: i.mode(),
+                declaration: self.snapshot.context().declaration_digest(),
+            })
+    }
+    pub(crate) fn inventory_mode(
+        &self,
+    ) -> Option<crate::native_player_inventory::PlayerInventoryMode> {
+        self.inventory.as_ref().map(|i| i.mode())
+    }
     pub(crate) fn inventory_recipe_id(&self) -> Option<&str> {
         self.inventory
             .as_ref()
-            .map(|inventory| inventory.recipe_id.as_str())
+            .map(|inventory| inventory.recipe_id())
     }
     pub(crate) fn inventory_capture_identity(&self) -> Option<std::sync::Arc<()>> {
         self.inventory
@@ -517,6 +534,61 @@ fn prepare_checkpoint_edit(
     record.revision.checked_add(1).ok_or(PlayerError::Exhausted)
 }
 
+/// Trusted server-only operation. Each held attachment is supplied independently.
+pub fn apply_player_inventory_transfer(
+    world: &mut World,
+    source_key: PlayerKey,
+    source_epoch: u64,
+    destination_key: PlayerKey,
+    destination_epoch: u64,
+    request: &crate::native_player_inventory::PlayerInventoryTransferRequestV1,
+) -> anyhow::Result<crate::native_player_inventory::AppliedPlayerInventoryTransfer> {
+    reconcile_consumption_runtime(world)?;
+    crate::network::reconcile_player_authority(world)?;
+    let registry = world
+        .get_resource::<PlayerRegistry>()
+        .ok_or(PlayerError::Missing)?;
+    registry.proof_health()?;
+    anyhow::ensure!(
+        !registry.writer_failed
+            && source_key != destination_key
+            && source_epoch != destination_epoch,
+        "player inventory authority refused"
+    );
+    for (key, epoch, owner) in [
+        (source_key, source_epoch, request.source.owner),
+        (
+            destination_key,
+            destination_epoch,
+            request.destination.owner,
+        ),
+    ] {
+        let held = registry
+            .attachments
+            .get(&epoch)
+            .ok_or(PlayerError::Missing)?;
+        anyhow::ensure!(
+            held.key == key
+                && held.activated
+                && held.pending.is_none()
+                && !registry.leaves.contains_key(&key)
+                && registry
+                    .projection(epoch)
+                    .is_some_and(|p| p.player_id == owner.player_id),
+            "player inventory authority refused"
+        );
+    }
+    let generation = crate::simulation::capture(world)?;
+    let (prepared, result) =
+        crate::native_player_inventory::prepare_transfer_owned(generation, request)?;
+    let players = prepared.native_players.expect("preflight players");
+    let inventory = prepared.player_inventory.expect("preflight inventory");
+    let mut registry = world.resource_mut::<PlayerRegistry>();
+    registry.snapshot = players;
+    registry.inventory = Some(inventory);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod consumption_tests {
     use super::*;
@@ -608,7 +680,7 @@ mod consumption_tests {
         .unwrap();
         let mut registry = registry();
         attach(&mut registry, 1, 1);
-        registry.inventory = Some(recipe.empty().issue(1).unwrap());
+        registry.inventory = Some(recipe.empty().issue(1).unwrap().into());
         let mut world = World::new();
         world.insert_resource(registry);
         let before = world.resource::<PlayerRegistry>().snapshot();
@@ -1304,6 +1376,32 @@ pub(crate) fn player_declaration_digest(
     Ok(sha2::Sha256::digest(bytes).into())
 }
 
+pub(crate) fn player_inventory_declaration_digest(
+    declaration: &crate::config::PlayerPersistenceConfig,
+    consumption: Option<ConsumptionConfig>,
+    damage: Option<DepletionDamageConfig>,
+    actual_tick_hz: u32,
+    transfers: bool,
+) -> anyhow::Result<[u8; 32]> {
+    use sha2::Digest;
+    let base =
+        player_survival_declaration_digest(declaration, consumption, damage, actual_tick_hz)?;
+    if !transfers {
+        return Ok(base);
+    }
+    Ok(sha2::Sha256::digest(serde_json::to_vec(&(
+        "authored_player_inventory_transfers_v1",
+        true,
+        16_u32,
+        2_u32,
+        base,
+    ))?)
+    .into())
+}
+pub(crate) fn inventory_pin_v2_overhead_bytes() -> usize {
+    leave::inventory_pin_v2_overhead_bytes()
+}
+
 pub(crate) fn player_survival_declaration_digest(
     declaration: &crate::config::PlayerPersistenceConfig,
     consumption: Option<ConsumptionConfig>,
@@ -1536,6 +1634,51 @@ mod consumption_phase_tests {
         }
     }
 
+    #[test]
+    fn transfer_policy_digest_preserves_false_and_wraps_exact_old_digest() {
+        use sha2::Digest;
+        let declaration = declaration();
+        let rates = ConsumptionConfig {
+            oxygen: 1,
+            water: 2,
+            food: 3,
+        };
+        let damage = DepletionDamageConfig {
+            oxygen: 3,
+            water: 2,
+            food: 1,
+        };
+        for (consumption, damage) in [
+            (None, None),
+            (Some(rates), None),
+            (Some(rates), Some(damage)),
+        ] {
+            let base =
+                player_survival_declaration_digest(&declaration, consumption, damage, 7).unwrap();
+            assert_eq!(
+                player_inventory_declaration_digest(&declaration, consumption, damage, 7, false)
+                    .unwrap(),
+                base
+            );
+            let expected: [u8; 32] = sha2::Sha256::digest(
+                serde_json::to_vec(&(
+                    "authored_player_inventory_transfers_v1",
+                    true,
+                    16_u32,
+                    2_u32,
+                    base,
+                ))
+                .unwrap(),
+            )
+            .into();
+            assert_eq!(
+                player_inventory_declaration_digest(&declaration, consumption, damage, 7, true)
+                    .unwrap(),
+                expected
+            );
+            assert_ne!(expected, base);
+        }
+    }
     #[test]
     fn omitted_rules_keep_exact_legacy_declaration_bytes_and_digest() {
         let declaration = declaration();
@@ -1948,8 +2091,14 @@ pub fn activate_player(world: &mut World, epoch: u64) -> anyhow::Result<PlayerPr
         .get(&epoch)
         .ok_or(PlayerError::Missing)?;
     let projection = registry.projection(epoch).ok_or(PlayerError::Missing)?;
-    let mut players = registry.snapshot();
-    let mut inventory = registry.inventory.clone().ok_or(PlayerError::Missing)?;
+    let mut players = generation
+        .native_players
+        .take()
+        .ok_or(PlayerError::Missing)?;
+    let mut inventory = generation
+        .player_inventory
+        .take()
+        .ok_or(PlayerError::Missing)?;
     if let Some(record) = &held.pending {
         players
             .records
@@ -1964,9 +2113,11 @@ pub fn activate_player(world: &mut World, epoch: u64) -> anyhow::Result<PlayerPr
             "returning player bag missing"
         );
     }
-    generation.native_players = Some(players.clone());
-    generation.player_inventory = Some(inventory.clone());
+    generation.native_players = Some(players);
+    generation.player_inventory = Some(inventory);
     crate::persistence::SnapshotStore::preflight(&generation)?;
+    let players = generation.native_players.expect("preflight players");
+    let inventory = generation.player_inventory.expect("preflight inventory");
     // No allocation, validation, callbacks or fallible work beyond this point.
     let mut registry = world.resource_mut::<PlayerRegistry>();
     registry.snapshot = players;
@@ -1986,6 +2137,14 @@ pub fn apply_player_inventory_action(
     epoch: u64,
     request: &crate::native_player_inventory::PlayerInventoryRequestV1,
 ) -> anyhow::Result<crate::native_inventory::InventoryActionOutcomeV1> {
+    if world
+        .get_resource::<PlayerRegistry>()
+        .and_then(|r| r.inventory_mode())
+        == Some(crate::native_player_inventory::PlayerInventoryMode::TransfersV2)
+    {
+        reconcile_consumption_runtime(world)?;
+        crate::network::reconcile_player_authority(world)?;
+    }
     let generation = crate::simulation::capture(world)?;
     let registry = world
         .get_resource::<PlayerRegistry>()
@@ -2033,7 +2192,7 @@ pub(crate) fn drain_inventory_activations(world: &mut World) -> Vec<u64> {
     failed
 }
 
-/// Schema 15 keeps survival in the same exclusive full-generation admission
+/// Schemas 15/16 keep survival in the same exclusive full-generation admission
 /// boundary. Schema 14 retains its original registry and proof behavior.
 pub fn consume_player_vitals(world: &mut World, rates: ConsumptionRates) -> anyhow::Result<usize> {
     advance_player_survival(world, rates, DepletionDamageRates::ZERO)
@@ -2119,7 +2278,7 @@ pub fn edit_player_checkpoint(
     );
     anyhow::ensure!(
         registry.has_inventory(),
-        "world checkpoint edits require schema 15"
+        "world checkpoint edits require schema 15 or 16"
     );
     let players = generation
         .native_players

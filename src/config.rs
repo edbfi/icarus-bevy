@@ -62,6 +62,8 @@ pub struct NetworkConfig {
     /// Independently authored schema-15 recipe; fresh stores only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_inventory: Option<PathBuf>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub player_inventory_transfers: bool,
     /// EXPERIMENTAL: explicitly dispatch the selected ordinary controller leave
     /// protocol against authored checkpoints. Codec qualification alone never
     /// enables this policy. Default false; stock-client completion is unqualified.
@@ -184,6 +186,7 @@ impl Default for NetworkConfig {
         Self {
             player_persistence: None,
             player_inventory: None,
+            player_inventory_transfers: false,
             authored_controller_leave: false,
             player_consumption: None,
             player_depletion_damage: None,
@@ -278,6 +281,11 @@ impl NetworkConfig {
         ensure!(
             self.player_inventory.is_none() || self.player_persistence.is_some(),
             "player inventory requires player persistence"
+        );
+        ensure!(
+            !self.player_inventory_transfers
+                || (self.player_inventory.is_some() && self.player_persistence.is_some()),
+            "network.player_inventory_transfers requires inventory and player persistence"
         );
         if let Some(players) = &self.player_persistence {
             ensure!(
@@ -515,6 +523,10 @@ impl ServerConfig {
     pub fn tick_interval(&self) -> Duration {
         Duration::from_secs_f64(1.0 / f64::from(self.tick_hz))
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg(test)]

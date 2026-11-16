@@ -28,7 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 static CLI_LOCK: Mutex<()> = Mutex::new(());
-fn context() -> PlayerContext {
+pub(super) fn context() -> PlayerContext {
     PlayerContext::new(
         "authored-bag-world".encode_utf16().collect(),
         "/Authored/Bags".into(),
@@ -43,7 +43,7 @@ fn context() -> PlayerContext {
     )
     .unwrap()
 }
-fn checkpoint() -> PlayerCheckpoint {
+pub(super) fn checkpoint() -> PlayerCheckpoint {
     PlayerCheckpoint {
         location_cm: [10., 20., 30.],
         vitals: CharacterVitals {
@@ -62,7 +62,7 @@ fn checkpoint() -> PlayerCheckpoint {
         },
     }
 }
-fn recipe() -> PlayerInventoryRecipeV1 {
+pub(super) fn recipe() -> PlayerInventoryRecipeV1 {
     PlayerInventoryRecipeV1 {
         format: 1,
         items: vec![ItemDefinitionV1 {
@@ -99,7 +99,8 @@ fn empty_recipe(recipe: PlayerInventoryRecipeV1) -> WorldSnapshot {
         player_inventory: Some(
             CompiledPlayerInventoryRecipe::compile(recipe)
                 .unwrap()
-                .empty(),
+                .empty()
+                .into(),
         ),
         ..Default::default()
     }
@@ -107,10 +108,10 @@ fn empty_recipe(recipe: PlayerInventoryRecipeV1) -> WorldSnapshot {
 fn app() -> bevy::prelude::App {
     build_app(&ServerConfig::default(), &empty()).unwrap()
 }
-fn key(n: u64) -> PlayerKey {
+pub(super) fn key(n: u64) -> PlayerKey {
     PlayerKey::new(9000 + n, 0).unwrap()
 }
-fn attach(app: &mut bevy::prelude::App, n: u64, epoch: u64) -> u64 {
+pub(super) fn attach(app: &mut bevy::prelude::App, n: u64, epoch: u64) -> u64 {
     app.world_mut()
         .resource_mut::<PlayerRegistry>()
         .reserve(key(n), epoch, checkpoint())
@@ -121,7 +122,14 @@ fn snapshot(app: &mut bevy::prelude::App) -> WorldSnapshot {
     capture(app.world_mut()).unwrap()
 }
 fn bag(state: &WorldSnapshot, id: u64) -> &PlayerBagV1 {
-    state.player_inventory.as_ref().unwrap().bag(id).unwrap()
+    state
+        .player_inventory
+        .as_ref()
+        .unwrap()
+        .as_v1()
+        .unwrap()
+        .bag(id)
+        .unwrap()
 }
 fn endpoint(state: &WorldSnapshot, id: u64, slot: usize) -> PlayerStackEndpointV1 {
     let b = bag(state, id);
@@ -207,7 +215,16 @@ fn sparse_reservations_once_only_issuance_detach_restart_and_operations() {
     let a = activate_player(app.world_mut(), 2).unwrap().player_id;
     assert_eq!((a, b), (2, 3));
     let initial = snapshot(&mut app);
-    assert_eq!(initial.player_inventory.as_ref().unwrap().next_stack_id, 3);
+    assert_eq!(
+        initial
+            .player_inventory
+            .as_ref()
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .next_stack_id,
+        3
+    );
     activate_player(app.world_mut(), 2).unwrap();
     assert_eq!(snapshot(&mut app), initial);
     let split = request(
@@ -267,7 +284,16 @@ fn sparse_reservations_once_only_issuance_detach_restart_and_operations() {
     apply(&mut app, 1, 2, &req);
     let state = snapshot(&mut app);
     assert_eq!(bag(&state, a).consumed[0].count, 8);
-    assert_eq!(state.player_inventory.as_ref().unwrap().next_stack_id, 4);
+    assert_eq!(
+        state
+            .player_inventory
+            .as_ref()
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .next_stack_id,
+        4
+    );
     {
         let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
         registry.detach(2);
@@ -407,7 +433,16 @@ fn zero_slot_and_overflow_paths_survive_reload_without_id_reuse() {
     apply(&mut app, 1, 2, &req);
     let state = snapshot(&mut app);
     assert_eq!(bag(&state, a).inventories[0].slots.len(), 2);
-    assert_eq!(state.player_inventory.as_ref().unwrap().next_stack_id, 3);
+    assert_eq!(
+        state
+            .player_inventory
+            .as_ref()
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .next_stack_id,
+        3
+    );
     assert_eq!(reload(&state), state);
     let mut invalid = recipe();
     invalid.inventories[0].initial_slots = 0;
@@ -423,7 +458,12 @@ fn player_local_conservation_rejects_two_player_redistribution_on_reload() {
     let state = snapshot(&mut app);
     apply(&mut app, 1, 1, &consume(&state, a, 8));
     let mut malformed = snapshot(&mut app);
-    let i = malformed.player_inventory.as_mut().unwrap();
+    let i = malformed
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v1_mut()
+        .unwrap();
     let moved = i
         .bags
         .iter_mut()
@@ -476,7 +516,7 @@ fn strict_corruption_recipe_matching_and_future_format_refuse() {
     let state = snapshot(&mut app);
     for kind in 0..7 {
         let mut bad = state.clone();
-        let i = bad.player_inventory.as_mut().unwrap();
+        let i = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
         match kind {
             0 => i.bags.clear(),
             1 => i.bags.push(i.bags[0].clone()),
@@ -513,9 +553,9 @@ fn strict_corruption_recipe_matching_and_future_format_refuse() {
         }
         let mut v = serde_json::to_value(&state).unwrap();
         match field {
-            "section" => v["player_inventory"]["format"] = json!(2),
+            "section" => v["player_inventory"]["format"] = json!(3),
             "recipe" => v["player_inventory"]["recipe"]["format"] = json!(3),
-            _ => v["schema_version"] = json!(16),
+            _ => v["schema_version"] = json!(17),
         }
         replace_current(dir.path(), &v);
         let store = SnapshotStore::open_existing(dir.path()).unwrap();
@@ -829,14 +869,37 @@ fn allocation_and_revision_exhaustion_cannot_partially_issue_or_edit() {
     ] {
         let mut state = state.clone();
         match kind {
-            "allocator" => state.player_inventory.as_mut().unwrap().next_stack_id = u64::MAX,
+            "allocator" => {
+                state
+                    .player_inventory
+                    .as_mut()
+                    .unwrap()
+                    .as_v1_mut()
+                    .unwrap()
+                    .next_stack_id = u64::MAX
+            }
             "bag_revision" => {
                 let mut value = serde_json::to_value(&state).unwrap();
                 value["native_players"]["records"][0]["revision"] = json!(u64::MAX);
                 state = serde_json::from_value(value).unwrap();
-                state.player_inventory.as_mut().unwrap().bags[0].revision = u64::MAX;
+                state
+                    .player_inventory
+                    .as_mut()
+                    .unwrap()
+                    .as_v1_mut()
+                    .unwrap()
+                    .bags[0]
+                    .revision = u64::MAX;
             }
-            "global_revision" => state.player_inventory.as_mut().unwrap().revision = u64::MAX,
+            "global_revision" => {
+                state
+                    .player_inventory
+                    .as_mut()
+                    .unwrap()
+                    .as_v1_mut()
+                    .unwrap()
+                    .revision = u64::MAX
+            }
             _ => {
                 let mut value = serde_json::to_value(&state).unwrap();
                 value["native_players"]["records"][0]["revision"] = json!(u64::MAX);
@@ -897,6 +960,8 @@ fn recipe_and_generation_limits_admit_before_clone_and_preserve_existing_owners(
         .player_inventory
         .as_mut()
         .unwrap()
+        .as_v1_mut()
+        .unwrap()
         .bags
         .reserve_exact(9000);
     assert!(oversized.validate().is_err());
@@ -946,7 +1011,12 @@ fn global_stack_limit_rejection_preserves_all_players_and_allocator() {
     }
     let mut state = first;
     state.native_players = Some(players.snapshot());
-    let inventory = state.player_inventory.as_mut().unwrap();
+    let inventory = state
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v1_mut()
+        .unwrap();
     inventory.bags.clear();
     for id in 1..=256 {
         let mut bag = template.clone();
@@ -994,6 +1064,7 @@ fn recipe_selection_is_explicit_and_never_promotes_schema14() {
         network_checksum: network_checksum(version),
     };
     let mut prepared = PreparedPlayers {
+        inventory_mode: icarus_bevy::native_player_inventory::PlayerInventoryMode::LocalV1,
         context: context(),
         initial_vitals: checkpoint().vitals,
         release,
@@ -1224,7 +1295,12 @@ fn durable_owner_capacity_refuses_reservation_without_orphan_issuance() {
         players.detach(n);
     }
     state.native_players = Some(players.snapshot());
-    let inventory = state.player_inventory.as_mut().unwrap();
+    let inventory = state
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v1_mut()
+        .unwrap();
     inventory.bags = (1..=4096)
         .map(|id| {
             let mut b = template.clone();
@@ -1265,7 +1341,7 @@ fn all_unknown_section_and_recipe_formats_refuse_previous_generation_recovery() 
             json!({}),
             json!([]),
         ] {
-            if recipe && format == json!(2) {
+            if format == json!(2) {
                 continue;
             }
             let dir = tempfile::tempdir().unwrap();
@@ -1403,7 +1479,16 @@ fn every_operation_continues_after_aggregate_save_reload_and_reattach() {
             .tick = 10 * (step + 1);
         state = snapshot(&mut next);
     }
-    assert_eq!(state.player_inventory.as_ref().unwrap().next_stack_id, 4);
+    assert_eq!(
+        state
+            .player_inventory
+            .as_ref()
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .next_stack_id,
+        4
+    );
     assert_eq!(bag(&state, a).consumed[0].count, 2);
     assert_eq!(reload(&state), state);
 }
@@ -1503,7 +1588,8 @@ mod consumables {
         state.player_inventory = Some(
             CompiledPlayerInventoryRecipe::compile_versioned(r.into())
                 .unwrap()
-                .empty(),
+                .empty()
+                .into(),
         );
         state
     }
@@ -1872,8 +1958,8 @@ mod consumables {
             );
             assert_eq!(bag(&after, id).revision, bag(&before, id).revision + 1);
             assert_eq!(bag(&after, id).consumed[0].count, 1);
-            let section = after.player_inventory.as_ref().unwrap();
-            let old = before.player_inventory.as_ref().unwrap();
+            let section = after.player_inventory.as_ref().unwrap().as_v1().unwrap();
+            let old = before.player_inventory.as_ref().unwrap().as_v1().unwrap();
             assert_eq!(section.revision, old.revision + 1);
             assert_eq!(section.next_stack_id, old.next_stack_id);
             assert_eq!(section.recipe, old.recipe);
@@ -2033,11 +2119,20 @@ mod consumables {
             let req = use_item(&state, id);
             match kind {
                 "consumed" => {
-                    bad.player_inventory.as_mut().unwrap().bags[0].consumed[0].count = u64::MAX
+                    bad.player_inventory
+                        .as_mut()
+                        .unwrap()
+                        .as_v1_mut()
+                        .unwrap()
+                        .bags[0]
+                        .consumed[0]
+                        .count = u64::MAX
                 }
                 "capacity" => bad
                     .player_inventory
                     .as_mut()
+                    .unwrap()
+                    .as_v1_mut()
                     .unwrap()
                     .bags
                     .reserve_exact(9000),
@@ -2351,11 +2446,13 @@ mod consumables {
         ];
         for (from, selected) in recipes.iter().enumerate() {
             let mut state = empty();
-            state.player_inventory = Some(selected.empty());
+            state.player_inventory = Some(selected.empty().into());
             let stored = reload(&state);
             for (to, target) in recipes.iter().enumerate() {
                 let version = "1.0.0.9";
                 let mut prepared = PreparedPlayers {
+                    inventory_mode:
+                        icarus_bevy::native_player_inventory::PlayerInventoryMode::LocalV1,
                     context: context(),
                     initial_vitals: checkpoint().vitals,
                     release: ReleasePin {
@@ -2498,7 +2595,12 @@ mod consumables {
             registry.detach(id);
         }
         state.native_players = Some(registry.snapshot());
-        let section = state.player_inventory.as_mut().unwrap();
+        let section = state
+            .player_inventory
+            .as_mut()
+            .unwrap()
+            .as_v1_mut()
+            .unwrap();
         section.bags.clear();
         for id in 1..=256 {
             let mut bag = template.clone();
@@ -2516,12 +2618,30 @@ mod consumables {
         // The first passing state is within one 256-stack bag of the eight-copy
         // limit. Higher IDs may remain retired without being reused.
         while state.validate().is_err() {
-            state.player_inventory.as_mut().unwrap().bags.pop().unwrap();
+            state
+                .player_inventory
+                .as_mut()
+                .unwrap()
+                .as_v1_mut()
+                .unwrap()
+                .bags
+                .pop()
+                .unwrap();
             let mut players = serde_json::to_value(state.native_players.take().unwrap()).unwrap();
             players["records"].as_array_mut().unwrap().pop().unwrap();
             state.native_players = Some(serde_json::from_value(players).unwrap());
         }
-        assert!(state.player_inventory.as_ref().unwrap().bags.len() > 200);
+        assert!(
+            state
+                .player_inventory
+                .as_ref()
+                .unwrap()
+                .as_v1()
+                .unwrap()
+                .bags
+                .len()
+                > 200
+        );
         assert_eq!(reload(&state), state);
         let roundtrip: WorldSnapshot =
             serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
@@ -2563,7 +2683,12 @@ mod consumables {
         let mut players = serde_json::to_value(state.native_players.as_ref().unwrap()).unwrap();
         players["records"][0]["revision"] = json!(9);
         state.native_players = Some(serde_json::from_value(players).unwrap());
-        let section = state.player_inventory.as_mut().unwrap();
+        let section = state
+            .player_inventory
+            .as_mut()
+            .unwrap()
+            .as_v1_mut()
+            .unwrap();
         section.bags[0].revision = 9;
         section.revision = 9;
         let mut remaining = 64 * 1024 * 1024 - serde_json::to_vec(&state).unwrap().len();

@@ -336,38 +336,41 @@ fn expected(tick: u64) -> Result<WorldSnapshot> {
         schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
         tick,
         native_players: Some(expected_players(tick, applied)?),
-        player_inventory: Some(PlayerInventorySnapshotV1 {
-            format: 1,
-            recipe_id: recipe_identity()?,
-            recipe: recipe().into(),
-            baseline: InventoryInitialTotalsV1 {
-                items: totals(100_000, 7),
-            },
-            revision: 3 + applied,
-            next_stack_id: 5 + s,
-            bags: vec![
-                PlayerBagV1 {
-                    owner: owner(A),
-                    revision: 1 + applied,
-                    consumed: totals(c, 0),
-                    inventories: vec![InventoryStateV1 {
-                        key: "bag".into(),
-                        slots: a_slots,
-                        overflow: if p == 0 { overflow(2)? } else { vec![] },
-                    }],
+        player_inventory: Some(
+            PlayerInventorySnapshotV1 {
+                format: 1,
+                recipe_id: recipe_identity()?,
+                recipe: recipe().into(),
+                baseline: InventoryInitialTotalsV1 {
+                    items: totals(100_000, 7),
                 },
-                PlayerBagV1 {
-                    owner: owner(B),
-                    revision: 1,
-                    consumed: totals(0, 0),
-                    inventories: vec![InventoryStateV1 {
-                        key: "bag".into(),
-                        slots: vec![Some(stack(3, TOKEN, 100_000)?), None, None, None],
-                        overflow: overflow(4)?,
-                    }],
-                },
-            ],
-        }),
+                revision: 3 + applied,
+                next_stack_id: 5 + s,
+                bags: vec![
+                    PlayerBagV1 {
+                        owner: owner(A),
+                        revision: 1 + applied,
+                        consumed: totals(c, 0),
+                        inventories: vec![InventoryStateV1 {
+                            key: "bag".into(),
+                            slots: a_slots,
+                            overflow: if p == 0 { overflow(2)? } else { vec![] },
+                        }],
+                    },
+                    PlayerBagV1 {
+                        owner: owner(B),
+                        revision: 1,
+                        consumed: totals(0, 0),
+                        inventories: vec![InventoryStateV1 {
+                            key: "bag".into(),
+                            slots: vec![Some(stack(3, TOKEN, 100_000)?), None, None, None],
+                            overflow: overflow(4)?,
+                        }],
+                    },
+                ],
+            }
+            .into(),
+        ),
         ..Default::default()
     })
 }
@@ -386,7 +389,9 @@ fn check_conservation(snapshot: &WorldSnapshot) -> Result<()> {
     let inventory = snapshot
         .player_inventory
         .as_ref()
-        .context("inventory missing")?;
+        .context("inventory missing")?
+        .as_v1()
+        .context("inventory format")?;
     let mut ids = BTreeSet::new();
     for bag in &inventory.bags {
         for (item, baseline) in [(TOKEN, 100_000), (MARKER, 7)] {
@@ -437,7 +442,11 @@ fn seed() -> Result<WorldSnapshot> {
     let empty = WorldSnapshot {
         schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
         native_players: Some(PlayerSnapshot::fresh(fixture_context()?, &release())?),
-        player_inventory: Some(CompiledPlayerInventoryRecipe::compile(recipe())?.empty()),
+        player_inventory: Some(
+            CompiledPlayerInventoryRecipe::compile(recipe())?
+                .empty()
+                .into(),
+        ),
         ..Default::default()
     };
     let snapshot = populate_seed(empty, &config())?;

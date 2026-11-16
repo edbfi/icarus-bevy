@@ -89,92 +89,74 @@ A complete profile carries protocol values; its build id selects none.
 
 ## Persistence
 
-Versioned domain snapshots cross a coherent simulation boundary: worker
-serialization, checksummed generation, synchronized storage, atomic manifest
-publication and retention of the preceding valid generation. Autosave defaults to
-60 seconds. `SaveReceipt` acknowledges its submitted generation/tick after durable
-publication, never later edits. Validate or explicitly migrate before activation;
-missing required domain components refuse capture/publication. Authored schemas
-4–11 (F-919, F-922, F-923, F-927, F-931) pin activation, reject incomplete state
-and never promote implicitly; bounds imply neither physics nor navigation.
-Contracts: [authored worlds](runbooks/authored-worlds.md).
+Coherent snapshots use the [worker/generation protocol](runbooks/native-server.md#persistence-and-recovery).
+`SaveReceipt` acknowledges its submitted generation/tick, never later
+edits. Validate or explicitly migrate before activation; missing domain components
+refuse capture/publication. Authored schemas 4–11 (F-919, F-922, F-923, F-927,
+F-931) pin activation and forbid implicit promotion; bounds prove neither physics
+nor navigation. [Contracts](runbooks/authored-worlds.md).
 
-Opt-in schema 14 saves foundation entities/clock and private player checkpoints.
-`PlayerRegistry` owns reservations/committed state independently of `PeerLab`.
-Only fresh foundation worlds are supported; schemas 1–12, preserved/imported worlds
-and native spatial actor/lifecycle/inventory composition refuse before Steam or
-sockets. Disabling the feature cannot load or downgrade schema 14. Retired
-release-bound schema 13 refuses without migration or writes, instructing operators
-to move the state directory aside. Optional [player bags](runbooks/authored-survival.md#player-inventory)
-select fresh schema 15, retaining the schema-14 context/release contract.
+Opt-in schema 14 saves foundation entities/clock and private checkpoints;
+`PlayerRegistry` retains reservations/committed state independently of PeerLab.
+Fresh foundation only: schemas 1–12, preserved/imported and native spatial
+actor/lifecycle/inventory composition refuse before Steam/sockets. Disabled
+checkpoints cannot load/downgrade player stores. Retired release-bound schema 13
+refuses load/migration/writes: move its state directory aside. Optional
+[player bags](runbooks/authored-survival.md#player-inventory) select fresh schema
+15 (local) or 16 (transfers), preserving context/release binding.
 
-Configure release/catalog, independently authored gameplay and
-`[network.authored_world]`, then add context matching hosting:
+Configure release/catalog, independent gameplay and `network.authored_world`.
+Declare stable `prospect_id`, `map_url`, `prospect_row` and `difficulty` in
+`[network.player_persistence]`, matching hosting.
 
-```toml
-[network.player_persistence]
-prospect_id = "stable-authored-workshop"
-map_url = "/Authored/Maps/Workshop"
-prospect_row = "AuthoredProspect"
-difficulty = 2
-```
+Online requires authenticated hosting; offline reopen disables networking,
+omits hosting and retains context/prepared inputs. Bind prospect id/map URL and
+digests of exact authored_gameplay bytes, spawn, authored_world, player_persistence
+and resolved initial maxima/growth row name. Changes refuse by input name;
+passwords/tickets/names are excluded. Survival omission keeps schema-14 bytes;
+enabled rates bind SHA-256 of
+`serde_json::to_vec(("authored_player_rules_v1", declaration, rates, actual_tick_hz))`.
+Transfers wrap the base digest with
+`("authored_player_inventory_transfers_v1", true, 16_u32, 2_u32, base_digest)`;
+false keeps it exact. Clock binds authored_world (F-1183; authored only).
+Release build/version/checksum record provenance at `player_store_reopened`,
+never compared. [Operations](runbooks/authored-survival.md).
 
-Online requires authenticated hosting. Offline reopen disables networking, omits
-hosting and retains the player context and prepared inputs.
+Checkpoints store `D_CharacterGrowth` names resolved at open; missing rows/indices
+>255 refuse, unrelated catalog churn does not. No wire/biome handles persist:
+pawns use biome 0, rejecting other checkpoint values.
 
-A store binds prospect id/map URL and digests of exact `network.authored_gameplay`
-bytes, `network.spawn`, `network.authored_world`, `[network.player_persistence]`
-and resolved initial maxima/growth row name. Changed inputs refuse by name;
-passwords/tickets/names are excluded. [Survival](runbooks/authored-survival.md)
-omission preserves bytes/schema 14. Enabled rates bind SHA-256 of
-`serde_json::to_vec(("authored_player_rules_v1", declaration, rates, actual_tick_hz))`;
-clock settings bind the authored-world digest (F-1183; authored only). Release
-build/version/checksum are provenance at each `player_store_reopened`, never
-compared.
+Gameplay schema 1 pins catalog counts/names/order; schema 2 normalizes sparse
+named rows to installed order with independent defaults. Missing tables,
+invalid/duplicate/unknown names and ambiguous catalogs refuse. Expansion caps:
+262144 rows/8 MiB UTF-8 names, separate from 8 MiB recipe. Minimal schema-2
+generator recipes survive unrelated churn; skeleton emits schema 1. Schema 14
+binds exact recipe bytes: conversion refuses by input name, without reset/client
+qualification (F-1179).
 
-Checkpoints store `D_CharacterGrowth` names, resolved at open; missing rows/indices
-above 255 refuse. Unrelated catalog churn is harmless. No wire/biome handle is
-stored: pawns open at biome row 0; checkpoints with other values refuse.
+Authority needs accepted live tickets, Joined and matching nonnegative
+client-chosen Begin/Character slots; login strings/names/profile XP/move reports
+grant none. Retain ≤4096 records, 64/account, no eviction; one live account/slot
+attachment. Duplicates refuse until detach/timeout, sharing profile-failure counts.
+Bootstrap precedes slot validation; controller spawn/handle 19 peek uncommitted,
+pawns use checkpoints (client effects unqualified). New reservations increment
+spawn once: no cancellation refund, retries reuse it, committed reconnects use
+none. Disabled checkpoints retain legacy spawn/History/restore.
 
-Gameplay schema 1 binds catalog counts/names/order. Schema 2 normalizes sparse
-named rows to installed order, with independent defaults; missing tables,
-invalid/duplicate/unknown names and ambiguous catalogs reject. Expansion caps:
-262,144 rows/8 MiB UTF-8 names, separate from the 8 MiB recipe. The generator's
-minimal schema-2 recipe survives unrelated catalog churn; skeleton mode emits
-schema 1. Schema 14 binds exact recipe bytes: conversion refuses by input name
-without reset or client qualification (F-1179).
+Checkpoint edits preserve maxima/biome/growth and affect next pawn placement;
+bag worlds use exclusive preflight wrappers ([contract](runbooks/authored-survival.md#player-inventory)).
+Generic registry edits have test callers only. Vital projections coalesce unsent
+revisions; enqueue proves neither ACK nor publication. Detach/revocation retains state.
 
-Keys require an accepted live ticket request, Joined admission and matching
-nonnegative client-chosen Begin/Character slots. Login strings, names, profile XP
-and client move reports confer no authority. Limits: 4,096 retained records,
-64 per account, no eviction. One account/slot has one live attachment; a duplicate
-newcomer refuses until detach/timeout, using shared profile-failure counters.
-
-Bootstrap precedes slot validation. Controller spawn/handle 19 use an uncommitted
-peek; the pawn uses its checkpoint. Client effects remain unqualified.
-New reservations commit one spawn counter increment; cancellation gets no refund,
-retries reuse it and committed reconnects
-consume none. Disabling checkpoints retains legacy spawn/History/restore.
-
-`PlayerRegistry::edit` has only test callers: checkpoint/CAS edits preserve
-maxima/biome/growth; schema 15 uses the exclusive world wrapper. Vital projection
-coalesces unsent revisions; enqueue proves neither ACK nor disk publication.
-Placement affects the next pawn open. Detach/revocation retains committed state.
-
-Leave cutoffs, writer pinning, cancellation, completion and barriers:
-[operations](runbooks/authored-survival.md#checkpoint-leave).
-Default-off `network.authored_controller_leave` needs authenticated checkpoints and
+[Leave operations](runbooks/authored-survival.md#checkpoint-leave): cutoffs, writer
+pins, cancellation, completion and barriers. Default-off
+`network.authored_controller_leave` needs authenticated checkpoints and
 codec/controller/checksum binding before state/services. `player_leave` and
-`sessions.controller_leave` totals survive teardown (F-1188). Aggregate counters
-and transport ACK grant no player-record or client-menu proof.
+`sessions.controller_leave` totals survive teardown (F-1188); aggregate counters/
+transport ACK prove neither player records nor client menus.
 
-Run-only `--private-leave-proof` stays schema 14. It binds case/manager identity
-and one protected admission, rates 0/0/1 and fresh food 1..100 with valid max.
-Private receipts check cutoff/readback, raw row identity, sealed-current restart
-and actual pawn composition/admission. State-free prepare checks inputs; observe also needs
-Ready and the owner's menu report. Exit/resource release and seal precede restart.
-Sink failure is terminal; existing save receipts stand. [Operations](runbooks/native-server.md).
-No terrain, OnRep, full-save or stock-client qualification follows.
+Run-only [private leave proof](runbooks/native-server.md#network-sessions-experimental)
+requires schema 14; qualification is separate.
 
 Supplied saves may ride as one lossless opaque preserved section, carried unchanged
 into every later generation, reconstructing the verified payload byte-identically

@@ -2003,6 +2003,7 @@ pub struct PreparedPlayers {
     pub context: crate::native_players::PlayerContext,
     pub initial_vitals: CharacterVitals,
     pub inventory: Option<crate::native_player_inventory::CompiledPlayerInventoryRecipe>,
+    pub inventory_mode: crate::native_player_inventory::PlayerInventoryMode,
     /// The active release, recorded in the store as provenance only.
     pub release: crate::experimental::release::ReleasePin,
 }
@@ -2013,11 +2014,21 @@ pub fn fresh_player_snapshot(
     match players {
         Some(players) => crate::simulation::WorldSnapshot {
             schema_version: if players.inventory.is_some() {
-                crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+                players.inventory_mode.snapshot_schema()
             } else {
                 crate::simulation::SNAPSHOT_SCHEMA_PLAYERS
             },
-            player_inventory: players.inventory.as_ref().map(|i| i.empty()),
+            player_inventory: players
+                .inventory
+                .as_ref()
+                .map(|i| match players.inventory_mode {
+                    crate::native_player_inventory::PlayerInventoryMode::LocalV1 => {
+                        i.empty().into()
+                    }
+                    crate::native_player_inventory::PlayerInventoryMode::TransfersV2 => {
+                        i.empty_v2().into()
+                    }
+                }),
             // prepare_run validated this release; were it invalid, the missing
             // checkpoints would fail snapshot validation before any state opens.
             native_players: crate::native_players::PlayerSnapshot::fresh(
@@ -2041,7 +2052,10 @@ pub fn open_player_snapshot(
     players: Option<&PreparedPlayers>,
 ) -> Result<Option<crate::experimental::release::ReleasePin>> {
     let schema = if players.is_some_and(|p| p.inventory.is_some()) {
-        crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+        players
+            .expect("inventory configured")
+            .inventory_mode
+            .snapshot_schema()
     } else {
         crate::simulation::SNAPSHOT_SCHEMA_PLAYERS
     };
@@ -2051,11 +2065,17 @@ pub fn open_player_snapshot(
             snapshot.player_inventory.as_ref()
         ) {
             (None, None) => true,
-            (Some(recipe), Some(stored)) => recipe.identity() == stored.recipe_id,
+            (Some(recipe), Some(stored)) => recipe.identity() == stored.recipe_id(),
             _ => false,
         },
         "network.player_inventory differs from stored recipe"
     );
+    if let (Some(prepared), Some(stored)) = (players, snapshot.player_inventory.as_ref()) {
+        ensure!(
+            prepared.inventory_mode == stored.mode(),
+            "network.player_persistence / network.player_inventory_transfers differs from stored policy"
+        );
+    }
     snapshot.validate()?;
     match (players, snapshot.native_players.as_mut()) {
         (Some(prepared), Some(stored)) => {
@@ -2099,6 +2119,10 @@ pub fn install_player_registry(
             registry.inventory_recipe_id()
                 == players.inventory.as_ref().map(|recipe| recipe.identity()),
             "network.player_inventory differs from registry activation"
+        );
+        ensure!(
+            registry.inventory_mode() == players.inventory.as_ref().map(|_| players.inventory_mode),
+            "network.player_persistence / network.player_inventory_transfers differs from registry activation"
         );
         crate::native_player_runtime::install(
             world,
@@ -2409,11 +2433,12 @@ pub fn prepare_run_with_tick_hz(
         authored_gameplay: digest(bytes),
         spawn: digest(serde_json::to_vec(&network.spawn)?),
         authored_world: digest(serde_json::to_vec(&network.authored_world)?),
-        declaration: crate::native_player_runtime::player_survival_declaration_digest(
+        declaration: crate::native_player_runtime::player_inventory_declaration_digest(
             declaration,
             network.player_consumption,
             network.player_depletion_damage,
             tick_hz,
+            network.player_inventory_transfers,
         )?,
         initial_values: digest(serde_json::to_vec(&resolved_values)?),
     };
@@ -2424,7 +2449,18 @@ pub fn prepare_run_with_tick_hz(
         growth_rows,
     )?;
     crate::native_players::PlayerSnapshot::fresh(context.clone(), &profile.pin)?;
+    let inventory_mode = if network.player_inventory_transfers {
+        crate::native_player_inventory::PlayerInventoryMode::TransfersV2
+    } else {
+        crate::native_player_inventory::PlayerInventoryMode::LocalV1
+    };
+    if let Some(recipe) = &inventory
+        && network.player_inventory_transfers
+    {
+        crate::native_inventory::player_inventory_v2_charge(&recipe.empty_v2(), 8)?;
+    }
     let players = PreparedPlayers {
+        inventory_mode,
         context,
         initial_vitals,
         inventory,

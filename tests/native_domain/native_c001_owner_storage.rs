@@ -394,7 +394,7 @@ fn every_future_discriminator_wins_over_corruption_and_missing_sidecars() {
             json!([{"value":{"type":"i32","value":0}}]);
         *wire.pointer_mut(path).unwrap() = if path == "/schema_version" {
             // One past the current (player) schema.
-            (icarus_bevy::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY + 1).into()
+            (icarus_bevy::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS + 1).into()
         } else if path.ends_with("_format")
             || path == "/native_owner_import/format"
             || path == "/preserved_prospect/encoding"

@@ -99,3 +99,6 @@ mod native_players;
 
 #[path = "native_domain/native_player_inventory.rs"]
 mod native_player_inventory;
+
+#[path = "native_domain/native_player_transfer.rs"]
+mod native_player_transfer;
