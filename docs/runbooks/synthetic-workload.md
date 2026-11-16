@@ -93,7 +93,9 @@ deny success. Retain receipts; no production-loop/client qualification.
 Schema15: `authored-player-inventory` checks sparse bags, conservation, revisions
 and allocation;
 `authored-player-consumables` checks format-2 Use, coupled vitals/bag changes,
-stale retries and fractional restart. Both use a literal oracle and the exact
+stale retries and fractional restart.
+`authored-player-depletion` adds health loss; each cycle needs new Use and damage ACKs.
+All use a literal oracle and the exact
 writer's leave cutoff. Consumable cycles wait for a new Use-bearing ACK before
 arming interruption. Bounds: 1–4 cycles, 240s workload, 64 MiB output,
 3 GiB available-RAM start floor; apply external CPU/memory limits.

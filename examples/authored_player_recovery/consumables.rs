@@ -6,7 +6,7 @@ use icarus_bevy::native_player_inventory::{PlayerConsumableV2, PlayerInventoryRe
 pub(super) const PROTOCOL: &str = "authored_player_consumable_recovery_v1";
 const RECIPE_ID: &str = "b7e1f6e8079c3e92d3e587eef4714a65b6ffd202374ca59dfe145c42fe9abb9a";
 
-fn recipe() -> PlayerInventoryRecipeV2 {
+pub(super) fn recipe() -> PlayerInventoryRecipeV2 {
     PlayerInventoryRecipeV2 {
         format: 2,
         consumables: vec![PlayerConsumableV2 {
@@ -53,7 +53,7 @@ fn recipe() -> PlayerInventoryRecipeV2 {
         ],
     }
 }
-fn recipe_identity() -> Result<String> {
+pub(super) fn recipe_identity() -> Result<String> {
     let mut bytes = b"authored-player-inventory-recipe-v2\0".to_vec();
     bytes.extend(serde_json::to_vec(&recipe())?);
     ensure!(
