@@ -69,6 +69,9 @@ pub struct NetworkConfig {
     /// Independent integer vital units per simulated second; requires checkpoints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_consumption: Option<crate::native_player_runtime::ConsumptionConfig>,
+    /// Opt-in authored health loss while needs are empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_depletion_damage: Option<crate::native_player_runtime::DepletionDamageConfig>,
     /// Explicit bounded Steam hosting; absent retains the loopback lab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosting: Option<crate::native_hosting::HostingConfig>,
@@ -183,6 +186,7 @@ impl Default for NetworkConfig {
             player_inventory: None,
             authored_controller_leave: false,
             player_consumption: None,
+            player_depletion_damage: None,
             hosting: None,
             authored_world: None,
             enabled: false,
@@ -257,6 +261,13 @@ impl NetworkConfig {
             !self.authored_controller_leave || self.player_persistence.is_some(),
             "network.authored_controller_leave requires player persistence"
         );
+        if let Some(damage) = self.player_depletion_damage {
+            damage.validate()?;
+            ensure!(
+                self.player_consumption.is_some() && self.player_persistence.is_some(),
+                "player depletion damage requires player consumption and persistence"
+            );
+        }
         if let Some(consumption) = self.player_consumption {
             consumption.validate()?;
             ensure!(

@@ -7,6 +7,10 @@ use icarus_bevy::{
 
 pub(super) fn validate_config(config: &ServerConfig) -> Result<()> {
     ensure!(
+        config.network.player_depletion_damage.is_none(),
+        "private leave proof refuses depletion damage"
+    );
+    ensure!(
         config.network.player_inventory.is_none(),
         "private leave proof requires schema 14"
     );
@@ -90,6 +94,25 @@ mod inventory_refusal_tests {
         assert_eq!(
             validate_config(&config).unwrap_err().to_string(),
             "private leave proof requires schema 14"
+        );
+    }
+}
+
+#[cfg(test)]
+mod depletion_refusal_tests {
+    use super::*;
+    #[test]
+    fn depletion_damage_is_refused_before_proof_setup() {
+        let mut config = ServerConfig::default();
+        config.network.player_depletion_damage =
+            Some(icarus_bevy::native_player_runtime::DepletionDamageConfig {
+                oxygen: 0,
+                water: 0,
+                food: 1,
+            });
+        assert_eq!(
+            validate_config(&config).unwrap_err().to_string(),
+            "private leave proof refuses depletion damage"
         );
     }
 }

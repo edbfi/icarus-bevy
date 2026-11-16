@@ -65,11 +65,10 @@ A complete profile carries protocol values; its build id selects none.
   framing checks and bounds 149/27/8 (F-1015, F-1016, M-1197); output is metadata
   only, unknown components opaque. Active 3.0.36 retains none of these.
 - Controller `selected_controller_v1` binds identity/pin/versions/bounds.
-  F-1197's conditional codec (M-1498 to M-1501) permits an explicit default-off
-  experiment; metadata grants no dispatch. F-1188 requires current exact pinned
-  cutoffs, cancel suppression and reliable admission/ACK; obsolete state cannot
-  replace the current cutoff. Live archive/cache/OnRep/menu behavior, coverage and
-  original durability remain unproved.
+  F-1197's conditional codec (M-1498 to M-1501) grants no dispatch; the
+  [default-off leave experiment](runbooks/authored-survival.md#checkpoint-leave)
+  follows F-1188. Live archive/cache/OnRep/menu behavior, coverage and original
+  durability remain unproved.
 - Historical profiles under `tests/fixtures/releases/` are loaded explicitly
   with `ReleaseProfile::fixture` or `fixture_path`. No release gets a fixture
   automatically; an active fixture, where present, must equal the pin.
@@ -162,13 +161,12 @@ maxima/biome/growth; schema 15 uses the exclusive world wrapper. Vital projectio
 coalesces unsent revisions; enqueue proves neither ACK nor disk publication.
 Placement affects the next pawn open. Detach/revocation retains committed state.
 
-[Authored leave](runbooks/authored-survival.md#checkpoint-leave) pins exact writer
-contents before completion and fixed-prefix ACK/detach. Cancel suppresses an
-unadmitted completion while retaining the frozen obligation. Detached pending/
-failed barriers remain. Default-off `network.authored_controller_leave` needs
-authenticated checkpoints and codec/controller/checksum binding before state/services.
-`player_leave` and `sessions.controller_leave` totals survive teardown (F-1188).
-Aggregate counters and transport ACK grant no player-record or client-menu proof.
+Leave cutoffs, writer pinning, cancellation, completion and barriers:
+[operations](runbooks/authored-survival.md#checkpoint-leave).
+Default-off `network.authored_controller_leave` needs authenticated checkpoints and
+codec/controller/checksum binding before state/services. `player_leave` and
+`sessions.controller_leave` totals survive teardown (F-1188). Aggregate counters
+and transport ACK grant no player-record or client-menu proof.
 
 Run-only `--private-leave-proof` stays schema 14. It binds case/manager identity
 and one protected admission, rates 0/0/1 and fresh food 1..100 with valid max.
