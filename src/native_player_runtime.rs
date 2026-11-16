@@ -1855,8 +1855,7 @@ pub fn apply_player_inventory_action(
         projection.player_id == request.player_id,
         "player inventory authority refused"
     );
-    let (prepared, outcome) =
-        crate::native_player_inventory::prepare_offline(&generation, request)?;
+    let (prepared, outcome) = crate::native_player_inventory::prepare_owned(generation, request)?;
     if outcome == crate::native_inventory::InventoryActionOutcomeV1::Applied {
         let players = prepared.native_players.expect("preflight players");
         let inventory = prepared.player_inventory.expect("preflight inventory");

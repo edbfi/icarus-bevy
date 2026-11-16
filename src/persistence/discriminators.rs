@@ -8,6 +8,7 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 enum Kind {
     Format(u32),
     ExactFormat(u32),
+    ExactFormats(&'static [u32]),
     Enum(&'static [&'static str]),
 }
 
@@ -152,10 +153,9 @@ pub(super) fn header(bytes: &[u8]) -> anyhow::Result<bool> {
 
 impl Probe<'_> {
     fn non_integer_format(&mut self) {
-        *self.future |= self
-            .rules
-            .iter()
-            .any(|r| r.path.is_empty() && matches!(r.kind, Kind::ExactFormat(_)));
+        *self.future |= self.rules.iter().any(|r| {
+            r.path.is_empty() && matches!(r.kind, Kind::ExactFormat(_) | Kind::ExactFormats(_))
+        });
     }
     fn children(&self, key: &str) -> Vec<Rule> {
         self.rules
@@ -221,6 +221,9 @@ impl<'de> Visitor<'de> for Probe<'_> {
                 && match r.kind {
                     Kind::Format(current) => value > u64::from(current),
                     Kind::ExactFormat(current) => value != u64::from(current),
+                    Kind::ExactFormats(accepted) => {
+                        !accepted.iter().any(|v| value == u64::from(*v))
+                    }
                     Kind::Enum(_) => false,
                 }
         });
@@ -292,7 +295,7 @@ pub(super) fn player_inventory(bytes: &[u8]) -> anyhow::Result<()> {
         bytes,
         rules![
             "player_inventory/format" => Kind::ExactFormat(1),
-            "player_inventory/recipe/format" => Kind::ExactFormat(1),
+            "player_inventory/recipe/format" => Kind::ExactFormats(&[1, 2]),
         ],
     )
 }
@@ -684,6 +687,14 @@ mod tests {
                 Kind::Format(current) | Kind::ExactFormat(current) => {
                     assert_eq!(case.accepted, [json!(current)], "{}", case.path);
                 }
+                Kind::ExactFormats(accepted) => {
+                    assert_eq!(
+                        case.accepted,
+                        accepted.iter().map(|v| json!(v)).collect::<Vec<_>>(),
+                        "{}",
+                        case.path
+                    );
+                }
                 Kind::Enum(accepted) => {
                     let variants: BTreeSet<_> = case
                         .accepted
@@ -842,5 +853,68 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod player_recipe_versions {
+    use super::*;
+    #[test]
+    fn exact_recipe_set_scans_every_integer_and_noninteger_occurrence() {
+        for accepted in [1, 2] {
+            player_inventory(
+                format!(
+                    "{{\"player_inventory\":{{\"format\":1,\"recipe\":{{\"format\":{accepted}}}}}}}"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        }
+        for invalid in [
+            "0",
+            "3",
+            "-1",
+            "1.0",
+            "2.0",
+            "null",
+            "true",
+            "\"2\"",
+            "[]",
+            "{}",
+            "4294967296",
+        ] {
+            for future_first in [false, true] {
+                for parent in [false, true] {
+                    let pair = if parent {
+                        let bad = format!("\"recipe\":{{\"format\":{invalid}}}");
+                        let good = "\"recipe\":{\"format\":2}";
+                        if future_first {
+                            format!("{bad},{good}")
+                        } else {
+                            format!("{good},{bad}")
+                        }
+                    } else {
+                        let pair = if future_first {
+                            format!("\"format\":{invalid},\"format\":2")
+                        } else {
+                            format!("\"format\":2,\"format\":{invalid}")
+                        };
+                        format!("\"recipe\":{{{pair}}}")
+                    };
+                    let text = format!("{{\"player_inventory\":{{\"format\":1,{pair}}}}}");
+                    assert!(
+                        player_inventory(text.as_bytes())
+                            .unwrap_err()
+                            .is::<super::super::UnsupportedSchema>(),
+                        "{text}"
+                    );
+                }
+            }
+        }
+        assert!(
+            player_inventory(br#"{"player_inventory":{"format":2,"recipe":{"format":2}}}"#)
+                .unwrap_err()
+                .is::<super::super::UnsupportedSchema>()
+        );
     }
 }

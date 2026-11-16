@@ -74,18 +74,18 @@ Transport ACK and authored tests prove neither full player-save nor client menus
 
 ## Player inventory
 
-Set `network.player_inventory = "authored-bags.json"` before store creation.
-`check-config` is shape-only: it neither loads nor validates this recipe; `run` does.
-Omission retains schema 14; changed/enabled/removed recipes refuse mismatched
-stores. Strict JSON format 1: `items` (key/stack_limit), `inventories` (slot rules),
-owner-free `starter` (inventory/requested_slot/item/count). Use independent values.
-Canonical item/inventory/eligibility order binds the digest; starter order binds routing.
+Set `network.player_inventory` before store creation; omission keeps schema 14.
+`check-config` checks shape; `run` loads the recipe. Recipe changes refuse reopen;
+use a fresh store, with no migration. V1 requires `format`, `items`,
+`inventories`, owner-free `starter`. V2 adds nonempty `consumables`:
+item/oxygen/water/food are required. Gains are authored integers 0..=10000000,
+at least one positive per item; unknown/duplicate items refuse.
+Example: `config/player-inventory-consumables.example.json`.
+Canonical item/inventory/eligibility/effect order binds identity; starter order
+binds routing. V1 bytes/digest stay unchanged.
 
-Schema 15 issues once per sparse player ID; detach/reconnect retains bags and each
-player's starter conservation/consumed totals. Player/bag CAS, aggregate revision
-and monotonic stack IDs are separate. Exclusive world wrappers preflight all live
-edits/activation; registry bypasses and private proof refuse. Leave pins only that
-player's exact state while others mutate.
+Player/bag CAS, aggregate revision and stack IDs differ (F-1200). World wrappers preflight edits/activation;
+registry bypasses and private proof refuse. Leave pins each record/bag.
 
 With the server stopped:
 
@@ -94,16 +94,19 @@ icarus-server apply-player-inventory --data-dir STATE --request PRIVATE.json --d
 icarus-server apply-player-inventory --data-dir STATE --request PRIVATE.json
 ```
 
-Request and owner must be named-field JSON objects, never positional arrays;
-unknown fields refuse. Request: `player_id`, `expected_player_revision`,
-`expected_bag_revision`, `action`. Actions: move/split/merge/consume/place_overflow.
-Endpoints name matching `owner: {"player_id": ID, "incarnation": 1}`,
-inventory and stack_id or slot.
-Overflow slot null appends. Private regular requests: ≤64 KiB, no symlink components.
-Existing-store exclusive lock spans load/save; only Applied saves. Dry-run/NoChange/
-rejection preserve bytes. Success prints SaveReceipt; errors print none.
-Reopen before retry: publication can be uncertain.
+Named JSON objects only; unknown fields refuse. Request: `player_id`,
+`expected_player_revision`, `expected_bag_revision`, `action`. Actions:
+move/split/merge/consume/place_overflow; format-2 `use` takes only `source`.
+Endpoints: matching `owner: {"player_id": ID, "incarnation": 1}`, inventory,
+stack_id or slot. Overflow slot null appends. Use consumes one item and caps
+oxygen/water/food at their maxima atomically. All-full Use checks source/CAS,
+then returns NoChange without consumption/revisions; raw consume has no vital effect.
+Health does not gate Use.
+
+Regular requests: ≤64 KiB, no symlink components. The lock spans load/save;
+only Applied saves. Dry-run/NoChange/rejection preserve bytes. Success prints
+SaveReceipt; errors print none. Reopen before retry after uncertain publication.
 
 Caps: 4 MiB recipe, 16 MiB encoded inventory, 65,536 stacks, 64 MiB generation.
-The 64 MiB inventory charge reserves eight aggregate copies/128 baseline pins;
-admission can fail below logical caps. No stock dispatch, import, trade or removal.
+Graph charge reserves eight copies/128 baseline pins; admission can fail below
+logical caps. No stock dispatch, import, trade or removal.
