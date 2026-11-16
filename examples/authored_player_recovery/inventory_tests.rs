@@ -243,22 +243,42 @@ fn every_ack_and_lost_acknowledged_fallback_are_checked() -> Result<()> {
         });
     }
     drop(store);
-    assert_eq!(verify(directory.path(), &acks)?["resumed_tick"], 17);
+    assert_eq!(
+        verify(InventoryMode::Raw, directory.path(), &acks)?["resumed_tick"],
+        17
+    );
     // Generation 2 can be committed without its ACK surviving a crash. The
     // next process starts there and acknowledges generation 3.
     let gap = vec![acks[0].clone(), acks[2].clone()];
-    assert_eq!(verify(directory.path(), &gap)?["acknowledgements"], 2);
-    assert!(verify(directory.path(), &[acks[0].clone(), acks[0].clone()]).is_err());
-    assert!(verify(directory.path(), &[acks[2].clone(), acks[0].clone()]).is_err());
+    assert_eq!(
+        verify(InventoryMode::Raw, directory.path(), &gap)?["acknowledgements"],
+        2
+    );
+    assert!(
+        verify(
+            InventoryMode::Raw,
+            directory.path(),
+            &[acks[0].clone(), acks[0].clone()]
+        )
+        .is_err()
+    );
+    assert!(
+        verify(
+            InventoryMode::Raw,
+            directory.path(),
+            &[acks[2].clone(), acks[0].clone()]
+        )
+        .is_err()
+    );
     let mut bad = acks.clone();
     bad[0].digest = "0".repeat(64);
-    assert!(verify(directory.path(), &bad).is_err());
-    assert!(verify(directory.path(), &[]).is_err());
+    assert!(verify(InventoryMode::Raw, directory.path(), &bad).is_err());
+    assert!(verify(InventoryMode::Raw, directory.path(), &[]).is_err());
     fs::write(
         directory.path().join("snapshot-3.json"),
         b"authored corruption fixture",
     )?;
-    assert!(verify(directory.path(), &acks).is_err());
+    assert!(verify(InventoryMode::Raw, directory.path(), &acks).is_err());
     Ok(())
 }
 
@@ -272,7 +292,14 @@ fn exact_new_submission_is_required_for_same_tick_leave() -> Result<()> {
     let frozen = capture(app.world_mut())?;
     let mut writer = CheckpointWriter::spawn(SnapshotStore::open(directory.path())?)?;
     let mut pending = None;
-    submit(&mut app, &mut writer, 0, &mut pending, None)?;
+    submit(
+        InventoryMode::Raw,
+        &mut app,
+        &mut writer,
+        0,
+        &mut pending,
+        None,
+    )?;
     let revision = frozen
         .native_players
         .as_ref()
@@ -306,11 +333,12 @@ fn exact_new_submission_is_required_for_same_tick_leave() -> Result<()> {
     let old = writer
         .finish_before(app.world_mut(), deadline)?
         .context("old receipt")?;
-    matched(&old, &pending, 0)?;
+    matched(InventoryMode::Raw, &old, &pending, 0)?;
     assert_eq!(leave_phase(&app)?, LeavePhase::Pending);
     let generation = old.generation;
     pending = None;
     submit(
+        InventoryMode::Raw,
         &mut app,
         &mut writer,
         generation,
@@ -320,7 +348,7 @@ fn exact_new_submission_is_required_for_same_tick_leave() -> Result<()> {
     let final_receipt = writer
         .finish_before(app.world_mut(), deadline)?
         .context("final receipt")?;
-    matched(&final_receipt, &pending, generation)?;
+    matched(InventoryMode::Raw, &final_receipt, &pending, generation)?;
     assert_eq!(
         leave_phase(&app)?,
         LeavePhase::Durable {
@@ -353,6 +381,7 @@ fn mismatched_receipt_and_deadline_cannot_acknowledge_or_settle() -> Result<()> 
     let mut generation = 0;
     assert!(
         acknowledge(
+            InventoryMode::Raw,
             &options,
             SaveReceipt {
                 generation: 1,
@@ -368,6 +397,7 @@ fn mismatched_receipt_and_deadline_cannot_acknowledge_or_settle() -> Result<()> 
     pending.as_mut().unwrap().digest = "0".repeat(64);
     assert!(
         acknowledge(
+            InventoryMode::Raw,
             &options,
             SaveReceipt {
                 generation: 1,
@@ -382,6 +412,7 @@ fn mismatched_receipt_and_deadline_cannot_acknowledge_or_settle() -> Result<()> 
     assert!(pending.is_some());
     assert!(
         matched(
+            InventoryMode::Raw,
             &SaveReceipt {
                 generation: 1,
                 tick: 0
@@ -398,7 +429,17 @@ fn mismatched_receipt_and_deadline_cannot_acknowledge_or_settle() -> Result<()> 
         .request_leave(key(A)?, A, 1, now, Duration::from_secs(3))?;
     let mut writer = CheckpointWriter::spawn(SnapshotStore::open(directory.path())?)?;
     pending = None;
-    assert!(submit(&mut app, &mut writer, 0, &mut pending, Some(now)).is_err());
+    assert!(
+        submit(
+            InventoryMode::Raw,
+            &mut app,
+            &mut writer,
+            0,
+            &mut pending,
+            Some(now)
+        )
+        .is_err()
+    );
     assert!(pending.is_none());
     assert!(!matches!(leave_phase(&app)?, LeavePhase::Durable { .. }));
     assert!(
@@ -423,11 +464,19 @@ fn shutdown_settles_exact_cutoff_and_aborts_after_bad_old_receipt() -> Result<()
         let mut writer = CheckpointWriter::spawn(SnapshotStore::open(directory.path())?)?;
         let mut generation = 0;
         let mut pending = None;
-        submit(&mut app, &mut writer, generation, &mut pending, None)?;
+        submit(
+            InventoryMode::Raw,
+            &mut app,
+            &mut writer,
+            generation,
+            &mut pending,
+            None,
+        )?;
         if corrupt {
             pending.as_mut().unwrap().tick += 1;
         }
         let result = shutdown(
+            InventoryMode::Raw,
             &options(directory.path()),
             &mut app,
             &mut writer,
@@ -461,22 +510,77 @@ fn shutdown_settles_exact_cutoff_and_aborts_after_bad_old_receipt() -> Result<()
 }
 
 #[test]
-fn explicit_mode_selection_retains_legacy_cli() {
-    for inventory in [false, true] {
+fn explicit_mode_selection_retains_legacy_cli_and_rejects_conflicts_before_store() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let missing = directory.path().join("must-not-exist");
+    let path = missing.to_str().context("UTF-8 temp path")?;
+    for flag in [None, Some("--inventory"), Some("--consumables")] {
         for command in [
             vec!["init"],
             vec!["run"],
             vec!["verify", "--receipts", "receipts.json"],
         ] {
-            let mut args = vec!["fixture", "--data-dir", "state", "--run-id", "unit"];
-            if inventory {
-                args.push("--inventory");
+            let mut args = vec!["fixture", "--data-dir", path, "--run-id", "unit"];
+            if let Some(flag) = flag {
+                args.push(flag);
             }
-            args.extend(command);
-            assert_eq!(
-                Invocation::try_parse_from(args).unwrap().inventory,
-                inventory
-            );
+            args.extend(command.clone());
+            let parsed = Invocation::try_parse_from(args)?;
+            assert_eq!(parsed.inventory, flag == Some("--inventory"));
+            assert_eq!(parsed.consumables, flag == Some("--consumables"));
+            if let Command::Run {
+                duration_seconds,
+                save_millis,
+            } = parsed.options.command
+            {
+                assert_eq!((duration_seconds, save_millis), (12, 1000));
+            }
+            for flags in [
+                ["--inventory", "--consumables"],
+                ["--consumables", "--inventory"],
+            ] {
+                let mut bad = vec!["fixture", "--data-dir", path, "--run-id", "unit"];
+                bad.extend(flags);
+                bad.extend(command.clone());
+                assert!(Invocation::try_parse_from(bad).is_err());
+            }
+            assert!(!missing.exists());
         }
     }
+    assert_eq!(
+        InventoryMode::Raw.protocol(),
+        "authored_player_inventory_recovery_v1"
+    );
+    assert_eq!(
+        InventoryMode::Consumables.protocol(),
+        "authored_player_consumable_recovery_v1"
+    );
+    assert_eq!(crate::PROTOCOL, "authored_player_recovery_v1");
+    Ok(())
+}
+
+#[test]
+fn raw_v1_identity_and_consume_bytes_remain_pinned() -> Result<()> {
+    assert_eq!(
+        recipe_identity()?,
+        "c55ed2bb1d35955b835decfbf43bd36d0689530a8e11da4e71fdf3920da4e273"
+    );
+    // The old six-tick workload and V1 typed serialization retain this identity.
+    let mut app = open_app(&seed()?)?;
+    for _ in 0..9 {
+        step(&mut app)?;
+    }
+    assert_eq!(
+        check(&capture(app.world_mut())?)?,
+        "24f816c13debeb439ca53d583d9e7f7c93a82e882b6ab3ad9ae8a5c7bcf267ec"
+    );
+    let v = app
+        .world()
+        .resource::<PlayerRegistry>()
+        .projection(A)
+        .unwrap()
+        .checkpoint
+        .vitals;
+    assert_eq!([v.oxygen, v.water, v.food], [999_998, 999_997, 999_994]);
+    Ok(())
 }

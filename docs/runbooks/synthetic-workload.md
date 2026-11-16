@@ -1,7 +1,7 @@
 # Synthetic durability workload
 
-`synthetic_soak` mutates authored entity positions through Bevy's fixed schedule
-and asynchronous writer, then reopens the fresh store to compare the full snapshot.
+`synthetic_soak` uses Bevy's fixed schedule and asynchronous writer to mutate
+authored entity positions, then reopens its fresh store and checks the full snapshot.
 
 ```bash
 cargo run --release --locked --example synthetic_soak -- \
@@ -30,25 +30,24 @@ cargo run --release --locked --example synthetic_soak -- --compressed \
   --data-dir work/soak-new --duration-seconds 259200 --entities 100000 --save-seconds 10
 ```
 
-Compression covers operation counts, retained growth per operation and
-counter ranges. It does not cover behavior paced by the wall clock (the
-production loop's autosave timer, peer idle timeouts), real-time deadline
-pressure between ticks, or storage, page-cache and host effects that accrue
-over days; pair it with a short paced run for those.
+Compression covers operation counts, retained growth per operation and counter
+ranges. It excludes production-loop wall-clock autosaves, peer idle timeouts,
+deadline pressure between ticks and storage/page-cache/host effects over days;
+pair it with a short paced run.
 
-These authored workloads prove neither compatibility nor official-server speedup.
-The [plan](../linux-dedicated-server-plan.md) requires heavy ICARUS worlds.
+Compatibility and official-server speedups require the
+[plan](../linux-dedicated-server-plan.md)'s heavy ICARUS worlds.
 
-For repeated synchronous persistence measurements, use:
+Synchronous persistence:
 
 ```bash
 cargo run --release --locked --example snapshot_bench -- \
   --data-dir work/bench-new --entities 100000 --iterations 20
 ```
 
-The benchmark makes two warm-up commits, times each save/load and checks all
-recovered state. Repeat fresh runs at matched population, affinity and build
-settings; retain baseline binaries and hashes under ignored `work/`.
+The benchmark makes two warm-up commits, times save/load and checks all recovered
+state. Repeat fresh runs at matched population, affinity and build settings;
+retain baseline binaries and hashes under ignored `work/`.
 `/usr/bin/time -v` includes verification allocations: its peak RSS must not be
 labeled steady-state server memory.
 
@@ -61,24 +60,23 @@ cargo run --release --locked --example native_lifecycle_bench -- \
   --data-dir work/CASE/new-store --operations preflight --slots 3,64,256,1024
 ```
 
-Run operations separately to avoid starving later ones within the shared
-20-second limit. Defaults: three repetitions, five warm-ups, 50 samples. JSON
-retains raw times and incomplete markers. Enforce external CPU, memory and
-hard-time limits. Action timings include capture and preflight; load reuses the
-open store. Match fixtures, builds and affinity; exclude incomplete cases from
-comparisons.
+Run each operation separately within the shared 20s limit to avoid starving
+later ones. Defaults: three repetitions, five warm-ups, 50 samples. JSON retains
+raw times and incomplete markers. Enforce external CPU/memory/deadline limits.
+Action times include capture/preflight; load reuses the open store. Compare only
+complete cases with matched fixtures, builds and affinity.
 
-Recovery alternates SIGKILL/SIGTERM around autosaves after one commit.
-Default mode checks 10,000 authored entities, checksum, clock and acknowledgements.
-Use fresh output; retain provenance/logs. No mode qualifies
-filesystem fault points, disk exhaustion or physical power loss.
+Recovery alternates SIGKILL/SIGTERM near autosaves after a commit. The default
+10,000-entity fixture checks checksums, clock and ACKs. Use fresh output and retain
+provenance/logs; no mode qualifies I/O fault points, disk exhaustion or physical
+power loss.
 
 ```bash
 python3 tools/native_recovery_campaign.py --binary target/release/icarus-server \
   --output work/recovery-new --cycles 24
 ```
 
-Build and run the schema14 fixture:
+Schema14 fixture:
 
 ```bash
 python3 tools/cargo_guard.py build --locked --example authored_player_recovery
@@ -88,13 +86,16 @@ python3 tools/native_recovery_campaign.py --mode authored-player \
 ```
 
 The 7 Hz schema14 fixture covers active/detached players (F-1183). Fresh Rust
-verification checks typed state and eight resumed steps; no downtime debit.
+verification checks typed state and eight resumed steps without downtime debit.
 Identity/collection/exit failures, 20s child deadlines or the 30 GiB disk floor
-deny success; retain all receipts. No production-loop/client qualification.
+deny success. Retain receipts; no production-loop/client qualification.
 
-Use `--mode authored-player-inventory` for schema15 (1–4 cycles). Its independent
-oracle checks sparse bags, conservation, revisions and allocation; graceful stop
-checks the exact writer's leave cutoff. Bounds: 240s workload, 64 MiB output,
-3 GiB available-RAM start floor. Apply external CPU/memory limits.
-F-1200/M-1516 records four authored recovery cycles; no production/client or
-physical-power-loss qualification.
+Schema15: `authored-player-inventory` checks sparse bags, conservation, revisions
+and allocation;
+`authored-player-consumables` checks format-2 Use, coupled vitals/bag changes,
+stale retries and fractional restart. Both use a literal oracle and the exact
+writer's leave cutoff. Consumable cycles wait for a new Use-bearing ACK before
+arming interruption. Bounds: 1–4 cycles, 240s workload, 64 MiB output,
+3 GiB available-RAM start floor; apply external CPU/memory limits.
+F-1200: M-1516 covers four raw-inventory cycles; M-1519 covers four Use cycles.
+Shared decoder; no production/client, power-loss or performance qualification.
