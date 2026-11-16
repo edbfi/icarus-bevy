@@ -76,11 +76,11 @@ def main() -> None:
     _ = parser.add_argument("--binary", type=Path, required=True)
     _ = parser.add_argument("--output", type=Path, required=True)
     _ = parser.add_argument("--cycles", type=int, default=argparse.SUPPRESS)
-    _ = parser.add_argument("--mode", choices=("entities", "authored-player", "authored-player-inventory"), default="entities")
+    _ = parser.add_argument("--mode", choices=("entities", *PLAYER_FIXTURES), default="entities")
     args = parser.parse_args(namespace=Arguments())
     if "cycles" not in vars(args):
-        args.cycles = 4 if args.mode == "authored-player-inventory" else 24
-    maximum = 4 if args.mode == "authored-player-inventory" else 120
+        args.cycles = 4 if PLAYER_FIXTURES.get(args.mode) in BOUNDED_FIXTURES else 24
+    maximum = 4 if PLAYER_FIXTURES.get(args.mode) in BOUNDED_FIXTURES else 120
     if not 1 <= args.cycles <= maximum:
         parser.error(f"cycles must be 1..{maximum}")
     if args.mode != "entities":
@@ -182,6 +182,7 @@ def main() -> None:
 
 PLAYER_PROTOCOL = "authored_player_recovery_v1"
 INVENTORY_PROTOCOL = "authored_player_inventory_recovery_v1"
+CONSUMABLE_PROTOCOL = "authored_player_consumable_recovery_v1"
 DISK_FLOOR = 30 * 1024**3
 MAX_OUTPUT = 1024 * 1024
 MAX_CASE_BYTES = 64 * 1024**2
@@ -198,6 +199,9 @@ class PlayerFixture:
 
 PLAYER_FIXTURE = PlayerFixture("authored-player", PLAYER_PROTOCOL, 14)
 INVENTORY_FIXTURE = PlayerFixture("authored-player-inventory", INVENTORY_PROTOCOL, 15, ("--inventory",))
+CONSUMABLE_FIXTURE = PlayerFixture("authored-player-consumables", CONSUMABLE_PROTOCOL, 15, ("--consumables",))
+BOUNDED_FIXTURES = (INVENTORY_FIXTURE, CONSUMABLE_FIXTURE)
+PLAYER_FIXTURES = {fixture.mode: fixture for fixture in (PLAYER_FIXTURE, *BOUNDED_FIXTURES)}
 
 
 @dataclass(frozen=True)
@@ -256,6 +260,7 @@ def validate_player_cycle(records: list[JsonObject], run_id: str, pid: int, code
         raise RuntimeError("missing or incorrect restored state")
     phase = "running"
     shutdown_acknowledgements = 0
+    use_covered = False
     acknowledgements: list[PlayerState] = []
     previous = before
     for record in records[1:]:
@@ -265,6 +270,8 @@ def validate_player_cycle(records: list[JsonObject], run_id: str, pid: int, code
             if state.generation != previous.generation + 1 or state.tick < previous.tick:
                 raise RuntimeError("acknowledged generation/tick sequence differs")
             acknowledgements.append(state)
+            if phase == "running" and (state.tick + 2) // 7 > (before.tick + 2) // 7:
+                use_covered = True
             if phase == "stopping":
                 shutdown_acknowledgements += 1
                 if shutdown_acknowledgements > 2:
@@ -274,12 +281,14 @@ def validate_player_cycle(records: list[JsonObject], run_id: str, pid: int, code
             phase = "stopping"
         elif event == "completed" and phase == "stopping" and shutdown_acknowledgements:
             if ((integer_field(record, "generation"), integer_field(record, "tick")) != (previous.generation, previous.tick)
-                    or ("digest" in record and string_field(record, "digest") != previous.digest)):
+                    or ((fixture == CONSUMABLE_FIXTURE or "digest" in record)
+                        and string_field(record, "digest") != previous.digest)):
                 raise RuntimeError("final output disagrees with writer receipt")
             phase = "completed"
         else:
             raise RuntimeError(f"unexpected or early final authored output: {event}")
-    if not acknowledgements or code != (-signal.SIGKILL if abrupt else 0) or (not abrupt and phase != "completed"):
+    if (not acknowledgements or code != (-signal.SIGKILL if abrupt else 0) or (not abrupt and phase != "completed")
+            or (fixture == CONSUMABLE_FIXTURE and not use_covered)):
         raise RuntimeError(f"incomplete authored cycle or unexpected child exit: {code}")
     return acknowledgements
 
@@ -291,7 +300,7 @@ def player_guard(directory: Path, deadline: float, fixture: PlayerFixture = PLAY
         raise RuntimeError("authored controller disk floor reached")
     if sum(p.stat().st_size for p in directory.glob("*.stderr")) > MAX_OUTPUT:
         raise RuntimeError("authored child stderr exceeds bound")
-    if fixture == INVENTORY_FIXTURE:
+    if fixture in BOUNDED_FIXTURES:
         size = 0
         for path in directory.rglob("*"):
             try:
@@ -351,6 +360,7 @@ def player_child(binary: Path, output: Path, state: Path, label: str, command: l
             reader.start()
             abrupt = cycle % 2 == 0
             stop_at: float | None = None
+            live_previous: PlayerState | None = None
             eof = False
             while not eof:
                 player_guard(output, deadline, fixture)
@@ -367,7 +377,24 @@ def player_child(binary: Path, output: Path, state: Path, label: str, command: l
                         if before is not None:
                             if event in ("completed", "stopping") and not signalled:
                                 raise RuntimeError("authored process emitted early final output")
-                            if event == "save_committed" and stop_at is None:
+                            if fixture == CONSUMABLE_FIXTURE:
+                                if event == "started":
+                                    if live_previous is not None or PlayerState.parse(record) != before:
+                                        raise RuntimeError("missing or incorrect restored state")
+                                    live_previous = before
+                                elif event == "save_committed":
+                                    state_ack = PlayerState.parse(record)
+                                    if (live_previous is None or state_ack.generation != live_previous.generation + 1
+                                            or state_ack.tick < live_previous.tick):
+                                        raise RuntimeError("acknowledged generation/tick sequence differs")
+                                    live_previous = state_ack
+                                    # Each restart needs a newly acknowledged Use;
+                                    # U(t) counts Uses completed through tick t.
+                                    if stop_at is None and (state_ack.tick + 2) // 7 > (before.tick + 2) // 7:
+                                        stop_at = time.monotonic() + (0.96, 0.99, 1.02, 1.05)[cycle % 4]
+                                elif event not in ("stopping", "completed"):
+                                    raise RuntimeError(f"unexpected authored output: {event}")
+                            elif event == "save_committed" and stop_at is None:
                                 # Relative to observing one commit, cross the next
                                 # autosave window. No deterministic I/O interception.
                                 stop_at = time.monotonic() + (0.96, 0.99, 1.02, 1.05)[cycle % 4]
@@ -463,15 +490,15 @@ def authored_campaign(args: Arguments) -> None:
     failure: str | None = None
     completed_cycles = 0
     children: list[tuple[str, int, int]] = []
-    fixture = INVENTORY_FIXTURE if args.mode == INVENTORY_FIXTURE.mode else PLAYER_FIXTURE
-    deadline = time.monotonic() + 240 if fixture == INVENTORY_FIXTURE else float("inf")
+    fixture = PLAYER_FIXTURES.get(args.mode)
+    deadline = time.monotonic() + 240 if fixture in BOUNDED_FIXTURES else float("inf")
     try:
-        maximum = 4 if fixture == INVENTORY_FIXTURE else 120
-        if args.mode not in (PLAYER_FIXTURE.mode, INVENTORY_FIXTURE.mode) or not 1 <= args.cycles <= maximum:
+        maximum = 4 if fixture in BOUNDED_FIXTURES else 120
+        if fixture is None or not 1 <= args.cycles <= maximum:
             raise RuntimeError(f"invalid authored mode or cycles (1..{maximum})")
         state = output / "state"
         player_guard(output, deadline, fixture)
-        if fixture == INVENTORY_FIXTURE:
+        if fixture in BOUNDED_FIXTURES:
             player_preflight()
         provenance: JsonObject = {"mode": fixture.mode, "binary": str(binary),
             "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -522,6 +549,12 @@ def authored_campaign(args: Arguments) -> None:
                         or integer_field(verified[0], "acknowledgements") != len(acknowledgements)
                         or integer_field(verified[0], "schema") != fixture.schema):
                     raise RuntimeError("typed verifier final receipt differs")
+                if fixture == CONSUMABLE_FIXTURE:
+                    if (integer_field(verified[0], "uses") != (selected.tick + 2) // 7
+                            or integer_field(verified[0], "resumed_uses") != (selected.tick + 10) // 7
+                            or not 0 <= integer_field(verified[0], "day_sample_bits") <= 0xFFFF_FFFF
+                            or not 0 <= integer_field(verified[0], "resumed_day_sample_bits") <= 0xFFFF_FFFF):
+                        raise RuntimeError("typed verifier consumable receipt differs")
                 result: JsonObject = {"cycle": cycle, "termination": "SIGKILL" if cycle % 2 == 0 else "SIGTERM",
                     "child_pid": pid, "child_exit": code, "verifier_pid": verifier_pid, "verifier_exit": verify_exit,
                     "selected": selected.receipt(), "acknowledged": len(acks), "state_verified": True}
@@ -540,7 +573,7 @@ def authored_campaign(args: Arguments) -> None:
         raise
     finally:
         _ = (output / "controller.json").write_text(json.dumps({"controller_exit": controller_exit,
-            "complete": controller_exit == 0, "error": failure, "mode": fixture.mode,
+            "complete": controller_exit == 0, "error": failure, "mode": args.mode,
             "completed_cycles": completed_cycles, "expected_cycles": args.cycles,
             "children": len(children), "expected_children": 1 + 2 * args.cycles}) + "\n")
 
