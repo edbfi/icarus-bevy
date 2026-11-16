@@ -630,7 +630,11 @@ fn verify(directory: &Path, acknowledgements: &[Acknowledgement]) -> Result<serd
     let mut previous = (0, 0);
     for ack in acknowledgements {
         ensure!(
-            ack.generation == previous.0 + 1 && ack.tick >= previous.1,
+            // A killed process may commit a generation before emitting its ACK.
+            // The next process resumes that selected state, leaving a legitimate
+            // gap in the cumulative ACK history. Per-run continuity is checked
+            // by the controller; every received historical ACK still checks here.
+            ack.generation > previous.0 && ack.tick >= previous.1,
             "acknowledgements out of order"
         );
         ensure!(

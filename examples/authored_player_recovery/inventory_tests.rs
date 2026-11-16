@@ -240,6 +240,12 @@ fn every_ack_and_lost_acknowledged_fallback_are_checked() -> Result<()> {
     }
     drop(store);
     assert_eq!(verify(directory.path(), &acks)?["resumed_tick"], 17);
+    // Generation 2 can be committed without its ACK surviving a crash. The
+    // next process starts there and acknowledges generation 3.
+    let gap = vec![acks[0].clone(), acks[2].clone()];
+    assert_eq!(verify(directory.path(), &gap)?["acknowledgements"], 2);
+    assert!(verify(directory.path(), &[acks[0].clone(), acks[0].clone()]).is_err());
+    assert!(verify(directory.path(), &[acks[2].clone(), acks[0].clone()]).is_err());
     let mut bad = acks.clone();
     bad[0].digest = "0".repeat(64);
     assert!(verify(directory.path(), &bad).is_err());
