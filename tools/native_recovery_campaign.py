@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass
 import signal
 import stat
+import struct
 import subprocess
 import threading
 import time
@@ -183,6 +184,7 @@ def main() -> None:
 PLAYER_PROTOCOL = "authored_player_recovery_v1"
 INVENTORY_PROTOCOL = "authored_player_inventory_recovery_v1"
 CONSUMABLE_PROTOCOL = "authored_player_consumable_recovery_v1"
+DEPLETION_PROTOCOL = "authored_player_depletion_recovery_v1"
 DISK_FLOOR = 30 * 1024**3
 MAX_OUTPUT = 1024 * 1024
 MAX_CASE_BYTES = 64 * 1024**2
@@ -200,13 +202,39 @@ class PlayerFixture:
 PLAYER_FIXTURE = PlayerFixture("authored-player", PLAYER_PROTOCOL, 14)
 INVENTORY_FIXTURE = PlayerFixture("authored-player-inventory", INVENTORY_PROTOCOL, 15, ("--inventory",))
 CONSUMABLE_FIXTURE = PlayerFixture("authored-player-consumables", CONSUMABLE_PROTOCOL, 15, ("--consumables",))
-BOUNDED_FIXTURES = (INVENTORY_FIXTURE, CONSUMABLE_FIXTURE)
+DEPLETION_FIXTURE = PlayerFixture("authored-player-depletion", DEPLETION_PROTOCOL, 15, ("--depletion",))
+BOUNDED_FIXTURES = (INVENTORY_FIXTURE, CONSUMABLE_FIXTURE, DEPLETION_FIXTURE)
 PLAYER_FIXTURES = {fixture.mode: fixture for fixture in (PLAYER_FIXTURE, *BOUNDED_FIXTURES)}
 
 
 def consumable_uses(tick: int) -> int:
     """Completed Uses in the fixture's seven-tick schedule."""
     return (tick + 2) // 7
+
+
+def depletion_uses(tick: int) -> int:
+    """Completed Uses before steps 8, 15, 22, ...; step zero has none."""
+    return 0 if tick == 0 else (tick - 1) // 7
+
+
+def depletion_health(tick: int) -> int:
+    """Literal authored health oracle, independent of production mutation."""
+    return 1_000_000 - 8 * (tick // 7) - (0, 0, 0, 1, 2, 4, 5, 8)[tick % 7]
+
+
+def depletion_day_sample_bits(tick: int) -> int:
+    """Independent 480-minute, 11-second/day clock at 7 Hz, rounded once."""
+    if not 0 <= tick <= 100_000:
+        raise RuntimeError("depletion day tick bound exceeded")
+    minute = ((36_960 + 1440 * (tick % 77)) % 110_880) / 77
+    return int.from_bytes(struct.pack("!f", minute), "big")
+
+
+def player_progress_covered(start: int, acknowledged: int, fixture: PlayerFixture) -> bool:
+    if fixture == DEPLETION_FIXTURE:
+        return (depletion_uses(acknowledged) > depletion_uses(start)
+                and depletion_health(acknowledged) < depletion_health(start))
+    return consumable_uses(acknowledged) > consumable_uses(start)
 
 
 @dataclass(frozen=True)
@@ -275,7 +303,7 @@ def validate_player_cycle(records: list[JsonObject], run_id: str, pid: int, code
             if state.generation != previous.generation + 1 or state.tick < previous.tick:
                 raise RuntimeError("acknowledged generation/tick sequence differs")
             acknowledgements.append(state)
-            if phase == "running" and consumable_uses(state.tick) > consumable_uses(before.tick):
+            if phase == "running" and player_progress_covered(before.tick, state.tick, fixture):
                 use_covered = True
             if phase == "stopping":
                 shutdown_acknowledgements += 1
@@ -286,14 +314,14 @@ def validate_player_cycle(records: list[JsonObject], run_id: str, pid: int, code
             phase = "stopping"
         elif event == "completed" and phase == "stopping" and shutdown_acknowledgements:
             if ((integer_field(record, "generation"), integer_field(record, "tick")) != (previous.generation, previous.tick)
-                    or ((fixture == CONSUMABLE_FIXTURE or "digest" in record)
+                    or ((fixture in (CONSUMABLE_FIXTURE, DEPLETION_FIXTURE) or "digest" in record)
                         and string_field(record, "digest") != previous.digest)):
                 raise RuntimeError("final output disagrees with writer receipt")
             phase = "completed"
         else:
             raise RuntimeError(f"unexpected or early final authored output: {event}")
     if (not acknowledgements or code != (-signal.SIGKILL if abrupt else 0) or (not abrupt and phase != "completed")
-            or (fixture == CONSUMABLE_FIXTURE and not use_covered)):
+            or (fixture in (CONSUMABLE_FIXTURE, DEPLETION_FIXTURE) and not use_covered)):
         raise RuntimeError(f"incomplete authored cycle or unexpected child exit: {code}")
     return acknowledgements
 
@@ -382,7 +410,7 @@ def player_child(binary: Path, output: Path, state: Path, label: str, command: l
                         if before is not None:
                             if event in ("completed", "stopping") and not signalled:
                                 raise RuntimeError("authored process emitted early final output")
-                            if fixture == CONSUMABLE_FIXTURE:
+                            if fixture in (CONSUMABLE_FIXTURE, DEPLETION_FIXTURE):
                                 if event == "started":
                                     if live_previous is not None or PlayerState.parse(record) != before:
                                         raise RuntimeError("missing or incorrect restored state")
@@ -393,9 +421,9 @@ def player_child(binary: Path, output: Path, state: Path, label: str, command: l
                                             or state_ack.tick < live_previous.tick):
                                         raise RuntimeError("acknowledged generation/tick sequence differs")
                                     live_previous = state_ack
-                                    # Each restart needs a newly acknowledged Use;
-                                    # U(t) counts Uses completed through tick t.
-                                    if stop_at is None and consumable_uses(state_ack.tick) > consumable_uses(before.tick):
+                                    # Coverage is relative to this process's start;
+                                    # depletion also needs newly acknowledged damage.
+                                    if stop_at is None and player_progress_covered(before.tick, state_ack.tick, fixture):
                                         stop_at = time.monotonic() + (0.96, 0.99, 1.02, 1.05)[cycle % 4]
                                 elif event not in ("stopping", "completed"):
                                     raise RuntimeError(f"unexpected authored output: {event}")
@@ -560,6 +588,12 @@ def authored_campaign(args: Arguments) -> None:
                             or not 0 <= integer_field(verified[0], "day_sample_bits") <= 0xFFFF_FFFF
                             or not 0 <= integer_field(verified[0], "resumed_day_sample_bits") <= 0xFFFF_FFFF):
                         raise RuntimeError("typed verifier consumable receipt differs")
+                if fixture == DEPLETION_FIXTURE:
+                    for prefix, tick in (("", selected.tick), ("resumed_", selected.tick + 8)):
+                        if (integer_field(verified[0], prefix + "health") != depletion_health(tick)
+                                or integer_field(verified[0], prefix + "uses") != depletion_uses(tick)
+                                or integer_field(verified[0], prefix + "day_sample_bits") != depletion_day_sample_bits(tick)):
+                            raise RuntimeError("typed verifier depletion receipt differs")
                 result: JsonObject = {"cycle": cycle, "termination": "SIGKILL" if cycle % 2 == 0 else "SIGTERM",
                     "child_pid": pid, "child_exit": code, "verifier_pid": verifier_pid, "verifier_exit": verify_exit,
                     "selected": selected.receipt(), "acknowledged": len(acks), "state_verified": True}
