@@ -40,8 +40,11 @@ mod inventory;
 #[derive(Parser)]
 struct Invocation {
     /// Select the independent schema-15 inventory fixture on every invocation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "consumables")]
     inventory: bool,
+    /// Select the independent schema-15 consumable fixture on every invocation.
+    #[arg(long, conflicts_with = "inventory")]
+    consumables: bool,
     #[command(flatten)]
     options: Options,
 }
@@ -49,6 +52,7 @@ struct Invocation {
 enum Fixture {
     Players,
     Inventory,
+    Consumables,
 }
 
 #[derive(Parser)]
@@ -486,6 +490,8 @@ fn main() -> Result<()> {
     let invocation = Invocation::parse();
     let fixture = if invocation.inventory {
         Fixture::Inventory
+    } else if invocation.consumables {
+        Fixture::Consumables
     } else {
         Fixture::Players
     };
@@ -497,8 +503,14 @@ fn main() -> Result<()> {
     let stopping = Arc::new(AtomicBool::new(false));
     let signal = stopping.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))?;
-    if let Fixture::Inventory = fixture {
-        return inventory::execute(&options, &stopping);
+    match fixture {
+        Fixture::Inventory => {
+            return inventory::execute(&options, &stopping, inventory::InventoryMode::Raw);
+        }
+        Fixture::Consumables => {
+            return inventory::execute(&options, &stopping, inventory::InventoryMode::Consumables);
+        }
+        Fixture::Players => {}
     }
     match &options.command {
         Command::Init => {

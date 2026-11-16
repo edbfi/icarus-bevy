@@ -30,25 +30,22 @@ cargo run --release --locked --example synthetic_soak -- --compressed \
   --data-dir work/soak-new --duration-seconds 259200 --entities 100000 --save-seconds 10
 ```
 
-Compression covers operation counts, retained growth per operation and
-counter ranges. It does not cover behavior paced by the wall clock (the
-production loop's autosave timer, peer idle timeouts), real-time deadline
-pressure between ticks, or storage, page-cache and host effects that accrue
-over days; pair it with a short paced run for those.
+Compression covers operation counts, growth per operation and counter ranges.
+It excludes wall-clock autosaves/peer timeouts, deadline pressure and
+storage/page-cache/host effects over days; pair it with a short paced run.
 
 These authored workloads prove neither compatibility nor official-server speedup.
 The [plan](../linux-dedicated-server-plan.md) requires heavy ICARUS worlds.
 
-For repeated synchronous persistence measurements, use:
+Synchronous persistence measurements:
 
 ```bash
 cargo run --release --locked --example snapshot_bench -- \
   --data-dir work/bench-new --entities 100000 --iterations 20
 ```
 
-The benchmark makes two warm-up commits, times each save/load and checks all
-recovered state. Repeat fresh runs at matched population, affinity and build
-settings; retain baseline binaries and hashes under ignored `work/`.
+The benchmark warms twice, times save/load and checks recovered state. Match
+population, affinity and build settings; retain binaries and hashes under `work/`.
 `/usr/bin/time -v` includes verification allocations: its peak RSS must not be
 labeled steady-state server memory.
 
@@ -92,9 +89,11 @@ verification checks typed state and eight resumed steps; no downtime debit.
 Identity/collection/exit failures, 20s child deadlines or the 30 GiB disk floor
 deny success; retain all receipts. No production-loop/client qualification.
 
-Use `--mode authored-player-inventory` for schema15 (1–4 cycles). Its independent
-oracle checks sparse bags, conservation, revisions and allocation; graceful stop
-checks the exact writer's leave cutoff. Bounds: 240s workload, 64 MiB output,
-3 GiB available-RAM start floor. Apply external CPU/memory limits.
-F-1200/M-1516 records four authored recovery cycles; no production/client or
-physical-power-loss qualification.
+Schema15 modes: `authored-player-inventory` checks raw actions;
+`authored-player-consumables` checks format-2 Use, coupled vitals/bag changes,
+stale retries and fractional restart. Both use a literal oracle and the exact
+writer's leave cutoff. Consumable cycles wait for a new Use-bearing ACK before
+arming interruption. Bounds: 1–4 cycles, 240s workload, 64 MiB output,
+3 GiB available-RAM start floor; apply external CPU/memory limits.
+F-1200/M-1516 covers four raw-inventory cycles; consumable recovery is not yet
+measured. No production/client or physical-power-loss qualification.

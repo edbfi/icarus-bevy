@@ -19,6 +19,53 @@ use icarus_bevy::{
 };
 use std::collections::BTreeSet;
 
+#[path = "consumables.rs"]
+mod consumables;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum InventoryMode {
+    Raw,
+    Consumables,
+}
+impl InventoryMode {
+    fn protocol(self) -> &'static str {
+        match self {
+            Self::Raw => PROTOCOL,
+            Self::Consumables => consumables::PROTOCOL,
+        }
+    }
+    fn seed(self) -> Result<WorldSnapshot> {
+        match self {
+            Self::Raw => seed(),
+            Self::Consumables => consumables::seed(),
+        }
+    }
+    fn expected(self, tick: u64) -> Result<WorldSnapshot> {
+        match self {
+            Self::Raw => expected(tick),
+            Self::Consumables => consumables::expected(tick),
+        }
+    }
+    fn check(self, snapshot: &WorldSnapshot) -> Result<String> {
+        match self {
+            Self::Raw => check(snapshot),
+            Self::Consumables => consumables::check(snapshot),
+        }
+    }
+    fn open_app(self, snapshot: &WorldSnapshot) -> Result<App> {
+        match self {
+            Self::Raw => open_app(snapshot),
+            Self::Consumables => consumables::open_app(snapshot),
+        }
+    }
+    fn step(self, app: &mut App) -> Result<()> {
+        match self {
+            Self::Raw => step(app),
+            Self::Consumables => consumables::step(app),
+        }
+    }
+}
+
 const PROTOCOL: &str = "authored_player_inventory_recovery_v1";
 const A: u64 = 2;
 const B: u64 = 3;
@@ -321,6 +368,10 @@ fn check(snapshot: &WorldSnapshot) -> Result<String> {
         "typed inventory snapshot differs at tick {}",
         snapshot.tick
     );
+    check_conservation(snapshot)?;
+    Ok(digest(&serde_json::to_vec(snapshot)?))
+}
+fn check_conservation(snapshot: &WorldSnapshot) -> Result<()> {
     // Explicit owner-local conservation and global identity checks supplement
     // full equality and the storage decoder's shared shape validation.
     let inventory = snapshot
@@ -365,7 +416,7 @@ fn check(snapshot: &WorldSnapshot) -> Result<String> {
             );
         }
     }
-    Ok(digest(&serde_json::to_vec(snapshot)?))
+    Ok(())
 }
 fn app_from(snapshot: &WorldSnapshot) -> Result<App> {
     let mut app = build_app(&config(), snapshot)?;
@@ -380,7 +431,15 @@ fn seed() -> Result<WorldSnapshot> {
         player_inventory: Some(CompiledPlayerInventoryRecipe::compile(recipe())?.empty()),
         ..Default::default()
     };
-    let mut app = app_from(&empty)?;
+    let snapshot = populate_seed(empty, &config())?;
+    check(&snapshot)?;
+    Ok(snapshot)
+}
+fn populate_seed(empty: WorldSnapshot, config: &ServerConfig) -> Result<WorldSnapshot> {
+    let mut app = build_app(config, &empty)?;
+    drop(empty);
+    app.finish();
+    app.cleanup();
     {
         let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
         ensure!(
@@ -400,9 +459,7 @@ fn seed() -> Result<WorldSnapshot> {
         );
         activate_player(app.world_mut(), id)?;
     }
-    let snapshot = capture(app.world_mut())?;
-    check(&snapshot)?;
-    Ok(snapshot)
+    capture(app.world_mut())
 }
 fn open_app(snapshot: &WorldSnapshot) -> Result<App> {
     check(snapshot)?;
@@ -413,6 +470,7 @@ fn open_app(snapshot: &WorldSnapshot) -> Result<App> {
         .context("players missing")?
         .open(&fixture_context()?, &release())?;
     let mut app = app_from(&opened)?;
+    drop(opened);
     ensure!(
         capture(app.world_mut())? == *snapshot,
         "inventory reopen changed state"
@@ -602,7 +660,11 @@ fn step(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn load(store: &SnapshotStore, directory: &Path) -> Result<(u64, WorldSnapshot)> {
+fn load(
+    mode: InventoryMode,
+    store: &SnapshotStore,
+    directory: &Path,
+) -> Result<(u64, WorldSnapshot)> {
     let loaded = store.load()?.context("committed inventory missing")?;
     let manifest: Manifest = serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)?;
     ensure!(manifest.schema_version == 1, "manifest schema");
@@ -615,18 +677,22 @@ fn load(store: &SnapshotStore, directory: &Path) -> Result<(u64, WorldSnapshot)>
         selected.number > 0 && selected.sha256.len() == 64,
         "selected generation invalid"
     );
-    check(&loaded.snapshot)?;
+    mode.check(&loaded.snapshot)?;
     Ok((selected.number, loaded.snapshot))
 }
-fn verify(directory: &Path, acknowledgements: &[Acknowledgement]) -> Result<serde_json::Value> {
+fn verify(
+    mode: InventoryMode,
+    directory: &Path,
+    acknowledgements: &[Acknowledgement],
+) -> Result<serde_json::Value> {
     ensure!(
         !acknowledgements.is_empty(),
         "acknowledgement history missing"
     );
     let store = SnapshotStore::open_existing(directory)?;
-    let (generation, snapshot) = load(&store, directory)?;
+    let (generation, snapshot) = load(mode, &store, directory)?;
     ensure!(snapshot.tick <= MAX_TICK - 8, "verifier headroom exceeded");
-    let hash = check(&snapshot)?;
+    let hash = mode.check(&snapshot)?;
     let mut previous = (0, 0);
     for ack in acknowledgements {
         ensure!(
@@ -642,7 +708,7 @@ fn verify(directory: &Path, acknowledgements: &[Acknowledgement]) -> Result<serd
             "acknowledged state lost"
         );
         ensure!(
-            digest(&serde_json::to_vec(&expected(ack.tick)?)?) == ack.digest,
+            digest(&serde_json::to_vec(&mode.expected(ack.tick)?)?) == ack.digest,
             "acknowledged digest differs"
         );
         if ack.generation == generation {
@@ -657,21 +723,34 @@ fn verify(directory: &Path, acknowledgements: &[Acknowledgement]) -> Result<serd
         generation <= previous.0 + 1,
         "selection beyond single pending submission"
     );
-    let mut app = open_app(&snapshot)?;
+    let mut app = mode.open_app(&snapshot)?;
+    let selected_tick = snapshot.tick;
+    drop(snapshot);
     for _ in 0..8 {
-        step(&mut app)?;
+        mode.step(&mut app)?;
     }
     let resumed = capture(app.world_mut())?;
-    check(&resumed)?;
-    Ok(
-        json!({"generation":generation,"tick":snapshot.tick,"digest":hash,"schema":15,
-        "resumed_tick":resumed.tick,"acknowledgements":acknowledgements.len()}),
-    )
+    mode.check(&resumed)?;
+    let mut result = json!({"generation":generation,"tick":selected_tick,"digest":hash,"schema":15,
+        "resumed_tick":resumed.tick,"acknowledgements":acknowledgements.len()});
+    if matches!(mode, InventoryMode::Consumables) {
+        result["uses"] = json!(consumables::uses(selected_tick));
+        result["resumed_uses"] = json!(consumables::uses(resumed.tick));
+        result["day_sample_bits"] = json!(consumables::check_day(selected_tick)?);
+        result["resumed_day_sample_bits"] = json!(consumables::check_day(resumed.tick)?);
+    }
+    Ok(result)
 }
-fn emit(options: &Options, event: &str, mut fields: serde_json::Value) -> Result<()> {
-    super::emit_protocol(options, PROTOCOL, event, &mut fields)
+fn emit(
+    mode: InventoryMode,
+    options: &Options,
+    event: &str,
+    mut fields: serde_json::Value,
+) -> Result<()> {
+    super::emit_protocol(options, mode.protocol(), event, &mut fields)
 }
 fn matched(
+    mode: InventoryMode,
     receipt: &SaveReceipt,
     pending: &Option<Acknowledgement>,
     generation: u64,
@@ -686,24 +765,26 @@ fn matched(
         "inventory writer receipt mismatch"
     );
     ensure!(
-        ack.digest == digest(&serde_json::to_vec(&expected(ack.tick)?)?),
+        ack.digest == digest(&serde_json::to_vec(&mode.expected(ack.tick)?)?),
         "pending inventory digest differs"
     );
     Ok(ack.clone())
 }
 fn acknowledge(
+    mode: InventoryMode,
     options: &Options,
     receipt: SaveReceipt,
     pending: &mut Option<Acknowledgement>,
     generation: &mut u64,
 ) -> Result<()> {
-    let ack = matched(&receipt, pending, *generation)?;
-    emit(options, "save_committed", serde_json::to_value(&ack)?)?;
+    let ack = matched(mode, &receipt, pending, *generation)?;
+    emit(mode, options, "save_committed", serde_json::to_value(&ack)?)?;
     *generation = receipt.generation;
     *pending = None;
     Ok(())
 }
 fn submit(
+    mode: InventoryMode,
     app: &mut App,
     writer: &mut CheckpointWriter,
     generation: u64,
@@ -711,11 +792,13 @@ fn submit(
     deadline: Option<Instant>,
 ) -> Result<()> {
     ensure!(pending.is_none(), "pending inventory receipt overwritten");
-    let snapshot = capture(app.world_mut())?;
-    let ack = Acknowledgement {
-        generation: generation + 1,
-        tick: snapshot.tick,
-        digest: check(&snapshot)?,
+    let ack = {
+        let snapshot = capture(app.world_mut())?;
+        Acknowledgement {
+            generation: generation + 1,
+            tick: snapshot.tick,
+            digest: mode.check(&snapshot)?,
+        }
     };
     // No mutation between this checked capture and the writer's exclusive capture.
     match deadline {
@@ -734,6 +817,7 @@ fn leave_phase(app: &App) -> Result<LeavePhase> {
         .phase)
 }
 fn shutdown(
+    mode: InventoryMode,
     options: &Options,
     app: &mut App,
     writer: &mut CheckpointWriter,
@@ -742,9 +826,9 @@ fn shutdown(
 ) -> Result<()> {
     let now = Instant::now();
     let deadline = now + Duration::from_secs(3);
-    emit(options, "stopping", json!({}))?;
+    emit(mode, options, "stopping", json!({}))?;
     let frozen = capture(app.world_mut())?;
-    let hash = check(&frozen)?;
+    let hash = mode.check(&frozen)?;
     let revision = frozen
         .native_players
         .as_ref()
@@ -768,17 +852,17 @@ fn shutdown(
     );
     ensure!(capture(app.world_mut())? == frozen, "leave changed cutoff");
     if let Some(receipt) = writer.finish_before(app.world_mut(), deadline)? {
-        acknowledge(options, receipt, pending, generation)?;
+        acknowledge(mode, options, receipt, pending, generation)?;
     }
     ensure!(
         pending.is_none() && leave_phase(app)? == LeavePhase::Pending,
         "old submission settled new leave"
     );
-    submit(app, writer, *generation, pending, Some(deadline))?;
+    submit(mode, app, writer, *generation, pending, Some(deadline))?;
     let receipt = writer
         .finish_before(app.world_mut(), deadline)?
         .context("final inventory receipt missing")?;
-    matched(&receipt, pending, *generation)?;
+    matched(mode, &receipt, pending, *generation)?;
     ensure!(
         leave_phase(app)?
             == (LeavePhase::Durable {
@@ -798,7 +882,7 @@ fn shutdown(
         .context("durable leave missing")?;
     ensure!(status.revision == revision, "cutoff revision changed");
     let tick = receipt.tick;
-    acknowledge(options, receipt, pending, generation)?;
+    acknowledge(mode, options, receipt, pending, generation)?;
     {
         let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
         ensure!(registry.detach(A), "final detach failed");
@@ -814,25 +898,36 @@ fn shutdown(
         "settlement changed cutoff"
     );
     emit(
+        mode,
         options,
         "completed",
         json!({"generation":generation,"tick":tick,"digest":hash}),
     )
 }
-fn run(options: &Options, duration: u64, save_millis: u64, stopping: &AtomicBool) -> Result<()> {
+fn run(
+    mode: InventoryMode,
+    options: &Options,
+    duration: u64,
+    save_millis: u64,
+    stopping: &AtomicBool,
+) -> Result<()> {
     ensure!(
         (3..=12).contains(&duration) && (100..=5000).contains(&save_millis),
         "invalid inventory workload bounds"
     );
     let store = SnapshotStore::open_existing(&options.data_dir)?;
-    let (mut generation, snapshot) = load(&store, &options.data_dir)?;
-    ensure!(snapshot.tick <= MAX_TICK - 8, "run headroom exceeded");
-    let mut app = open_app(&snapshot)?;
-    emit(
-        options,
-        "started",
-        json!({"generation":generation,"tick":snapshot.tick,"digest":check(&snapshot)?}),
-    )?;
+    let (mut generation, mut app) = {
+        let (generation, snapshot) = load(mode, &store, &options.data_dir)?;
+        ensure!(snapshot.tick <= MAX_TICK - 8, "run headroom exceeded");
+        let app = mode.open_app(&snapshot)?;
+        emit(
+            mode,
+            options,
+            "started",
+            json!({"generation":generation,"tick":snapshot.tick,"digest":mode.check(&snapshot)?}),
+        )?;
+        (generation, app)
+    };
     let mut writer = CheckpointWriter::spawn(store)?;
     let start = Instant::now();
     let mut next_tick = start + config().tick_interval();
@@ -840,18 +935,18 @@ fn run(options: &Options, duration: u64, save_millis: u64, stopping: &AtomicBool
     let mut pending = None;
     while !stopping.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(duration) {
         if let Some(receipt) = writer.poll(app.world_mut())? {
-            acknowledge(options, receipt, &mut pending, &mut generation)?;
+            acknowledge(mode, options, receipt, &mut pending, &mut generation)?;
         }
         if Instant::now() >= next_tick {
             ensure!(
                 app.world().resource::<SimulationClock>().tick < MAX_TICK - 8,
                 "inventory run exhausted verifier headroom"
             );
-            step(&mut app)?;
+            mode.step(&mut app)?;
             next_tick = Instant::now() + config().tick_interval();
         }
         if Instant::now() >= next_save && !writer.is_busy() {
-            submit(&mut app, &mut writer, generation, &mut pending, None)?;
+            submit(mode, &mut app, &mut writer, generation, &mut pending, None)?;
             next_save = Instant::now() + Duration::from_millis(save_millis);
         }
         thread::sleep(Duration::from_millis(2));
@@ -861,6 +956,7 @@ fn run(options: &Options, duration: u64, save_millis: u64, stopping: &AtomicBool
         "inventory workload deadline reached before stop"
     );
     shutdown(
+        mode,
         options,
         &mut app,
         &mut writer,
@@ -868,18 +964,19 @@ fn run(options: &Options, duration: u64, save_millis: u64, stopping: &AtomicBool
         &mut pending,
     )
 }
-pub(super) fn execute(options: &Options, stopping: &AtomicBool) -> Result<()> {
+pub(super) fn execute(options: &Options, stopping: &AtomicBool, mode: InventoryMode) -> Result<()> {
     match &options.command {
         Command::Init => {
             let mut store = SnapshotStore::open(&options.data_dir)?;
-            let snapshot = seed()?;
-            let hash = check(&snapshot)?;
+            let snapshot = mode.seed()?;
+            let hash = mode.check(&snapshot)?;
             let receipt = store.save_new(&snapshot)?;
             ensure!(
                 receipt.generation == 1 && receipt.tick == 0,
                 "inventory init receipt differs"
             );
             emit(
+                mode,
                 options,
                 "initialized",
                 json!({"generation":receipt.generation,"tick":receipt.tick,"digest":hash}),
@@ -888,7 +985,7 @@ pub(super) fn execute(options: &Options, stopping: &AtomicBool) -> Result<()> {
         Command::Run {
             duration_seconds,
             save_millis,
-        } => run(options, *duration_seconds, *save_millis, stopping),
+        } => run(mode, options, *duration_seconds, *save_millis, stopping),
         Command::Verify { receipts } => {
             ensure!(
                 fs::metadata(receipts)?.len() <= 1024 * 1024,
@@ -897,9 +994,10 @@ pub(super) fn execute(options: &Options, stopping: &AtomicBool) -> Result<()> {
             let acknowledgements: Vec<Acknowledgement> =
                 serde_json::from_slice(&fs::read(receipts)?)?;
             emit(
+                mode,
                 options,
                 "verified",
-                verify(&options.data_dir, &acknowledgements)?,
+                verify(mode, &options.data_dir, &acknowledgements)?,
             )
         }
     }
