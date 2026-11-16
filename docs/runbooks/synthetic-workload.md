@@ -8,22 +8,17 @@ cargo run --release --locked --example synthetic_soak -- \
   --data-dir work/soak-new --duration-seconds 7200 --entities 100000 --save-seconds 10
 ```
 
-The workload emits JSON lines on stdout and accepts up to 259,200 seconds, the
-plan's 72-hour stability run. Tick measurements cover the fixed simulation
-systems; they exclude snapshot capture and the outer loop. Save latency is
-submission-to-observation, including polling delay. Snapshot capture is measured
-separately. Every sample goes into a fixed-memory histogram (ticks at 1 µs up to
-131,072 µs; saves and captures at 100 µs up to 10 s), so memory does not grow
-with duration. Quantiles use the sorted-sample rank `floor((n - 1) * percentile /
-100)`, rounded down to the resolution, and are `null` when the rank falls past the
-histogram range; maxima are exact. Periodic RSS samples describe the live
-process. `--warmup-seconds` (default 600) selects the first status sample used as
-the growth baseline; `rss_growth_after_warmup_percent` compares it with the RSS
-just before recovery verification, whose allocations only the final `rss_kib`
-includes. No tick samples are discarded. Record CPU affinity, build commit,
-binary hash, host resources and concurrent workloads with results.
-`rss_slope_kib_per_hour` fits a least-squares line to every status sample
-after warm-up, a steadier leak signal than the two-point growth.
+JSON output covers up to 259,200 seconds (72 hours). Tick timings exclude
+snapshot capture and the outer loop; save latency includes polling delay.
+Fixed-memory histograms retain every sample: ticks at 1 µs through 131,072 µs,
+saves/captures at 100 µs through 10 s. Quantiles use rank
+`floor((n - 1) * percentile / 100)`, rounded down to resolution; out-of-range
+ranks yield `null`, while maxima are exact.
+`--warmup-seconds` (default 600) selects the first RSS baseline sample.
+`rss_growth_after_warmup_percent` ends before recovery verification; only final
+`rss_kib` includes its allocations. `rss_slope_kib_per_hour` fits all post-warm-up
+status samples by least squares. Record affinity, commit, binary hash, host
+resources and concurrent workloads.
 
 `--compressed` uses simulated time: one fixed step per unpaced update, saves
 every `--save-seconds`, awaiting in-flight saves (`save_waits`). It executes
@@ -100,4 +95,6 @@ deny success; retain all receipts. No production-loop/client qualification.
 Use `--mode authored-player-inventory` for schema15 (1–4 cycles). Its independent
 oracle checks sparse bags, conservation, revisions and allocation; graceful stop
 checks the exact writer's leave cutoff. Bounds: 240s workload, 64 MiB output,
-3 GiB available RAM. Runtime qualification is separate from fixture tests.
+3 GiB available-RAM start floor. Apply external CPU/memory limits.
+F-1200/M-1516 records four authored recovery cycles; no production/client or
+physical-power-loss qualification.

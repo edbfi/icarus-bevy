@@ -641,7 +641,3 @@ class InventoryCampaignTest(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
-
-
-if __name__ == "__main__":
-    _ = unittest.main()
