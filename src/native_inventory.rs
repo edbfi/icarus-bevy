@@ -988,6 +988,18 @@ impl CompiledInventoryContractsV1 {
             bindings,
         })
     }
+    /// Narrow a validated contract to one existing owner without recompiling
+    /// its immutable recipe. Live-owner validation still requires exact coverage.
+    pub(crate) fn for_owner(&self, id: DomainId) -> Result<Self> {
+        let class = *self
+            .bindings
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("inventory owner binding missing"))?;
+        Ok(Self {
+            snapshot: Arc::clone(&self.snapshot),
+            bindings: BTreeMap::from([(id, class)]),
+        })
+    }
     /// Bounded JSON or TOML declarations through the same strict compiler.
     pub fn parse(text: &str, catalog: &CompiledNativeCatalog) -> Result<Self> {
         ensure!(

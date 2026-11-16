@@ -639,6 +639,10 @@ fn inventory_submission_requires_exact_player_local_pin_and_complete_validation(
     super::super::activate_player(app.world_mut(), 1).unwrap();
     request(&mut app, 1, 1);
     let state = capture(app.world_mut()).unwrap();
+    assert!(matches!(
+        inventory_pin(state.player_inventory.as_ref(), u64::MAX),
+        Err(PlayerError::Missing)
+    ));
     let mut wrong = state.clone();
     let inventory = wrong.player_inventory.as_mut().unwrap();
     let stack = inventory.bags[0].inventories[0].slots[0].as_mut().unwrap();

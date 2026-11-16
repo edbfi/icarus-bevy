@@ -187,6 +187,11 @@ impl PlayerInventorySnapshotV1 {
         let mut seen = BTreeSet::new();
         let mut stacks = BTreeSet::new();
         let mut instances = 0usize;
+        let contracts = CompiledInventoryContractsV1::player_bound(
+            &self.recipe,
+            records.keys().copied(),
+            &self.recipe_id,
+        )?;
         for bag in &self.bags {
             ensure!(
                 bag.owner.incarnation == 1
@@ -197,11 +202,7 @@ impl PlayerInventorySnapshotV1 {
                     && bag.revision > 0,
                 "player inventory owner invalid"
             );
-            let contracts = CompiledInventoryContractsV1::player_bound(
-                &self.recipe,
-                [bag.owner.player_id].into_iter(),
-                &self.recipe_id,
-            )?;
+            let contracts = contracts.for_owner(DomainId(bag.owner.player_id))?;
             validate_inventory_state(
                 &contracts,
                 &local(self, bag),

@@ -102,10 +102,11 @@ Contracts: [authored worlds](runbooks/authored-worlds.md).
 
 Opt-in schema 14 saves foundation entities/clock and private player checkpoints.
 `PlayerRegistry` owns reservations/committed state independently of `PeerLab`.
-Only fresh, non-preserved foundation worlds are supported; schemas 1–12 and native
-actor/lifecycle composition refuse before services. Disabling the feature cannot
-downgrade schema 14. Retired release-bound schema 13 refuses without migration
-or writes. Optional [player bags](runbooks/authored-survival.md#player-inventory)
+Only fresh foundation worlds are supported; schemas 1–12, preserved/imported worlds
+and native spatial actor/lifecycle/inventory composition refuse before Steam or
+sockets. Disabling the feature cannot load or downgrade schema 14. Retired
+release-bound schema 13 refuses without migration or writes, instructing operators
+to move the state directory aside. Optional [player bags](runbooks/authored-survival.md#player-inventory)
 select fresh schema 15, retaining the schema-14 context/release contract.
 
 Configure release/catalog, independently authored gameplay and
@@ -151,8 +152,9 @@ and client move reports confer no authority. Limits: 4,096 retained records,
 newcomer refuses until detach/timeout, using shared profile-failure counters.
 
 Bootstrap precedes slot validation. Controller spawn/handle 19 use an uncommitted
-peek; the pawn uses its checkpoint. New reservations commit one spawn counter
-increment; cancellation gets no refund, retries reuse it and committed reconnects
+peek; the pawn uses its checkpoint. Client effects remain unqualified.
+New reservations commit one spawn counter increment; cancellation gets no refund,
+retries reuse it and committed reconnects
 consume none. Disabling checkpoints retains legacy spawn/History/restore.
 
 `PlayerRegistry::edit` has only test callers: checkpoint/CAS edits preserve
@@ -164,20 +166,22 @@ Placement affects the next pawn open. Detach/revocation retains committed state.
 contents before completion and fixed-prefix ACK/detach. Cancel suppresses an
 unadmitted completion while retaining the frozen obligation. Detached pending/
 failed barriers remain. Default-off `network.authored_controller_leave` needs
-codec/controller/checksum binding before state/services. Aggregate counters and
-transport ACK grant no player-record or client-menu proof.
+authenticated checkpoints and codec/controller/checksum binding before state/services.
+`player_leave` and `sessions.controller_leave` totals survive teardown (F-1188).
+Aggregate counters and transport ACK grant no player-record or client-menu proof.
 
 Run-only `--private-leave-proof` stays schema 14. It binds case/manager identity
 and one protected admission, rates 0/0/1 and fresh food 1..100 with valid max.
 Private receipts check cutoff/readback, raw row identity, sealed-current restart
-and actual pawn admission. State-free prepare checks inputs; observe also needs
+and actual pawn composition/admission. State-free prepare checks inputs; observe also needs
 Ready and the owner's menu report. Exit/resource release and seal precede restart.
 Sink failure is terminal; existing save receipts stand. [Operations](runbooks/native-server.md).
 No terrain, OnRep, full-save or stock-client qualification follows.
 
-Supplied saves may ride unchanged as one lossless opaque preserved section,
-reconstructing the verified payload byte-identically and written once as a
-content-addressed sidecar (F-567). Preservation grants no semantic import acceptance.
+Supplied saves may ride as one lossless opaque preserved section, carried unchanged
+into every later generation, reconstructing the verified payload byte-identically
+and written once as a content-addressed sidecar (F-567).
+Preservation grants no semantic import acceptance.
 Reverse export is not promised; rollback uses original backups. Replacement-only
 progress is not assumed transferable.
 
