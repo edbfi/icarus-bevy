@@ -95,5 +95,5 @@ stale retries and fractional restart. Both use a literal oracle and the exact
 writer's leave cutoff. Consumable cycles wait for a new Use-bearing ACK before
 arming interruption. Bounds: 1–4 cycles, 240s workload, 64 MiB output,
 3 GiB available-RAM start floor; apply external CPU/memory limits.
-F-1200/M-1516 covers four raw-inventory cycles; consumable recovery is not yet
-measured. No production/client or physical-power-loss qualification.
+F-1200: M-1516 covers four raw-inventory cycles; M-1519 covers four Use cycles.
+Shared decoder; no production/client, power-loss or performance qualification.
