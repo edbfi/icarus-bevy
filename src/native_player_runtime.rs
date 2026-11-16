@@ -2241,6 +2241,7 @@ mod depletion_damage_tests {
             assert_eq!(registry.snapshot(), before, "{failure}");
         }
         // An overflowed scheduled tick fails before a health-only mutation and Finish.
+        // At 30 Hz, oxygen damage 30 guarantees a nonzero delta on this tick.
         let mut registry = activated();
         empty_needs(&mut registry);
         let state = WorldSnapshot {
@@ -2263,7 +2264,7 @@ mod depletion_damage_tests {
                 food: 1,
             },
             Some(DepletionDamageConfig {
-                oxygen: 1,
+                oxygen: 30,
                 water: 1,
                 food: 1,
             }),
