@@ -1573,6 +1573,12 @@ fn run(
         .transpose()?;
     app.finish();
     app.cleanup();
+    let start_tick = snapshot.tick;
+    let native_schema = snapshot.schema_version;
+    // The world owns the installed state. Release startup copies before the
+    // save worker and live transactions can retain additional generations.
+    drop(snapshot);
+    drop(players);
     let mut writer = CheckpointWriter::spawn(store)?;
     let stopping = Arc::new(AtomicBool::new(false));
     let signal = Arc::clone(&stopping);
@@ -1586,7 +1592,7 @@ fn run(
     let clock = RunClock {
         compressed,
         start: Instant::now(),
-        start_tick: snapshot.tick,
+        start_tick,
         tick_hz: config.tick_hz,
     };
     let mut last_save_request = Duration::ZERO;
@@ -1604,9 +1610,9 @@ fn run(
     let run_result = (|| -> Result<()> {
         activation_result?;
         write_run_record(
-            json!({"event": "started", "tick": snapshot.tick, "tick_hz": config.tick_hz,
+            json!({"event": "started", "tick": start_tick, "tick_hz": config.tick_hz,
         "icarus_compatible": false, "gameplay_ready": false,
-        "native_schema": snapshot.schema_version, "compressed": compressed,
+        "native_schema": native_schema, "compressed": compressed,
         "network_enabled": network_address.is_some()}),
         )?;
         if let Some(address) = network_address {
