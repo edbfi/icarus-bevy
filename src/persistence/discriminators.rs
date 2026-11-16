@@ -7,7 +7,6 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 #[derive(Clone, Copy)]
 enum Kind {
     Format(u32),
-    ExactFormat(u32),
     ExactFormats(&'static [u32]),
     Enum(&'static [&'static str]),
 }
@@ -122,7 +121,7 @@ impl<'de> Visitor<'de> for &mut HeaderProbe {
                         || schema
                             == u64::from(crate::simulation::SNAPSHOT_SCHEMA_C001_SCALAR_OWNERS);
                     self.future |=
-                        schema > u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY);
+                        schema > u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS);
                 }
             } else {
                 map.next_value::<IgnoredAny>()?;
@@ -153,9 +152,10 @@ pub(super) fn header(bytes: &[u8]) -> anyhow::Result<bool> {
 
 impl Probe<'_> {
     fn non_integer_format(&mut self) {
-        *self.future |= self.rules.iter().any(|r| {
-            r.path.is_empty() && matches!(r.kind, Kind::ExactFormat(_) | Kind::ExactFormats(_))
-        });
+        *self.future |= self
+            .rules
+            .iter()
+            .any(|r| r.path.is_empty() && matches!(r.kind, Kind::ExactFormats(_)));
     }
     fn children(&self, key: &str) -> Vec<Rule> {
         self.rules
@@ -220,7 +220,6 @@ impl<'de> Visitor<'de> for Probe<'_> {
             r.path.is_empty()
                 && match r.kind {
                     Kind::Format(current) => value > u64::from(current),
-                    Kind::ExactFormat(current) => value != u64::from(current),
                     Kind::ExactFormats(accepted) => {
                         !accepted.iter().any(|v| value == u64::from(*v))
                     }
@@ -294,7 +293,7 @@ pub(super) fn player_inventory(bytes: &[u8]) -> anyhow::Result<()> {
     scan(
         bytes,
         rules![
-            "player_inventory/format" => Kind::ExactFormat(1),
+            "player_inventory/format" => Kind::ExactFormats(&[1, 2]),
             "player_inventory/recipe/format" => Kind::ExactFormats(&[1, 2]),
         ],
     )
@@ -684,7 +683,7 @@ mod tests {
         for case in cases {
             let rule = RULES.iter().find(|rule| rule.path == case.path).unwrap();
             match rule.kind {
-                Kind::Format(current) | Kind::ExactFormat(current) => {
+                Kind::Format(current) => {
                     assert_eq!(case.accepted, [json!(current)], "{}", case.path);
                 }
                 Kind::ExactFormats(accepted) => {
@@ -777,7 +776,7 @@ mod tests {
 
     #[test]
     fn authored_schema_headers_are_scanned_and_future_duplicates_are_terminal() {
-        let future = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY + 1;
+        let future = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS + 1;
         for schema in [9, 10, 11, 12] {
             assert!(header(format!("{{\"schema_version\":{schema}}}").as_bytes()).unwrap());
             for other in [9, 10, 11, 12] {
@@ -911,10 +910,6 @@ mod player_recipe_versions {
                 }
             }
         }
-        assert!(
-            player_inventory(br#"{"player_inventory":{"format":2,"recipe":{"format":2}}}"#)
-                .unwrap_err()
-                .is::<super::super::UnsupportedSchema>()
-        );
+        player_inventory(br#"{"player_inventory":{"format":2,"recipe":{"format":2}}}"#).unwrap();
     }
 }

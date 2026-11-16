@@ -90,7 +90,7 @@ fn literal_health_needs_revisions_and_two_day_periods() -> Result<()> {
             app.world().resource::<PlayerRegistry>().activated_epochs(),
             vec![A]
         );
-        let inv = snapshot.player_inventory.as_ref().unwrap();
+        let inv = snapshot.player_inventory.as_ref().unwrap().as_v1().unwrap();
         assert_eq!(
             (
                 inv.revision,
@@ -233,7 +233,7 @@ fn full_oracle_rejects_health_needs_context_recipe_and_half_uses() -> Result<()>
     }
     for field in 0..9 {
         let mut bad = good.clone();
-        let inv = bad.player_inventory.as_mut().unwrap();
+        let inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
         match field {
             0 => inv.revision += 1,
             1 => inv.bags[0].revision += 1,
@@ -256,7 +256,7 @@ fn full_oracle_rejects_health_needs_context_recipe_and_half_uses() -> Result<()>
     }
     // Quantity-only and needs-only halves remain invalid even when conserved.
     let mut bad = good.clone();
-    let inv = bad.player_inventory.as_mut().unwrap();
+    let inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
     inv.bags[0].consumed[1].count = 0;
     inv.bags[0].inventories[0].slots[0].as_mut().unwrap().count = 100_000;
     bad.validate()?;

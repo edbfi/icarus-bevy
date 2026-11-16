@@ -173,7 +173,7 @@ fn inventory_state() -> WorldSnapshot {
     WorldSnapshot {
         schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
         native_players: Some(PlayerSnapshot::empty(context)),
-        player_inventory: Some(inventory),
+        player_inventory: Some(inventory.into()),
         ..Default::default()
     }
 }
@@ -249,7 +249,15 @@ fn admitted_pawn_activation_failure_detaches_removes_and_never_issues() {
     );
     assert_eq!(capture(app.world_mut()).unwrap(), before);
     assert!(before.native_players.unwrap().is_empty());
-    assert!(before.player_inventory.unwrap().bags.is_empty());
+    assert!(
+        before
+            .player_inventory
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .bags
+            .is_empty()
+    );
 }
 
 #[test]
@@ -397,7 +405,15 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
         native_player_runtime::{activate_player, apply_player_inventory_action},
     };
     let mut state = inventory_state();
-    let PlayerInventoryRecipe::V1(r) = state.player_inventory.take().unwrap().recipe else {
+    let PlayerInventoryRecipe::V1(r) = state
+        .player_inventory
+        .take()
+        .unwrap()
+        .as_v1()
+        .unwrap()
+        .recipe
+        .clone()
+    else {
         unreachable!()
     };
     state.player_inventory = Some(
@@ -417,7 +433,8 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
             .into(),
         )
         .unwrap()
-        .empty(),
+        .empty()
+        .into(),
     );
     let mut app = build_app(&ServerConfig::default(), &state).unwrap();
     let key = PlayerKey::new(1234, 0).unwrap();
@@ -474,7 +491,13 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
     assert_eq!(lab.peers[&address].checkpoint_projection, Some(initial));
     for _ in 0..2 {
         let before = capture(app.world_mut()).unwrap();
-        let bag = &before.player_inventory.as_ref().unwrap().bags[0];
+        let bag = &before
+            .player_inventory
+            .as_ref()
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .bags[0];
         let projection = before
             .native_players
             .as_ref()
@@ -519,7 +542,15 @@ fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
     }
     let after = capture(app.world_mut()).unwrap();
     assert_eq!(
-        after.player_inventory.as_ref().unwrap().bags[0].consumed[0].count,
+        after
+            .player_inventory
+            .as_ref()
+            .unwrap()
+            .as_v1()
+            .unwrap()
+            .bags[0]
+            .consumed[0]
+            .count,
         2
     );
     assert_eq!(
@@ -620,4 +651,163 @@ fn depletion_damage_queued_revocation_wins_before_scheduled_health_loss() {
     );
     assert!(!app.world().resource::<PeerLab>().has_peer(address));
     assert!(app.world().resource::<PeerLab>().socket.0.is_none());
+}
+
+#[test]
+fn transfer_two_held_authorities_reconcile_each_queued_revocation_loss_and_stale_peer() {
+    use crate::native_player_inventory::*;
+    use crate::native_player_runtime::{activate_player, apply_player_inventory_transfer};
+    for endpoint in [1u64, 2] {
+        for kind in ["revoked", "backend_loss", "stale", "success"] {
+            let mut state = inventory_state();
+            let PlayerInventoryRecipe::V1(mut recipe) = state
+                .player_inventory
+                .take()
+                .unwrap()
+                .as_v1()
+                .unwrap()
+                .recipe
+                .clone()
+            else {
+                unreachable!()
+            };
+            recipe.inventories[0].initial_slots = 2;
+            let rule = recipe.inventories[0].slot_rules[0].clone();
+            recipe.inventories[0].slot_rules.push(rule);
+            state.schema_version = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS;
+            state.player_inventory = Some(
+                CompiledPlayerInventoryRecipe::compile(recipe)
+                    .unwrap()
+                    .empty_v2()
+                    .into(),
+            );
+            let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+            let vitals = crate::experimental::pawn_open::CharacterVitals {
+                health: 100,
+                max_health: 100,
+                stamina: 100,
+                max_stamina: 100,
+                oxygen: 100,
+                max_oxygen: 100,
+                water: 100,
+                max_water: 100,
+                food: 100,
+                max_food: 100,
+                biome_row: 0,
+                growth_row: 0,
+            };
+            let mut lab = PeerLab::prepare(PeerLabConfig::default()).unwrap();
+            lab.checkpoint_initial_vitals = Some(vitals);
+            let (auth, backend) = AuthClient::test_bridge(8);
+            lab.authenticator = Some(auth);
+            for epoch in 1..=3 {
+                let key = PlayerKey::new(1233 + epoch, 0).unwrap();
+                app.world_mut()
+                    .resource_mut::<PlayerRegistry>()
+                    .reserve(
+                        key,
+                        epoch,
+                        PlayerCheckpoint {
+                            location_cm: [0.; 3],
+                            vitals,
+                        },
+                    )
+                    .unwrap();
+                let projection = activate_player(app.world_mut(), epoch).unwrap();
+                if epoch <= 2 {
+                    let mut entry = post_pawn_peer(lab.config.packet);
+                    entry.auth_request = Some(epoch);
+                    entry.auth_identity = Some(1233 + epoch);
+                    entry.checkpoint_epoch = Some(epoch);
+                    entry.checkpoint_active = true;
+                    entry.checkpoint_projection = Some(projection);
+                    entry.checkpoint_enqueued_revision = Some(projection.revision);
+                    if kind == "stale" && epoch == endpoint {
+                        entry.auth_accepted = false;
+                    }
+                    lab.peers.insert(
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12344 + epoch as u16),
+                        entry,
+                    );
+                }
+            }
+            app.insert_resource(lab);
+            let before = capture(app.world_mut()).unwrap();
+            let section = before.player_inventory.as_ref().unwrap().as_v2().unwrap();
+            let a = section.bag(1).unwrap();
+            let b = section.bag(2).unwrap();
+            let request = PlayerInventoryTransferRequestV1 {
+                source: PlayerStackEndpointV1 {
+                    owner: a.owner,
+                    inventory: "bag".into(),
+                    stack_id: a.inventories[0].slots[0].as_ref().unwrap().id,
+                },
+                destination: PlayerSlotEndpointV1 {
+                    owner: b.owner,
+                    inventory: "bag".into(),
+                    slot: 1,
+                },
+                amount: 1,
+                source_cas: PlayerInventoryRevisionPairV1 {
+                    expected_player_revision: 1,
+                    expected_bag_revision: 1,
+                },
+                destination_cas: PlayerInventoryRevisionPairV1 {
+                    expected_player_revision: 1,
+                    expected_bag_revision: 1,
+                },
+            };
+            if kind == "revoked" {
+                backend
+                    .event(crate::steam_auth::AuthEvent {
+                        request_id: endpoint,
+                        outcome: AuthOutcome::Revoked,
+                    })
+                    .unwrap();
+            }
+            if kind == "backend_loss" {
+                drop(backend);
+            }
+            let result = apply_player_inventory_transfer(
+                app.world_mut(),
+                PlayerKey::new(1234, 0).unwrap(),
+                1,
+                PlayerKey::new(1235, 0).unwrap(),
+                2,
+                &request,
+            );
+            if kind == "success" {
+                result.unwrap();
+                let after = capture(app.world_mut()).unwrap();
+                assert_ne!(after, before);
+                app.world_mut()
+                    .resource_scope(|world, mut lab: bevy::prelude::Mut<PeerLab>| {
+                        for _ in 0..3 {
+                            lab.refresh_checkpoint_projections(world.resource::<PlayerRegistry>());
+                        }
+                        for entry in lab.peers.values() {
+                            assert_eq!(entry.checkpoint_projection.unwrap().revision, 2);
+                            assert_eq!(entry.checkpoint_enqueued_revision, Some(1));
+                        }
+                    });
+                assert_eq!(capture(app.world_mut()).unwrap(), after);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(capture(app.world_mut()).unwrap(), before);
+                assert!(
+                    !app.world()
+                        .resource::<PlayerRegistry>()
+                        .active_epochs()
+                        .contains(&endpoint)
+                );
+            }
+            assert!(
+                !app.world()
+                    .resource::<PlayerRegistry>()
+                    .active_epochs()
+                    .contains(&3)
+            );
+            assert!(app.world().resource::<PeerLab>().socket.0.is_none());
+        }
+    }
 }

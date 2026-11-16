@@ -11,7 +11,7 @@ pub(super) fn validate_config(config: &ServerConfig) -> Result<()> {
         "private leave proof refuses depletion damage"
     );
     ensure!(
-        config.network.player_inventory.is_none(),
+        config.network.player_inventory.is_none() && !config.network.player_inventory_transfers,
         "private leave proof requires schema 14"
     );
     ensure!(
@@ -95,6 +95,18 @@ mod inventory_refusal_tests {
             validate_config(&config).unwrap_err().to_string(),
             "private leave proof requires schema 14"
         );
+    }
+    #[test]
+    fn transfer_policy_is_refused_even_without_a_recipe() {
+        for recipe in [None, Some("unused-authored-recipe.json".into())] {
+            let mut config = ServerConfig::default();
+            config.network.player_inventory = recipe;
+            config.network.player_inventory_transfers = true;
+            assert_eq!(
+                validate_config(&config).unwrap_err().to_string(),
+                "private leave proof requires schema 14"
+            );
+        }
     }
 }
 

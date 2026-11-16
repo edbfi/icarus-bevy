@@ -225,7 +225,10 @@ fn finish_decode<T: Serialize + Graph, E: de::Error>(
     }
     let limit = match name {
         "InventoryContractsV1" | "InventoryContractsSnapshotV1" => MAX_INVENTORY_CONTRACT_BYTES,
-        "InventoryStateSnapshotV1" | "PlayerInventorySnapshotV1" => MAX_INVENTORY_STATE_BYTES,
+        "InventoryStateSnapshotV1"
+        | "PlayerInventorySnapshotV1"
+        | "PlayerInventorySnapshotV2"
+        | "PlayerInventorySnapshot" => MAX_INVENTORY_STATE_BYTES,
         "PlayerInventoryRecipeV1" | "PlayerInventoryRecipeV2" | "PlayerInventoryRecipe" => {
             MAX_INVENTORY_CONTRACT_BYTES
         }
@@ -556,8 +559,279 @@ impl PlayerInventoryRecipe {
 }
 dto!(PlayerBagV1,4096,{pub owner:PlayerInventoryOwnerV1,pub revision:u64,pub consumed:Vec<ItemTotalV1>,pub inventories:Vec<InventoryStateV1>});
 dto!(PlayerInventorySnapshotV1,1,{pub format:u32,pub recipe_id:String,pub recipe:PlayerInventoryRecipe,pub baseline:InventoryInitialTotalsV1,pub revision:u64,pub next_stack_id:u64,pub bags:Vec<PlayerBagV1>});
+
+dto!(PlayerBagV2,4096,{pub owner:PlayerInventoryOwnerV1,pub revision:u64,pub consumed:Vec<ItemTotalV1>,pub received:Vec<ItemTotalV1>,pub sent:Vec<ItemTotalV1>,pub inventories:Vec<InventoryStateV1>});
+dto!(PlayerInventorySnapshotV2,1,{pub format:u32,pub recipe_id:String,pub recipe:PlayerInventoryRecipe,pub baseline:InventoryInitialTotalsV1,pub revision:u64,pub next_stack_id:u64,pub bags:Vec<PlayerBagV2>});
+
+/// The selected section object; V1 keeps its concrete durable layout.
+#[derive(Clone, PartialEq, Debug)]
+pub enum PlayerInventorySnapshot {
+    V1(PlayerInventorySnapshotV1),
+    V2(Box<PlayerInventorySnapshotV2>),
+}
+impl From<PlayerInventorySnapshotV1> for PlayerInventorySnapshot {
+    fn from(v: PlayerInventorySnapshotV1) -> Self {
+        Self::V1(v)
+    }
+}
+impl From<PlayerInventorySnapshotV2> for PlayerInventorySnapshot {
+    fn from(v: PlayerInventorySnapshotV2) -> Self {
+        Self::V2(Box::new(v))
+    }
+}
+impl Serialize for PlayerInventorySnapshot {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::V1(v) => v.serialize(s),
+            Self::V2(v) => v.serialize(s),
+        }
+    }
+}
+// Presence is distinct from an empty array, and null never means absent.
+#[derive(Default)]
+struct FlowField(Option<Vec<ItemTotalV1>>);
+impl<'de> Deserialize<'de> for FlowField {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        Vec::field(d).map(|v| Self(Some(v)))
+    }
+}
+enum BagRow {
+    V1(PlayerBagV1),
+    V2(PlayerBagV2),
+}
+impl<'de> Deserialize<'de> for BagRow {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            #[serde(deserialize_with = "field")]
+            owner: PlayerInventoryOwnerV1,
+            #[serde(deserialize_with = "field")]
+            revision: u64,
+            #[serde(deserialize_with = "field")]
+            consumed: Vec<ItemTotalV1>,
+            #[serde(default)]
+            received: FlowField,
+            #[serde(default)]
+            sent: FlowField,
+            #[serde(deserialize_with = "field")]
+            inventories: Vec<InventoryStateV1>,
+        }
+        let f: Fields = crate::json::object(d)?;
+        match (f.received.0, f.sent.0) {
+            (None, None) => Ok(Self::V1(PlayerBagV1 {
+                owner: f.owner,
+                revision: f.revision,
+                consumed: f.consumed,
+                inventories: f.inventories,
+            })),
+            (Some(received), Some(sent)) => Ok(Self::V2(PlayerBagV2 {
+                owner: f.owner,
+                revision: f.revision,
+                consumed: f.consumed,
+                received,
+                sent,
+                inventories: f.inventories,
+            })),
+            _ => Err(de::Error::custom(
+                "player inventory accounting fields invalid",
+            )),
+        }
+    }
+}
+enum BagRows {
+    Empty,
+    V1(Vec<PlayerBagV1>),
+    V2(Vec<PlayerBagV2>),
+}
+fn push_bag<T: Graph, E: de::Error>(v: &mut Vec<T>, item: T) -> std::result::Result<(), E> {
+    if v.len() >= T::LIMIT {
+        return Err(E::custom("inventory sequence limit"));
+    }
+    if v.len() == v.capacity() {
+        let cap = next_decode_capacity::<T>(v.capacity())
+            .map_err(|_| E::custom("inventory sequence limit"))?;
+        charge::<E>(
+            (cap - v.capacity())
+                .checked_mul(size_of::<T>())
+                .ok_or_else(|| E::custom("inventory allocation limit"))?,
+        )?;
+        v.try_reserve_exact(cap - v.len())
+            .map_err(|_| E::custom("inventory allocation limit"))?;
+    }
+    v.push(item);
+    Ok(())
+}
+impl<'de> Deserialize<'de> for BagRows {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> de::Visitor<'de> for V {
+            type Value = BagRows;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("bounded player bags")
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                struct Seed(usize);
+                impl<'de> de::DeserializeSeed<'de> for Seed {
+                    type Value = BagRow;
+                    fn deserialize<D: Deserializer<'de>>(
+                        self,
+                        d: D,
+                    ) -> std::result::Result<BagRow, D::Error> {
+                        if self.0 >= 4096 {
+                            return Err(de::Error::custom("inventory sequence limit"));
+                        }
+                        BagRow::deserialize(d)
+                    }
+                }
+                let mut rows = BagRows::Empty;
+                let mut count = 0;
+                while let Some(row) = a.next_element_seed(Seed(count))? {
+                    rows = match (rows, row) {
+                        (BagRows::Empty, BagRow::V1(v)) => {
+                            let mut rows = Vec::new();
+                            push_bag::<_, A::Error>(&mut rows, v)?;
+                            BagRows::V1(rows)
+                        }
+                        (BagRows::Empty, BagRow::V2(v)) => {
+                            let mut rows = Vec::new();
+                            push_bag::<_, A::Error>(&mut rows, v)?;
+                            BagRows::V2(rows)
+                        }
+                        (BagRows::V1(mut rows), BagRow::V1(v)) => {
+                            push_bag::<_, A::Error>(&mut rows, v)?;
+                            BagRows::V1(rows)
+                        }
+                        (BagRows::V2(mut rows), BagRow::V2(v)) => {
+                            push_bag::<_, A::Error>(&mut rows, v)?;
+                            BagRows::V2(rows)
+                        }
+                        _ => return Err(de::Error::custom("mixed player inventory bag formats")),
+                    };
+                    count += 1;
+                }
+                Ok(rows)
+            }
+        }
+        d.deserialize_seq(V)
+    }
+}
+impl<'de> Deserialize<'de> for PlayerInventorySnapshot {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let _scope = InventoryDecodeScope::enter();
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            #[serde(deserialize_with = "field")]
+            format: u32,
+            #[serde(deserialize_with = "field")]
+            recipe_id: String,
+            #[serde(deserialize_with = "field")]
+            recipe: PlayerInventoryRecipe,
+            #[serde(deserialize_with = "field")]
+            baseline: InventoryInitialTotalsV1,
+            #[serde(deserialize_with = "field")]
+            revision: u64,
+            #[serde(deserialize_with = "field")]
+            next_stack_id: u64,
+            bags: BagRows,
+        }
+        let f: Fields = crate::json::object(d)
+            .map_err(|_| de::Error::custom("player inventory object invalid"))?;
+        let rows = match (f.format, f.bags) {
+            (1, BagRows::Empty) => BagRows::V1(Vec::new()),
+            (2, BagRows::Empty) => BagRows::V2(Vec::new()),
+            (_, v) => v,
+        };
+        let value = match (f.format, rows) {
+            (1, BagRows::V1(bags)) => PlayerInventorySnapshotV1 {
+                format: 1,
+                recipe_id: f.recipe_id,
+                recipe: f.recipe,
+                baseline: f.baseline,
+                revision: f.revision,
+                next_stack_id: f.next_stack_id,
+                bags,
+            }
+            .into(),
+            (2, BagRows::V2(bags)) => {
+                charge::<D::Error>(size_of::<PlayerInventorySnapshotV2>())?;
+                PlayerInventorySnapshotV2 {
+                    format: 2,
+                    recipe_id: f.recipe_id,
+                    recipe: f.recipe,
+                    baseline: f.baseline,
+                    revision: f.revision,
+                    next_stack_id: f.next_stack_id,
+                    bags,
+                }
+                .into()
+            }
+            _ => {
+                return Err(de::Error::custom(
+                    "player inventory format or fields invalid",
+                ));
+            }
+        };
+        finish_decode::<Self, D::Error>("PlayerInventorySnapshot", &value)?;
+        Ok(value)
+    }
+}
+impl Field for PlayerInventorySnapshot {
+    fn field<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        Self::deserialize(d)
+    }
+}
+impl Graph for PlayerInventorySnapshot {
+    const LIMIT: usize = 1;
+    fn walk(&self, b: &mut Budget) -> Result<()> {
+        match self {
+            Self::V1(v) => v.walk(b),
+            Self::V2(v) => {
+                b.add(size_of::<PlayerInventorySnapshotV2>())?;
+                v.walk(b)
+            }
+        }
+    }
+}
+pub(crate) fn player_inventory_v2_bytes(v: &PlayerInventorySnapshotV2) -> Result<usize> {
+    graph(v)?
+        .checked_add(size_of::<PlayerInventorySnapshot>())
+        .ok_or_else(|| anyhow::anyhow!("inventory allocation limit"))
+}
+pub(crate) fn player_inventory_v2_charge(
+    v: &PlayerInventorySnapshotV2,
+    copies: usize,
+) -> Result<()> {
+    let pins = graph(&v.baseline)?
+        .checked_add(64)
+        .and_then(|n| {
+            n.checked_add(crate::native_player_runtime::inventory_pin_v2_overhead_bytes())
+        })
+        .and_then(|n| n.checked_mul(128));
+    // Four wide sums, three dense total vectors with maximum item strings,
+    // and two bounded endpoint plans. All remain inside the existing cap.
+    let scratch = MAX_INVENTORY_ITEMS
+        .checked_mul(4 * size_of::<u128>() + 3 * (size_of::<ItemTotalV1>() + 64))
+        .and_then(|n| n.checked_add(2 * 1024 + 64 * 1024));
+    ensure!(
+        player_inventory_v2_bytes(v)?
+            .checked_mul(copies)
+            .and_then(|n| pins.and_then(|p| n.checked_add(p)))
+            .and_then(|n| scratch.and_then(|p| n.checked_add(p)))
+            .is_some_and(|n| n <= MAX_INVENTORY_GRAPH_BYTES),
+        "player inventory allocation limit"
+    );
+    encoded(v, MAX_INVENTORY_STATE_BYTES)?;
+    Ok(())
+}
 dto!(PlayerStackEndpointV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub stack_id:StackId});
 dto!(PlayerSlotEndpointV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub slot:u16});
+dto!(PlayerInventoryRevisionPairV1,1,{pub expected_player_revision:u64,pub expected_bag_revision:u64});
+dto!(PlayerInventoryTransferRequestV1,1,{pub source:PlayerStackEndpointV1,pub destination:PlayerSlotEndpointV1,pub amount:u32,pub source_cas:PlayerInventoryRevisionPairV1,pub destination_cas:PlayerInventoryRevisionPairV1});
 dto!(PlayerOverflowDestinationV1,1,{pub owner:PlayerInventoryOwnerV1,pub inventory:String,pub slot:Option<u16>});
 
 pub(crate) fn player_action_bounds(value: &impl Serialize) -> Result<()> {
@@ -1416,6 +1690,15 @@ pub fn validate_inventory_state(
     initial_totals: &InventoryInitialTotalsV1,
     live: &InventoryLiveOwnersV1,
 ) -> Result<()> {
+    validate_inventory_state_target(contracts, state, initial_totals, live, None)
+}
+fn validate_inventory_state_target(
+    contracts: &CompiledInventoryContractsV1,
+    state: &InventoryStateSnapshotV1,
+    initial_totals: &InventoryInitialTotalsV1,
+    live: &InventoryLiveOwnersV1,
+    wide_target: Option<&[u128]>,
+) -> Result<()> {
     input_budget(&[state, initial_totals, live])?;
     encoded(state, MAX_INVENTORY_STATE_BYTES)?;
     ensure!(
@@ -1431,14 +1714,38 @@ pub fn validate_inventory_state(
         state.consumed.len() == initial.len(),
         "inventory consumed coverage invalid"
     );
-    let mut quantities = BTreeMap::new();
-    for v in &state.consumed {
-        ensure!(
-            initial.contains_key(v.item.as_str())
-                && quantities.insert(v.item.as_str(), v.count).is_none(),
-            "inventory consumed total invalid"
-        );
+    enum Quantities<'a> {
+        Legacy(BTreeMap<&'a str, u64>),
+        Wide(Vec<u128>),
     }
+    let mut quantities = if wide_target.is_some() {
+        // V2's adapter is dense in immutable recipe order. Its four wide
+        // vectors (global receive/send, target, contents+consumed) have an
+        // explicit reservation; no new accounting tree allocation is needed.
+        ensure!(
+            initial_totals
+                .items
+                .windows(2)
+                .all(|r| r[0].item < r[1].item)
+                && state
+                    .consumed
+                    .iter()
+                    .map(|r| r.item.as_str())
+                    .eq(initial.keys().copied()),
+            "inventory consumed coverage invalid"
+        );
+        Quantities::Wide(state.consumed.iter().map(|r| u128::from(r.count)).collect())
+    } else {
+        let mut quantities = BTreeMap::new();
+        for v in &state.consumed {
+            ensure!(
+                initial.contains_key(v.item.as_str())
+                    && quantities.insert(v.item.as_str(), v.count).is_none(),
+                "inventory consumed total invalid"
+            );
+        }
+        Quantities::Legacy(quantities)
+    };
     ensure!(
         state.owners.len() == handles.len(),
         "inventory state owner coverage invalid"
@@ -1485,10 +1792,24 @@ pub fn validate_inventory_state(
                     "inventory stack invalid"
                 );
                 bounded_sum(&mut stacks, 1, MAX_INVENTORY_STACKS)?;
-                let q = quantities
-                    .get_mut(s.item.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("inventory quantity item missing"))?;
-                add(q, u64::from(s.count))
+                match &mut quantities {
+                    Quantities::Legacy(quantities) => {
+                        let q = quantities
+                            .get_mut(s.item.as_str())
+                            .ok_or_else(|| anyhow::anyhow!("inventory quantity item missing"))?;
+                        add(q, u64::from(s.count))?;
+                    }
+                    Quantities::Wide(quantities) => {
+                        let index = initial_totals
+                            .items
+                            .binary_search_by(|v| v.item.cmp(&s.item))
+                            .map_err(|_| anyhow::anyhow!("inventory quantity item missing"))?;
+                        quantities[index] = quantities[index]
+                            .checked_add(u128::from(s.count))
+                            .ok_or_else(|| anyhow::anyhow!("inventory quantity overflow"))?;
+                    }
+                }
+                Ok(())
             };
             for (slot, stack) in inv.slots.iter().enumerate() {
                 if let Some(s) = stack {
@@ -1508,7 +1829,15 @@ pub fn validate_inventory_state(
             }
         }
     }
-    ensure!(quantities == initial, "inventory conservation mismatch");
+    match (quantities, wide_target) {
+        (Quantities::Legacy(quantities), None) => {
+            ensure!(quantities == initial, "inventory conservation mismatch")
+        }
+        (Quantities::Wide(quantities), Some(target)) => {
+            ensure!(quantities == target, "inventory conservation mismatch")
+        }
+        _ => unreachable!("selected inventory accounting width"),
+    }
     Ok(())
 }
 
@@ -1892,8 +2221,18 @@ pub fn prepare_inventory_action(
     live: &InventoryLiveOwnersV1,
     request: &InventoryActionRequestV1,
 ) -> Result<PreparedInventoryStateV1> {
+    prepare_inventory_action_target(contracts, current, initial_totals, live, request, None)
+}
+fn prepare_inventory_action_target(
+    contracts: &CompiledInventoryContractsV1,
+    current: &InventoryStateSnapshotV1,
+    initial_totals: &InventoryInitialTotalsV1,
+    live: &InventoryLiveOwnersV1,
+    request: &InventoryActionRequestV1,
+    target: Option<&[u128]>,
+) -> Result<PreparedInventoryStateV1> {
     let admitted_bytes = input_budget(&[current, initial_totals, live, request])?;
-    validate_inventory_state(contracts, current, initial_totals, live)?;
+    validate_inventory_state_target(contracts, current, initial_totals, live, target)?;
     ensure!(
         current.revision == request.expected_inventory_revision,
         "inventory revision conflict"
@@ -2127,7 +2466,7 @@ pub fn prepare_inventory_action(
     }
     state.revision = next_revision;
     if !placement {
-        validate_inventory_state(contracts, &state, initial_totals, live)?;
+        validate_inventory_state_target(contracts, &state, initial_totals, live, target)?;
     }
     // Placement's complete checks precede mutation: it transfers the unchanged
     // stack, preserves coverage/allocator/totals, and grows only the admitted
@@ -2361,6 +2700,81 @@ pub fn enable_inventory_owners(
     Ok(snapshot)
 }
 
+// The wide target is derived exclusively from immutable starter and retained
+// flow arrays. It is never a proposed contents total or a public bypass flag.
+pub(crate) fn player_inventory_wide_target(
+    baseline: &InventoryInitialTotalsV1,
+    received: &[ItemTotalV1],
+    sent: &[ItemTotalV1],
+) -> Result<Vec<u128>> {
+    let mut target = baseline
+        .items
+        .iter()
+        .map(|v| u128::from(v.count))
+        .collect::<Vec<_>>();
+    for (rows, subtract) in [(received, false), (sent, true)] {
+        validate_player_sparse(baseline, rows)?;
+        for row in rows {
+            let index = baseline
+                .items
+                .binary_search_by(|v| v.item.cmp(&row.item))
+                .map_err(|_| anyhow::anyhow!("player inventory item invalid"))?;
+            target[index] = if subtract {
+                target[index].checked_sub(u128::from(row.count))
+            } else {
+                target[index].checked_add(u128::from(row.count))
+            }
+            .ok_or_else(|| anyhow::anyhow!("player inventory balance invalid"))?;
+        }
+    }
+    Ok(target)
+}
+pub(crate) fn validate_player_sparse(
+    baseline: &InventoryInitialTotalsV1,
+    rows: &[ItemTotalV1],
+) -> Result<()> {
+    ensure!(
+        rows.len() <= MAX_INVENTORY_ITEMS && rows.windows(2).all(|r| r[0].item < r[1].item),
+        "player inventory sparse order invalid"
+    );
+    for row in rows {
+        ensure!(
+            row.count > 0
+                && baseline
+                    .items
+                    .binary_search_by(|v| v.item.cmp(&row.item))
+                    .is_ok(),
+            "player inventory sparse item invalid"
+        );
+    }
+    Ok(())
+}
+pub(crate) fn validate_player_inventory_state_v2(
+    contracts: &CompiledInventoryContractsV1,
+    state: &InventoryStateSnapshotV1,
+    baseline: &InventoryInitialTotalsV1,
+    live: &InventoryLiveOwnersV1,
+    received: &[ItemTotalV1],
+    sent: &[ItemTotalV1],
+) -> Result<()> {
+    let target = player_inventory_wide_target(baseline, received, sent)?;
+    validate_inventory_state_target(contracts, state, baseline, live, Some(&target))
+}
+pub(crate) fn prepare_player_inventory_action_v2(
+    contracts: &CompiledInventoryContractsV1,
+    state: &InventoryStateSnapshotV1,
+    baseline: &InventoryInitialTotalsV1,
+    live: &InventoryLiveOwnersV1,
+    flows: (&[ItemTotalV1], &[ItemTotalV1]),
+    request: &InventoryActionRequestV1,
+) -> Result<PreparedInventoryStateV1> {
+    let target = player_inventory_wide_target(baseline, flows.0, flows.1)?;
+    let result =
+        prepare_inventory_action_target(contracts, state, baseline, live, request, Some(&target))?;
+    validate_inventory_state_target(contracts, result.state(), baseline, live, Some(&target))?;
+    Ok(result)
+}
+
 #[cfg(test)]
 mod authored_authority_budget_tests {
     use super::*;
@@ -2573,6 +2987,11 @@ mod player_recipe_layout_tests {
         assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
         assert_eq!(graph(&decoded).unwrap(), graph(&legacy).unwrap());
         player_inventory_charge(&decoded, 8).unwrap();
+        let carrier: PlayerInventorySnapshot = decoded.clone().into();
+        assert_eq!(graph(&carrier).unwrap(), graph(&decoded).unwrap());
+        assert_eq!(serde_json::to_vec(&carrier).unwrap(), bytes);
+        let reloaded: PlayerInventorySnapshot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(graph(&carrier).unwrap(), graph(&reloaded).unwrap());
         eprintln!(
             "V1 DTO/enum={} section={} near-limit-charge={} reloaded={} bags={}",
             size_of::<PlayerInventoryRecipe>(),
@@ -2580,6 +2999,546 @@ mod player_recipe_layout_tests {
             graph(&section).unwrap(),
             graph(&decoded).unwrap(),
             section.bags.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod player_section_layout_tests {
+    use super::*;
+    #[test]
+    fn player_section_carrier_layout_and_legacy_bytes_are_identical() {
+        eprintln!(
+            "layout section_v1={} carrier={} option_v1={} option_carrier={} section_v2={} bag_v1={} bag_v2={} item_total={}",
+            size_of::<PlayerInventorySnapshotV1>(),
+            size_of::<PlayerInventorySnapshot>(),
+            size_of::<Option<PlayerInventorySnapshotV1>>(),
+            size_of::<Option<PlayerInventorySnapshot>>(),
+            size_of::<PlayerInventorySnapshotV2>(),
+            size_of::<PlayerBagV1>(),
+            size_of::<PlayerBagV2>(),
+            size_of::<ItemTotalV1>()
+        );
+        assert_eq!(size_of::<PlayerBagV1>(), 72);
+        assert_eq!(
+            size_of::<PlayerInventorySnapshot>(),
+            size_of::<PlayerInventorySnapshotV1>()
+        );
+        assert_eq!(
+            size_of::<Option<PlayerInventorySnapshot>>(),
+            size_of::<Option<PlayerInventorySnapshotV1>>()
+        );
+        for recipe in [
+            PlayerInventoryRecipe::V1(PlayerInventoryRecipeV1 {
+                format: 1,
+                items: vec![],
+                inventories: vec![],
+                starter: vec![],
+            }),
+            PlayerInventoryRecipe::V2(Box::new(PlayerInventoryRecipeV2 {
+                format: 2,
+                items: vec![],
+                inventories: vec![],
+                starter: vec![],
+                consumables: vec![],
+            })),
+        ] {
+            let v = PlayerInventorySnapshotV1 {
+                format: 1,
+                recipe_id: "test".into(),
+                recipe,
+                baseline: InventoryInitialTotalsV1 { items: vec![] },
+                revision: 1,
+                next_stack_id: 1,
+                bags: vec![],
+            };
+            let carrier: PlayerInventorySnapshot = v.clone().into();
+            assert_eq!(graph(&v).unwrap(), graph(&carrier).unwrap());
+            assert_eq!(
+                serde_json::to_vec(&v).unwrap(),
+                serde_json::to_vec(&carrier).unwrap()
+            );
+            let decoded: PlayerInventorySnapshot =
+                serde_json::from_slice(&serde_json::to_vec(&v).unwrap()).unwrap();
+            assert_eq!(carrier, decoded);
+        }
+    }
+}
+
+#[cfg(test)]
+mod player_section_budget_tests {
+    use super::*;
+    #[test]
+    fn boxed_root_sparse_spare_capacity_and_nested_decode_share_budget() {
+        let text = r#"{"bags":[{"sent":[],"received":[{"item":"i","count":1}],"owner":{"player_id":1,"incarnation":1},"revision":1,"consumed":[],"inventories":[]}],"format":2,"recipe_id":"id","recipe":{"format":1,"items":[],"inventories":[],"starter":[]},"baseline":{"items":[]},"revision":1,"next_stack_id":1}"#;
+        let mut value: PlayerInventorySnapshot = serde_json::from_str(text).unwrap();
+        let base = graph(&value).unwrap();
+        let PlayerInventorySnapshot::V2(v) = &value else {
+            unreachable!()
+        };
+        assert_eq!(
+            base,
+            graph(v.as_ref()).unwrap() + size_of::<PlayerInventorySnapshot>()
+        );
+        let PlayerInventorySnapshot::V2(v) = &mut value else {
+            unreachable!()
+        };
+        v.bags[0].sent.reserve_exact(1024);
+        let cap = v.bags[0].sent.capacity();
+        assert_eq!(
+            graph(&value).unwrap() - base,
+            cap * size_of::<ItemTotalV1>()
+        );
+        {
+            let _scope = InventoryDecodeScope::enter();
+            charge::<serde::de::value::Error>(MAX_INVENTORY_GRAPH_BYTES - 100).unwrap();
+            assert!(serde_json::from_str::<PlayerInventorySnapshot>(text).is_err());
+        }
+        assert!(serde_json::from_str::<PlayerInventorySnapshot>(text).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod transfer_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn boundary_v2_encoded_ceiling_is_dominated_by_graph_charge() {
+        // Induction over the section's JSON tree: each local object shell,
+        // including maximal decimal scalars and one array separator, fits in
+        // twice its charged Rust storage. Empty strings/vectors here stand for
+        // child payloads, not valid API input. Keys contain only unescaped
+        // ASCII, so adding their bytes costs <= twice the charged capacity.
+        // Each vector reserves >= len * size_of(element), also after reload.
+        fn shell<T: Serialize>(value: &T) {
+            let bytes = serde_json::to_vec(value).unwrap().len() + 1;
+            assert!(
+                bytes <= 2 * size_of::<T>(),
+                "{}: {bytes} > {}",
+                std::any::type_name::<T>(),
+                2 * size_of::<T>()
+            );
+        }
+        let stack = || StackV1 {
+            id: StackId::new(u64::MAX).unwrap(),
+            item: String::new(),
+            count: u32::MAX,
+        };
+        shell(&String::new());
+        shell(&ItemDefinitionV1 {
+            key: String::new(),
+            stack_limit: u32::MAX,
+        });
+        shell(&SlotRuleV1 {
+            allowed_items: vec![],
+        });
+        shell(&InventoryDefinitionV1 {
+            key: String::new(),
+            initial_slots: u16::MAX,
+            slot_rules: vec![],
+            force_add_when_zero: false,
+            overflow_limit: u16::MAX,
+        });
+        shell(&Some(stack()));
+        shell(&Option::<StackV1>::None);
+        shell(&DeferredStackV1 {
+            stack: stack(),
+            requested_slot: u16::MAX,
+        });
+        shell(&InventoryStateV1 {
+            key: String::new(),
+            slots: vec![],
+            overflow: vec![],
+        });
+        shell(&ItemTotalV1 {
+            item: String::new(),
+            count: u64::MAX,
+        });
+        shell(&PlayerStarterItemV1 {
+            inventory: String::new(),
+            requested_slot: u16::MAX,
+            item: String::new(),
+            count: u32::MAX,
+        });
+        shell(&PlayerConsumableV2 {
+            item: String::new(),
+            oxygen: u32::MAX,
+            water: u32::MAX,
+            food: u32::MAX,
+        });
+        shell(&PlayerBagV2 {
+            owner: PlayerInventoryOwnerV1 {
+                player_id: u64::MAX,
+                incarnation: u64::MAX,
+            },
+            revision: u64::MAX,
+            consumed: vec![],
+            received: vec![],
+            sent: vec![],
+            inventories: vec![],
+        });
+        let v1 = PlayerInventoryRecipeV1 {
+            format: u32::MAX,
+            items: vec![],
+            inventories: vec![],
+            starter: vec![],
+        };
+        shell(&v1);
+        let v2 = PlayerInventoryRecipeV2 {
+            format: u32::MAX,
+            items: vec![],
+            inventories: vec![],
+            starter: vec![],
+            consumables: vec![],
+        };
+        shell(&v2);
+        for recipe in [v1.into(), v2.into()] {
+            let section = PlayerInventorySnapshotV2 {
+                format: u32::MAX,
+                recipe_id: String::new(),
+                recipe,
+                baseline: InventoryInitialTotalsV1 { items: vec![] },
+                revision: u64::MAX,
+                next_stack_id: u64::MAX,
+                bags: vec![],
+            };
+            // Includes the inline recipe and baseline roots in the section
+            // shell; V2's additional boxed recipe root only increases charge.
+            shell(&section);
+        }
+        let pins_min = 128
+            * (size_of::<InventoryInitialTotalsV1>()
+                + 64
+                + crate::native_player_runtime::inventory_pin_v2_overhead_bytes());
+        let scratch = MAX_INVENTORY_ITEMS
+            * (4 * size_of::<u128>() + 3 * (size_of::<ItemTotalV1>() + 64))
+            + 2 * 1024
+            + 64 * 1024;
+        let max_graph = (MAX_INVENTORY_GRAPH_BYTES - pins_min - scratch) / 8;
+        let max_encoded = 2 * max_graph;
+        assert_eq!(pins_min, 37_888);
+        assert_eq!(scratch, 428_032);
+        assert_eq!(max_graph, 8_330_368);
+        assert_eq!(max_encoded, 16_660_736);
+        assert!(max_encoded < MAX_INVENTORY_STATE_BYTES);
+        eprintln!(
+            "V2 encoded upper bound={max_encoded} < {} (gap={}), G<={max_graph}, pins>={pins_min}, scratch={scratch}",
+            MAX_INVENTORY_STATE_BYTES,
+            MAX_INVENTORY_STATE_BYTES - max_encoded
+        );
+    }
+
+    #[test]
+    fn boundary_encoded_helper_accepts_exact_limit_and_refuses_next_byte() {
+        // Helper coverage only: this single string is not an inventory section
+        // and is unreachable through V2's stricter graph admission.
+        let mut payload = "a".repeat(MAX_INVENTORY_STATE_BYTES - 2);
+        assert_eq!(
+            encoded(&payload, MAX_INVENTORY_STATE_BYTES).unwrap(),
+            MAX_INVENTORY_STATE_BYTES
+        );
+        payload.push('a');
+        assert_eq!(
+            encoded(&payload, MAX_INVENTORY_STATE_BYTES)
+                .unwrap_err()
+                .to_string(),
+            "inventory encoding limit"
+        );
+    }
+}
+
+#[cfg(test)]
+mod transfer_graph_boundary_tests {
+    use super::*;
+    use crate::{
+        config::ServerConfig,
+        native_player_inventory::{prepare_transfer_offline, transfer_staging_tests as fixtures},
+        native_player_runtime::{CheckpointWriter, LeavePhase, PlayerRegistry, activate_player},
+        persistence::SnapshotStore,
+        simulation::{WorldSnapshot, build_app, capture},
+    };
+    use std::time::{Duration, Instant};
+
+    fn section(s: &WorldSnapshot) -> &PlayerInventorySnapshotV2 {
+        s.player_inventory.as_ref().unwrap().as_v2().unwrap()
+    }
+    fn section_mut(s: &mut WorldSnapshot) -> &mut PlayerInventorySnapshotV2 {
+        s.player_inventory.as_mut().unwrap().as_v2_mut().unwrap()
+    }
+    fn charge(s: &WorldSnapshot) -> usize {
+        let s = section(s);
+        8 * player_inventory_v2_bytes(s).unwrap()
+            + 128
+                * (graph(&s.baseline).unwrap()
+                    + 64
+                    + crate::native_player_runtime::inventory_pin_v2_overhead_bytes())
+            + MAX_INVENTORY_ITEMS * (4 * size_of::<u128>() + 3 * (size_of::<ItemTotalV1>() + 64))
+            + 2 * 1024
+            + 64 * 1024
+    }
+    fn add_balanced_row(bag: &mut PlayerBagV2, item: &str) {
+        for rows in [&mut bag.received, &mut bag.sent] {
+            let i = rows
+                .binary_search_by(|v| v.item.as_str().cmp(item))
+                .unwrap_err();
+            rows.insert(
+                i,
+                ItemTotalV1 {
+                    item: item.into(),
+                    count: 9,
+                },
+            );
+        }
+    }
+    fn fixture() -> WorldSnapshot {
+        let item = "a".repeat(64);
+        let extra: Vec<String> = (0..24).map(|n| format!("z{n:063}")).collect();
+        let definition = |key: &str, slots| InventoryDefinitionV1 {
+            key: key.into(),
+            initial_slots: slots,
+            slot_rules: vec![
+                SlotRuleV1 {
+                    allowed_items: vec![item.clone()]
+                };
+                slots as usize
+            ],
+            force_add_when_zero: false,
+            overflow_limit: 0,
+        };
+        let recipe = PlayerInventoryRecipeV1 {
+            format: 1,
+            items: std::iter::once(item.clone())
+                .chain(extra.clone())
+                .map(|key| ItemDefinitionV1 {
+                    key,
+                    stack_limit: 2,
+                })
+                .collect(),
+            inventories: vec![definition("bag", 256), definition("spare", 1)],
+            starter: (0..256)
+                .map(|slot| PlayerStarterItemV1 {
+                    inventory: "bag".into(),
+                    requested_slot: slot,
+                    item: item.clone(),
+                    count: 2,
+                })
+                .collect(),
+        };
+        let mut s = fixtures::fixture(recipe, 256);
+        for bag in &mut section_mut(&mut s).bags {
+            bag.received = extra[..16]
+                .iter()
+                .map(|item| ItemTotalV1 {
+                    item: item.clone(),
+                    count: 9,
+                })
+                .collect();
+            bag.sent = bag.received.clone();
+        }
+        s
+    }
+
+    #[test]
+    fn boundary_v2_graph_charge_transfer_growth_reload_and_returning_leave() {
+        let mut s = fixture();
+        let item = section(&s).recipe.items()[0].key.clone();
+        let base_charge = charge(&s);
+        eprintln!(
+            "V2 initial charge={base_charge} graph={} baseline={} bags={}",
+            player_inventory_v2_bytes(section(&s)).unwrap(),
+            graph(&section(&s).baseline).unwrap(),
+            section(&s).bags.len()
+        );
+        s.validate().unwrap();
+        // Add genuine balanced cumulative flow rows to non-endpoints until the
+        // next row pair would cross admission. No string spare-capacity padding.
+        let padding: Vec<_> = section(&s).recipe.items()[17..]
+            .iter()
+            .map(|i| i.key.clone())
+            .chain(std::iter::once(item.clone()))
+            .collect();
+        let mut refused_at = None;
+        let mut current_charge = base_charge;
+        'padding: for i in 2..section(&s).bags.len() {
+            for key in &padding {
+                let bag = &mut section_mut(&mut s).bags[i];
+                let before = graph(bag).unwrap();
+                add_balanced_row(bag, key);
+                current_charge += 8 * (graph(bag).unwrap() - before);
+                if current_charge > MAX_INVENTORY_GRAPH_BYTES {
+                    refused_at = Some((i, key.clone()));
+                    break 'padding;
+                }
+            }
+        }
+        let (i, refused_key) = refused_at.expect("fixture must bracket the unchanged graph cap");
+        let rejected = s.clone();
+        let bag = &mut section_mut(&mut s).bags[i];
+        for rows in [&mut bag.received, &mut bag.sent] {
+            let j = rows.binary_search_by(|v| v.item.cmp(&refused_key)).unwrap();
+            rows.remove(j);
+            rows.shrink_to_fit();
+        }
+        let last_accepted = s;
+        let accepted_charge = charge(&last_accepted);
+        let refused_charge = charge(&rejected);
+        assert_eq!(refused_charge, current_charge);
+        assert!(accepted_charge <= MAX_INVENTORY_GRAPH_BYTES);
+        assert!(refused_charge > MAX_INVENTORY_GRAPH_BYTES);
+        assert!(accepted_charge > MAX_INVENTORY_GRAPH_BYTES * 99 / 100);
+        assert_eq!(
+            rejected.validate().unwrap_err().to_string(),
+            "player inventory allocation limit"
+        );
+        last_accepted.validate().unwrap();
+        // The first refused pair is balanced and valid except for the budget:
+        // removing exactly that row pair restores all semantic checks.
+        let request = fixtures::request(&last_accepted);
+        let mut request = PlayerInventoryTransferRequestV1 {
+            amount: 2,
+            ..request
+        };
+        let before = serde_json::to_vec(&last_accepted).unwrap();
+        let err = prepare_transfer_offline(&last_accepted, &request).unwrap_err();
+        assert_eq!(err.to_string(), "player inventory allocation limit");
+        assert_eq!(serde_json::to_vec(&last_accepted).unwrap(), before);
+        let mut refused_live = build_app(&ServerConfig::default(), &last_accepted).unwrap();
+        for (id, epoch) in [(1, 1001), (2, 1002)] {
+            refused_live
+                .world_mut()
+                .resource_mut::<PlayerRegistry>()
+                .reserve(fixtures::key(id), epoch, fixtures::checkpoint())
+                .unwrap();
+            activate_player(refused_live.world_mut(), epoch).unwrap();
+        }
+        let live_before = capture(refused_live.world_mut()).unwrap();
+        let err = crate::native_player_runtime::apply_player_inventory_transfer(
+            refused_live.world_mut(),
+            fixtures::key(1),
+            1001,
+            fixtures::key(2),
+            1002,
+            &request,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "player inventory allocation limit");
+        assert_eq!(capture(refused_live.world_mut()).unwrap(), live_before);
+        refused_live
+            .world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .reserve(fixtures::key(257), 2000, fixtures::checkpoint())
+            .unwrap();
+        let pending = capture(refused_live.world_mut()).unwrap();
+        assert!(activate_player(refused_live.world_mut(), 2000).is_err());
+        assert_eq!(capture(refused_live.world_mut()).unwrap(), pending);
+        drop(refused_live);
+        // Removing one non-endpoint's padding makes room for the endpoint key
+        // insertions (16 -> 17 rows, decoder capacity 16 -> 32 at each end).
+        let mut room = last_accepted.clone();
+        let bag = section_mut(&mut room)
+            .bags
+            .iter_mut()
+            .find(|b| b.owner.player_id > 2 && b.received.len() > 16)
+            .unwrap();
+        for rows in [&mut bag.received, &mut bag.sent] {
+            rows.retain(|v| !padding.contains(&v.item));
+        }
+        room = serde_json::from_slice(&serde_json::to_vec(&room).unwrap()).unwrap();
+        room.validate().unwrap();
+        request.source_cas.expected_player_revision = room
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(1)
+            .unwrap()
+            .revision;
+        let (transferred, _) = prepare_transfer_offline(&room, &request).unwrap();
+        let after_charge = charge(&transferred);
+        assert!(after_charge <= MAX_INVENTORY_GRAPH_BYTES);
+        eprintln!(
+            "V2 bracket cap={} accepted={accepted_charge} refused={refused_charge}, transfer input={} output={after_charge}",
+            MAX_INVENTORY_GRAPH_BYTES,
+            charge(&room)
+        );
+        assert_eq!(
+            section(&transferred).next_stack_id,
+            section(&room).next_stack_id
+        );
+        assert_eq!(section(&transferred).bag(1).unwrap().sent[0].count, 2);
+        assert_eq!(section(&transferred).bag(2).unwrap().received[0].count, 2);
+        let input_graph = player_inventory_v2_bytes(section(&room)).unwrap();
+        let bytes = serde_json::to_vec(&transferred).unwrap();
+        let decoded: WorldSnapshot = serde_json::from_slice(&bytes).unwrap();
+        decoded.validate().unwrap();
+        let reload_graph = player_inventory_v2_bytes(section(&decoded)).unwrap();
+        assert_eq!(charge(&decoded), after_charge);
+        assert_eq!(decoded, transferred);
+        // Real stopped-store publication/reload, then returning activation and
+        // a captured leave pin; neither path may issue starter state again.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(dir.path()).unwrap();
+        store.save(&decoded).unwrap();
+        let disk = store.load().unwrap().unwrap().snapshot;
+        assert_eq!(disk, decoded);
+        let mut app = build_app(&ServerConfig::default(), &disk).unwrap();
+        let registry_before = capture(app.world_mut()).unwrap();
+        let context = disk.native_players.as_ref().unwrap().context().clone();
+        assert_eq!(
+            context,
+            registry_before
+                .native_players
+                .as_ref()
+                .unwrap()
+                .context()
+                .clone()
+        );
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .reserve(fixtures::key(1), 1001, fixtures::checkpoint())
+            .unwrap();
+        activate_player(app.world_mut(), 1001).unwrap();
+        let active = capture(app.world_mut()).unwrap();
+        assert_eq!(active.player_inventory, disk.player_inventory);
+        assert_eq!(active.native_players, disk.native_players);
+        let revision = active
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(1)
+            .unwrap()
+            .revision;
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .request_leave(
+                fixtures::key(1),
+                1001,
+                revision,
+                Instant::now(),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(capture(app.world_mut()).unwrap(), active);
+        let mut writer = CheckpointWriter::spawn(store).unwrap();
+        writer.submit(app.world_mut()).unwrap();
+        writer
+            .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert!(matches!(
+            app.world()
+                .resource::<PlayerRegistry>()
+                .leave_status(fixtures::key(1), 1001)
+                .unwrap()
+                .phase,
+            LeavePhase::Durable { .. }
+        ));
+        assert_eq!(capture(app.world_mut()).unwrap(), active);
+        eprintln!(
+            "V2 cap={} accepted={accepted_charge} refused={refused_charge} transfer-input={} transfer-output={after_charge} graph-input={input_graph} graph-reload={reload_graph} encoded={} bags={} allocator={}",
+            MAX_INVENTORY_GRAPH_BYTES,
+            charge(&room),
+            encoded(section(&decoded), MAX_INVENTORY_STATE_BYTES).unwrap(),
+            section(&decoded).bags.len(),
+            section(&decoded).next_stack_id
         );
     }
 }

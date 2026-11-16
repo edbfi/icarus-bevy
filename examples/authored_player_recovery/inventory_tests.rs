@@ -29,7 +29,12 @@ fn literal_seed_and_every_phase_restart_match_without_reissuance() -> Result<()>
         }
     }
     let final_state = capture(app.world_mut())?;
-    let inventory = final_state.player_inventory.context("inventory")?;
+    let inventory = final_state
+        .player_inventory
+        .as_ref()
+        .context("inventory")?
+        .as_v1()
+        .context("schema15 inventory")?;
     assert_eq!(inventory.next_stack_id, 8);
     assert!(
         inventory
@@ -125,7 +130,7 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
     macro_rules! inventory_reject {
         ($inv:ident, $body:block) => {
             reject!(bad, {
-                let $inv = bad.player_inventory.as_mut().unwrap();
+                let $inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
                 $body
             });
         };
@@ -146,7 +151,12 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
         i.next_stack_id -= 1;
     });
     reject!(bad, {
-        bad.player_inventory.as_mut().unwrap().next_stack_id += 1;
+        bad.player_inventory
+            .as_mut()
+            .unwrap()
+            .as_v1_mut()
+            .unwrap()
+            .next_stack_id += 1;
         bad.validate()?;
     });
     inventory_reject!(i, {
@@ -185,7 +195,7 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
     });
     // A global quantity-preserving transfer still violates each owner's baseline.
     reject!(bad, {
-        let i = bad.player_inventory.as_mut().unwrap();
+        let i = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
         i.bags[0].inventories[0].slots[0].as_mut().unwrap().count += 1;
         i.bags[1].inventories[0].slots[0].as_mut().unwrap().count -= 1;
     });

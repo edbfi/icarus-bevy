@@ -147,7 +147,7 @@ struct PlayerInventoryGeneration {
     #[serde(deserialize_with = "crate::json::objects")]
     entities: Vec<EntityRecord>,
     native_players: crate::native_players::PlayerSnapshot,
-    player_inventory: crate::native_player_inventory::PlayerInventorySnapshotV1,
+    player_inventory: crate::native_player_inventory::PlayerInventorySnapshot,
 }
 #[derive(Serialize)]
 struct PlayerInventoryOut<'a> {
@@ -155,7 +155,7 @@ struct PlayerInventoryOut<'a> {
     tick: u64,
     entities: &'a [EntityRecord],
     native_players: &'a crate::native_players::PlayerSnapshot,
-    player_inventory: &'a crate::native_player_inventory::PlayerInventorySnapshotV1,
+    player_inventory: &'a crate::native_player_inventory::PlayerInventorySnapshot,
 }
 
 // Probe only the schema before typed decoding. Ignoring the entity fields avoids
@@ -860,7 +860,8 @@ fn prepare_generation<O: GenerationOutput>(
     }
     // Dispatch by schema before considering an optional source sidecar.
     let output = match snapshot.schema_version {
-        crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY => O::serialize_bounded_generation(
+        crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+        | crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS => O::serialize_bounded_generation(
             &PlayerInventoryOut {
                 schema_version: snapshot.schema_version,
                 tick: snapshot.tick,
@@ -1352,7 +1353,8 @@ impl SnapshotStore {
             .0;
         match header.schema_version.as_u64() {
             Some(schema)
-                if schema == u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY) =>
+                if schema == u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY)
+                    || schema == u64::from(crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS) =>
             {
                 ensure!(
                     bytes.len() as u64 <= MAX_DOMAIN_SNAPSHOT_BYTES,
@@ -4390,7 +4392,7 @@ mod crash_consistency_tests {
         state.entities.push(state.entities[0].clone());
         invalid.push(state);
         let mut state = snapshot(10);
-        state.schema_version = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY + 1;
+        state.schema_version = crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS + 1;
         invalid.push(state);
         for mut state in [inert(10, 1), owners(10, 1, 2), scalar_owners(10, 1, 8)] {
             state.preserved_prospect = inert(10, 2).preserved_prospect;
@@ -6549,11 +6551,14 @@ mod player_inventory_publication_tests {
     #[test]
     fn complete_player_inventory_publication_failure_and_uncertain_error() {
         for use_consumable in [false, true] {
-            publication_case(use_consumable);
+            publication_case(use_consumable, false, false);
+            for partial in [false, true] {
+                publication_case(use_consumable, true, partial);
+            }
         }
     }
-    fn publication_case(use_consumable: bool) {
-        let authored = PlayerInventoryRecipeV1 {
+    fn publication_case(use_consumable: bool, transfers: bool, partial: bool) {
+        let mut authored = PlayerInventoryRecipeV1 {
             format: 1,
             items: vec![ItemDefinitionV1 {
                 key: "authored".into(),
@@ -6575,6 +6580,11 @@ mod player_inventory_publication_tests {
                 count: 3,
             }],
         };
+        if transfers {
+            authored.inventories[0].initial_slots = 2;
+            let rule = authored.inventories[0].slot_rules[0].clone();
+            authored.inventories[0].slot_rules.push(rule);
+        }
         let recipe = if use_consumable {
             CompiledPlayerInventoryRecipe::compile_versioned(
                 PlayerInventoryRecipeV2 {
@@ -6609,9 +6619,17 @@ mod player_inventory_publication_tests {
         )
         .unwrap();
         let state = WorldSnapshot {
-            schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
+            schema_version: if transfers {
+                crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS
+            } else {
+                SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+            },
             native_players: Some(PlayerSnapshot::empty(context)),
-            player_inventory: Some(recipe.empty()),
+            player_inventory: Some(if transfers {
+                recipe.empty_v2().into()
+            } else {
+                recipe.empty().into()
+            }),
             ..Default::default()
         };
         let mut app = build_app(&ServerConfig::default(), &state).unwrap();
@@ -6637,8 +6655,15 @@ mod player_inventory_publication_tests {
             .reserve(PlayerKey::new(7, 0).unwrap(), 1, checkpoint)
             .unwrap();
         activate_player(app.world_mut(), 1).unwrap();
+        if transfers {
+            app.world_mut()
+                .resource_mut::<PlayerRegistry>()
+                .reserve(PlayerKey::new(8, 0).unwrap(), 2, checkpoint)
+                .unwrap();
+            activate_player(app.world_mut(), 2).unwrap();
+        }
         let before = capture(app.world_mut()).unwrap();
-        let bag = &before.player_inventory.as_ref().unwrap().bags[0];
+        let bag = before.player_inventory.as_ref().unwrap().bag(1).unwrap();
         let request = PlayerInventoryRequestV1 {
             player_id: 1,
             expected_player_revision: 1,
@@ -6656,7 +6681,33 @@ mod player_inventory_publication_tests {
                 }
             },
         };
-        let (after, _) = prepare_offline(&before, &request).unwrap();
+        let after = if transfers {
+            let destination = before.player_inventory.as_ref().unwrap().bag(2).unwrap();
+            let transfer = PlayerInventoryTransferRequestV1 {
+                source: PlayerStackEndpointV1 {
+                    owner: bag.owner,
+                    inventory: "bag".into(),
+                    stack_id: bag.inventories[0].slots[0].as_ref().unwrap().id,
+                },
+                destination: PlayerSlotEndpointV1 {
+                    owner: destination.owner,
+                    inventory: "bag".into(),
+                    slot: 1,
+                },
+                amount: if partial { 1 } else { 3 },
+                source_cas: PlayerInventoryRevisionPairV1 {
+                    expected_player_revision: 1,
+                    expected_bag_revision: 1,
+                },
+                destination_cas: PlayerInventoryRevisionPairV1 {
+                    expected_player_revision: 1,
+                    expected_bag_revision: 1,
+                },
+            };
+            prepare_transfer_offline(&before, &transfer).unwrap().0
+        } else {
+            prepare_offline(&before, &request).unwrap().0
+        };
         for fail_at in ["snapshot-2.json", "manifest.json"] {
             for after_write in [false, true] {
                 let directory = tempfile::tempdir().unwrap();

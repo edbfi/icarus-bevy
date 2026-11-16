@@ -1,7 +1,7 @@
 # Authored survival
 
-Authored-only F-1183/F-1200: schema-14/15 [players](../architecture.md#persistence);
-rules default absent.
+Authored [players](../architecture.md#persistence), schemas 14–16.
+Rules default absent; F-1183/F-1200 cover 14/15.
 
 ## Configuration and reopening
 
@@ -17,12 +17,11 @@ seconds_per_day = 3600
 tick_hz = 30
 ```
 
-Rates: integer vital units/s, each 0..=10000000; ≥1 positive.
-Needs clamp at zero. Optional `[network.player_depletion_damage]` needs
-consumption/persistence; integer `oxygen`, `water`, `food` health rates
-share those bounds. Sum tick deltas for pre-batch empty needs; clamp health at
-zero. Newly empty needs start next tick. Prior Use prevents damage from
-replenished needs; it never restores health. No death/respawn/Use gate; maxima/placement/biome/growth/bags/allocators
+Integer need units/s: each 0..=10000000, ≥1 positive; clamp at zero.
+`[network.player_depletion_damage]` requires consumption/checkpoints; integer
+oxygen/water/food health rates share these bounds. Sum deltas for pre-batch empty
+needs; clamp health at zero. Newly empty needs start next tick; prior Use
+prevents replenished-need damage, never heals. No death/respawn/Use gate; maxima/placement/biome/growth/bags/allocators
 unchanged. Private proof rejects damage.
 Clock: minute 0..=1439, positive i32 seconds/day; server-matching `tick_hz` 1..=240.
 Clock binds world input; rates/frequency bind declaration. Damage uses a distinct
@@ -37,7 +36,7 @@ epochs; later events wait for next cut.
 
 Tick `t`: `floor((t+1)*r/hz) - floor(t*r/hz)` debit/damage. One atomic batch/revision
 follows Gameplay, before Finish; unchanged currents use none.
-Schema 15 preflights the full generation at `t+1`; direct APIs retain current
+Schemas 15/16 preflight the full generation at `t+1`; direct APIs retain current
 tick. Overflow/failure refuses mutation. Projections follow Finish;
 polling/pressure/NAKs never replay effects. Saved tick owns day/fractional phase;
 no wall-time catch-up/extra accumulator. Offline ticks advance day, charging no
@@ -79,37 +78,42 @@ prove neither full player-save nor client menus.
 
 ## Player inventory
 
-Set `network.player_inventory` before creation; omitted: schema 14.
-`check-config` checks shape; `run` loads recipes. Recipe changes need fresh storage,
-without migration. V1 requires `format`, `items`, `inventories`, owner-free
-`starter`; V2 adds nonempty `consumables` requiring item/oxygen/water/food.
-Authored gains: integers 0..=10000000, ≥1 positive/item; unknown/duplicate items refuse.
-Example: `config/player-inventory-consumables.example.json`. Canonical
-item/inventory/eligibility/effect order binds identity; starter order binds routing.
-V1 bytes/digest unchanged.
+`network.player_inventory` selects fresh schema 15/section 1; omission: schema 14.
+True `network.player_inventory_transfers` requires recipe/checkpoints and fresh
+schema 16/section 2. False/default keeps legacy bytes/digests. No upgrade,
+downgrade, reset or migration; policy/recipe/context changes refuse reopen.
+`check-config` checks shape; `run` prepares recipes before state. Recipe 1:
+format/items/inventories/owner-free starter. Recipe 2 adds nonempty consumables
+(item/oxygen/water/food); gains are integers 0..=10000000, ≥1 positive/item.
+Unknown/duplicate items refuse. Example: `config/player-inventory-consumables.example.json`.
+Canonical item/inventory/eligibility/effect order binds identity; starter order
+binds routing. Recipe 2 Use and section 2 accounting are independent versions.
 
-Player/bag CAS, aggregate revision and stack IDs differ (F-1200). World wrappers
-preflight edits/activation; registry bypasses/private proof refuse. Leave pins record/bag.
+Local move/split/merge/consume/place_overflow remain. Recipe 2 use takes only
+source, consumes one on change and caps oxygen/water/food at maxima. All-full
+Use validates source/CAS: exact NoChange without increment headroom. Consume
+has no vital effect; health never gates Use. Distinct player/bag CAS, aggregate
+revision and global stack IDs (F-1200); world preflight, no registry bypass/private
+proof. Section 2 keeps sparse cumulative received/sent/consumed per owner:
+starter+received=contents+consumed+sent; global received=sent. Consumption stays
+with its consumer; flows never net. Leave pins owner bag/flows/mode/context,
+excluding global revision/allocator; unrelated transfers remain settleable.
 
-With the server stopped:
+Stopped server: `apply-player-inventory` or `apply-player-inventory-transfer`,
+with `--data-dir STATE --request PRIVATE.json [--dry-run]`. Requests: named JSON
+objects, regular files ≤64 KiB, no symlink components; unknown/duplicate/positional
+fields refuse. Local fields: player_id/expected_player_revision/expected_bag_revision/action.
+Endpoints: owner {player_id, incarnation:1}, inventory, stack_id or slot;
+local overflow slot null appends. Transfers require source/destination/positive
+amount/source_cas/destination_cas; both CAS: expected_player_revision/
+expected_bag_revision. Only section 2 transfers: normal/overflow source to another
+owner's empty normal slot. Whole retains ID; partial allocates one; both player/
+bag revisions +1, aggregate +1, no NoChange. Live calls need two independently
+held key/epoch authorities after queued-auth reconciliation; IDs grant none.
 
-```bash
-icarus-server apply-player-inventory --data-dir STATE --request PRIVATE.json --dry-run
-icarus-server apply-player-inventory --data-dir STATE --request PRIVATE.json
-```
-
-Named JSON objects only; unknown fields refuse. Required: `player_id`,
-`expected_player_revision`, `expected_bag_revision`, `action`.
-Actions: move/split/merge/consume/place_overflow; format-2 `use` takes only `source`.
-Endpoints: matching `owner: {"player_id": ID, "incarnation": 1}`, inventory,
-stack_id or slot; overflow slot null appends. Use atomically consumes one item,
-capping oxygen/water/food at maxima. All-full Use checks source/CAS then returns
-NoChange without consumption/revisions. Raw consume has no vital effect;
-health never gates Use.
-
-Requests: regular, ≤64 KiB, no symlink components. Lock spans load/save; only
-Applied saves. Dry-run/NoChange/rejection preserve bytes. Success prints
-SaveReceipt, errors none. Reopen before retrying uncertain writes.
-
-Caps: 4 MiB recipe, 16 MiB encoded inventory, 65,536 stacks, 64 MiB generation.
-Graph charge reserves eight copies/128 baseline pins; admission may fail below caps. No stock dispatch/import/trade/removal.
+Lock spans load/save; Applied saves once. Dry-run/NoChange/rejection preserve
+bytes. Success prints SaveReceipt after publication, errors none; reopen before
+uncertain-write retry. Caps: 4 MiB recipe, 16 MiB section, 65536 stacks, 64 MiB
+generation/graph. Eight copies/128 baseline pins; section 2 also reserves pin
+roots/accounting scratch/64 KiB requests. Admission may fail below caps.
+No stock RPC/consent/trade/import/player removal or client proof.

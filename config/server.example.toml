@@ -11,6 +11,9 @@ status_interval_seconds = 10
 # the loopback peer lab. Authenticated public hosting is explicit and bounded;
 # protocol/gameplay compatibility remains unproven.
 [network]
+# Authored bags require checkpoints and fresh storage; recipe versions are independent.
+# player_inventory = "config/player-inventory-consumables.example.json"
+# player_inventory_transfers = false # true selects new schema 16; no migration
 enabled = false
 bind = "127.0.0.1"
 port = 17777

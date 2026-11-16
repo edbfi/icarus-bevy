@@ -673,15 +673,15 @@ fn future_schema_is_not_silently_rolled_back() {
     let mut store = SnapshotStore::open(directory.path()).unwrap();
     store.save(&snapshot(10)).unwrap();
     store.save(&snapshot(20)).unwrap();
-    // Schema 15 holds authored player inventories; the future fixture uses 16.
-    let bytes = br#"{"schema_version":16,"tick":20,"entities":[],"new_field":true}"#;
+    // Schema 16 holds authored transfers; the future fixture uses 17.
+    let bytes = br#"{"schema_version":17,"tick":20,"entities":[],"new_field":true}"#;
     fs::write(directory.path().join("snapshot-2.json"), bytes).unwrap();
     let path = directory.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // Independently calculated with coreutils sha256sum over the fixture bytes.
     manifest["current"]["sha256"] =
-        "676b409e01fae84e324770064555f6642e9bcf45816e63cca10d545194a531ce".into();
+        "0f37028f9701e377a097a7854b07c3753f95f0d0bacfbf696635015170646acc".into();
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(
         store

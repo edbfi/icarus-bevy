@@ -628,7 +628,7 @@ fn inventory_submission_requires_exact_player_local_pin_and_complete_validation(
     let state = WorldSnapshot {
         schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
         native_players: Some(PlayerSnapshot::empty(old.snapshot().context().clone())),
-        player_inventory: Some(recipe.empty()),
+        player_inventory: Some(recipe.empty().into()),
         ..Default::default()
     };
     let mut app = build_app(&ServerConfig::default(), &state).unwrap();
@@ -640,11 +640,25 @@ fn inventory_submission_requires_exact_player_local_pin_and_complete_validation(
     request(&mut app, 1, 1);
     let state = capture(app.world_mut()).unwrap();
     assert!(matches!(
-        inventory_pin(state.player_inventory.as_ref(), u64::MAX),
+        inventory_pin(
+            state.player_inventory.as_ref(),
+            u64::MAX,
+            state
+                .native_players
+                .as_ref()
+                .unwrap()
+                .context()
+                .declaration_digest()
+        ),
         Err(PlayerError::Missing)
     ));
     let mut wrong = state.clone();
-    let inventory = wrong.player_inventory.as_mut().unwrap();
+    let inventory = wrong
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v1_mut()
+        .unwrap();
     let stack = inventory.bags[0].inventories[0].slots[0].as_mut().unwrap();
     stack.count -= 1;
     inventory.bags[0].consumed[0].count += 1;
@@ -654,7 +668,15 @@ fn inventory_submission_requires_exact_player_local_pin_and_complete_validation(
         "a different valid bag cannot certify this cutoff"
     );
     let mut wrong = state.clone();
-    wrong.player_inventory.as_mut().unwrap().bags[0].inventories[0].slots[0]
+    wrong
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v1_mut()
+        .unwrap()
+        .bags[0]
+        .inventories[0]
+        .slots[0]
         .as_mut()
         .unwrap()
         .count += 1;
@@ -669,4 +691,88 @@ fn inventory_submission_requires_exact_player_local_pin_and_complete_validation(
         phase(&app, 1, 1),
         LeavePhase::Durable { generation: 99, .. }
     ));
+}
+
+#[test]
+fn versioned_pin_keeps_legacy_layout_and_charges_v2_roots() {
+    eprintln!(
+        "pin v1={} carrier={} v2={} bag_v2={} v2_overhead={}",
+        std::mem::size_of::<PlayerInventoryPinV1>(),
+        std::mem::size_of::<PlayerInventoryPin>(),
+        std::mem::size_of::<PlayerInventoryPinV2>(),
+        std::mem::size_of::<crate::native_inventory::PlayerBagV2>(),
+        inventory_pin_v2_overhead_bytes()
+    );
+    assert_eq!(
+        std::mem::size_of::<PlayerInventoryPin>(),
+        std::mem::size_of::<PlayerInventoryPinV1>()
+    );
+    assert_eq!(std::mem::size_of::<PlayerInventoryPinV1>(), 120);
+    assert!(
+        inventory_pin_v2_overhead_bytes()
+            >= std::mem::size_of::<PlayerInventoryPinV2>()
+                - std::mem::size_of::<crate::native_inventory::PlayerBagV2>()
+    );
+}
+
+#[test]
+fn transfers_cutoff_pins_flows_and_context_but_not_global_revision_allocator() {
+    use crate::native_player_inventory::*;
+    let recipe=CompiledPlayerInventoryRecipe::parse(r#"{"format":1,"items":[{"key":"authored","stack_limit":10}],"inventories":[{"key":"bag","initial_slots":1,"slot_rules":[{"allowed_items":["authored"]}],"overflow_limit":0,"force_add_when_zero":false}],"starter":[{"inventory":"bag","requested_slot":0,"item":"authored","count":3}]}"#).unwrap();
+    let mut old = registry();
+    attach(&mut old, 1, 1);
+    let initial = old.projection(1).unwrap().checkpoint;
+    let state = WorldSnapshot {
+        schema_version: crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS,
+        native_players: Some(PlayerSnapshot::empty(old.snapshot().context().clone())),
+        player_inventory: Some(recipe.empty_v2().into()),
+        ..Default::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+    app.world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(key(1), 1, initial)
+        .unwrap();
+    super::super::activate_player(app.world_mut(), 1).unwrap();
+    request(&mut app, 1, 1);
+    let state = capture(app.world_mut()).unwrap();
+    let mut unrelated = state.clone();
+    let section = unrelated
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v2_mut()
+        .unwrap();
+    section.revision += 1;
+    section.next_stack_id += 100;
+    unrelated.validate().unwrap();
+    Submission::capture(app.world(), &unrelated).unwrap();
+    let mut different = state.clone();
+    let bag = &mut different
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v2_mut()
+        .unwrap()
+        .bags[0];
+    let row = crate::native_inventory::ItemTotalV1 {
+        item: "authored".into(),
+        count: 1,
+    };
+    bag.received.push(row.clone());
+    bag.sent.push(row);
+    different.validate().unwrap();
+    assert!(Submission::capture(app.world(), &different).is_err());
+    let digest = state
+        .native_players
+        .as_ref()
+        .unwrap()
+        .context()
+        .declaration_digest();
+    let mut changed = digest;
+    changed[0] ^= 1;
+    assert!(
+        inventory_pin(state.player_inventory.as_ref(), 1, digest).unwrap()
+            != inventory_pin(state.player_inventory.as_ref(), 1, changed).unwrap()
+    );
 }

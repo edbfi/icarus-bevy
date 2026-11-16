@@ -83,24 +83,58 @@ pub(super) struct LeaveOperation {
     phase: LeavePhase,
 }
 #[derive(Clone, PartialEq)]
-struct PlayerInventoryPin {
+struct PlayerInventoryPinV1 {
     recipe_id: String,
     baseline: crate::native_inventory::InventoryInitialTotalsV1,
     bag: crate::native_player_inventory::PlayerBagV1,
 }
+#[derive(Clone, PartialEq)]
+struct PlayerInventoryPinV2 {
+    recipe_id: String,
+    baseline: crate::native_inventory::InventoryInitialTotalsV1,
+    bag: crate::native_player_inventory::PlayerBagV2,
+    mode: crate::native_player_inventory::PlayerInventoryMode,
+    declaration: [u8; 32],
+}
+#[derive(Clone, PartialEq)]
+enum PlayerInventoryPin {
+    V1(PlayerInventoryPinV1),
+    V2(Box<PlayerInventoryPinV2>),
+}
+pub(super) fn inventory_pin_v2_overhead_bytes() -> usize {
+    // V2 owns a boxed pin as well as the unchanged-size V1 carrier. Both
+    // roots are charged; aggregate copies already reserve the bag payload.
+    std::mem::size_of::<PlayerInventoryPin>() + std::mem::size_of::<PlayerInventoryPinV2>()
+        - std::mem::size_of::<crate::native_player_inventory::PlayerBagV2>()
+}
 fn inventory_pin(
-    inventory: Option<&crate::native_player_inventory::PlayerInventorySnapshotV1>,
+    inventory: Option<&crate::native_player_inventory::PlayerInventorySnapshot>,
     id: u64,
+    declaration: [u8; 32],
 ) -> std::result::Result<Option<PlayerInventoryPin>, PlayerError> {
+    use crate::native_player_inventory::{PlayerInventoryMode, PlayerInventorySnapshot};
     inventory
-        .map(|inventory| {
-            crate::native_inventory::player_inventory_charge(inventory, 8)
-                .map_err(|_| PlayerError::Limit)?;
-            Ok(PlayerInventoryPin {
-                recipe_id: inventory.recipe_id.clone(),
-                baseline: inventory.baseline.clone(),
-                bag: inventory.bag(id).ok_or(PlayerError::Missing)?.clone(),
-            })
+        .map(|inventory| match inventory {
+            PlayerInventorySnapshot::V1(v) => {
+                crate::native_inventory::player_inventory_charge(v, 8)
+                    .map_err(|_| PlayerError::Limit)?;
+                Ok(PlayerInventoryPin::V1(PlayerInventoryPinV1 {
+                    recipe_id: v.recipe_id.clone(),
+                    baseline: v.baseline.clone(),
+                    bag: v.bag(id).ok_or(PlayerError::Missing)?.clone(),
+                }))
+            }
+            PlayerInventorySnapshot::V2(v) => {
+                crate::native_inventory::player_inventory_v2_charge(v, 8)
+                    .map_err(|_| PlayerError::Limit)?;
+                Ok(PlayerInventoryPin::V2(Box::new(PlayerInventoryPinV2 {
+                    recipe_id: v.recipe_id.clone(),
+                    baseline: v.baseline.clone(),
+                    bag: v.bag(id).ok_or(PlayerError::Missing)?.clone(),
+                    mode: PlayerInventoryMode::TransfersV2,
+                    declaration,
+                })))
+            }
         })
         .transpose()
 }
@@ -175,7 +209,11 @@ impl PlayerRegistry {
         let op = LeaveOperation {
             epoch,
             record: record.clone(),
-            inventory: inventory_pin(self.inventory.as_ref(), record.id)?,
+            inventory: inventory_pin(
+                self.inventory.as_ref(),
+                record.id,
+                self.snapshot.context().declaration_digest(),
+            )?,
             attempt: 1,
             deadline,
             phase: LeavePhase::Pending,
@@ -341,8 +379,16 @@ impl Submission {
             });
             ensure!(
                 record == Some(&op.record)
-                    && inventory_pin(snapshot.player_inventory.as_ref(), op.record.id)?
-                        == op.inventory,
+                    && inventory_pin(
+                        snapshot.player_inventory.as_ref(),
+                        op.record.id,
+                        snapshot
+                            .native_players
+                            .as_ref()
+                            .ok_or(PlayerError::Missing)?
+                            .context()
+                            .declaration_digest()
+                    )? == op.inventory,
                 "leave cutoff differs from captured player record"
             );
             if op.phase == LeavePhase::Pending {

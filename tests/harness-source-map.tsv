@@ -124,3 +124,4 @@ native_authored_inventory	tests/native_authored_inventory.rs	native_domain	tests
 native_inventory_transactions	tests/native_inventory_transactions.rs	native_domain	tests/native_domain/native_inventory_transactions.rs	native_inventory_transactions::	in-process
 native_players	tests/native_players.rs	native_domain	tests/native_domain/native_players.rs	native_players::	in-process
 native_player_inventory	tests/native_player_inventory.rs	native_domain	tests/native_domain/native_player_inventory.rs	native_player_inventory::	in-process
+native_player_transfer	tests/native_player_transfer.rs	native_domain	tests/native_domain/native_player_transfer.rs	native_player_transfer::	in-process

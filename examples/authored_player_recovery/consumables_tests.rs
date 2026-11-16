@@ -71,7 +71,7 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
     macro_rules! inventory_reject {
         ($inv:ident, $body:block) => {
             reject!(bad, {
-                let $inv = bad.player_inventory.as_mut().unwrap();
+                let $inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
                 $body
             });
         };
@@ -92,7 +92,12 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
         i.next_stack_id -= 1;
     });
     reject!(bad, {
-        bad.player_inventory.as_mut().unwrap().next_stack_id += 1;
+        bad.player_inventory
+            .as_mut()
+            .unwrap()
+            .as_v1_mut()
+            .unwrap()
+            .next_stack_id += 1;
         bad.validate()?;
     });
     inventory_reject!(i, {
@@ -131,7 +136,7 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
     });
     // A global quantity-preserving transfer still violates each owner's baseline.
     reject!(bad, {
-        let i = bad.player_inventory.as_mut().unwrap();
+        let i = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
         i.bags[0].inventories[0].slots[0].as_mut().unwrap().count += 1;
         i.bags[1].inventories[0].slots[0].as_mut().unwrap().count -= 1;
     });
@@ -437,7 +442,7 @@ fn literal_seed_witnesses_and_two_day_periods() -> Result<()> {
         );
         assert_eq!(applied(t), a);
         assert_eq!(survival_batches(t), b);
-        let inv = snapshot.player_inventory.unwrap();
+        let inv = snapshot.player_inventory.as_ref().unwrap().as_v1().unwrap();
         assert_eq!(
             (inv.revision, inv.bags[0].revision, inv.next_stack_id),
             (3 + a, 1 + a, next)
@@ -606,7 +611,7 @@ fn independently_mutated_targets_and_half_uses_are_rejected() -> Result<()> {
     }
     for field in 0..7 {
         let mut bad = good.clone();
-        let inv = bad.player_inventory.as_mut().unwrap();
+        let inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
         let icarus_bevy::native_player_inventory::PlayerInventoryRecipe::V2(recipe) =
             &mut inv.recipe
         else {
@@ -639,7 +644,7 @@ fn independently_mutated_targets_and_half_uses_are_rejected() -> Result<()> {
     }
     for doubled in [false, true] {
         let mut bad = good.clone();
-        let inv = bad.player_inventory.as_mut().unwrap();
+        let inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
         let bag = &mut inv.bags[0];
         let delta = if doubled { 1 } else { -1 };
         bag.inventories[0].slots[0].as_mut().unwrap().count =
@@ -656,7 +661,7 @@ fn independently_mutated_targets_and_half_uses_are_rejected() -> Result<()> {
     })?;
     assert!(check(&bad).is_err(), "vital-only half Use");
     let mut bad = good.clone();
-    let inv = bad.player_inventory.as_mut().unwrap();
+    let inv = bad.player_inventory.as_mut().unwrap().as_v1_mut().unwrap();
     inv.bags[0].inventories[0].slots[0].as_mut().unwrap().count += 1;
     inv.bags[1].inventories[0].slots[0].as_mut().unwrap().count -= 1;
     assert!(
@@ -807,7 +812,13 @@ fn equal_tick_wrong_bag_submission_cannot_settle_original_cutoff() -> Result<()>
         .resource_mut::<PlayerRegistry>()
         .request_leave(key(A)?, A, revision, now, Duration::from_secs(3))?;
     let mut wrong = frozen.clone();
-    let bag = &mut wrong.player_inventory.as_mut().unwrap().bags[0];
+    let bag = &mut wrong
+        .player_inventory
+        .as_mut()
+        .unwrap()
+        .as_v1_mut()
+        .unwrap()
+        .bags[0];
     bag.inventories[0].slots[0].as_mut().unwrap().count -= 1;
     bag.consumed[1].count += 1;
     wrong.validate()?;

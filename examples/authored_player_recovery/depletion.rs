@@ -188,17 +188,20 @@ pub(super) fn expected(tick: u64) -> Result<WorldSnapshot> {
         schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
         tick,
         native_players: Some(serde_json::from_slice(&serde_json::to_vec(&players)?)?),
-        player_inventory: Some(PlayerInventorySnapshotV1 {
-            format: 1,
-            recipe_id: consumables::recipe_identity()?,
-            recipe: consumables::recipe().into(),
-            baseline: InventoryInitialTotalsV1 {
-                items: totals(100_000, 7),
-            },
-            revision: 3 + u,
-            next_stack_id: 5,
-            bags,
-        }),
+        player_inventory: Some(
+            PlayerInventorySnapshotV1 {
+                format: 1,
+                recipe_id: consumables::recipe_identity()?,
+                recipe: consumables::recipe().into(),
+                baseline: InventoryInitialTotalsV1 {
+                    items: totals(100_000, 7),
+                },
+                revision: 3 + u,
+                next_stack_id: 5,
+                bags,
+            }
+            .into(),
+        ),
         ..Default::default()
     })
 }
@@ -217,7 +220,9 @@ pub(super) fn seed() -> Result<WorldSnapshot> {
         schema_version: SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
         native_players: Some(PlayerSnapshot::fresh(fixture_context()?, &release())?),
         player_inventory: Some(
-            CompiledPlayerInventoryRecipe::compile_versioned(consumables::recipe().into())?.empty(),
+            CompiledPlayerInventoryRecipe::compile_versioned(consumables::recipe().into())?
+                .empty()
+                .into(),
         ),
         ..Default::default()
     };
@@ -279,7 +284,12 @@ fn use_checked(app: &mut App) -> Result<()> {
         record.vitals[current] = record.vitals[max];
     }
     delta.native_players = Some(serde_json::from_slice(&serde_json::to_vec(&players)?)?);
-    let inventory = delta.player_inventory.as_mut().context("inventory")?;
+    let inventory = delta
+        .player_inventory
+        .as_mut()
+        .context("inventory")?
+        .as_v1_mut()
+        .context("inventory format")?;
     inventory.revision += 1;
     let bag = &mut inventory.bags[0];
     bag.revision += 1;

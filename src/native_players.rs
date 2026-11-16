@@ -177,6 +177,9 @@ pub struct PlayerContext {
     growth_rows: Arc<[String]>,
 }
 impl PlayerContext {
+    pub(crate) fn declaration_digest(&self) -> [u8; 32] {
+        self.inputs.declaration
+    }
     /// `growth_rows` lists the installed [`GROWTH_TABLE`] rows in order; a
     /// checkpoint's `growth_row` is an index into it.
     pub fn new(

@@ -1,9 +1,11 @@
 //! Fresh-store, independently authored player bags. No stock inventory protocol.
 //! Only the exclusive-world runtime adapter can commit live inventory changes.
 pub use crate::native_inventory::{
-    PlayerBagV1, PlayerConsumableV2, PlayerInventoryOwnerV1, PlayerInventoryRecipe,
-    PlayerInventoryRecipeV1, PlayerInventoryRecipeV2, PlayerInventorySnapshotV1,
-    PlayerOverflowDestinationV1, PlayerSlotEndpointV1, PlayerStackEndpointV1, PlayerStarterItemV1,
+    PlayerBagV1, PlayerBagV2, PlayerConsumableV2, PlayerInventoryOwnerV1, PlayerInventoryRecipe,
+    PlayerInventoryRecipeV1, PlayerInventoryRecipeV2, PlayerInventoryRevisionPairV1,
+    PlayerInventorySnapshot, PlayerInventorySnapshotV1, PlayerInventorySnapshotV2,
+    PlayerInventoryTransferRequestV1, PlayerOverflowDestinationV1, PlayerSlotEndpointV1,
+    PlayerStackEndpointV1, PlayerStarterItemV1,
 };
 use crate::{
     native_inventory::*, native_lifecycle::OwnerHandle, native_players::PlayerSnapshot,
@@ -19,10 +21,123 @@ use std::{
     path::Path,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerInventoryMode {
+    LocalV1,
+    TransfersV2,
+}
+impl PlayerInventoryMode {
+    pub const fn snapshot_schema(self) -> u32 {
+        match self {
+            Self::LocalV1 => 15,
+            Self::TransfersV2 => 16,
+        }
+    }
+}
+pub struct PlayerBagRef<'a> {
+    pub owner: PlayerInventoryOwnerV1,
+    pub revision: u64,
+    pub consumed: &'a Vec<ItemTotalV1>,
+    pub inventories: &'a Vec<InventoryStateV1>,
+}
+impl PlayerInventorySnapshot {
+    pub fn mode(&self) -> PlayerInventoryMode {
+        match self {
+            Self::V1(_) => PlayerInventoryMode::LocalV1,
+            Self::V2(_) => PlayerInventoryMode::TransfersV2,
+        }
+    }
+    pub fn recipe_id(&self) -> &str {
+        match self {
+            Self::V1(v) => &v.recipe_id,
+            Self::V2(v) => &v.recipe_id,
+        }
+    }
+    pub fn recipe(&self) -> &PlayerInventoryRecipe {
+        match self {
+            Self::V1(v) => &v.recipe,
+            Self::V2(v) => &v.recipe,
+        }
+    }
+    pub fn revision(&self) -> u64 {
+        match self {
+            Self::V1(v) => v.revision,
+            Self::V2(v) => v.revision,
+        }
+    }
+    pub fn next_stack_id(&self) -> u64 {
+        match self {
+            Self::V1(v) => v.next_stack_id,
+            Self::V2(v) => v.next_stack_id,
+        }
+    }
+    pub fn as_v1(&self) -> Option<&PlayerInventorySnapshotV1> {
+        match self {
+            Self::V1(v) => Some(v),
+            _ => None,
+        }
+    }
+    pub fn as_v1_mut(&mut self) -> Option<&mut PlayerInventorySnapshotV1> {
+        match self {
+            Self::V1(v) => Some(v),
+            _ => None,
+        }
+    }
+    pub fn as_v2(&self) -> Option<&PlayerInventorySnapshotV2> {
+        match self {
+            Self::V2(v) => Some(v),
+            _ => None,
+        }
+    }
+    pub fn as_v2_mut(&mut self) -> Option<&mut PlayerInventorySnapshotV2> {
+        match self {
+            Self::V2(v) => Some(v),
+            _ => None,
+        }
+    }
+    pub fn bag(&self, id: u64) -> Option<PlayerBagRef<'_>> {
+        match self {
+            Self::V1(v) => v.bag(id).map(|b| PlayerBagRef {
+                owner: b.owner,
+                revision: b.revision,
+                consumed: &b.consumed,
+                inventories: &b.inventories,
+            }),
+            Self::V2(v) => v.bag(id).map(|b| PlayerBagRef {
+                owner: b.owner,
+                revision: b.revision,
+                consumed: &b.consumed,
+                inventories: &b.inventories,
+            }),
+        }
+    }
+    pub fn validate(&self, players: &PlayerSnapshot) -> Result<()> {
+        match self {
+            Self::V1(v) => v.validate(players),
+            Self::V2(v) => v.validate(players),
+        }
+    }
+    pub(crate) fn issue(&self, id: u64) -> Result<Self> {
+        match self {
+            Self::V1(v) => Ok(v.issue(id)?.into()),
+            Self::V2(v) => Ok(v.issue(id)?.into()),
+        }
+    }
+    fn prepare_local(
+        &self,
+        request: &PlayerInventoryRequestV1,
+    ) -> Result<(InventoryStateSnapshotV1, InventoryActionOutcomeV1)> {
+        match self {
+            Self::V1(v) => v.prepare_local(request),
+            Self::V2(v) => v.prepare_local(request),
+        }
+    }
+}
+
 pub(crate) fn deserialize_optional<'de, D: serde::Deserializer<'de>>(
     d: D,
-) -> std::result::Result<Option<PlayerInventorySnapshotV1>, D::Error> {
-    PlayerInventorySnapshotV1::deserialize(d).map(Some)
+) -> std::result::Result<Option<PlayerInventorySnapshot>, D::Error> {
+    PlayerInventorySnapshot::deserialize(d).map(Some)
 }
 
 #[derive(Clone, PartialEq)]
@@ -108,6 +223,17 @@ impl CompiledPlayerInventoryRecipe {
     pub fn identity(&self) -> &str {
         &self.identity
     }
+    pub fn empty_v2(&self) -> PlayerInventorySnapshotV2 {
+        PlayerInventorySnapshotV2 {
+            format: 2,
+            recipe_id: self.identity.clone(),
+            recipe: self.recipe.clone(),
+            baseline: self.baseline.clone(),
+            revision: 1,
+            next_stack_id: 1,
+            bags: vec![],
+        }
+    }
     pub fn empty(&self) -> PlayerInventorySnapshotV1 {
         PlayerInventorySnapshotV1 {
             format: 1,
@@ -154,8 +280,11 @@ fn recipe_identity(recipe: &PlayerInventoryRecipe, domain: &[u8]) -> Result<Stri
     hash.update(serde_json::to_vec(recipe)?);
     Ok(crate::hex_lower(&hash.finalize()))
 }
-fn validate_retained_recipe(section: &PlayerInventorySnapshotV1) -> Result<()> {
-    let recipe = &section.recipe;
+fn validate_retained_recipe_parts(
+    recipe: &PlayerInventoryRecipe,
+    recipe_id: &str,
+    baseline: &InventoryInitialTotalsV1,
+) -> Result<()> {
     player_recipe_charge(recipe)?;
     let domain = recipe_domain(recipe)?;
     ensure!(
@@ -172,11 +301,10 @@ fn validate_retained_recipe(section: &PlayerInventorySnapshotV1) -> Result<()> {
         "player inventory retained recipe is not canonical"
     );
     ensure!(
-        recipe_identity(recipe, domain)? == section.recipe_id,
+        recipe_identity(recipe, domain)? == recipe_id,
         "player inventory recipe identity mismatch"
     );
-    let contracts =
-        CompiledInventoryContractsV1::player_bound(recipe, [1].into_iter(), &section.recipe_id)?;
+    let contracts = CompiledInventoryContractsV1::player_bound(recipe, [1].into_iter(), recipe_id)?;
     let initial = prepare_initial_inventory_from(
         &contracts,
         &InventoryLiveOwnersV1 {
@@ -187,7 +315,7 @@ fn validate_retained_recipe(section: &PlayerInventorySnapshotV1) -> Result<()> {
         1,
     )?;
     ensure!(
-        initial.initial_totals() == &section.baseline,
+        initial.initial_totals() == baseline,
         "player inventory immutable baseline mismatch"
     );
     Ok(())
@@ -245,7 +373,7 @@ impl PlayerInventorySnapshotV1 {
             self.format == 1 && self.revision > 0 && self.next_stack_id > 0,
             "player inventory header invalid"
         );
-        validate_retained_recipe(self)?;
+        validate_retained_recipe_parts(&self.recipe, &self.recipe_id, &self.baseline)?;
         let records: BTreeMap<_, _> = players.records.iter().map(|r| (r.id, r)).collect();
         ensure!(
             self.bags.len() == records.len(),
@@ -605,8 +733,12 @@ fn prepare_generation(
     player_action_bounds(request)?;
     snapshot.validate()?;
     ensure!(
-        snapshot.schema_version == crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY,
-        "player inventory requires schema 15"
+        matches!(
+            snapshot.schema_version,
+            crate::simulation::SNAPSHOT_SCHEMA_PLAYER_INVENTORY
+                | crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS
+        ),
+        "player inventory requires schema 15 or 16"
     );
     let record = snapshot
         .native_players
@@ -657,24 +789,48 @@ fn prepare_generation(
             .player_inventory
             .as_mut()
             .context("player inventory missing")?;
-        section.revision = section
-            .revision
-            .checked_add(1)
-            .context("player inventory revision exhausted")?;
-        section.next_stack_id = inventory.next_stack_id;
-        let bag = section
-            .bags
-            .iter_mut()
-            .find(|b| b.owner.player_id == request.player_id)
-            .context("player inventory missing")?;
-        bag.revision = inventory.revision;
-        bag.consumed = inventory.consumed;
-        bag.inventories = inventory
+        let inventories = inventory
             .owners
             .into_iter()
             .next()
             .context("player inventory missing")?
             .inventories;
+        match section {
+            PlayerInventorySnapshot::V1(section) => {
+                section.revision = section
+                    .revision
+                    .checked_add(1)
+                    .context("player inventory revision exhausted")?;
+                section.next_stack_id = inventory.next_stack_id;
+                let bag = section
+                    .bags
+                    .iter_mut()
+                    .find(|b| b.owner.player_id == request.player_id)
+                    .context("player inventory missing")?;
+                bag.revision = inventory.revision;
+                bag.consumed = inventory.consumed;
+                bag.inventories = inventories;
+            }
+            PlayerInventorySnapshot::V2(section) => {
+                section.revision = section
+                    .revision
+                    .checked_add(1)
+                    .context("player inventory revision exhausted")?;
+                section.next_stack_id = inventory.next_stack_id;
+                let bag = section
+                    .bags
+                    .iter_mut()
+                    .find(|b| b.owner.player_id == request.player_id)
+                    .context("player inventory missing")?;
+                bag.revision = inventory.revision;
+                bag.consumed = inventory
+                    .consumed
+                    .into_iter()
+                    .filter(|v| v.count > 0)
+                    .collect();
+                bag.inventories = inventories;
+            }
+        }
         crate::persistence::SnapshotStore::preflight(&next)?;
     }
     Ok((next, outcome))
@@ -717,7 +873,7 @@ fn prepare_use(
         .context("player inventory source missing")?;
     ensure!(stack.count > 0, "player inventory source empty");
     let effect = section
-        .recipe
+        .recipe()
         .effect(&stack.item)
         .context("player inventory item is not consumable")?;
     let gain = |current: i32, maximum: i32, amount: u32| -> Result<i32> {
@@ -731,4 +887,699 @@ fn prepare_use(
     v.water = gain(v.water, v.max_water, effect.water)?;
     v.food = gain(v.food, v.max_food, effect.food)?;
     Ok(checkpoint)
+}
+
+fn dense_consumed(
+    baseline: &InventoryInitialTotalsV1,
+    rows: &[ItemTotalV1],
+) -> Result<Vec<ItemTotalV1>> {
+    validate_player_sparse(baseline, rows)?;
+    let mut dense = zero(baseline);
+    for row in rows {
+        let i = dense
+            .binary_search_by(|v| v.item.cmp(&row.item))
+            .map_err(|_| anyhow::anyhow!("player inventory item invalid"))?;
+        dense[i].count = row.count;
+    }
+    Ok(dense)
+}
+fn local_v2(
+    section: &PlayerInventorySnapshotV2,
+    bag: &PlayerBagV2,
+) -> Result<InventoryStateSnapshotV1> {
+    Ok(InventoryStateSnapshotV1 {
+        format: 1,
+        contract_id: section.recipe_id.clone(),
+        revision: bag.revision,
+        next_stack_id: section.next_stack_id,
+        consumed: dense_consumed(&section.baseline, &bag.consumed)?,
+        owners: vec![OwnerInventoriesV1 {
+            owner: handle(bag.owner.player_id),
+            inventories: bag.inventories.clone(),
+        }],
+    })
+}
+impl PlayerInventorySnapshotV2 {
+    pub fn bag(&self, id: u64) -> Option<&PlayerBagV2> {
+        self.bags.iter().find(|b| b.owner.player_id == id)
+    }
+    pub fn validate(&self, players: &PlayerSnapshot) -> Result<()> {
+        player_inventory_v2_charge(self, 8)?;
+        players.validate()?;
+        ensure!(
+            self.format == 2 && self.revision > 0 && self.next_stack_id > 0,
+            "player inventory header invalid"
+        );
+        validate_retained_recipe_parts(&self.recipe, &self.recipe_id, &self.baseline)?;
+        ensure!(
+            self.bags.len() == players.records.len()
+                && self.bags.windows(2).all(|r| r[0].owner < r[1].owner),
+            "player inventory coverage invalid"
+        );
+        let issued = self
+            .recipe
+            .starter()
+            .len()
+            .checked_mul(self.bags.len())
+            .and_then(|n| u64::try_from(n).ok())
+            .and_then(|n| n.checked_add(1))
+            .context("player inventory allocator exhausted")?;
+        ensure!(
+            self.next_stack_id >= issued,
+            "player inventory allocator precedes issuance"
+        );
+        let contracts = CompiledInventoryContractsV1::player_bound(
+            &self.recipe,
+            players.records.iter().map(|r| r.id),
+            &self.recipe_id,
+        )?;
+        let mut received = vec![0u128; self.baseline.items.len()];
+        let mut sent = vec![0u128; received.len()];
+        let mut stacks = BTreeSet::new();
+        let mut instances = 0usize;
+        for bag in &self.bags {
+            ensure!(
+                bag.owner.incarnation == 1
+                    && bag.revision > 0
+                    && players
+                        .records
+                        .iter()
+                        .any(|r| r.id == bag.owner.player_id && r.revision >= bag.revision),
+                "player inventory owner invalid"
+            );
+            for (rows, totals) in [(&bag.received, &mut received), (&bag.sent, &mut sent)] {
+                validate_player_sparse(&self.baseline, rows)?;
+                for row in rows {
+                    let i = self
+                        .baseline
+                        .items
+                        .binary_search_by(|v| v.item.cmp(&row.item))
+                        .map_err(|_| anyhow::anyhow!("player inventory item invalid"))?;
+                    totals[i] = totals[i]
+                        .checked_add(u128::from(row.count))
+                        .context("player inventory quantity exhausted")?;
+                }
+            }
+            let contract = contracts.for_owner(DomainId(bag.owner.player_id))?;
+            validate_player_inventory_state_v2(
+                &contract,
+                &local_v2(self, bag)?,
+                &self.baseline,
+                &InventoryLiveOwnersV1 {
+                    owners: vec![handle(bag.owner.player_id)],
+                },
+                &bag.received,
+                &bag.sent,
+            )?;
+            instances = instances
+                .checked_add(bag.inventories.len())
+                .context("player inventory instance limit")?;
+            ensure!(
+                instances <= MAX_INVENTORY_INSTANCES,
+                "player inventory instance limit"
+            );
+            for inv in &bag.inventories {
+                for stack in inv
+                    .slots
+                    .iter()
+                    .flatten()
+                    .chain(inv.overflow.iter().map(|v| &v.stack))
+                {
+                    ensure!(
+                        stacks.insert(stack.id) && stacks.len() <= MAX_INVENTORY_STACKS,
+                        "player inventory stack identity or limit invalid"
+                    );
+                }
+            }
+        }
+        ensure!(received == sent, "player inventory global flow mismatch");
+        Ok(())
+    }
+    fn issue(&self, id: u64) -> Result<Self> {
+        player_inventory_v2_charge(self, 8)?;
+        ensure!(
+            self.bag(id).is_none() && self.bags.len() < 4096,
+            "player inventory issuance conflict"
+        );
+        let contracts = CompiledInventoryContractsV1::player_bound(
+            &self.recipe,
+            [id].into_iter(),
+            &self.recipe_id,
+        )?;
+        let initial = prepare_initial_inventory_from(
+            &contracts,
+            &InventoryLiveOwnersV1 {
+                owners: vec![handle(id)],
+            },
+            &starters(&self.recipe, id),
+            player_inventory_v2_bytes(self)?
+                .checked_mul(8)
+                .context("player inventory allocation limit")?,
+            self.next_stack_id,
+        )?;
+        let (state, baseline, _) = initial.into_parts();
+        ensure!(
+            baseline == self.baseline,
+            "player inventory issuance baseline invalid"
+        );
+        let mut next = self.clone();
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .context("player inventory revision exhausted")?;
+        next.next_stack_id = state.next_stack_id;
+        next.bags
+            .try_reserve(1)
+            .context("player inventory allocation limit")?;
+        next.bags.push(PlayerBagV2 {
+            owner: PlayerInventoryOwnerV1 {
+                player_id: id,
+                incarnation: 1,
+            },
+            revision: 1,
+            consumed: vec![],
+            received: vec![],
+            sent: vec![],
+            inventories: state
+                .owners
+                .into_iter()
+                .next()
+                .context("player inventory issuance missing")?
+                .inventories,
+        });
+        next.bags.sort_by_key(|b| b.owner);
+        player_inventory_v2_charge(&next, 8)?;
+        Ok(next)
+    }
+    fn prepare_local(
+        &self,
+        request: &PlayerInventoryRequestV1,
+    ) -> Result<(InventoryStateSnapshotV1, InventoryActionOutcomeV1)> {
+        player_inventory_v2_charge(self, 8)?;
+        player_action_bounds(request)?;
+        let bag = self
+            .bag(request.player_id)
+            .context("player inventory missing")?;
+        ensure!(
+            bag.revision == request.expected_bag_revision,
+            "player inventory revision conflict"
+        );
+        let action = request.action.lower(bag.owner)?;
+        let contracts = CompiledInventoryContractsV1::player_bound(
+            &self.recipe,
+            [request.player_id].into_iter(),
+            &self.recipe_id,
+        )?;
+        let prepared = prepare_player_inventory_action_v2(
+            &contracts,
+            &local_v2(self, bag)?,
+            &self.baseline,
+            &InventoryLiveOwnersV1 {
+                owners: vec![handle(request.player_id)],
+            },
+            (&bag.received, &bag.sent),
+            &InventoryActionRequestV1 {
+                expected_inventory_revision: bag.revision,
+                action,
+            },
+        )?;
+        let outcome = prepared.outcome();
+        if outcome == InventoryActionOutcomeV1::Applied {
+            self.revision
+                .checked_add(1)
+                .context("player inventory revision exhausted")?;
+        }
+        Ok((prepared.into_state(), outcome))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct AppliedPlayerInventoryTransfer {
+    pub source_player_revision: u64,
+    pub source_bag_revision: u64,
+    pub destination_player_revision: u64,
+    pub destination_bag_revision: u64,
+    pub inventory_revision: u64,
+}
+pub fn prepare_transfer_offline(
+    snapshot: &crate::simulation::WorldSnapshot,
+    request: &PlayerInventoryTransferRequestV1,
+) -> Result<(
+    crate::simulation::WorldSnapshot,
+    AppliedPlayerInventoryTransfer,
+)> {
+    prepare_transfer_generation(std::borrow::Cow::Borrowed(snapshot), request)
+}
+pub(crate) fn prepare_transfer_owned(
+    snapshot: crate::simulation::WorldSnapshot,
+    request: &PlayerInventoryTransferRequestV1,
+) -> Result<(
+    crate::simulation::WorldSnapshot,
+    AppliedPlayerInventoryTransfer,
+)> {
+    prepare_transfer_generation(std::borrow::Cow::Owned(snapshot), request)
+}
+fn flow_next(rows: &[ItemTotalV1], item: &str, amount: u32) -> Result<u64> {
+    rows.iter()
+        .find(|v| v.item == item)
+        .map_or(0, |v| v.count)
+        .checked_add(u64::from(amount))
+        .context("player inventory flow exhausted")
+}
+fn set_flow(rows: &mut Vec<ItemTotalV1>, item: String, count: u64) {
+    match rows.binary_search_by(|v| v.item.cmp(&item)) {
+        Ok(i) => rows[i].count = count,
+        Err(i) => rows.insert(i, ItemTotalV1 { item, count }),
+    }
+}
+fn prepare_transfer_generation(
+    snapshot: std::borrow::Cow<'_, crate::simulation::WorldSnapshot>,
+    request: &PlayerInventoryTransferRequestV1,
+) -> Result<(
+    crate::simulation::WorldSnapshot,
+    AppliedPlayerInventoryTransfer,
+)> {
+    prepare_transfer_with_reserve(snapshot, request, |rows| {
+        rows.try_reserve(1)
+            .context("player inventory allocation limit")
+    })
+}
+
+// Per-call reserve dependency keeps refusal tests local to these two genuinely
+// fallible staging operations. The production caller retains Vec::try_reserve.
+fn prepare_transfer_with_reserve(
+    snapshot: std::borrow::Cow<'_, crate::simulation::WorldSnapshot>,
+    request: &PlayerInventoryTransferRequestV1,
+    mut reserve: impl FnMut(&mut Vec<ItemTotalV1>) -> Result<()>,
+) -> Result<(
+    crate::simulation::WorldSnapshot,
+    AppliedPlayerInventoryTransfer,
+)> {
+    player_action_bounds(request)?;
+    snapshot.validate()?;
+    ensure!(
+        snapshot.schema_version == crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS,
+        "player inventory transfer requires schema 16"
+    );
+    let section = snapshot
+        .player_inventory
+        .as_ref()
+        .and_then(PlayerInventorySnapshot::as_v2)
+        .context("player inventory transfer requires section 2")?;
+    let source = request.source.owner;
+    let dest = request.destination.owner;
+    ensure!(
+        source.player_id > 0
+            && dest.player_id > 0
+            && source.incarnation == 1
+            && dest.incarnation == 1
+            && source.player_id != dest.player_id
+            && request.amount > 0,
+        "player inventory transfer endpoints invalid"
+    );
+    let players = snapshot
+        .native_players
+        .as_ref()
+        .context("players missing")?;
+    let record_index = |id| {
+        players
+            .records
+            .iter()
+            .position(|r| r.id == id)
+            .context("player inventory transfer player missing")
+    };
+    let si = record_index(source.player_id)?;
+    let di = record_index(dest.player_id)?;
+    let sb = section
+        .bags
+        .iter()
+        .position(|b| b.owner == source)
+        .context("player inventory transfer bag missing")?;
+    let db = section
+        .bags
+        .iter()
+        .position(|b| b.owner == dest)
+        .context("player inventory transfer bag missing")?;
+    let src = &section.bags[sb];
+    let dst = &section.bags[db];
+    ensure!(
+        players.records[si].revision == request.source_cas.expected_player_revision
+            && src.revision == request.source_cas.expected_bag_revision
+            && players.records[di].revision == request.destination_cas.expected_player_revision
+            && dst.revision == request.destination_cas.expected_bag_revision,
+        "player inventory transfer revision conflict"
+    );
+    let sinv = src
+        .inventories
+        .iter()
+        .position(|i| i.key == request.source.inventory)
+        .context("player inventory transfer source missing")?;
+    let dinv = dst
+        .inventories
+        .iter()
+        .position(|i| i.key == request.destination.inventory)
+        .context("player inventory transfer destination missing")?;
+    let inv = &src.inventories[sinv];
+    let normal = inv
+        .slots
+        .iter()
+        .position(|v| v.as_ref().is_some_and(|s| s.id == request.source.stack_id));
+    let overflow = inv
+        .overflow
+        .iter()
+        .position(|v| v.stack.id == request.source.stack_id);
+    let stack = match (normal, overflow) {
+        (Some(i), None) => inv.slots[i].as_ref().expect("located stack"),
+        (None, Some(i)) => &inv.overflow[i].stack,
+        _ => anyhow::bail!("player inventory transfer source missing"),
+    };
+    let slot = usize::from(request.destination.slot);
+    let definition = section
+        .recipe
+        .inventories()
+        .iter()
+        .find(|i| i.key == request.destination.inventory)
+        .context("player inventory transfer destination missing")?;
+    ensure!(
+        dst.inventories[dinv]
+            .slots
+            .get(slot)
+            .is_some_and(Option::is_none)
+            && definition
+                .slot_rules
+                .get(slot)
+                .is_some_and(|r| r.allowed_items.iter().any(|i| i == &stack.item)),
+        "player inventory transfer destination refused"
+    );
+    let limit = section
+        .recipe
+        .items()
+        .iter()
+        .find(|i| i.key == stack.item)
+        .context("player inventory transfer item missing")?
+        .stack_limit;
+    ensure!(
+        request.amount <= stack.count && request.amount <= limit,
+        "player inventory transfer amount invalid"
+    );
+    let partial = request.amount < stack.count;
+    let next_stack_id = if partial {
+        section
+            .next_stack_id
+            .checked_add(1)
+            .context("player inventory allocator exhausted")?
+    } else {
+        section.next_stack_id
+    };
+    if partial {
+        let count: usize = section
+            .bags
+            .iter()
+            .flat_map(|b| &b.inventories)
+            .map(|i| i.slots.iter().flatten().count() + i.overflow.len())
+            .sum();
+        ensure!(count < MAX_INVENTORY_STACKS, "player inventory stack limit");
+    }
+    let result = AppliedPlayerInventoryTransfer {
+        source_player_revision: players.records[si]
+            .revision
+            .checked_add(1)
+            .context("player revision exhausted")?,
+        source_bag_revision: src
+            .revision
+            .checked_add(1)
+            .context("player inventory revision exhausted")?,
+        destination_player_revision: players.records[di]
+            .revision
+            .checked_add(1)
+            .context("player revision exhausted")?,
+        destination_bag_revision: dst
+            .revision
+            .checked_add(1)
+            .context("player inventory revision exhausted")?,
+        inventory_revision: section
+            .revision
+            .checked_add(1)
+            .context("player inventory revision exhausted")?,
+    };
+    let sent = flow_next(&src.sent, &stack.item, request.amount)?;
+    let received = flow_next(&dst.received, &stack.item, request.amount)?;
+    let transferred = StackV1 {
+        id: if partial {
+            StackId::new(section.next_stack_id)?
+        } else {
+            stack.id
+        },
+        item: stack.item.clone(),
+        count: request.amount,
+    };
+    let sent_item = stack.item.clone();
+    let received_item = stack.item.clone();
+    let mut next = snapshot.into_owned();
+    let section = next
+        .player_inventory
+        .as_mut()
+        .and_then(PlayerInventorySnapshot::as_v2_mut)
+        .expect("validated section");
+    if section.bags[sb]
+        .sent
+        .binary_search_by(|v| v.item.cmp(&sent_item))
+        .is_err()
+    {
+        reserve(&mut section.bags[sb].sent)?;
+    }
+    if section.bags[db]
+        .received
+        .binary_search_by(|v| v.item.cmp(&received_item))
+        .is_err()
+    {
+        reserve(&mut section.bags[db].received)?;
+    }
+    let inv = &mut section.bags[sb].inventories[sinv];
+    match (normal, overflow, partial) {
+        (Some(i), None, true) => {
+            inv.slots[i].as_mut().expect("located stack").count -= request.amount
+        }
+        (Some(i), None, false) => {
+            inv.slots[i].take();
+        }
+        (None, Some(i), true) => inv.overflow[i].stack.count -= request.amount,
+        (None, Some(i), false) => {
+            inv.overflow.remove(i);
+        }
+        _ => unreachable!("validated source"),
+    }
+    section.bags[db].inventories[dinv].slots[slot] = Some(transferred);
+    set_flow(&mut section.bags[sb].sent, sent_item, sent);
+    set_flow(&mut section.bags[db].received, received_item, received);
+    section.bags[sb].revision = result.source_bag_revision;
+    section.bags[db].revision = result.destination_bag_revision;
+    section.revision = result.inventory_revision;
+    section.next_stack_id = next_stack_id;
+    let players = next.native_players.as_mut().expect("validated players");
+    players.records[si].revision = result.source_player_revision;
+    players.records[di].revision = result.destination_player_revision;
+    crate::persistence::SnapshotStore::preflight(&next)?;
+    Ok((next, result))
+}
+
+#[cfg(test)]
+pub(crate) mod transfer_staging_tests {
+    use super::*;
+    use crate::{
+        experimental::pawn_open::CharacterVitals,
+        native_player_runtime::PlayerRegistry,
+        native_players::{PlayerCheckpoint, PlayerContext, PlayerInputs, PlayerKey},
+        simulation::WorldSnapshot,
+    };
+
+    pub(crate) fn key(id: u64) -> PlayerKey {
+        PlayerKey::new(9000 + id, 0).unwrap()
+    }
+
+    pub(crate) fn checkpoint() -> PlayerCheckpoint {
+        PlayerCheckpoint {
+            location_cm: [10., 20., 30.],
+            vitals: CharacterVitals {
+                health: 100,
+                max_health: 100,
+                stamina: 100,
+                max_stamina: 100,
+                oxygen: 100,
+                max_oxygen: 100,
+                water: 100,
+                max_water: 100,
+                food: 100,
+                max_food: 100,
+                biome_row: 0,
+                growth_row: 0,
+            },
+        }
+    }
+
+    // Authored retained owners, issued once each. Larger graph tests reuse the
+    // same setup; balanced sparse flows are added explicitly by those tests.
+    pub(crate) fn fixture(recipe: PlayerInventoryRecipeV1, owners: u64) -> WorldSnapshot {
+        let context = PlayerContext::new(
+            "boundary-world".encode_utf16().collect(),
+            "/Authored/Boundary".into(),
+            PlayerInputs {
+                authored_gameplay: [1; 32],
+                spawn: [2; 32],
+                authored_world: [3; 32],
+                declaration: [4; 32],
+                initial_values: [5; 32],
+            },
+            vec!["Player".into()],
+        )
+        .unwrap();
+        let compiled = CompiledPlayerInventoryRecipe::compile(recipe).unwrap();
+        let mut section = compiled.empty_v2().issue(1).unwrap();
+        let template = section.bags.pop().unwrap();
+        let stacks = section.recipe.starter().len() as u64;
+        let mut players =
+            PlayerRegistry::new(PlayerSnapshot::empty(context.clone()), &context, 64).unwrap();
+        for id in 1..=owners {
+            players.reserve(key(id), id, checkpoint()).unwrap();
+            players.activate(id).unwrap();
+            players.detach(id);
+            let mut bag = template.clone();
+            bag.owner.player_id = id;
+            for stack in bag.inventories.iter_mut().flat_map(|i| {
+                i.slots
+                    .iter_mut()
+                    .flatten()
+                    .chain(i.overflow.iter_mut().map(|v| &mut v.stack))
+            }) {
+                stack.id = StackId::new((id - 1) * stacks + stack.id.get()).unwrap();
+            }
+            section.bags.push(bag);
+        }
+        section.next_stack_id = stacks * owners + 1;
+        section.revision = owners + 1;
+        WorldSnapshot {
+            schema_version: crate::simulation::SNAPSHOT_SCHEMA_PLAYER_TRANSFERS,
+            native_players: Some(players.snapshot()),
+            player_inventory: Some(section.into()),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn request(snapshot: &WorldSnapshot) -> PlayerInventoryTransferRequestV1 {
+        let section = snapshot.player_inventory.as_ref().unwrap().as_v2().unwrap();
+        let src = section.bag(1).unwrap();
+        let dst = section.bag(2).unwrap();
+        PlayerInventoryTransferRequestV1 {
+            source: PlayerStackEndpointV1 {
+                owner: src.owner,
+                inventory: src.inventories[0].key.clone(),
+                stack_id: src.inventories[0].slots[0].as_ref().unwrap().id,
+            },
+            destination: PlayerSlotEndpointV1 {
+                owner: dst.owner,
+                inventory: dst.inventories[1].key.clone(),
+                slot: 0,
+            },
+            amount: 1,
+            source_cas: PlayerInventoryRevisionPairV1 {
+                expected_player_revision: snapshot
+                    .native_players
+                    .as_ref()
+                    .unwrap()
+                    .projection_by_id(1)
+                    .unwrap()
+                    .revision,
+                expected_bag_revision: src.revision,
+            },
+            destination_cas: PlayerInventoryRevisionPairV1 {
+                expected_player_revision: snapshot
+                    .native_players
+                    .as_ref()
+                    .unwrap()
+                    .projection_by_id(2)
+                    .unwrap()
+                    .revision,
+                expected_bag_revision: dst.revision,
+            },
+        }
+    }
+
+    #[test]
+    fn boundary_each_transfer_reserve_refusal_preserves_input_then_succeeds() {
+        let inventory = |key: &str, slots| InventoryDefinitionV1 {
+            key: key.into(),
+            initial_slots: slots,
+            slot_rules: vec![
+                SlotRuleV1 {
+                    allowed_items: vec!["item".into()]
+                };
+                slots as usize
+            ],
+            force_add_when_zero: false,
+            overflow_limit: 0,
+        };
+        let snapshot = fixture(
+            PlayerInventoryRecipeV1 {
+                format: 1,
+                items: vec![ItemDefinitionV1 {
+                    key: "item".into(),
+                    stack_limit: 10,
+                }],
+                inventories: vec![inventory("bag", 1), inventory("spare", 1)],
+                starter: vec![PlayerStarterItemV1 {
+                    inventory: "bag".into(),
+                    requested_slot: 0,
+                    item: "item".into(),
+                    count: 2,
+                }],
+            },
+            2,
+        );
+        snapshot.validate().unwrap();
+        let before = serde_json::to_vec(&snapshot).unwrap();
+        let req = request(&snapshot);
+        let expected = prepare_transfer_offline(&snapshot, &req).unwrap();
+        for fail_at in 1..=2 {
+            let mut calls = 0;
+            let err = prepare_transfer_with_reserve(
+                std::borrow::Cow::Borrowed(&snapshot),
+                &req,
+                |rows| {
+                    calls += 1;
+                    if calls == fail_at {
+                        // A real TryReserveError (deterministic capacity overflow),
+                        // delivered at the selected private staging call only.
+                        Vec::<u8>::new()
+                            .try_reserve(usize::MAX)
+                            .context("player inventory allocation limit")?;
+                        unreachable!("usize::MAX reserve must refuse");
+                    }
+                    rows.try_reserve(1)
+                        .context("player inventory allocation limit")
+                },
+            )
+            .unwrap_err();
+            assert_eq!(calls, fail_at);
+            assert_eq!(err.to_string(), "player inventory allocation limit");
+            assert!(
+                err.downcast_ref::<std::collections::TryReserveError>()
+                    .is_some()
+            );
+            assert_eq!(serde_json::to_vec(&snapshot).unwrap(), before);
+            let mut calls = 0;
+            let retried = prepare_transfer_with_reserve(
+                std::borrow::Cow::Borrowed(&snapshot),
+                &req,
+                |rows| {
+                    calls += 1;
+                    rows.try_reserve(1)
+                        .context("player inventory allocation limit")
+                },
+            )
+            .unwrap();
+            assert_eq!(calls, 2);
+            assert_eq!(retried, expected);
+            assert_eq!(serde_json::to_vec(&snapshot).unwrap(), before);
+        }
+    }
 }

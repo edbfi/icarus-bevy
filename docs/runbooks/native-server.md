@@ -1,4 +1,4 @@
-# Native server: run, persistence and inspection
+# Native server
 
 [Constraints](../architecture.md), [status](../implementation-status.md).
 
@@ -52,11 +52,12 @@ Presence/listing/empty saves: F-1171/F-1004/F-1170. CM IDs omitted from logs/Deb
 [Stall limits](controller-receive.md): F-1181/F-1184; populated saves unqualified (U-038).
 CM deadlines: F-1180.
 
-`network.authored_controller_leave` defaults false ([binding](../architecture.md#persistence)).
-Run-only `--private-leave-proof DESCRIPTOR` requires protected one-player hosting,
-manager `INVOCATION_ID`, owned 0700 CWD and 0600 files. Observer `prepare` is pure.
-`record-menu` records the owner's report atomically; `observe` also needs Ready.
-Exit/resource release and `seal-exit` must succeed before restart; ACK is transport only.
+Run-only `--private-leave-proof`: schema 14; descriptor/case/manager `INVOCATION_ID`;
+one protected player; rates 0/0/1; fresh food 1..100/valid max; owned 0700 CWD/0600
+files. Pure `prepare`; `observe`: Ready/owner menu report (atomic `record-menu`).
+Check cutoff/raw-row identity/readback, sealed-current pawn composition/admission.
+Exit/release/`seal-exit` precede restart. Sink failure terminal; old receipts stand.
+ACK transport-only; no terrain/OnRep/full-save/client proof.
 
 `native_join_probe`: [diagnostics](network-readiness.md),
 [stats](network-readiness.md#fresh-player-stats),
