@@ -9,8 +9,8 @@ cargo run --release --locked --example synthetic_soak -- \
 ```
 
 JSON output covers up to 259,200 seconds (72 hours). Tick timings exclude
-snapshot capture and the outer loop; save latency includes polling delay.
-Fixed-memory histograms retain every sample: ticks at 1 µs through 131,072 µs,
+snapshot capture and the outer loop. Save latency spans submission to observation,
+including polling delay. Fixed-memory histograms count every sample: ticks at 1 µs through 131,072 µs,
 saves/captures at 100 µs through 10 s. Quantiles use rank
 `floor((n - 1) * percentile / 100)`, rounded down to resolution; out-of-range
 ranks yield `null`, while maxima are exact.
