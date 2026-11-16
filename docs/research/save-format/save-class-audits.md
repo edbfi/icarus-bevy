@@ -29,8 +29,10 @@ Reference plans: F-897, F-898, F-916; candidate retention, not restoration:
 F-920.
 
 Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
-append chains F-937/F-940. F-1195 declares types, not native element/requested-row
-storage, getter/class identity, ABI, aliases or lifetimes; client/runtime/import
+append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;
+M-1517 qualifies the repeated reader.
+Next: actual caller/lowering and owner/receiver proof; element/requested-row
+storage, getter/class identity, ABI, aliases, lifetimes, client/runtime/import
 remain open ([boundary](../../specs/save-format/restore-rules.md#confirmed)).
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
@@ -44,4 +46,4 @@ Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Artifacts
 
-Earlier artifacts: cited findings; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-1508.
+Cited findings; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-1508, M-1517.
