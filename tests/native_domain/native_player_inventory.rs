@@ -482,7 +482,10 @@ fn strict_corruption_recipe_matching_and_future_format_refuse() {
             1 => i.bags.push(i.bags[0].clone()),
             2 => i.bags[0].owner.player_id = 99,
             3 => i.baseline.items[0].count += 1,
-            4 => i.recipe.starter[0].count -= 1,
+            4 => match &mut i.recipe {
+                PlayerInventoryRecipe::V1(v) => v.starter[0].count -= 1,
+                _ => unreachable!(),
+            },
             5 => i.bags[0].inventories[0].slots[0].as_mut().unwrap().count += 1,
             _ => i.next_stack_id = 1,
         }
@@ -511,7 +514,7 @@ fn strict_corruption_recipe_matching_and_future_format_refuse() {
         let mut v = serde_json::to_value(&state).unwrap();
         match field {
             "section" => v["player_inventory"]["format"] = json!(2),
-            "recipe" => v["player_inventory"]["recipe"]["format"] = json!(2),
+            "recipe" => v["player_inventory"]["recipe"]["format"] = json!(3),
             _ => v["schema_version"] = json!(16),
         }
         replace_current(dir.path(), &v);
@@ -1252,6 +1255,9 @@ fn all_unknown_section_and_recipe_formats_refuse_previous_generation_recovery() 
         for format in [
             json!(0),
             json!(2),
+            json!(3),
+            json!(-1),
+            json!(1.0),
             json!(u32::MAX),
             json!("future-private"),
             json!(true),
@@ -1259,6 +1265,9 @@ fn all_unknown_section_and_recipe_formats_refuse_previous_generation_recovery() 
             json!({}),
             json!([]),
         ] {
+            if recipe && format == json!(2) {
+                continue;
+            }
             let dir = tempfile::tempdir().unwrap();
             {
                 let mut store = SnapshotStore::open(dir.path()).unwrap();
@@ -1469,4 +1478,1044 @@ fn cli_post_publication_output_failure_requires_reopen_before_retry() {
     let retry = execute(&root, &req, false);
     assert!(!retry.status.success());
     assert_eq!(disk(&root), before);
+}
+
+mod consumables {
+    use super::*;
+    use icarus_bevy::native_inventory::StackId;
+    fn v2() -> PlayerInventoryRecipeV2 {
+        let v = recipe();
+        PlayerInventoryRecipeV2 {
+            format: 2,
+            items: v.items,
+            inventories: v.inventories,
+            starter: v.starter,
+            consumables: vec![PlayerConsumableV2 {
+                item: "authored-token".into(),
+                oxygen: 15,
+                water: 25,
+                food: 35,
+            }],
+        }
+    }
+    fn empty_v2(r: PlayerInventoryRecipeV2) -> WorldSnapshot {
+        let mut state = empty();
+        state.player_inventory = Some(
+            CompiledPlayerInventoryRecipe::compile_versioned(r.into())
+                .unwrap()
+                .empty(),
+        );
+        state
+    }
+    fn setup(r: PlayerInventoryRecipeV2) -> (bevy::prelude::App, u64) {
+        let mut app = build_app(&ServerConfig::default(), &empty_v2(r)).unwrap();
+        let id = attach(&mut app, 1, 1);
+        (app, id)
+    }
+    fn use_item(state: &WorldSnapshot, id: u64) -> PlayerInventoryRequestV1 {
+        request(
+            state,
+            id,
+            PlayerInventoryActionV1::Use {
+                source: endpoint(state, id, 0),
+            },
+        )
+    }
+    fn depleted(app: &mut bevy::prelude::App, id: u64) {
+        let revision = snapshot(app)
+            .native_players
+            .unwrap()
+            .projection_by_id(id)
+            .unwrap()
+            .revision;
+        let mut next = checkpoint();
+        next.vitals.health = 0;
+        next.vitals.oxygen = 0;
+        next.vitals.water = 90;
+        next.vitals.food = 50;
+        icarus_bevy::native_player_runtime::edit_player_checkpoint(
+            app.world_mut(),
+            key(1),
+            1,
+            revision,
+            next,
+        )
+        .unwrap();
+    }
+    fn parse(value: &serde_json::Value) -> bool {
+        CompiledPlayerInventoryRecipe::parse(&serde_json::to_string(value).unwrap()).is_ok()
+    }
+    #[test]
+    fn v1_golden_bytes_identity_and_strict_decode_parity() {
+        const GOLDEN: &str = r#"{"format":1,"items":[{"key":"authored-token","stack_limit":10}],"inventories":[{"key":"bag","initial_slots":3,"slot_rules":[{"allowed_items":["authored-token"]},{"allowed_items":["authored-token"]},{"allowed_items":["authored-token"]},{"allowed_items":["authored-token"]}],"force_add_when_zero":false,"overflow_limit":4}],"starter":[{"inventory":"bag","requested_slot":0,"item":"authored-token","count":8}]}"#;
+        const ID: &str = "81656f4ae25783adac34aeca2f7219eac385b4975717a6eba7f10a2f2c53be02";
+        let compiled = CompiledPlayerInventoryRecipe::compile(recipe()).unwrap();
+        assert_eq!(compiled.identity(), ID);
+        assert_eq!(
+            serde_json::to_string(&compiled.empty().recipe).unwrap(),
+            GOLDEN
+        );
+        let direct: PlayerInventoryRecipeV1 = serde_json::from_str(GOLDEN).unwrap();
+        let versioned: PlayerInventoryRecipe = serde_json::from_str(GOLDEN).unwrap();
+        assert_eq!(
+            serde_json::to_string(&direct).unwrap(),
+            serde_json::to_string(&versioned).unwrap()
+        );
+        let named = serde_json::to_value(direct).unwrap();
+        let mut cases = vec![json!(null), json!([]), json!([1, [], [], []])];
+        for field in ["format", "items", "inventories", "starter"] {
+            let mut missing = named.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            cases.push(missing);
+            let mut null = named.clone();
+            null[field] = json!(null);
+            cases.push(null);
+        }
+        for (pointer, value) in [
+            ("/items/0", json!(["authored-token", 10])),
+            ("/inventories/0", json!([])),
+            ("/inventories/0/slot_rules/0", json!([[]])),
+            ("/starter/0", json!([])),
+        ] {
+            let mut bad = named.clone();
+            *bad.pointer_mut(pointer).unwrap() = value;
+            cases.push(bad);
+        }
+        let mut unknown = named.clone();
+        unknown["consumables"] = json!(null);
+        cases.push(unknown);
+        for bad in cases {
+            let text = serde_json::to_string(&bad).unwrap();
+            assert!(
+                serde_json::from_str::<PlayerInventoryRecipeV1>(&text).is_err(),
+                "{text}"
+            );
+            assert!(
+                serde_json::from_str::<PlayerInventoryRecipe>(&text).is_err(),
+                "{text}"
+            );
+        }
+        for suffix in [r#", "format":1}"#, r#", "items":[]}"#, r#", "unknown":{}}"#] {
+            let bad = format!("{}{}", &GOLDEN[..GOLDEN.len() - 1], suffix);
+            assert!(serde_json::from_str::<PlayerInventoryRecipeV1>(&bad).is_err());
+            assert!(serde_json::from_str::<PlayerInventoryRecipe>(&bad).is_err());
+        }
+        let mut legacy = app();
+        let id = attach(&mut legacy, 1, 1);
+        let state = snapshot(&mut legacy);
+        assert!(prepare_offline(&state, &use_item(&state, id)).is_err());
+        assert_eq!(snapshot(&mut legacy), state);
+    }
+    #[test]
+    fn v2_strict_fields_numbers_references_and_canonical_identity() {
+        let named = serde_json::to_value(v2()).unwrap();
+        assert!(parse(&named));
+        for field in ["format", "items", "inventories", "starter", "consumables"] {
+            let mut bad = named.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(!parse(&bad), "missing {field}");
+            let mut bad = named.clone();
+            bad[field] = json!(null);
+            assert!(!parse(&bad), "null {field}");
+        }
+        for field in ["item", "oxygen", "water", "food"] {
+            let mut bad = named.clone();
+            bad["consumables"][0].as_object_mut().unwrap().remove(field);
+            assert!(!parse(&bad));
+        }
+        for field in ["oxygen", "water", "food"] {
+            for number in [
+                json!(-1),
+                json!(1.0),
+                json!("1"),
+                json!(null),
+                json!(10_000_001u64),
+                json!(u64::MAX),
+                json!([]),
+                json!({}),
+                json!(true),
+            ] {
+                let mut bad = named.clone();
+                bad["consumables"][0][field] = number;
+                assert!(!parse(&bad));
+            }
+        }
+        for effects in [
+            json!([]),
+            json!([{"item":"authored-token","oxygen":0,"water":0,"food":0}]),
+            json!([{"item":"Authored-token","oxygen":1,"water":0,"food":0}]),
+            json!([{"item":"missing","oxygen":1,"water":0,"food":0}]),
+            json!([[]]),
+            json!([null]),
+        ] {
+            let mut bad = named.clone();
+            bad["consumables"] = effects;
+            assert!(!parse(&bad));
+        }
+        for pointer in [
+            "/items/0",
+            "/inventories/0",
+            "/inventories/0/slot_rules/0",
+            "/starter/0",
+            "/consumables/0",
+        ] {
+            let mut bad = named.clone();
+            *bad.pointer_mut(pointer).unwrap() = json!([]);
+            assert!(!parse(&bad));
+            let mut bad = named.clone();
+            bad.pointer_mut(pointer).unwrap()["unknown"] = json!(true);
+            assert!(!parse(&bad));
+        }
+        for field in ["items", "consumables"] {
+            let mut bad = named.clone();
+            let repeated = bad[field][0].clone();
+            bad[field].as_array_mut().unwrap().push(repeated);
+            assert!(!parse(&bad));
+        }
+        let mut too_many = named.clone();
+        too_many["consumables"] = json!(vec![named["consumables"][0].clone(); 1025]);
+        assert!(!parse(&too_many));
+        for key in ["".into(), "a".repeat(65), "bad key".into(), "é".into()] {
+            let mut bad = named.clone();
+            bad["consumables"][0]["item"] = json!(key);
+            assert!(!parse(&bad));
+        }
+        let mut spare = v2();
+        spare.consumables.reserve_exact(3000);
+        assert!(CompiledPlayerInventoryRecipe::compile_versioned(spare.into()).is_err());
+        let mut spare = v2();
+        spare.consumables[0].item.reserve_exact(133);
+        assert!(CompiledPlayerInventoryRecipe::compile_versioned(spare.into()).is_err());
+        let text = serde_json::to_string(&named).unwrap();
+        for suffix in [
+            r#", "format":2}"#,
+            r#", "consumables":[]}"#,
+            r#", "extra":0}"#,
+        ] {
+            assert!(
+                CompiledPlayerInventoryRecipe::parse(&format!(
+                    "{}{}",
+                    &text[..text.len() - 1],
+                    suffix
+                ))
+                .is_err()
+            );
+        }
+        let effect = r#"{"item":"authored-token","oxygen":15,"water":25,"food":35,"water":25}"#;
+        let mut bad = named.clone();
+        bad["consumables"] = json!([]);
+        assert!(
+            CompiledPlayerInventoryRecipe::parse(
+                &serde_json::to_string(&bad)
+                    .unwrap()
+                    .replace("\"consumables\":[]", &format!("\"consumables\":[{effect}]"))
+            )
+            .is_err()
+        );
+        let late = format!(
+            "{{\"consumables\":{},\"starter\":{},\"inventories\":{},\"items\":{},\"format\":2}}",
+            named["consumables"], named["starter"], named["inventories"], named["items"]
+        );
+        assert_eq!(
+            CompiledPlayerInventoryRecipe::parse(&late).unwrap(),
+            CompiledPlayerInventoryRecipe::parse(&text).unwrap()
+        );
+        assert!(
+            CompiledPlayerInventoryRecipe::parse(&format!("{text}{}", " ".repeat(4 * 1024 * 1024)))
+                .is_err()
+        );
+        let mut multi = v2();
+        multi.items.push(ItemDefinitionV1 {
+            key: "another".into(),
+            stack_limit: 10,
+        });
+        multi.inventories[0].slot_rules[0]
+            .allowed_items
+            .push("another".into());
+        multi.consumables.push(PlayerConsumableV2 {
+            item: "another".into(),
+            oxygen: 1,
+            water: 0,
+            food: 0,
+        });
+        let mut extra = multi.inventories[0].clone();
+        extra.key = "extra".into();
+        multi.inventories.push(extra);
+        multi.starter.push(PlayerStarterItemV1 {
+            inventory: "extra".into(),
+            requested_slot: 0,
+            item: "another".into(),
+            count: 2,
+        });
+        let original =
+            CompiledPlayerInventoryRecipe::compile_versioned(multi.clone().into()).unwrap();
+        multi.items.reverse();
+        multi.inventories.reverse();
+        multi.consumables.reverse();
+        for i in &mut multi.inventories {
+            for r in &mut i.slot_rules {
+                r.allowed_items.reverse();
+            }
+        }
+        assert_eq!(
+            CompiledPlayerInventoryRecipe::compile_versioned(multi.clone().into()).unwrap(),
+            original
+        );
+        multi.starter.reverse();
+        assert_ne!(
+            CompiledPlayerInventoryRecipe::compile_versioned(multi.clone().into())
+                .unwrap()
+                .identity(),
+            original.identity()
+        );
+        multi.starter.reverse();
+        multi.consumables[0].food += 1;
+        assert_ne!(
+            CompiledPlayerInventoryRecipe::compile_versioned(multi.into())
+                .unwrap()
+                .identity(),
+            original.identity()
+        );
+        let example = include_str!("../../config/player-inventory-consumables.example.json");
+        assert!(CompiledPlayerInventoryRecipe::parse(example).is_ok());
+    }
+    #[test]
+    fn use_request_has_only_named_authoritative_source() {
+        let (mut app, id) = setup(v2());
+        let state = snapshot(&mut app);
+        let req = use_item(&state, id);
+        let good = serde_json::to_value(&req).unwrap();
+        assert!(serde_json::from_value::<PlayerInventoryRequestV1>(good.clone()).is_ok());
+        for field in [
+            "amount",
+            "oxygen",
+            "water",
+            "food",
+            "item",
+            "target",
+            "destination",
+        ] {
+            let mut bad = good.clone();
+            bad["action"][field] = json!(1);
+            assert!(serde_json::from_value::<PlayerInventoryRequestV1>(bad).is_err());
+        }
+        for pointer in ["/action", "/action/source", "/action/source/owner"] {
+            let mut bad = good.clone();
+            *bad.pointer_mut(pointer).unwrap() = json!([]);
+            assert!(serde_json::from_value::<PlayerInventoryRequestV1>(bad).is_err());
+        }
+        let text = serde_json::to_string(&good).unwrap();
+        assert!(
+            serde_json::from_str::<PlayerInventoryRequestV1>(
+                &text.replace("\"type\":\"use\"", "\"type\":\"use\",\"type\":\"use\"")
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PlayerInventoryRequestV1>(
+                &text.replace("\"source\":", "\"amount\":null,\"source\":")
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn use_couples_vitals_quantity_revisions_and_preserves_unrelated_state() {
+        for (count, overflow) in [(1, false), (8, false), (1, true), (8, true)] {
+            let mut r = v2();
+            r.starter[0].count = count;
+            if overflow {
+                r.starter[0].requested_slot = 3;
+            }
+            let (mut app, id) = setup(r);
+            let other = attach(&mut app, 2, 2);
+            depleted(&mut app, id);
+            let before = snapshot(&mut app);
+            let source = if overflow {
+                PlayerStackEndpointV1 {
+                    owner: bag(&before, id).owner,
+                    inventory: "bag".into(),
+                    stack_id: bag(&before, id).inventories[0].overflow[0].stack.id,
+                }
+            } else {
+                endpoint(&before, id, 0)
+            };
+            let req = request(
+                &before,
+                id,
+                PlayerInventoryActionV1::Use {
+                    source: source.clone(),
+                },
+            );
+            assert_eq!(
+                apply(&mut app, 1, 1, &req),
+                InventoryActionOutcomeV1::Applied
+            );
+            let after = snapshot(&mut app);
+            let mut expected = before
+                .native_players
+                .as_ref()
+                .unwrap()
+                .projection_by_id(id)
+                .unwrap();
+            expected.revision += 1;
+            expected.checkpoint.vitals.oxygen = 15;
+            expected.checkpoint.vitals.water = 100;
+            expected.checkpoint.vitals.food = 85;
+            assert_eq!(
+                after
+                    .native_players
+                    .as_ref()
+                    .unwrap()
+                    .projection_by_id(id)
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(bag(&after, id).revision, bag(&before, id).revision + 1);
+            assert_eq!(bag(&after, id).consumed[0].count, 1);
+            let section = after.player_inventory.as_ref().unwrap();
+            let old = before.player_inventory.as_ref().unwrap();
+            assert_eq!(section.revision, old.revision + 1);
+            assert_eq!(section.next_stack_id, old.next_stack_id);
+            assert_eq!(section.recipe, old.recipe);
+            assert_eq!(section.baseline, old.baseline);
+            assert_eq!(bag(&after, other), bag(&before, other));
+            let inv = &bag(&after, id).inventories[0];
+            let remaining = inv
+                .slots
+                .iter()
+                .flatten()
+                .chain(inv.overflow.iter().map(|s| &s.stack))
+                .find(|s| s.id == source.stack_id);
+            if count == 1 {
+                assert!(remaining.is_none());
+            } else {
+                assert_eq!(remaining.unwrap().count, count - 1);
+            }
+            assert!(apply_player_inventory_action(app.world_mut(), key(1), 1, &req).is_err());
+            assert_eq!(snapshot(&mut app), after);
+            assert_eq!(reload(&after), after);
+            let mut restarted = build_app(&ServerConfig::default(), &after).unwrap();
+            attach(&mut restarted, 1, 10);
+            assert_eq!(snapshot(&mut restarted), after);
+        }
+        let mut r = v2();
+        r.consumables[0].oxygen = 0;
+        r.consumables[0].food = 0;
+        let (mut app, id) = setup(r);
+        depleted(&mut app, id);
+        let before = snapshot(&mut app);
+        let after = prepare_offline(&before, &use_item(&before, id)).unwrap().0;
+        let v = after
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(id)
+            .unwrap()
+            .checkpoint
+            .vitals;
+        assert_eq!((v.oxygen, v.water, v.food), (0, 100, 50));
+        let raw = prepare_offline(&before, &consume(&before, id, 1))
+            .unwrap()
+            .0;
+        assert_eq!(
+            raw.native_players
+                .as_ref()
+                .unwrap()
+                .projection_by_id(id)
+                .unwrap()
+                .checkpoint,
+            before
+                .native_players
+                .as_ref()
+                .unwrap()
+                .projection_by_id(id)
+                .unwrap()
+                .checkpoint
+        );
+    }
+    fn max_revisions(mut state: WorldSnapshot, kind: &str) -> WorldSnapshot {
+        let mut json = serde_json::to_value(&state).unwrap();
+        if kind == "player" || kind == "bag" || kind == "all" {
+            json["native_players"]["records"][0]["revision"] = json!(u64::MAX);
+        }
+        if kind == "bag" || kind == "all" {
+            json["player_inventory"]["bags"][0]["revision"] = json!(u64::MAX);
+        }
+        if kind == "aggregate" || kind == "all" {
+            json["player_inventory"]["revision"] = json!(u64::MAX);
+        }
+        if kind == "allocator" || kind == "all" {
+            json["player_inventory"]["next_stack_id"] = json!(u64::MAX);
+        }
+        state = serde_json::from_value(json).unwrap();
+        state.validate().unwrap();
+        state
+    }
+    #[test]
+    fn nochange_precedes_exhaustion_but_follows_both_cas_and_source_checks() {
+        let (mut initial, id) = setup(v2());
+        let full = snapshot(&mut initial);
+        let state = max_revisions(full.clone(), "all");
+        let req = use_item(&state, id);
+        let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+        attach(&mut app, 1, 10);
+        assert_eq!(
+            apply(&mut app, 1, 10, &req),
+            InventoryActionOutcomeV1::NoChange
+        );
+        assert_eq!(snapshot(&mut app), state);
+        for kind in [
+            "player",
+            "bag",
+            "owner",
+            "incarnation",
+            "inventory",
+            "stack",
+            "id",
+        ] {
+            let mut bad = req.clone();
+            match kind {
+                "player" => bad.expected_player_revision -= 1,
+                "bag" => bad.expected_bag_revision -= 1,
+                "id" => bad.player_id += 1,
+                _ => {
+                    if let PlayerInventoryActionV1::Use { source } = &mut bad.action {
+                        match kind {
+                            "owner" => source.owner.player_id += 1,
+                            "incarnation" => source.owner.incarnation += 1,
+                            "inventory" => source.inventory = "missing".into(),
+                            _ => source.stack_id = StackId::new(999).unwrap(),
+                        }
+                    }
+                }
+            }
+            assert!(
+                apply_player_inventory_action(app.world_mut(), key(1), 10, &bad).is_err(),
+                "{kind}"
+            );
+            assert_eq!(snapshot(&mut app), state);
+        }
+        let mut r = v2();
+        r.items.push(ItemDefinitionV1 {
+            key: "unused".into(),
+            stack_limit: 10,
+        });
+        r.consumables[0].item = "unused".into();
+        let (mut non, id) = setup(r);
+        let state = snapshot(&mut non);
+        assert!(prepare_offline(&state, &use_item(&state, id)).is_err());
+        depleted(&mut initial, id);
+        let low = snapshot(&mut initial);
+        for kind in ["player", "bag", "aggregate"] {
+            let state = max_revisions(low.clone(), kind);
+            let req = use_item(&state, id);
+            let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+            attach(&mut app, 1, 10);
+            assert!(
+                apply_player_inventory_action(app.world_mut(), key(1), 10, &req).is_err(),
+                "{kind}"
+            );
+            assert_eq!(snapshot(&mut app), state);
+        }
+        let state = max_revisions(low, "allocator");
+        assert_eq!(
+            prepare_offline(&state, &use_item(&state, id)).unwrap().1,
+            InventoryActionOutcomeV1::Applied
+        );
+    }
+    #[test]
+    fn malformed_consumed_overflow_and_allocation_refuse_without_mutation() {
+        let (mut app, id) = setup(v2());
+        depleted(&mut app, id);
+        let state = snapshot(&mut app);
+        for kind in ["consumed", "capacity", "schema"] {
+            let mut bad = state.clone();
+            let req = use_item(&state, id);
+            match kind {
+                "consumed" => {
+                    bad.player_inventory.as_mut().unwrap().bags[0].consumed[0].count = u64::MAX
+                }
+                "capacity" => bad
+                    .player_inventory
+                    .as_mut()
+                    .unwrap()
+                    .bags
+                    .reserve_exact(9000),
+                _ => {
+                    bad.schema_version = 14;
+                    bad.player_inventory = None;
+                }
+            }
+            assert!(prepare_offline(&bad, &req).is_err(), "{kind}");
+            assert_eq!(snapshot(&mut app), state);
+        }
+        // The maximum authored gain is admitted and clamps without i32 addition.
+        let mut r = v2();
+        r.consumables[0].oxygen = 10_000_000;
+        let (mut app, id) = setup(r);
+        depleted(&mut app, id);
+        let state = snapshot(&mut app);
+        let after = prepare_offline(&state, &use_item(&state, id)).unwrap().0;
+        assert_eq!(
+            after
+                .native_players
+                .unwrap()
+                .projection_by_id(id)
+                .unwrap()
+                .checkpoint
+                .vitals
+                .oxygen,
+            100
+        );
+    }
+    #[test]
+    fn live_authority_leave_pins_and_detached_cutoff_cover_use() {
+        let (mut app, id) = setup(v2());
+        let other = attach(&mut app, 2, 2);
+        depleted(&mut app, id);
+        let before = snapshot(&mut app);
+        let req = use_item(&before, id);
+        for (key, epoch) in [(key(2), 1), (key(1), 2), (key(1), 0), (key(1), 999)] {
+            assert!(apply_player_inventory_action(app.world_mut(), key, epoch, &req).is_err());
+            assert_eq!(snapshot(&mut app), before);
+        }
+        app.world_mut().resource_mut::<PlayerRegistry>().detach(1);
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .reserve(key(1), 3, checkpoint())
+            .unwrap();
+        for epoch in [1, 3] {
+            assert!(apply_player_inventory_action(app.world_mut(), key(1), epoch, &req).is_err());
+        }
+        assert_eq!(snapshot(&mut app), before);
+        activate_player(app.world_mut(), 3).unwrap();
+        apply(&mut app, 1, 3, &req);
+        let cutoff = snapshot(&mut app);
+        let revision = cutoff
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(id)
+            .unwrap()
+            .revision;
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .request_leave(key(1), 3, revision, Instant::now(), Duration::from_secs(30))
+            .unwrap();
+        let blocked = use_item(&cutoff, id);
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+        // Another player's independent record and bag may advance under the pin.
+        icarus_bevy::native_player_runtime::consume_player_vitals(
+            app.world_mut(),
+            icarus_bevy::native_player_runtime::ConsumptionRates::new(1, 1, 1).unwrap(),
+        )
+        .unwrap();
+        let state = snapshot(&mut app);
+        apply(&mut app, 2, 2, &use_item(&state, other));
+        let pinned = snapshot(&mut app);
+        assert_eq!(bag(&pinned, id), bag(&cutoff, id));
+        assert_eq!(
+            pinned.native_players.as_ref().unwrap().projection_by_id(id),
+            cutoff.native_players.as_ref().unwrap().projection_by_id(id)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = CheckpointWriter::spawn(SnapshotStore::open(dir.path()).unwrap()).unwrap();
+        writer.submit(app.world_mut()).unwrap();
+        assert!(
+            writer
+                .settle_before(app.world_mut(), Instant::now())
+                .is_err()
+        );
+        assert!(matches!(
+            app.world()
+                .resource::<PlayerRegistry>()
+                .leave_status(key(1), 3)
+                .unwrap()
+                .phase,
+            LeavePhase::Failed(_)
+        ));
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+        app.world_mut()
+            .resource_mut::<PlayerRegistry>()
+            .retry_leave(key(1), 3, Instant::now(), Duration::from_secs(30))
+            .unwrap();
+        writer
+            .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(
+            app.world()
+                .resource::<PlayerRegistry>()
+                .leave_status(key(1), 3)
+                .unwrap()
+                .phase,
+            LeavePhase::Pending
+        );
+        writer.submit(app.world_mut()).unwrap();
+        app.world_mut().resource_mut::<PlayerRegistry>().detach(3);
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+        writer
+            .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(30))
+            .unwrap();
+        assert!(matches!(
+            app.world()
+                .resource::<PlayerRegistry>()
+                .leave_status(key(1), 3)
+                .unwrap()
+                .phase,
+            LeavePhase::Durable { .. }
+        ));
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+        assert_eq!(snapshot(&mut app), pinned);
+        assert_eq!(reload(&pinned), pinned);
+        // Full capture still rejects substituted/missing registry authority.
+        let different = empty_v2(v2());
+        let replacement = PlayerRegistry::new_with_inventory(
+            different.native_players.unwrap(),
+            &context(),
+            64,
+            different.player_inventory,
+        )
+        .unwrap();
+        app.world_mut().insert_resource(replacement);
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+        app.world_mut().remove_resource::<PlayerRegistry>();
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 3, &blocked).is_err());
+    }
+    #[test]
+    fn durable_use_cli_lock_dryrun_applied_nochange_stale_and_failure() {
+        let _lock = CLI_LOCK.lock().unwrap();
+        let (mut app, id) = setup(v2());
+        depleted(&mut app, id);
+        let state = snapshot(&mut app);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        let path = dir.path().join("use.json");
+        SnapshotStore::open(&root).unwrap().save(&state).unwrap();
+        let before = disk(&root);
+        fs::write(&path, serde_json::to_vec(&use_item(&state, id)).unwrap()).unwrap();
+        assert!(execute(&root, &path, true).status.success());
+        assert_eq!(disk(&root), before);
+        {
+            let _store = SnapshotStore::open_existing(&root).unwrap();
+            assert!(!execute(&root, &path, false).status.success());
+        }
+        assert_eq!(disk(&root), before);
+        let output = execute(&root, &path, false);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt["outcome"], "applied");
+        assert_eq!(receipt["receipt"]["generation"], 2);
+        let mut loaded = SnapshotStore::open_existing(&root)
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap()
+            .snapshot;
+        assert_eq!(
+            loaded,
+            prepare_offline(&state, &use_item(&state, id)).unwrap().0
+        );
+        let bytes = disk(&root);
+        assert!(!execute(&root, &path, false).status.success());
+        assert_eq!(disk(&root), bytes);
+        // Repeated use eventually reaches all full; that retry writes no receipt.
+        loop {
+            let req = use_item(&loaded, id);
+            let (next, outcome) = prepare_offline(&loaded, &req).unwrap();
+            fs::write(&path, serde_json::to_vec(&req).unwrap()).unwrap();
+            let before = disk(&root);
+            let output = execute(&root, &path, false);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            loaded = next;
+            if outcome == InventoryActionOutcomeV1::NoChange {
+                assert_eq!(disk(&root), before);
+                assert!(!String::from_utf8_lossy(&output.stdout).contains("receipt"));
+                break;
+            }
+        }
+        // A failed publication cannot emit a success receipt for a coupled edit.
+        let root = dir.path().join("failed");
+        SnapshotStore::open(&root).unwrap().save(&state).unwrap();
+        fs::write(&path, serde_json::to_vec(&use_item(&state, id)).unwrap()).unwrap();
+        fs::create_dir(root.join("snapshot-2.json")).unwrap();
+        let out = execute(&root, &path, false);
+        assert!(!out.status.success());
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("receipt"));
+        assert_eq!(
+            SnapshotStore::open_existing(&root)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap()
+                .snapshot,
+            state
+        );
+    }
+    #[test]
+    fn recipe_reopen_matrix_preserves_provenance_and_never_promotes() {
+        use icarus_bevy::{
+            experimental::release::{DEDICATED_SERVER_APP_ID, ReleasePin, network_checksum},
+            network::{PreparedPlayers, open_player_snapshot},
+        };
+        let recipes = [
+            CompiledPlayerInventoryRecipe::compile(recipe()).unwrap(),
+            CompiledPlayerInventoryRecipe::compile_versioned(v2().into()).unwrap(),
+        ];
+        for (from, selected) in recipes.iter().enumerate() {
+            let mut state = empty();
+            state.player_inventory = Some(selected.empty());
+            let stored = reload(&state);
+            for (to, target) in recipes.iter().enumerate() {
+                let version = "1.0.0.9";
+                let mut prepared = PreparedPlayers {
+                    context: context(),
+                    initial_vitals: checkpoint().vitals,
+                    release: ReleasePin {
+                        app_id: DEDICATED_SERVER_APP_ID,
+                        build_id: 999,
+                        project_version: version.into(),
+                        network_checksum: network_checksum(version),
+                    },
+                    inventory: Some(target.clone()),
+                };
+                let mut candidate = stored.clone();
+                let result = open_player_snapshot(&mut candidate, Some(&prepared));
+                assert_eq!(result.is_ok(), from == to);
+                if result.is_err() {
+                    assert_eq!(candidate, stored);
+                }
+                let mut changed = v2();
+                changed.consumables[0].water += 1;
+                prepared.inventory =
+                    Some(CompiledPlayerInventoryRecipe::compile_versioned(changed.into()).unwrap());
+                let mut candidate = stored.clone();
+                assert!(open_player_snapshot(&mut candidate, Some(&prepared)).is_err());
+                assert_eq!(candidate, stored);
+            }
+        }
+    }
+    #[test]
+    fn known_v2_corruption_recovers_but_future_duplicate_versions_fail_closed() {
+        let (mut app, id) = setup(v2());
+        depleted(&mut app, id);
+        let before = snapshot(&mut app);
+        let after = prepare_offline(&before, &use_item(&before, id)).unwrap().0;
+        // Known recipe 2 without required effects is corruption, so previous
+        // committed state remains eligible. Version 3 blocks that recovery.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut store = SnapshotStore::open(dir.path()).unwrap();
+            store.save(&before).unwrap();
+            store.save(&after).unwrap();
+        }
+        let mut broken = serde_json::to_value(&after).unwrap();
+        broken["player_inventory"]["recipe"]
+            .as_object_mut()
+            .unwrap()
+            .remove("consumables");
+        replace_current(dir.path(), &broken);
+        assert_eq!(
+            SnapshotStore::open_existing(dir.path())
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap()
+                .snapshot,
+            before
+        );
+        for future_first in [false, true] {
+            for parent_duplicate in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut store = SnapshotStore::open(dir.path()).unwrap();
+                store.save(&before).unwrap();
+                store.save(&after).unwrap();
+                drop(store);
+                let v = serde_json::to_value(&after).unwrap();
+                let recipe = &v["player_inventory"]["recipe"];
+                let body = serde_json::to_string(recipe).unwrap();
+                let altered = if parent_duplicate {
+                    let unknown = if future_first {
+                        format!("\"recipe\":{{\"format\":3}},\"recipe\":{body}")
+                    } else {
+                        format!("\"recipe\":{body},\"recipe\":{{\"format\":3}}")
+                    };
+                    serde_json::to_string(&v)
+                        .unwrap()
+                        .replace(&format!("\"recipe\":{body}"), &unknown)
+                } else {
+                    let pair = if future_first {
+                        "\"format\":3,\"format\":2"
+                    } else {
+                        "\"format\":2,\"format\":3"
+                    };
+                    serde_json::to_string(&v)
+                        .unwrap()
+                        .replace(&body, &body.replace("\"format\":2", pair))
+                };
+                replace_current_bytes(dir.path(), altered.as_bytes());
+                let bytes = disk(dir.path());
+                let mut store = SnapshotStore::open_existing(dir.path()).unwrap();
+                let error = store.load().unwrap_err();
+                assert!(error.to_string().contains("unsupported"), "{error}");
+                assert!(store.save(&after).is_err());
+                drop(store);
+                assert_eq!(disk(dir.path()), bytes);
+            }
+        }
+    }
+    fn replace_current_bytes(root: &Path, bytes: &[u8]) {
+        use sha2::{Digest, Sha256};
+        let path = root.join("manifest.json");
+        let mut m: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let n = m["current"]["number"].as_u64().unwrap();
+        m["current"]["sha256"] = json!(
+            Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        fs::write(root.join(format!("snapshot-{n}.json")), bytes).unwrap();
+        fs::write(path, serde_json::to_vec(&m).unwrap()).unwrap();
+    }
+    #[test]
+    fn near_limit_semantic_v1_roundtrip_preserves_admission() {
+        let mut r = recipe();
+        let long = "a".repeat(64);
+        r.items[0].key = long.clone();
+        r.items[0].stack_limit = 1;
+        r.inventories[0].initial_slots = 256;
+        r.inventories[0].slot_rules = vec![
+            SlotRuleV1 {
+                allowed_items: vec![long.clone()]
+            };
+            256
+        ];
+        r.starter = (0..256)
+            .map(|slot| PlayerStarterItemV1 {
+                inventory: "bag".into(),
+                requested_slot: slot,
+                item: long.clone(),
+                count: 1,
+            })
+            .collect();
+        let mut initial = build_app(&ServerConfig::default(), &empty_recipe(r)).unwrap();
+        attach(&mut initial, 1, 1);
+        let mut state = snapshot(&mut initial);
+        let template = bag(&state, 1).clone();
+        let mut registry =
+            PlayerRegistry::new(PlayerSnapshot::empty(context()), &context(), 64).unwrap();
+        for id in 1..=256 {
+            registry.reserve(key(id), id, checkpoint()).unwrap();
+            registry.activate(id).unwrap();
+            registry.detach(id);
+        }
+        state.native_players = Some(registry.snapshot());
+        let section = state.player_inventory.as_mut().unwrap();
+        section.bags.clear();
+        for id in 1..=256 {
+            let mut bag = template.clone();
+            bag.owner.player_id = id;
+            for (slot, stack) in bag.inventories[0].slots.iter_mut().enumerate() {
+                let stack = stack.as_mut().unwrap();
+                stack.id = StackId::new((id - 1) * 256 + slot as u64 + 1).unwrap();
+                let mut capacity = String::with_capacity(96);
+                capacity.push_str(&long);
+                stack.item = capacity;
+            }
+            section.bags.push(bag);
+        }
+        section.next_stack_id = 65537;
+        // The first passing state is within one 256-stack bag of the eight-copy
+        // limit. Higher IDs may remain retired without being reused.
+        while state.validate().is_err() {
+            state.player_inventory.as_mut().unwrap().bags.pop().unwrap();
+            let mut players = serde_json::to_value(state.native_players.take().unwrap()).unwrap();
+            players["records"].as_array_mut().unwrap().pop().unwrap();
+            state.native_players = Some(serde_json::from_value(players).unwrap());
+        }
+        assert!(state.player_inventory.as_ref().unwrap().bags.len() > 200);
+        assert_eq!(reload(&state), state);
+        let roundtrip: WorldSnapshot =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        roundtrip.validate().unwrap();
+        let req = request(
+            &state,
+            1,
+            PlayerInventoryActionV1::Consume {
+                source: endpoint(&state, 1, 0),
+                amount: 1,
+            },
+        );
+        let (after, outcome) = prepare_offline(&state, &req).unwrap();
+        assert_eq!(outcome, InventoryActionOutcomeV1::Applied);
+        assert_eq!(reload(&after), after);
+    }
+    #[test]
+    fn full_generation_use_preflight_failure_never_exposes_either_domain() {
+        let (mut app, id) = setup(v2());
+        depleted(&mut app, id);
+        let mut state = snapshot(&mut app);
+        let req = use_item(&state, id);
+        let mut length = serde_json::to_vec(&state).unwrap().len();
+        let mut entity_id = 1;
+        loop {
+            let entity = EntityRecord {
+                id: DomainId(entity_id),
+                position: Position([0.; 3]),
+            };
+            let delta = serde_json::to_vec(&entity).unwrap().len()
+                + usize::from(!state.entities.is_empty());
+            if length + delta > 64 * 1024 * 1024 {
+                break;
+            }
+            length += delta;
+            state.entities.push(entity);
+            entity_id += 1;
+        }
+        let mut players = serde_json::to_value(state.native_players.as_ref().unwrap()).unwrap();
+        players["records"][0]["revision"] = json!(9);
+        state.native_players = Some(serde_json::from_value(players).unwrap());
+        let section = state.player_inventory.as_mut().unwrap();
+        section.bags[0].revision = 9;
+        section.revision = 9;
+        let mut remaining = 64 * 1024 * 1024 - serde_json::to_vec(&state).unwrap().len();
+        for entity in state.entities.iter_mut().take(20) {
+            for coordinate in &mut entity.position.0 {
+                let mut best = (0, 0.0);
+                for digits in 1..=17 {
+                    let value = format!("0.{}", "1".repeat(digits)).parse::<f32>().unwrap();
+                    let gain = serde_json::to_string(&value).unwrap().len() - 3;
+                    if gain <= remaining && gain > best.0 {
+                        best = (gain, value);
+                    }
+                }
+                *coordinate = best.1;
+                remaining -= best.0;
+            }
+        }
+        assert_eq!(remaining, 0);
+        SnapshotStore::preflight(&state).unwrap();
+        let req = request(&state, id, req.action);
+        let mut small = state.clone();
+        small.entities.clear();
+        assert_eq!(
+            prepare_offline(&small, &req).unwrap().1,
+            InventoryActionOutcomeV1::Applied
+        );
+        drop(small);
+        assert!(prepare_offline(&state, &req).is_err());
+        let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+        attach(&mut app, 1, 10);
+        let before = snapshot(&mut app);
+        assert!(apply_player_inventory_action(app.world_mut(), key(1), 10, &req).is_err());
+        assert_eq!(snapshot(&mut app), before);
+    }
 }

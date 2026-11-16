@@ -363,3 +363,118 @@ fn canceled_controller_completion_keeps_schema15_inventory_cutoff() {
     assert_eq!(capture(app.world_mut()).unwrap(), before);
     assert!(lab.socket.0.is_none());
 }
+
+#[test]
+fn authored_use_projection_refresh_coalesces_without_reexecuting_use() {
+    use crate::{
+        native_player_inventory::{
+            PlayerConsumableV2, PlayerInventoryActionV1, PlayerInventoryRecipe,
+            PlayerInventoryRecipeV2, PlayerInventoryRequestV1, PlayerStackEndpointV1,
+        },
+        native_player_runtime::{activate_player, apply_player_inventory_action},
+    };
+    let mut state = inventory_state();
+    let PlayerInventoryRecipe::V1(r) = state.player_inventory.take().unwrap().recipe else {
+        unreachable!()
+    };
+    state.player_inventory = Some(
+        CompiledPlayerInventoryRecipe::compile_versioned(
+            PlayerInventoryRecipeV2 {
+                format: 2,
+                items: r.items,
+                inventories: r.inventories,
+                starter: r.starter,
+                consumables: vec![PlayerConsumableV2 {
+                    item: "authored".into(),
+                    oxygen: 15,
+                    water: 25,
+                    food: 35,
+                }],
+            }
+            .into(),
+        )
+        .unwrap()
+        .empty(),
+    );
+    let mut app = build_app(&ServerConfig::default(), &state).unwrap();
+    let key = PlayerKey::new(1234, 0).unwrap();
+    let checkpoint = PlayerCheckpoint {
+        location_cm: [0.; 3],
+        vitals: crate::experimental::pawn_open::CharacterVitals {
+            health: 100,
+            max_health: 100,
+            stamina: 100,
+            max_stamina: 100,
+            oxygen: 0,
+            max_oxygen: 100,
+            water: 0,
+            max_water: 100,
+            food: 0,
+            max_food: 100,
+            biome_row: 0,
+            growth_row: 0,
+        },
+    };
+    app.world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(key, 1, checkpoint)
+        .unwrap();
+    let initial = activate_player(app.world_mut(), 1).unwrap();
+    let mut lab = PeerLab::prepare(PeerLabConfig::default()).unwrap();
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12345);
+    let mut entry = post_pawn_peer(lab.config.packet);
+    entry.checkpoint_active = true;
+    entry.checkpoint_projection = Some(initial);
+    entry.checkpoint_enqueued_revision = Some(initial.revision);
+    lab.peers.insert(address, entry);
+    for _ in 0..2 {
+        let before = capture(app.world_mut()).unwrap();
+        let bag = &before.player_inventory.as_ref().unwrap().bags[0];
+        let projection = before
+            .native_players
+            .as_ref()
+            .unwrap()
+            .projection_by_id(initial.player_id)
+            .unwrap();
+        let request = PlayerInventoryRequestV1 {
+            player_id: initial.player_id,
+            expected_player_revision: projection.revision,
+            expected_bag_revision: bag.revision,
+            action: PlayerInventoryActionV1::Use {
+                source: PlayerStackEndpointV1 {
+                    owner: bag.owner,
+                    inventory: "bag".into(),
+                    stack_id: bag.inventories[0].slots[0].as_ref().unwrap().id,
+                },
+            },
+        };
+        apply_player_inventory_action(app.world_mut(), key, 1, &request).unwrap();
+        let after = capture(app.world_mut()).unwrap();
+        for _ in 0..4 {
+            lab.refresh_checkpoint_projections(app.world().resource::<PlayerRegistry>());
+        }
+        assert_eq!(
+            lab.peers[&address].checkpoint_enqueued_revision,
+            Some(initial.revision)
+        );
+        assert_eq!(
+            lab.peers[&address].checkpoint_projection,
+            app.world().resource::<PlayerRegistry>().projection(1)
+        );
+        assert_eq!(capture(app.world_mut()).unwrap(), after);
+    }
+    let after = capture(app.world_mut()).unwrap();
+    assert_eq!(
+        after.player_inventory.as_ref().unwrap().bags[0].consumed[0].count,
+        2
+    );
+    assert_eq!(
+        lab.peers[&address]
+            .checkpoint_projection
+            .unwrap()
+            .checkpoint
+            .vitals
+            .oxygen,
+        30
+    );
+}

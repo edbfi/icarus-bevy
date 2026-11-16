@@ -153,7 +153,11 @@ fn full_typed_oracle_rejects_independent_field_mutations() -> Result<()> {
         i.recipe_id = "0".repeat(64);
     });
     inventory_reject!(i, {
-        i.recipe.items[0].stack_limit += 1;
+        let icarus_bevy::native_player_inventory::PlayerInventoryRecipe::V1(recipe) = &mut i.recipe
+        else {
+            unreachable!()
+        };
+        recipe.items[0].stack_limit += 1;
     });
     inventory_reject!(i, {
         i.baseline.items[0].count += 1;

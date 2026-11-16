@@ -283,7 +283,7 @@ fn expected(tick: u64) -> Result<WorldSnapshot> {
         player_inventory: Some(PlayerInventorySnapshotV1 {
             format: 1,
             recipe_id: recipe_identity()?,
-            recipe: recipe(),
+            recipe: recipe().into(),
             baseline: InventoryInitialTotalsV1 {
                 items: totals(100_000, 7),
             },

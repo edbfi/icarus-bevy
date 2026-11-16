@@ -6548,7 +6548,12 @@ mod player_inventory_publication_tests {
     };
     #[test]
     fn complete_player_inventory_publication_failure_and_uncertain_error() {
-        let recipe = CompiledPlayerInventoryRecipe::compile(PlayerInventoryRecipeV1 {
+        for use_consumable in [false, true] {
+            publication_case(use_consumable);
+        }
+    }
+    fn publication_case(use_consumable: bool) {
+        let authored = PlayerInventoryRecipeV1 {
             format: 1,
             items: vec![ItemDefinitionV1 {
                 key: "authored".into(),
@@ -6569,7 +6574,26 @@ mod player_inventory_publication_tests {
                 item: "authored".into(),
                 count: 3,
             }],
-        })
+        };
+        let recipe = if use_consumable {
+            CompiledPlayerInventoryRecipe::compile_versioned(
+                PlayerInventoryRecipeV2 {
+                    format: 2,
+                    items: authored.items,
+                    inventories: authored.inventories,
+                    starter: authored.starter,
+                    consumables: vec![PlayerConsumableV2 {
+                        item: "authored".into(),
+                        oxygen: 15,
+                        water: 25,
+                        food: 35,
+                    }],
+                }
+                .into(),
+            )
+        } else {
+            CompiledPlayerInventoryRecipe::compile(authored)
+        }
         .unwrap();
         let context = PlayerContext::new(
             vec![65],
@@ -6598,7 +6622,7 @@ mod player_inventory_publication_tests {
                 max_health: 100,
                 stamina: 100,
                 max_stamina: 100,
-                oxygen: 100,
+                oxygen: if use_consumable { 0 } else { 100 },
                 max_oxygen: 100,
                 water: 100,
                 max_water: 100,
@@ -6619,13 +6643,17 @@ mod player_inventory_publication_tests {
             player_id: 1,
             expected_player_revision: 1,
             expected_bag_revision: 1,
-            action: PlayerInventoryActionV1::Consume {
-                source: PlayerStackEndpointV1 {
+            action: {
+                let source = PlayerStackEndpointV1 {
                     owner: bag.owner,
                     inventory: "bag".into(),
                     stack_id: bag.inventories[0].slots[0].as_ref().unwrap().id,
-                },
-                amount: 1,
+                };
+                if use_consumable {
+                    PlayerInventoryActionV1::Use { source }
+                } else {
+                    PlayerInventoryActionV1::Consume { source, amount: 1 }
+                }
             },
         };
         let (after, _) = prepare_offline(&before, &request).unwrap();
