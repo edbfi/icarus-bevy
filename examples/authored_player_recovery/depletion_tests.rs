@@ -480,13 +480,25 @@ fn older_health_submission_cannot_settle_new_frozen_leave_cutoff() -> Result<()>
     }
     assert_eq!(capture(app.world_mut())?, frozen);
     drop(writer);
-    assert_eq!(
-        SnapshotStore::open_existing(directory.path())?
-            .load()?
-            .unwrap()
-            .snapshot,
-        frozen
-    );
+    // Dropping the sender lets the writer thread exit asynchronously.
+    let reopen_deadline = deadline();
+    let reopened = loop {
+        match SnapshotStore::open_existing(directory.path()) {
+            Ok(store) => break store,
+            Err(error)
+                if Instant::now() < reopen_deadline
+                    && error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => {
+                return Err(error).context("reopen durable state after writer teardown");
+            }
+        }
+    };
+    assert_eq!(reopened.load()?.unwrap().snapshot, frozen);
     Ok(())
 }
 
