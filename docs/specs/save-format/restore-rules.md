@@ -6,7 +6,7 @@ Experimental: pure rules in `experimental::restore_rules` and
 `experimental::modifier_lifecycle` (`tests/save_format/restore_rules.rs`,
 `tests/save_format/modifier_lifecycle.rs`, U-045; U-020..U-022, U-032, U-046,
 U-048, U-050 resolved).
-Last reconciled: 2026-11-15.
+Last reconciled: 2026-11-16.
 
 ## Scope
 
@@ -136,35 +136,40 @@ addresses retain helper names or stand alone.
   Unresolved/non-`USceneComponent` attachment classes crash.
   Subclass/Blueprint overrides, downstream callee
   effects, owner/row binding and live execution remain unqualified.
-  Row declarations (F-1195): `DataRowHandleNew +0xb4` joins FRowHandle;
-  `RowName +8` joins FName, declaring `ComparisonIndex +0`/FNameEntryId and
-  `Number +4`. Forward FNameEntryId `0x28d8` joins complete `0x310dd`
-  (declared size 4); 16 entries weigh 17, including `Value +0`. Number/Value
-  declare direct unsigned32 (`0x75`); method identities/empty arglist agree.
-- Server 25621760 removal declarations (F-1195): `0x1414b5950` declares
-  1059 bytes and selects TPI 2050973 alone (M-1452, M-1454/ev_892924c04bd4).
-  Its 28-byte `LF_MFUNCTION` (leaf `0x1009`) declares return 48, class 2050923,
-  this 0, convention/attributes 0, count 3, arglist 2050972, this-adjustment 0
+  F-1195: `DataRowHandleNew +0xb4` joins FRowHandle; `RowName +8` joins FName
+  (`ComparisonIndex +0`/FNameEntryId, `Number +4`). Forward FNameEntryId
+  `0x28d8` joins complete `0x310dd` (declared size 4; 16 entries/weight 17,
+  including `Value +0`). Number/Value declare direct unsigned32 (`0x75`);
+  method identities/empty arglist agree.
+- Server 25621760 removal (F-1195): `0x1414b5950`, declared size 1059 bytes,
+  selects only TPI 2050973 (M-1452, M-1454/ev_892924c04bd4).
+  28-byte `LF_MFUNCTION` (`0x1009`): return 48, class 2050923,
+  this/convention/attributes 0, count 3, arglist 2050972, this-adjustment 0
   (M-1453, M-1454/ev_b213265d962e, M-1455, M-1456/ev_86dc4a8fa781).
-  Class 2050923 is a 76-byte forward `UIcarusFunctionLibrary` `LF_CLASS`
-  (leaf `0x1504`, flags 640, size/count/field-list 0); no definition is followed
+  Class 2050923: 76-byte forward `UIcarusFunctionLibrary` `LF_CLASS`
+  (`0x1504`, flags 640, size/count/field-list 0); definition unfollowed
   (M-1458/ev_e9e2faf6b771).
-  The 20-byte `LF_ARGLIST` 2050972 (leaf `0x1201`) declares count 3 matching
-  2050973, ordered 7453/1997626/116 (M-1471/ev_b12f5b8b75a1).
-  Envelopes: M-1471/ev_ac1d9cdde283. Grammar declares
-  7453 `LF_POINTER`: referent 7450, attributes 65548, kind 12/mode 0; no physical
-  width/ABI follows. Forward 1997626 names `FModifierStatesRowHandle`,
-  flags 640, size/count/field-list/derived/vshape 0 (M-1471/ev_c593a2dcb42c).
-  Its complete 1997679 header declares flags 566, size 24, count 30, field-list 1997678,
-  derived/vshape 0 (M-1471/ev_85400f1f84f1); no member widths, occupied storage
-  or complete semantic definition follows. Retained 7450 `LF_CLASS` names
-  forward `AActor`, flags 640, size/count/field-list/derived/vshape 0
-  (M-1471/ev_516c488fb7d2). Argument 116 stays numeric/opaque.
-  Grammar inherits framing/fixity; no original replay. Prior two complete framing
+  20-byte `LF_ARGLIST` 2050972 (`0x1201`): count 3 matching
+  2050973, ordered 7453/1997626/116 (M-1471/ev_b12f5b8b75a1);
+  envelopes M-1471/ev_ac1d9cdde283. 7453 `LF_POINTER`: referent 7450,
+  attributes 65548, kind 12/mode 0; no physical width/ABI follows.
+  Forward 1997626 `FModifierStatesRowHandle`: flags 640,
+  size/count/field-list/derived/vshape 0 (M-1471/ev_c593a2dcb42c).
+  Complete 1997679: flags 566, declared size 24/count 30, list 1997678,
+  derived/vshape 0 (M-1471/ev_85400f1f84f1). M-1426 already qualifies
+  21 physical declarations/weight 30: declared base offset 0 and nested alias
+  `Super` both reference 873791, forward FRowHandle joined to complete 873846
+  (declared size 24). M-1517 qualifies the bounded reader/lifecycle; its read
+  repeated these declarations and establishes no ICARUS performance.
+  Retained 7450 `LF_CLASS`: forward `AActor`, flags 640,
+  size/count/field-list/derived/vshape 0 (M-1471/ev_516c488fb7d2); 116 stays opaque.
+  M-1471 decoded retained records without a new original read. Two prior full framing
   passes, 3150352684 physical bytes, full pre/post fixity and independent owned-unit/cgroup
-  cleanup (not host-wide): M-1457, M-1458/ev_800189c44abc; receipts M-1472 to M-1476.
-  Return/this definitions, storage, aggregate/static ABI, comparator associations,
-  native owner/receiver, overrides, coordinates, runtime/import/compatibility stay open.
+  cleanup (not host-wide): M-1457, M-1458/ev_800189c44abc; M-1472 to M-1476.
+  Return/this definitions, member widths/occupied storage, signatures/method effects,
+  actual caller/lowering, aggregate/static ABI, comparator associations,
+  native owner/receiver, overrides, coordinates, lifetimes and runtime/client/import
+  compatibility stay open.
 - `UIcarusFunctionLibrary::RemoveModifierState` matches local selection in
   25621760/25793767 (F-937): filter `+0x8b & 2`, prefer first explicit UID
   match (`-1` disables), else last comparison match; request `+0x3c0(0)`.
@@ -179,9 +184,9 @@ addresses retain helper names or stand alone.
   Getters return cached words or pass slot addresses to a common helper.
   Its three STORE8 sites and later LOAD8 require cross-call preservation;
   an intervening call prevents readback identity; its indirect tail is unresolved.
-  F-1195 declares types; native element/row storage, requested 24-byte argument
-  lowering, ABI, aliases, lifetimes, class/owner/effects and client helper stay
-  open. M-1508 binds static checks; M-1509/M-1510 record processes only.
+  Native element/row storage, requested 24-byte argument lowering, aliases,
+  class/effects and client helper remain open with F-1195's limits. M-1508 binds
+  static checks; M-1509/M-1510 record processes only.
 
 ## Candidate
 
@@ -194,5 +199,5 @@ addresses retain helper names or stand alone.
 ## Evidence
 
 F-645..F-681, F-716, F-894, F-902..F-904, F-728, F-734..F-736, F-741..F-744, F-746, F-747,
-F-750, F-897, F-930, F-937, F-940, F-1195; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
+F-750, F-897, F-930, F-937, F-940, F-1195; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476, M-1517; M-642..M-698, M-755..M-792, M-794..M-807, M-858, M-1024, M-1025,
 M-1027, M-1028, M-1035..M-1037, M-1046..M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071..M-1074.

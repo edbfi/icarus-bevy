@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-15
+Last reconciled: 2026-11-16
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -59,4 +59,4 @@ Last reconciled: 2026-11-15
 | F-930 | UModifierStateComponent vftable, ScaleStatsHelper, StateData, InitImpl/Applied/Removed, OnStatContainerUpdated, FixModifierActivation, reload/expiry match | observed | static-pcode, authored-test; M-976, M-978, M-990..M-1010, M-1024/ev_053a26045f8e, M-1025, M-1027/ev_c40e7a02c708, M-1028 | high; NaN guards differ; subclass/BP, callee, owner/row, live open | U-025, U-045 | active |
 | F-937 | Removal UID/last match; server operands, append and conditional slot writes bound | observed | pcode, metadata; models authored; M-1035..M-1037, M-1046/ev_89fc8bd4555c, M-1046/ev_aac6fe0fbfe0, M-1047, M-1048, M-1050, M-1052..M-1054, M-1058, M-1059, M-1061..M-1062, M-1065..M-1068, M-1071, M-1508 | high; new chains server-only; type/ABI/alias/lifetime open; F-940 | U-025, U-045 | active |
 | F-940 | Server helper copies u64[RCX+8] to [RDX], sets RAX=RDX and returns | observed | static-disasm; prior authored-test; M-1046/ev_89fc8bd4555c call target, M-1071, M-1072, M-1074/ev_b00d459327ea; M-1073 failed launch; M-1508 | high; 25621760; 11 declared bytes; ABI/client/field/runtime open | U-025, U-045 | active |
-| F-1195 | Modifier declarations join FName/EntryId (Number/Value direct unsigned32), removal count 3/ordered refs, pointer/forward AActor and complete row-handle header | derived | static-metadata; M-1425..M-1428, M-1432..M-1458, M-1471..M-1476 | 25621760; declarations only; storage/ABI, comparator/owner, overrides, coordinates, runtime/import open; spec | U-025, U-045 | active |
+| F-1195 | Modifier FName/EntryId (Number/Value direct unsigned32), removal count 3/ordered refs, pointer/forward AActor, row-handle header/list 21 entries/weight 30/base join | derived | static-metadata; M-1425..M-1428, M-1432..M-1458, M-1471..M-1476, M-1517 | 25621760; declarations only; storage/ABI, comparator/owner, overrides, coordinates, runtime/import open; spec | U-025, U-045 | active |

@@ -5,7 +5,7 @@ Checkpoint: [findings](ledgers/findings/), [unknowns](ledgers/unknowns.md),
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-11-15
+Last reconciled: 2026-11-16
 
 ## Summary
 
@@ -40,7 +40,7 @@ Digests: [foundation](research/foundation/foundation.md) and
 ## Next tasks
 
 1. Data F-828/F-829/F-831/F-832/F-993; saved rows F-861/F-866. Next: independent gameplay/reference qualification; no client dependency or packaged values.
-2. Import U-045/U-025: restoration unproven F-766/F-916. Candidates F-920/F-927/F-929; declaration counts/refs/headers F-1195; lifecycle/removal/timers F-930/F-937/F-940/F-931. Next: remaining definitions/storage/ABI, comparator operand/receiver proof, overrides, native owner/subclass bindings and coordinates before all-or-nothing import. Publication stays closed (F-660); [procedures](runbooks/authored-worlds.md), costs F-926.
+2. Import U-045/U-025: restoration unproven F-766/F-916. Candidates F-920/F-927/F-929; reuse F-1195's list/base join; lifecycle/removal/timers F-930/F-937/F-940/F-931. Next: actual caller/lowering, remaining definitions/storage/ABI, comparator operand/receiver proof, overrides, native owner/subclass bindings and coordinates before all-or-nothing import. Publication stays closed (F-660); [procedures](runbooks/authored-worlds.md), costs F-926.
 3. Player state F-668/F-643; build ambiguity/time window F-635/F-896/F-685/F-878. Next: producing log U-040. Authored checkpoints F-1172, leave cutoffs F-1188, survival F-1183 and schema-15 bags F-1200 are test-qualified ([operations](runbooks/authored-survival.md)); next: authoritative state coverage and separately scoped client qualification.
 4. Network bounds F-841/F-975/F-1015/F-1016; restore F-973/F-978 to F-993/F-1054 to F-1056/F-1063/F-1064/F-1066; ticks F-995 to F-1000. Entry F-1185; failed leave F-1186. F-1197 conditional leave codec retains inherited-layout/old-trace limits. F-1188 adds default-off private leave/restart checks; client proof remains open. Next: checkpoint entry after F-1199, then client leave/cancel/rejoin and durability; membership F-1171. F-1177 active; preserved-world hosting refuses; U-069/U-070/U-076 open.
 5. Replication replay/scheduling F-762/F-761, lifecycle/costs F-938/F-952. Authored speed stats accompany stock-client locomotion F-1185; authoritative motion/physics, collision, audio and stat UI remain unqualified (U-025/U-080). Next: qualify candidate F-1198 and operator spawn points F-1139/F-1140 after the mountain spawn, then saved-location placement F-1134 to F-1138/M-1374. [Protocol](specs/network/actor-channel.md); [configuration](runbooks/native-server.md#network-sessions-experimental).
