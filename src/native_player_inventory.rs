@@ -223,6 +223,10 @@ impl CompiledPlayerInventoryRecipe {
     pub fn identity(&self) -> &str {
         &self.identity
     }
+    /// The canonical recipe, read-only (session projections bind to its keys).
+    pub(crate) fn recipe(&self) -> &PlayerInventoryRecipe {
+        &self.recipe
+    }
     pub fn empty_v2(&self) -> PlayerInventorySnapshotV2 {
         PlayerInventorySnapshotV2 {
             format: 2,

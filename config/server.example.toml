@@ -14,6 +14,14 @@ status_interval_seconds = 10
 # Authored bags require checkpoints and fresh storage; recipe versions are independent.
 # player_inventory = "config/player-inventory-consumables.example.json"
 # player_inventory_transfers = false # true selects new schema 16; no migration
+# OPTIONAL, EXPERIMENTAL: replicate each player's own bag to that player's pawn
+# inventories. The binding names, for every recipe inventory and item, data.pak
+# row identities only (D_InventoryInfo, D_TagQueries, D_ItemsStatic); unknown,
+# ambiguous or missing rows refuse startup. Session-only: stores reopen
+# unchanged. Fresh checkpoint players only: refuses a preserved world and an
+# authored Player row whose inventories enable the returning-pawn restore.
+# Client inventory actions are not handled; unqualified with stock clients.
+# player_inventory_projection = "config/player-inventory-projection.example.json"
 enabled = false
 bind = "127.0.0.1"
 port = 17777

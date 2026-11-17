@@ -92,6 +92,14 @@ impl PlayerRegistry {
     pub fn has_inventory(&self) -> bool {
         self.inventory.is_some()
     }
+    /// One committed bag, read-only, without cloning the inventory section.
+    /// Session projections read it; they never mutate or retain it.
+    pub(crate) fn inventory_bag(
+        &self,
+        player_id: u64,
+    ) -> Option<crate::native_player_inventory::PlayerBagRef<'_>> {
+        self.inventory.as_ref()?.bag(player_id)
+    }
     pub(crate) fn context_matches(&self, expected: &PlayerContext) -> bool {
         self.snapshot.context() == expected
     }

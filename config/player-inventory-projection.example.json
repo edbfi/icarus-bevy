@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "inventories": [{
+    "inventory": "bag",
+    "info_row": "REPLACE_WITH_D_InventoryInfo_ROW",
+    "slot_queries": ["REPLACE_WITH_D_TagQueries_ROW"]
+  }],
+  "items": [{
+    "item": "authored-water",
+    "row": "REPLACE_WITH_D_ItemsStatic_ROW",
+    "count_property": true,
+    "dynamic": []
+  }]
+}

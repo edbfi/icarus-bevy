@@ -1463,6 +1463,14 @@ fn run(
         config.network.hosting.is_none() || snapshot.preserved_prospect.is_none(),
         "hosting preserved worlds require a qualified saved-map binding; only fresh authored hosting is supported"
     );
+    // Fresh checkpoint players only: a preserved world's returning pawns
+    // restore against the profile's inventory list, not the projected one.
+    ensure!(
+        !config.network.enabled
+            || config.network.player_inventory_projection.is_none()
+            || snapshot.preserved_prospect.is_none(),
+        "network.player_inventory_projection serves fresh checkpoint players only and refuses a preserved world"
+    );
     if config.network.enabled
         && let Some(world) = &config.network.authored_world
     {
@@ -1675,6 +1683,9 @@ fn run(
             }
             if config.network.checkpoint_pawn_before_identity {
                 record["checkpoint_pawn_before_identity"] = json!(true);
+            }
+            if config.network.player_inventory_projection.is_some() {
+                record["player_inventory_projection"] = json!(true);
             }
             if let Some(hosting) = &config.network.hosting {
                 record["hosting"] = json!({"seconds": hosting.seconds,
