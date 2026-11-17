@@ -11,12 +11,9 @@ Actor opens, codecs, relevancy and readiness after admission.
 ## Current answer
 
 Bounds/RPCs/opens F-1015/F-1016/F-1052/F-1034; lifetime F-1182; entry F-1185.
-F-1197: conditional fields 148/149/150/169, cache 182/bound 183; normal RPC
-presence + three enum bits/exact consumption. Initialized absence preserves zero
-but stays distinct on wire. Handle 26 inherits custom-struct rules; checksum-off/
-nonshared completion is 20 property/30 actor-content bits (M-1498 to M-1501).
-Old trace/F-1193/F-1177 limits stand; live class/cache/archive/OnRep, full layout,
-durability and client result stay open. Encoding permits a default-off experiment.
+F-1197's conditional leave codec (M-1498 to M-1501) and its limits
+(F-1193/F-1177): [actor channel](../../specs/network/actor-channel.md#confirmed);
+its encoding permits a default-off experiment.
 
 [Visibility](../../specs/network/visibility-state.md): wire/staging/capture,
 conditional consumer and inert models F-1020 to F-1024; replay F-1034;

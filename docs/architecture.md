@@ -1,8 +1,8 @@
 # Architecture and interfaces
 
-Design constraints for the native server, repository boundaries and the
-toolchain. The [plan](linux-dedicated-server-plan.md) sets goals and exit
-criteria; [implementation status](implementation-status.md) records what exists.
+Design constraints, repository boundaries and toolchain for the native server.
+Goals: [plan](linux-dedicated-server-plan.md); state:
+[status](implementation-status.md).
 
 Before restructure: 96ddb0b:docs/architecture.md
 
@@ -126,13 +126,10 @@ Checkpoints store `D_CharacterGrowth` names resolved at open; missing rows/indic
 >255 refuse, unrelated catalog churn does not. No wire/biome handles persist:
 pawns use biome 0, rejecting other checkpoint values.
 
-Gameplay schema 1 pins catalog counts/names/order; schema 2 normalizes sparse
-named rows to installed order with independent defaults. Missing tables,
-invalid/duplicate/unknown names and ambiguous catalogs refuse. Expansion caps:
-262144 rows/8 MiB UTF-8 names, separate from 8 MiB recipe. Minimal schema-2
-generator recipes survive unrelated churn; skeleton emits schema 1. Schema 14
-binds exact recipe bytes: conversion refuses by input name, without reset/client
-qualification (F-1179).
+Gameplay recipe schemas, caps and refusals:
+[native server](runbooks/native-server.md#network-sessions-experimental) (F-1179);
+the [generator](runbooks/network-readiness.md#fresh-player-stats)'s minimal
+schema-2 recipes survive unrelated churn and its skeleton emits schema 1.
 
 Authority needs accepted live tickets, Joined and matching nonnegative
 client-chosen Begin/Character slots; login strings/names/profile XP/move reports

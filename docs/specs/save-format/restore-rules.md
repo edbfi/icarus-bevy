@@ -156,16 +156,14 @@ addresses retain helper names or stand alone.
   Forward 1997626 `FModifierStatesRowHandle`: flags 640,
   size/count/field-list/derived/vshape 0 (M-1471/ev_c593a2dcb42c).
   Complete 1997679: flags 566, declared size 24/count 30, list 1997678,
-  derived/vshape 0 (M-1471/ev_85400f1f84f1). M-1426 already qualifies
-  21 physical declarations/weight 30: declared base offset 0 and nested alias
-  `Super` both reference 873791, forward FRowHandle joined to complete 873846
-  (declared size 24). M-1517 qualifies the bounded reader/lifecycle; its read
-  repeated these declarations and establishes no ICARUS performance.
+  derived/vshape 0 (M-1471/ev_85400f1f84f1). M-1426 qualifies 21 physical
+  declarations/weight 30: declared base offset 0 and nested alias `Super` both
+  reference 873791, forward FRowHandle joined to complete 873846 (declared
+  size 24). M-1517 qualifies the bounded reader/lifecycle, not ICARUS
+  performance.
   Retained 7450 `LF_CLASS`: forward `AActor`, flags 640,
   size/count/field-list/derived/vshape 0 (M-1471/ev_516c488fb7d2); 116 stays opaque.
-  M-1471 decoded retained records without a new original read. Two prior full framing
-  passes, 3150352684 physical bytes, full pre/post fixity and independent owned-unit/cgroup
-  cleanup (not host-wide): M-1457, M-1458/ev_800189c44abc; M-1472 to M-1476.
+  Framing and fixity receipts: M-1457, M-1458/ev_800189c44abc; M-1472 to M-1476.
   Return/this definitions, member widths/occupied storage, signatures/method effects,
   actual caller/lowering, aggregate/static ABI, comparator associations,
   native owner/receiver, overrides, coordinates, lifetimes and runtime/client/import

@@ -39,19 +39,8 @@ For a justified direct fallback, resolve `rea.sh`'s JDK/Ghidra paths in scope:
 JAVA_HOME="$SCOPED_JDK" "$SCOPED_GHIDRA/support/analyzeHeadless" <arguments>
 ```
 
-`tools/pdb_public_symbols.cjs` and `tools/pe_function_ranges.cjs` bind symbols and
-exception entries; neither proves ownership, instruction boundaries or whole functions.
-`tools/pdb_procedure_ranges.cjs` optionally retains up to 32 unresolved TPI/IPI references.
-`tools/pdb_selected_types.cjs` separates raw-record, header/signature and
-declaration-entry profiles. `inspectSelectedRawTypeRecords` (M-1442) selects
-one numeric TPI index and validates outer framing; its leaf/raw envelope
-qualifies no payload semantics or references.
-`inspectSelectedDeclarationEntries` (M-1438) binds complete owner index, header
-bytes/hash and FIELDLIST; only bounded FIELDLIST chains are followed. Cycles,
-shared lists and weighted-count mismatches refuse. Other references stay opaque.
-Declared sizes/offsets prove no storage layout; legacy member/overlap checks
-remain strict. Authored fixtures qualify no original entries. Callers bind
-input identity, physical reads, confinement and provenance.
+PE/PDB readers and other authored helpers: [research helpers](research-helpers.md).
+
 Run `tools/ghidra/TraceBoundedFunctions.java NEW_DIRECTORY START:END_EXCLUSIVE`
 with `-noanalysis`. Require `EXPORT_FINISHED.txt`, no `FAILED.txt`, physical-byte
 checks and inspected statuses. Pseudocode and listing installation are disabled;
