@@ -87,6 +87,12 @@ must fit both byte-order budgets before binding. Bootstrap supplies no terrain.
 reject after load, before binding/polling; stored state unchanged.
 Networking off: no actor bootstrap; player context is still validated.
 
+`network.checkpoint_pawn_before_identity` (default false; needs player
+persistence; F-1201): the pawn opens after the controller, before Begin, so
+`restart-pawn` can precede it. Stored vitals follow as a pawn update; saved
+locations stay unapplied (`checkpoint_locations_unapplied`).
+`--private-leave-proof` refuses it.
+
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
 CLI replaces TOML; `[]` disables. Needs release/controller plans and settled
 pawn/GUID for restart. Opens precede actions; `network_listening` lists them.
@@ -121,10 +127,14 @@ despite traffic causes `closed_by_delivery_stall`/`peers_delivery_stalled`, unli
 closes via `closed_by_possession_abandoned` (F-1116). GUIDs never reuse (F-1083).
 
 
-`authored_gameplay`: regular JSON ≤8 MiB. Schema 1: full catalog counts/names/order.
-Schema 2: sparse named rows in any order; [binding](../architecture.md#persistence).
-Missing tables, unknown/duplicate/invalid names and ambiguous catalogs fail.
-Omitted rows/fields use parser defaults, never pak values; neither input: lab defaults.
+`authored_gameplay`: regular JSON ≤8 MiB. Schema 1 pins full catalog
+counts/names/order; schema 2 takes sparse named rows in any order, normalized to
+installed order with independent defaults (F-1179). Missing tables,
+unknown/duplicate/invalid names and ambiguous catalogs fail. Omitted rows/fields
+use parser defaults, never pak values; neither input: lab defaults. Expansion
+caps: 262144 rows/8 MiB UTF-8 names, separate from the 8 MiB recipe. Schema 14
+binds exact recipe bytes; conversion refuses by input name, without reset or
+client qualification ([binding](../architecture.md#persistence)).
 
 UID (F-948): handle 46; ≤262,144 claims/reservations/remaps each.
 Unreadable saved ID fails startup; failed claim skips open, counts
@@ -223,8 +233,8 @@ of authored records/clock; no ICARUS gameplay. Domain-ID entities need positions
 Schema 1: records/clock, 64 MiB; schema 3: plus write-once, digest-verified
 `preserved-<sha256>.bin` sidecar; schema 2 loads (F-567).
 Schemas 4–12: [authored worlds](authored-worlds.md) (F-919, F-922, F-923, F-927,
-F-931, F-1029); 64 MiB + 4 KiB per generation with sections/sidecar reference.
-Preservation grants no import acceptance.
+F-931, F-1029); preservation grants no import acceptance
+([contract](../architecture.md#persistence)).
 
 Checksum/sync before atomic manifest publication; retain two generations.
 Corrupt current file recovers previous. Invalid/missing manifests,
@@ -278,20 +288,3 @@ including dropped records; RSS unbounded (F-920).
 `required_decode_limits`/`remaining_headroom`; no names/values/import authority.
 Headroom cannot guarantee another recorder's preflight. Meanings/original round trips
 unvalidated; [workload](synthetic-workload.md).
-
-## Offline metadata tools
-
-`tools/native_field_catalog.cjs`: call `joinNativeFieldCatalog` with three
-reader reports, exported `PROFILE` and exact `options.addresses`; limits only
-lower `CAPS`. Output stays `ready: false`.
-
-`tools/pdb_selected_types.cjs`: exported `PARAMETER_PROFILE` reads bounded
-parameter/base/embedded declarations. No runtime ancestry/consumers, net order,
-checksums, activation or compatibility qualification.
-`DECLARATION_PROFILE` reports UDT identity/size, declarations, counts and direct
-references; no layout.
-
-`node tools/pdb_selected_metadata.cjs --request request.json`: JSON binds
-PDB path/size/SHA-256, GUID/age, profile/names and output path.
-Exclusive mode-0600 publication follows complete writes and sync; failures
-are redacted. Caps only lower limits.

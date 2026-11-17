@@ -4276,19 +4276,25 @@ impl PeerLab {
                 if let Some(entry) = self.peers.get_mut(&address) {
                     entry.checkpoint_epoch = Some(epoch);
                     entry.checkpoint_projection = Some(projection);
-                    if let Some(resolution) = &resolution {
-                        entry.placement = Some(Placement {
-                            location: projection.checkpoint.location_cm.map(|value| value as f32),
-                            yaw: None,
-                            source: if projection.is_new {
-                                resolution.placement.source
-                            } else {
-                                PlacementSource::Saved
-                            },
-                        });
-                    } else {
-                        // Publish the reserved vitals to the already open pawn.
-                        entry.pawn_property_retry_ready = true;
+                    match &resolution {
+                        // Gated pawn: it will open at the reserved checkpoint.
+                        Some(resolution) => {
+                            entry.placement = Some(Placement {
+                                location: projection
+                                    .checkpoint
+                                    .location_cm
+                                    .map(|value| value as f32),
+                                yaw: None,
+                                source: if projection.is_new {
+                                    resolution.placement.source
+                                } else {
+                                    PlacementSource::Saved
+                                },
+                            });
+                        }
+                        // Early pawn: already open where the controller placed
+                        // it; publish the reserved vitals to it.
+                        None => entry.pawn_property_retry_ready = true,
                     }
                     if let Some(pending) = &mut entry.initial_opens {
                         pending.retry_ready = true;

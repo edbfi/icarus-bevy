@@ -30,11 +30,11 @@ version/control negotiation, replication and gameplay admission.
 
 - The initial client request is 29 bytes: first byte `01`, last byte `08`, all
   others zero (zero restart/selector bits, 28 zero bytes, termination bit).
-- The original replied to that request with a 29-byte challenge (restart false,
-  selector true, finite positive timestamp, 20-byte cookie) and, after an echo
-  of the issued timestamp, selector and cookie, with a 29-byte acknowledgement
-  carrying timestamp `-1.0`, selector one, restart zero and the same cookie. Its
-  log recorded `Handler Handshake Complete`; Steam authentication was inactive
+- The original answered it with a 29-byte challenge (restart false, selector
+  true, finite positive timestamp, 20-byte cookie) and, after an echo of the
+  issued timestamp, selector and cookie, with a 29-byte acknowledgement
+  carrying timestamp `-1.0`, selector one, restart zero and the same cookie,
+  logging `Handler Handshake Complete` with Steam authentication inactive
   (F-253, M-169).
 - Optional prefix (`0x14372d5d0`): reads `net.StatelessConnectComponent.MagicHeader`
   and accepts `1..=32` ASCII `'0'`/`'1'` bits (`0` bits in stock ICARUS); empty,
@@ -45,7 +45,7 @@ version/control negotiation, replication and gameplay admission.
   termination-bit strip: `1` bit (`1`-byte `0x07` server-to-client restart
   request from `SendRestartHandshakeRequest` `0x143745ee0`), `226` bits (`29` B
   standard packet) or `386` bits (`49` B extended restart response carrying
-  `Cookie` + `OrigCookie` from `SendChallengeResponse` `0x143745810`). All other
+  `Cookie` + `OrigCookie` from `SendChallengeResponse` `0x143745810`). Other
   bit counts call `Packet.SetError()` (`0x141f62140`), and `IncomingConnectionless`
   (`0x14373f0f0`) rejects `NaN` or `ChallengeAge` outside `[0.0, 40.0)`
   (`_DAT_1453edbc8 = 40.0`) (F-729; U-051 resolved).
@@ -64,16 +64,16 @@ version/control negotiation, replication and gameplay admission.
 
 ## Candidate
 
-- Current client (build 25793767): after a negative-timestamp acknowledgement
-  the client seeds its connection's incoming and outgoing sequences from the
+- After a negative-timestamp acknowledgement the current client (build
+  25793767) seeds its connection's incoming and outgoing sequences from the
   cookie's first and second little-endian 16-bit words, masked to 14 bits
   (F-536), and data packets carry a zero handshake bit after any magic header
   (F-524). The server seeds sequences identically (`0x14373f0f0`, F-714).
 - The loopback lab (`examples/handshake_lab.rs`) generates cookies with
   HMAC-SHA256 truncated to 20 bytes over `icarus-bevy/handshake-lab/v1\0`, IPv4
   octets, big-endian port and little-endian binary64 timestamp, with a fresh
-  32-byte OS-random secret per process and selector fixed at zero. It has not
-  been tested with the stock client (U-052).
+  32-byte OS-random secret per process and selector fixed at zero. It is
+  untested with the stock client (U-052).
 
 ## Open questions
 

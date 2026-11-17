@@ -193,6 +193,19 @@ fn controller_leave_installs_only_for_explicit_prepared_authenticated_player_ses
         assert!(lab.local_addr().is_err());
         assert_eq!(lab.session_counts().active_peers, 0);
     }
+    // The early checkpoint pawn reaches the lab only through this wiring.
+    for enabled in [false, true] {
+        config.checkpoint_pawn_before_identity = enabled;
+        let (session, _) =
+            network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+        let mut session = session.unwrap();
+        let lab = &session.session_mut().lab;
+        assert_eq!(lab.has_checkpoint_early_pawn(), enabled);
+        assert_eq!(
+            lab.session_counts().checkpoint_locations_unapplied,
+            enabled.then_some(0)
+        );
+    }
 }
 
 #[test]

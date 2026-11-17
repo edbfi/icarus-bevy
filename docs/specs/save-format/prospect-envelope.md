@@ -35,58 +35,57 @@ unavailable.
 
 - `WriteToProspectBlob` (`0x1418fa200` server / `0x1418fa530` client) writes
   `"actors"` into `Key`, compresses via `FCompression::CompressMemory` (`NAME_Zlib`
-  `0x101`), and at `0x1418fa48c..0x1418fa49a` stores `CompressedSize` to both
+  `0x101`) and at `0x1418fa48c..0x1418fa49a` stores `CompressedSize` to both
   `TotalLength` (`+0x20`) and `DataLength` (`+0x24`). `ReadFromProspectBlob`
-  (`0x1418e6240` server / `0x1418e7680` client) leaves `DataLength` unread,
-  pre-allocates `CompressedData` to `TotalLength`, calls `FBase64::Decode`
-  (`0x141efc520`, which resizes `CompressedData` to `GetDecodedDataSize`
-  `0x141f02ee0`), ignores `FBase64::Decode`'s `bool` return, sign-extends
-  `UncompressedLength` into `memset`, and passes `CompressedSize = TotalLength`
-  (not `CompressedData.Num()`) to `FCompression::UncompressMemory` (`0x141f140f0`,
-  `NAME_Zlib` `0x101`, window bits 15), hashes the output through `0x140accda0`
-  (SHA-1 state initialized by `0x141f2cf00`), compares with `Hash`, and enters
-  archive deserialization at `0x1418ee4a0` (F-283, F-737;
-  `evaluate_prospect_blob_decode` in `experimental::restore_rules`).
-- Supplied saves (M-118, F-881, F-738): twelve BOM-marked UTF-16LE JSON prospect
-  documents (one current, eleven backups), raw 2,154,484 to 2,239,534 bytes,
-  Base64-decoded 805,856 to 837,751 bytes, decompressed 17,671,728 to
-  19,131,027 bytes; all pass canonical Base64, exact lengths, one complete zlib
-  stream and SHA-1; eleven distinct bodies, one backup equals current; seven
-  distinct account/character-slot tuples per prospect with the claimed owner
-  among them; `DataLength == TotalLength` in all twelve. Twelve identical 97-byte
-  UTF-8 documents (`Accolades.json` and 11 backups) match `FAccoladeSaveData`
+  (`0x1418e6240` server / `0x1418e7680` client) pre-allocates `CompressedData`
+  to `TotalLength`, calls `FBase64::Decode` (`0x141efc520`, which resizes
+  `CompressedData` to `GetDecodedDataSize` `0x141f02ee0`) and ignores its
+  `bool` return, sign-extends `UncompressedLength` into `memset`, and passes
+  `CompressedSize = TotalLength` (not `CompressedData.Num()`) to
+  `FCompression::UncompressMemory` (`0x141f140f0`, `NAME_Zlib` `0x101`, window
+  bits 15). It hashes the output through `0x140accda0` (SHA-1 state initialized
+  by `0x141f2cf00`), compares with `Hash` and enters archive deserialization at
+  `0x1418ee4a0` (F-283, F-737; `evaluate_prospect_blob_decode` in
+  `experimental::restore_rules`).
+- Supplied saves (M-118; intake, integrity and decoded sizes F-881): twelve
+  BOM-marked UTF-16LE JSON prospect documents (one current, eleven backups;
+  one backup equals current), raw 2,154,484 to 2,239,534 bytes, Base64-decoded
+  805,856 to 837,751 bytes, decompressed 17,671,728 to 19,131,027 bytes. All
+  have one complete zlib stream, canonical Base64 and `DataLength ==
+  TotalLength`; each prospect lists seven distinct account/character-slot
+  tuples, the claimed owner among them. Twelve identical 97-byte UTF-8
+  documents (`Accolades.json` and 11 backups) match `FAccoladeSaveData`
   (`0x145dc1790` / `0x1419edb20`, size `0xB0`, align `0x08`: empty
   `CompletedAccolades: TArray<FAccoladeCompletedState>` `+0x00`,
   `PlayerTrackers: TMap<FPlayerTrackersRowHandle,int32>` `+0x10`, and
   `PlayerTaskListTrackers: TMap<FPlayerTrackersRowHandle,FTrackerTaskListProgress>`
-  `+0x60`; F-738). The release inspector reports 18,513,234 and 18,492,675
-  decoded bytes for the current prospect and one backup with
-  `world_imported: false` (F-881), and `inspect-save --stage-check
-  --expect-prospect-name` passes across all 12 supplied prospect files and 3
-  reference-server re-saves (`15 / 15`, `2,664..2,850` recorders, F-738).
+  `+0x60`; F-738). The release inspector reports `world_imported: false` (F-881), and
+  `inspect-save --stage-check --expect-prospect-name` passes all 12 supplied
+  prospect files and 3 reference-server re-saves (`15 / 15`, `2,664..2,850`
+  recorders, F-738).
 - No explicit outer build or save-version marker exists, and neither the
   payload nor the original server's re-save holds a version string (F-896).
-- Provenance: the user-supplied heavy-world archive is preserved privately with
-  an inventory (M-166); intake F-881. The writes date from the 3.0.29 window,
-  before the user-reported 3.0.31 client (F-896, F-685, F-878). Possession
-  completes no compatibility, bug-reproduction or performance gate.
+- Provenance: the heavy-world archive is preserved privately with an inventory
+  (M-166); the writes date from the 3.0.29 window, before the user-reported
+  3.0.31 client (F-896, F-685, F-878). Possession completes no compatibility,
+  bug-reproduction or performance gate.
 
 ## Candidate
 
-- Inspector policy (research limits, not recovered ones): raw input at most
-  4 MiB, declared output at most 32 MiB; accept UTF-8 or BOM-marked UTF-16LE
-  only, rejecting odd UTF-16 lengths and unpaired surrogates; validate the
-  entire UTF-8 input before skipping unknown fields (N-005, F-880); exact field
-  names and types with duplicates rejected; require named objects at root and
-  blob boundaries, rejecting positional arrays (F-880); keep only error
-  category/line/column in malformed JSON diagnostics, with raw causes removed
-  (F-880); reject negative lengths, malformed
-  SHA-1 or Base64; require canonical padded Base64, exact compressed count, one
-  complete zlib stream, no trailing bytes and exact output length; verify the
-  legacy hash without retaining the world; report `DataLength` without enforcing
-  `DataLength == TotalLength` (F-880, F-737). Success is labeled
-  `experimental_envelope_only`; `--inner-tags`
-  adds `experimental_root_tags_only` aggregate counts under the fixed research
+- Inspector policy (research limits, not recovered ones; F-880): raw input at
+  most 4 MiB, declared output at most 32 MiB; UTF-8 or BOM-marked UTF-16LE
+  only, rejecting odd UTF-16 lengths and unpaired surrogates; the entire UTF-8
+  input is validated before unknown fields are skipped (N-005); exact field
+  names and types, duplicates rejected; named objects required at root and
+  blob boundaries, positional arrays rejected; malformed-JSON diagnostics keep
+  only error category/line/column. It rejects negative lengths and malformed
+  SHA-1 or Base64; requires canonical padded Base64, the exact compressed
+  count, one complete zlib stream, no trailing bytes and the exact output
+  length; verifies the legacy hash without retaining the world; and reports
+  `DataLength` without enforcing
+  `DataLength == TotalLength` (F-737). Success is labeled
+  `experimental_envelope_only`; `--inner-tags` adds
+  `experimental_root_tags_only` aggregate counts under the fixed research
   profile (F-882), and `--stage-check` adds `experimental_stage_only` staging
   (`experimental::recorders::stage_prospect_save_state`,
   `prospect::stage_prospect`): the `FProspectSaveState` root schema, tag order,
@@ -118,7 +117,7 @@ unavailable.
 - Dependencies in `Cargo.lock`: `base64` 0.23.1, `flate2` 1.1.10 (Rust backend,
   `miniz_oxide` 0.9.1, `crc32fast` 1.5.2, `adler2` 2.0.1, `simd-adler32`
   0.3.10), `sha1` 0.11.0; permissive licenses; no proprietary SDK.
-- Native admission and diagnostic regressions: M-182; UTF-8/BOM UTF-16LE,
+- Native admission and diagnostic regressions (M-182): UTF-8/BOM UTF-16LE,
   all inspection modes, exact failure boundary and source preservation.
 - Fixture: Python `zlib.compress`, `base64.b64encode` and `hashlib.sha1` over
   the 42 bytes `Authored envelope fixture: no game state.\n`. Tests cover

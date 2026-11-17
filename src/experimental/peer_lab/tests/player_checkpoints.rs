@@ -1769,7 +1769,7 @@ fn early_fresh_pawn_open_is_the_legacy_open_and_needs_no_vitals_update() {
     );
     assert_eq!(lab.stats.pawn_spawns_configured, 1);
     assert_eq!(lab.stats.pawn_opens_sent, 1);
-    assert!(registry_is_empty_after_bridges(&mut lab));
+    assert_no_reservation_after_bridges(&mut lab);
     let mut registry = registry();
     identify(&mut lab, &socket, &mut client, address, 3, 3);
     lab.bridge_player_checkpoints(&mut registry);
@@ -1797,13 +1797,14 @@ fn early_fresh_pawn_open_is_the_legacy_open_and_needs_no_vitals_update() {
 }
 
 /// No reservation can exist before identity, however often the bridge runs.
-fn registry_is_empty_after_bridges(lab: &mut PeerLab) -> bool {
+fn assert_no_reservation_after_bridges(lab: &mut PeerLab) {
     let mut registry = registry();
     for _ in 0..3 {
         lab.bridge_player_checkpoints(&mut registry);
         lab.retry_initial_opens();
     }
-    lab.next_checkpoint_epoch == 1 && registry.active_epochs().is_empty()
+    assert_eq!(lab.next_checkpoint_epoch, 1);
+    assert!(registry.active_epochs().is_empty());
 }
 
 #[test]
