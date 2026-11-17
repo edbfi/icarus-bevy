@@ -9124,6 +9124,11 @@ fn controller_receive_production_retains_metadata_after_disconnect_and_shutdown(
         departed["controller_receive"]["fields"],
         observed["controller_receive"]["fields"]
     );
+    assert!(observed["pawn_receive"]["fields"]["entries"].is_array());
+    assert_eq!(
+        departed["pawn_receive"]["fields"],
+        observed["pawn_receive"]["fields"]
+    );
     assert!(
         serde_json::to_vec(&departed["controller_receive"])
             .unwrap()
@@ -9137,6 +9142,7 @@ fn controller_receive_production_retains_metadata_after_disconnect_and_shutdown(
         stopped["controller_receive"],
         departed["controller_receive"]
     );
+    assert_eq!(stopped["pawn_receive"], departed["pawn_receive"]);
 }
 
 #[test]

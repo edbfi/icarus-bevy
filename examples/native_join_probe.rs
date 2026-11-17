@@ -466,6 +466,10 @@ fn counts_before_shutdown(lab: &PeerLab) -> serde_json::Map<String, serde_json::
         "controller_fields_before_shutdown".into(),
         json!(lab.controller_field_totals()),
     );
+    counts.insert(
+        "pawn_fields_before_shutdown".into(),
+        json!(lab.pawn_field_totals()),
+    );
     // Lab-wide over every connection since bind, not per session: it reads
     // cleanly only with one client connected (the probe admits one).
     counts.insert(
@@ -747,7 +751,7 @@ fn main() -> Result<()> {
         }
         if now >= next_progress && output_error.is_none() {
             let lab = app.world().resource::<PeerLab>();
-            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"frozen_movement":lab.frozen_movement_observations(),"controller_fields":lab.controller_field_totals(),"unreliable_actor_bunches":lab.unreliable_actor_bunch_counts(),"stats":lab.stats(),"compatibility_proven":false});
+            let mut progress = json!({"event":"native_join_progress","incomplete":true,"sessions":lab.session_counts(),"readiness":lab.readiness_counts(),"frozen_movement":lab.frozen_movement_observations(),"controller_fields":lab.controller_field_totals(),"pawn_fields":lab.pawn_field_totals(),"unreliable_actor_bunches":lab.unreliable_actor_bunch_counts(),"stats":lab.stats(),"compatibility_proven":false});
             native_join_capture::add_counts(
                 &mut progress,
                 lab.private_rpc82_capture_counts(),
@@ -1473,6 +1477,7 @@ mod tests {
             "sessions_before_shutdown",
             "readiness_before_shutdown",
             "controller_fields_before_shutdown",
+            "pawn_fields_before_shutdown",
             "unreliable_actor_bunches_before_shutdown",
             "stats_before_shutdown",
             "spawns_before_shutdown",

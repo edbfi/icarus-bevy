@@ -35,6 +35,8 @@ fn post_pawn_peer(config: PacketLabConfig) -> PeerEntry {
         record_prerequisites: RecordPrerequisites::default(),
         frozen_release: FrozenMovementRelease::default(),
         pawn_inbound: PawnInboundCounts::default(),
+        pawn_field_diagnostics: PawnFieldDiagnostics::default(),
+        pawn_subobject_mapping: PawnSubobjectMapping::default(),
         pawn_moves: PawnMoves::default(),
         placement: None,
         visible_levels: BTreeSet::new(),

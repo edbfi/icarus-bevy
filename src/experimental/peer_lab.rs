@@ -202,6 +202,15 @@ use sha2::{Digest, Sha256};
 
 mod controller_leave;
 pub use controller_leave::ControllerLeaveCounts;
+mod pawn_receive;
+use pawn_receive::{
+    MoveOutcomes, PawnSubobjectMapping, observe_pawn_bunch, observe_pawn_transport_drop,
+};
+pub use pawn_receive::{
+    PAWN_FIELD_ENTRIES, PAWN_SKIPPED_BLOCK_ENTRIES, PawnFieldDiagnostics, PawnFieldDisposition,
+    PawnFieldSummary, PawnFieldTarget, PawnMoveFieldSummary, PawnReceiveDiagnostics,
+    PawnSkipReason, PawnSkippedBlockSummary, PawnSubobjectRelation, PawnTransportDrops,
+};
 
 use crate::{
     authored_world_bootstrap::AuthoredClockPlan,
@@ -255,7 +264,7 @@ use super::packet_lab::{
 use super::pawn_open::{
     InventorySlot, PawnContent, PawnInventory, PawnOpenPlan, PawnOpenState, PawnTemperatureState,
     compose_pawn_frozen_movement_update, compose_pawn_icarus_uid_update, compose_pawn_move_ack,
-    compose_pawn_open,
+    compose_pawn_open_with_guids,
 };
 use super::pawn_restore::{
     CurrentPawnState, compose_live_pawn_vitals_update, compose_restored_pawn_update,
@@ -2680,6 +2689,10 @@ struct PeerEntry {
     frozen_release: FrozenMovementRelease,
     /// Client-to-server bunches on this connection's pawn channel.
     pawn_inbound: PawnInboundCounts,
+    /// Bounded pawn-channel field metadata; removed with the peer.
+    pawn_field_diagnostics: PawnFieldDiagnostics,
+    /// The committed pawn open's sub-objects, for relations only.
+    pawn_subobject_mapping: PawnSubobjectMapping,
     /// Pawn moves and their acknowledgement ([`PeerLab::enable_pawn_move_acks`]).
     pawn_moves: PawnMoves,
     /// This connection's placement, resolved once at its first open and
@@ -2886,7 +2899,8 @@ fn count_placement(stats: &mut PeerLabStats, resolution: &Resolution) {
 /// ([`PeerLab::enable_pawn_move_acks`]): each well-formed move with a
 /// finite, nonnegative timestamp becomes the newest (by arrival) and due for
 /// acknowledgement, and its location is stored after the authored checks;
-/// anything else is counted malformed and skipped.
+/// anything else is counted malformed and skipped. Returns, for diagnostics
+/// only, which field-39 payloads were taken as moves.
 fn receive_pawn_moves(
     state: &mut PawnMoves,
     stats: &mut PeerLabStats,
@@ -2894,7 +2908,7 @@ fn receive_pawn_moves(
     codec: &RepLayoutCodec,
     now: Instant,
     connection: Option<u32>,
-) {
+) -> MoveOutcomes {
     use super::character_move::MOVEMENT_MODE_NONE;
     let malformed = |state: &mut PawnMoves, stats: &mut PeerLabStats| {
         state.counts.malformed = state.counts.malformed.saturating_add(1);
@@ -2902,16 +2916,19 @@ fn receive_pawn_moves(
     };
     let Ok(moves) = pawn_bunch_moves(bunch, codec) else {
         malformed(state, stats);
-        return;
+        return MoveOutcomes::Refused;
     };
+    let mut outcomes = Vec::with_capacity(moves.len());
     for packed in moves {
         let Some(packed) = packed.ok().filter(|packed| {
             let timestamp = packed.new.fields.timestamp;
             timestamp.is_finite() && timestamp >= 0.0
         }) else {
             malformed(state, stats);
+            outcomes.push(false);
             continue;
         };
+        outcomes.push(true);
         let mode = packed.new.movement_mode();
         state.latest_timestamp = Some(packed.new.fields.timestamp);
         state.unacked = true;
@@ -2947,6 +2964,7 @@ fn receive_pawn_moves(
             }
         }
     }
+    MoveOutcomes::Read(outcomes)
 }
 
 /// Capacity planning may fill a cloned queue even when the live queue is
@@ -3594,6 +3612,8 @@ pub struct PeerLab {
     unreliable_actor_bunches: UnreliableActorBunchCounts,
     /// First-seen metadata since bind, capped at 64 rows independently of peers.
     lifetime_controller_fields: ControllerFieldDiagnostics,
+    /// Pawn-channel metadata since bind, with the same independent caps.
+    lifetime_pawn_fields: PawnFieldDiagnostics,
     /// Opt-in ([`PeerLab::enable_unreliable_actor_bunch_counts`]): off by
     /// default, so the receive path parses no dropped bunch for diagnostics.
     count_unreliable_actor_bunches: bool,
@@ -4405,6 +4425,7 @@ impl PeerLab {
             level_actor_holders: BTreeMap::new(),
             unreliable_actor_bunches: UnreliableActorBunchCounts::default(),
             lifetime_controller_fields: ControllerFieldDiagnostics::default(),
+            lifetime_pawn_fields: PawnFieldDiagnostics::default(),
             count_unreliable_actor_bunches: false,
             manager_opens: Vec::new(),
             quest_open_base: None,
@@ -7609,6 +7630,33 @@ impl PeerLab {
         }
     }
 
+    /// Bounded pawn-channel field metadata for a live peer; diagnostics only.
+    pub fn pawn_field_diagnostics(&self, address: SocketAddrV4) -> Option<&PawnFieldDiagnostics> {
+        self.peers
+            .get(&address)
+            .map(|entry| &entry.pawn_field_diagnostics)
+    }
+
+    /// Aggregate live-peer pawn metadata under the same caps, without identities.
+    pub fn pawn_field_totals(&self) -> PawnFieldDiagnostics {
+        let mut totals = PawnFieldDiagnostics::default();
+        for peer in self.peers.values() {
+            totals.merge(&peer.pawn_field_diagnostics);
+        }
+        totals
+    }
+
+    /// Since-bind pawn-channel metadata, including departed peers. A row means
+    /// a field framed, not that a call applied; with overflow or unframed
+    /// counters, the absence of a row is inconclusive.
+    pub fn pawn_receive_diagnostics(&self) -> PawnReceiveDiagnostics {
+        PawnReceiveDiagnostics {
+            reliable_bunches: self.stats.pawn_bunches_received_reliable,
+            unreliable_bunches: self.stats.pawn_bunches_received_unreliable,
+            fields: self.lifetime_pawn_fields.clone(),
+        }
+    }
+
     /// Count current transport queues and primary joined-player phases without
     /// retaining per-peer detail or allocating output proportional to traffic.
     pub fn readiness_counts(&self) -> ReadinessCounts {
@@ -7999,6 +8047,8 @@ impl PeerLab {
                         record_prerequisites: RecordPrerequisites::default(),
                         frozen_release: FrozenMovementRelease::default(),
                         pawn_inbound: PawnInboundCounts::default(),
+                        pawn_field_diagnostics: PawnFieldDiagnostics::default(),
+                        pawn_subobject_mapping: PawnSubobjectMapping::default(),
                         pawn_moves: PawnMoves::default(),
                         placement: None,
                         visible_levels: BTreeSet::new(),
@@ -8536,6 +8586,7 @@ impl PeerLab {
                             // The client's packed moves (F-1127): decoded on
                             // arrival, acknowledged from the poll; the bunches
                             // stay dropped otherwise.
+                            let mut move_outcomes = Vec::new();
                             if self.pawn_move_acks && unreliable > 0 {
                                 let codec = RepLayoutCodec {
                                     actor: actor_codec(
@@ -8548,15 +8599,54 @@ impl PeerLab {
                                 for bunch in
                                     received.unreliable_actor_bunches().iter().filter(on_pawn)
                                 {
-                                    receive_pawn_moves(
+                                    move_outcomes.push(receive_pawn_moves(
                                         &mut entry.pawn_moves,
                                         &mut self.stats,
                                         bunch,
                                         &codec,
                                         now,
                                         entry.connection_id,
-                                    );
+                                    ));
                                 }
+                            }
+                            // Pawn receive metadata only: it reads these bunches
+                            // after the move handling above and changes nothing
+                            // the session applies, acknowledges or sends.
+                            let actor = actor_codec(
+                                plan.engine_net_version,
+                                entry.peer.connection_byte_order(),
+                            );
+                            let mut targets = [
+                                &mut entry.pawn_field_diagnostics,
+                                &mut self.lifetime_pawn_fields,
+                            ];
+                            for bunch in received.actor_bunches().iter().filter(on_pawn) {
+                                observe_pawn_bunch(
+                                    bunch,
+                                    &actor,
+                                    &entry.pawn_subobject_mapping,
+                                    &MoveOutcomes::NotRead,
+                                    &mut targets,
+                                );
+                            }
+                            let mut move_outcomes = move_outcomes.into_iter();
+                            for bunch in received.unreliable_actor_bunches().iter().filter(on_pawn)
+                            {
+                                let moves = move_outcomes.next().unwrap_or(MoveOutcomes::NotRead);
+                                observe_pawn_bunch(
+                                    bunch,
+                                    &actor,
+                                    &entry.pawn_subobject_mapping,
+                                    &moves,
+                                    &mut targets,
+                                );
+                            }
+                            for drop in received
+                                .reliable_actor_drops()
+                                .iter()
+                                .filter(|drop| drop.channel_index == *pawn_channel)
+                            {
+                                observe_pawn_transport_drop(drop, &mut targets);
                             }
                         }
                         // Header-only counts; these bunches stay dropped.
@@ -11412,7 +11502,7 @@ impl PeerLab {
         };
         let sent = PawnTemperatureState::from_values(&state.content.character_state).and_then(
             |temperature| {
-                let open = compose_pawn_open(
+                let (open, guids) = compose_pawn_open_with_guids(
                     &mut cache,
                     &mut exports,
                     plan,
@@ -11470,10 +11560,10 @@ impl PeerLab {
                         receipt.last,
                     )?;
                 }
-                Ok((sent, temperature))
+                Ok((sent, temperature, guids))
             },
         );
-        let (sent, temperature) = match sent {
+        let (sent, temperature, guids) = match sent {
             Ok(sent) => sent,
             Err(error) => {
                 bump(&mut self.stats.pawn_open_errors);
@@ -11496,6 +11586,7 @@ impl PeerLab {
             entry.pawn_moves.placement = Some((placement.location.map(f64::from), Instant::now()));
         }
         entry.controller_startup_pawn_guid = cache.actor_guid(state.key).ok();
+        entry.pawn_subobject_mapping = PawnSubobjectMapping::committed(&guids, plan);
         entry.pawn_temperature = Some(temperature);
         entry.queued_pawn_temperature = Some(temperature);
         let stat_pairs = state
@@ -21967,6 +22058,7 @@ mod tests {
     mod lossy_join;
     mod move_acks;
     mod pawn_capture;
+    mod pawn_receive;
     mod player_checkpoints;
     mod player_inventory;
     mod private_join_budget;

@@ -1793,6 +1793,7 @@ fn run(
                 "tick_p99_micros": metrics.tick_micros.quantile_micros(99),
                 "sessions": network::session_counts(app.world()),
                 "controller_receive": network::controller_receive_diagnostics(app.world()),
+                "pawn_receive": network::pawn_receive_diagnostics(app.world()),
                 "readiness": app.world().get_resource::<icarus_bevy::experimental::peer_lab::PeerLab>().map(|lab| lab.readiness_counts())}),
                     app.world(),
                 ))?;
@@ -1825,6 +1826,7 @@ fn run(
             json!({"event": "stopped", "tick": world.resource::<SimulationClock>().tick,
         "gameplay_ready": false, "sessions": &sessions,
         "controller_receive": network::controller_receive_diagnostics(world),
+        "pawn_receive": network::pawn_receive_diagnostics(world),
         "readiness_before_shutdown": &readiness}),
             world,
         ))
