@@ -64,6 +64,15 @@ pub struct NetworkConfig {
     pub player_inventory: Option<PathBuf>,
     #[serde(skip_serializing_if = "is_false")]
     pub player_inventory_transfers: bool,
+    /// EXPERIMENTAL, default absent; requires `player_persistence` and
+    /// `player_inventory`. An independently authored JSON binding of every
+    /// recipe inventory and item key to data.pak row identities (no values).
+    /// Each player's own bag is then replicated to that player's pawn as
+    /// inventory slot deltas. Session-only: excluded from every player input
+    /// and recipe digest, so stores reopen unchanged. Unqualified with a stock
+    /// client; client inventory actions are not handled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player_inventory_projection: Option<PathBuf>,
     /// EXPERIMENTAL: explicitly dispatch the selected ordinary controller leave
     /// protocol against authored checkpoints. Codec qualification alone never
     /// enables this policy. Default false; stock-client completion is unqualified.
@@ -196,6 +205,7 @@ impl Default for NetworkConfig {
             player_persistence: None,
             player_inventory: None,
             player_inventory_transfers: false,
+            player_inventory_projection: None,
             authored_controller_leave: false,
             player_consumption: None,
             player_depletion_damage: None,
@@ -300,6 +310,11 @@ impl NetworkConfig {
             !self.player_inventory_transfers
                 || (self.player_inventory.is_some() && self.player_persistence.is_some()),
             "network.player_inventory_transfers requires inventory and player persistence"
+        );
+        ensure!(
+            self.player_inventory_projection.is_none()
+                || (self.player_inventory.is_some() && self.player_persistence.is_some()),
+            "network.player_inventory_projection requires player persistence and network.player_inventory"
         );
         if let Some(players) = &self.player_persistence {
             ensure!(
@@ -678,5 +693,76 @@ mod checkpoint_early_pawn_config_tests {
         assert!(plain.validate().is_ok());
         plain.checkpoint_pawn_before_identity = true;
         assert!(plain.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod player_inventory_projection_config_tests {
+    use super::*;
+
+    fn persistent() -> NetworkConfig {
+        NetworkConfig {
+            release_profile: Some("authored-release.toml".into()),
+            data_pak: Some("authored.pak".into()),
+            authored_gameplay: Some("authored.json".into()),
+            player_persistence: Some(PlayerPersistenceConfig {
+                prospect_id: "authored".into(),
+                map_url: "/Authored/Map".into(),
+                prospect_row: "AuthoredRow".into(),
+                difficulty: 2,
+            }),
+            authored_world: Some(crate::authored_world_bootstrap::AuthoredWorldBootstrap {
+                seed: 42,
+                seed_initialised: true,
+                flod_tile_count: 0,
+                clock: None,
+            }),
+            ..NetworkConfig::default()
+        }
+    }
+
+    #[test]
+    fn default_absent_omitted_and_requires_persistence_and_inventory() {
+        let parsed: ServerConfig = toml::from_str("").unwrap();
+        assert_eq!(parsed.network.player_inventory_projection, None);
+        let parsed: ServerConfig =
+            toml::from_str("[network]\nplayer_inventory_projection = \"authored-binding.json\"\n")
+                .unwrap();
+        assert_eq!(
+            parsed.network.player_inventory_projection,
+            Some(PathBuf::from("authored-binding.json"))
+        );
+        // Absent, both serialized forms are exactly those of a config without the key.
+        let mut network = persistent();
+        network.player_inventory = Some("authored-recipe.json".into());
+        let toml_before = toml::to_string(&network).unwrap();
+        let json_before = serde_json::to_vec(&network).unwrap();
+        assert!(!toml_before.contains("player_inventory_projection"));
+        assert!(network.validate().is_ok());
+        network.player_inventory_projection = Some("authored-binding.json".into());
+        assert!(network.validate().is_ok());
+        let written = toml::to_string(&network).unwrap();
+        assert!(written.contains("player_inventory_projection = \"authored-binding.json\""));
+        assert_eq!(toml::from_str::<NetworkConfig>(&written).unwrap(), network);
+        network.player_inventory_projection = None;
+        assert_eq!(toml::to_string(&network).unwrap(), toml_before);
+        assert_eq!(serde_json::to_vec(&network).unwrap(), json_before);
+        let refusal = "network.player_inventory_projection requires player persistence and network.player_inventory";
+        // Without the bag recipe it projects.
+        let mut without_recipe = persistent();
+        without_recipe.player_inventory_projection = Some("authored-binding.json".into());
+        assert_eq!(without_recipe.validate().unwrap_err().to_string(), refusal);
+        // Without persistence or the recipe.
+        let mut plain = NetworkConfig {
+            player_inventory_projection: Some("authored-binding.json".into()),
+            ..NetworkConfig::default()
+        };
+        assert_eq!(plain.validate().unwrap_err().to_string(), refusal);
+        // With the recipe but no persistence, the inventory check refuses first.
+        plain.player_inventory = Some("authored-recipe.json".into());
+        assert_eq!(
+            plain.validate().unwrap_err().to_string(),
+            "player inventory requires player persistence"
+        );
     }
 }

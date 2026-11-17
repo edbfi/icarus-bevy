@@ -6,6 +6,7 @@ use super::super::super::{
     control_messages::{NetIdType, NetIdValue, UniqueNetId},
     packet::{BitWriter, Bunch, Payload},
     pawn_open::{CharacterVitals, PAWN_CHANNEL_INDEX, character_state_handle as h},
+    pawn_restore::compose_live_pawn_vitals_update,
     probe_initialise::{authored_character_profile, authored_user_profile},
     rep_layout::{RepLayoutCodec, append_bits, read_rep_properties},
     rep_rpc::{RpcArgument, RpcItem, backend_profile_response_parameters, encode_rpc_payload},
@@ -22,6 +23,8 @@ use crate::{
 
 const ACCOUNT: u64 = 76_561_197_960_265_770;
 
+#[path = "bag_projection.rs"]
+mod bag_projection_tests;
 #[path = "controller_leave.rs"]
 mod controller_leave_tests;
 
