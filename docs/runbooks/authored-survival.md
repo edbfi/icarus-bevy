@@ -99,6 +99,15 @@ starter+received=contents+consumed+sent; global received=sent. Consumption stays
 with its consumer; flows never net. Leave pins owner bag/flows/mode/context,
 excluding global revision/allocator; unrelated transfers remain settleable.
 
+`network.player_inventory_projection = "BINDING.json"` (default absent; needs
+player persistence and `player_inventory`; F-1202) sends each owner's bag to its
+own client: bound inventories open empty, then slot deltas precede the record.
+The binding names pak rows per recipe key (example:
+`config/player-inventory-projection.example.json`); unknown, duplicate or
+ambiguous rows, changeable slot counts and overflow refuse at startup.
+Session-only: no store byte changes. Weight is unsent, client inventory actions
+are unhandled, and restore inputs and `--private-leave-proof` refuse it.
+
 Stopped server: `apply-player-inventory` or `apply-player-inventory-transfer`,
 with `--data-dir STATE --request PRIVATE.json [--dry-run]`. Requests: named JSON
 objects, regular files ≤64 KiB, no symlink components; unknown/duplicate/positional
