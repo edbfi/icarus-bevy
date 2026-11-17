@@ -4056,17 +4056,18 @@ impl PeerLab {
     }
 
     /// Close a session whose bag can never be sent (projection, composition
-    /// or the byte bound at one slot), through the profile-exchange failure
-    /// path, detaching its epoch at once. Never retried.
+    /// or the byte bound at one slot), detaching its epoch at once. Never
+    /// retried. Counted as a failed peer and in the projection's own
+    /// `sessions_closed`, not as a profile-exchange failure.
     fn fail_player_bag(&mut self, registry: &mut PlayerRegistry, address: SocketAddrV4) {
         let epoch = self
             .peers
             .get(&address)
             .and_then(|entry| entry.checkpoint_epoch);
-        if self.peers.contains_key(&address) {
+        if self.remove_peer(address).is_some() {
             bump(&mut self.stats.player_bag_projection.sessions_closed);
+            bump(&mut self.stats.peers_failed);
         }
-        self.fail_profile_exchange(address);
         if let Some(epoch) = epoch {
             registry.detach(epoch);
         }

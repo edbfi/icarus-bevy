@@ -752,12 +752,13 @@ mod player_inventory_projection_config_tests {
         let mut without_recipe = persistent();
         without_recipe.player_inventory_projection = Some("authored-binding.json".into());
         assert_eq!(without_recipe.validate().unwrap_err().to_string(), refusal);
-        // Without persistence (the inventory check refuses first, naming it).
+        // Without persistence or the recipe.
         let mut plain = NetworkConfig {
             player_inventory_projection: Some("authored-binding.json".into()),
             ..NetworkConfig::default()
         };
         assert_eq!(plain.validate().unwrap_err().to_string(), refusal);
+        // With the recipe but no persistence, the inventory check refuses first.
         plain.player_inventory = Some("authored-recipe.json".into());
         assert_eq!(
             plain.validate().unwrap_err().to_string(),

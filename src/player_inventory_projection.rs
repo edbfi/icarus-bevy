@@ -492,11 +492,6 @@ impl PeerBagProjection {
         !self.frozen && self.seen_player_revision != Some(player_revision)
     }
 
-    /// Note a lookup at `player_revision` that found no bag.
-    pub fn looked_up(&mut self, player_revision: u64) {
-        self.seen_player_revision = Some(player_revision);
-    }
-
     /// Note the bag at `revision`, projecting it only when its revision is
     /// new. Returns whether the target changed.
     pub fn observe(

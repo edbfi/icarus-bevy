@@ -1344,6 +1344,7 @@ fn a_bag_that_can_never_be_sent_closes_only_its_session() {
             .unwrap()
             .force_held_key(0, i32::MAX);
         let failed_before = lab.stats.peers_failed;
+        let profile_failed_before = lab.stats.profile_players_failed;
         for (session, player) in [(&first, a), (&second, b)] {
             let action = PlayerInventoryActionV1::Move {
                 source: endpoint(&app, player, "bag", 0),
@@ -1364,6 +1365,8 @@ fn a_bag_that_can_never_be_sent_closes_only_its_session() {
             "epoch detached at once"
         );
         assert_eq!(lab.stats.peers_failed, failed_before + 1);
+        // A bag failure is not a profile-exchange failure.
+        assert_eq!(lab.stats.profile_players_failed, profile_failed_before);
         let counts = lab.session_counts().player_bag_projection.unwrap();
         assert_eq!((counts.sessions_closed, counts.projection_errors), (1, 1));
         // The other player is unaffected and the store is unchanged.

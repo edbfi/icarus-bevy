@@ -3213,6 +3213,57 @@ mod authored_preparation_tests {
         assert!(prepare(&network).is_err());
     }
 
+    /// The option reaches the lab only through live preparation: after the
+    /// checkpoints and the pawn open it depends on.
+    #[test]
+    fn inventory_projection_reaches_the_lab_through_live_preparation() {
+        use crate::pak_writer::{fresh_join_pak_with, table_json};
+        let (directory, mut network) = projection_inputs(true);
+        // Hosting also resolves the declared prospect row.
+        std::fs::write(
+            network.data_pak.as_ref().unwrap(),
+            fresh_join_pak_with(&[
+                (
+                    "Items/D_ItemsStatic.json",
+                    table_json(&["ItemZero", "AuthoredWater", "Twice", "Twice"]),
+                ),
+                (
+                    "Prospects/D_ProspectList.json",
+                    table_json(&["AuthoredWorkshop"]),
+                ),
+            ]),
+        )
+        .unwrap();
+        let occupied = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        network.enabled = true;
+        network.port = occupied.local_addr().unwrap().port();
+        let declaration = network.player_persistence.clone().unwrap();
+        network.hosting = Some(crate::native_hosting::HostingConfig {
+            query_bind: "127.0.0.1".parse().unwrap(),
+            query_port: if network.port == 27015 { 27016 } else { 27015 },
+            private_ip: "127.0.0.1".parse().unwrap(),
+            seconds: 60,
+            name: "Authored workshop".into(),
+            map_url: declaration.map_url.clone(),
+            prospect_id: declaration.prospect_id.clone(),
+            prospect_row: declaration.prospect_row.clone(),
+            lobby_name: "Workshop".into(),
+            difficulty: declaration.difficulty,
+        });
+        let binding = write_binding(&directory, "Unused", "AuthoredWater");
+        for enabled in [false, true] {
+            network.player_inventory_projection = enabled.then(|| binding.clone());
+            let (session, players) =
+                prepare_run_with_tick_hz(&network, peer_lab_config(&network), 30).unwrap();
+            assert!(players.is_some());
+            let mut session = session.unwrap();
+            let lab = &session.session_mut().lab;
+            assert_eq!(lab.has_player_inventory_projection(), enabled);
+            // Pure preparation: the occupied game port is never bound.
+            assert!(lab.local_addr().is_err());
+        }
+    }
+
     #[test]
     fn failed_repeat_preparation_clears_previous_clock_binding_permission() {
         let mut session = prepared();
