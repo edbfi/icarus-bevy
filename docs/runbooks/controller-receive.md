@@ -10,6 +10,13 @@ Production `status` and `stopped` expose `controller_receive`, cumulative since
 network bind across departures/replacements and teardown. Snapshots overlap;
 never add them. `null` means networking was never installed.
 
+`pawn_receive` (F-1203) is the same kind of record for the player's pawn
+channel. `fields.entries` keeps the first 64 keys of target, index, reliability and
+disposition, each with its payload size range; field 39 has its own `fields.movement` rows;
+sub-objects appear as `PawnComponent`/`PawnInventory` ordinals. Blocks without
+a known field bound and unframed bunches are counted only, so a missing row
+proves no missing call.
+
 Probe `controller_fields` (final `controller_fields_before_shutdown`) and library
 `controller_field_totals`/`controller_field_diagnostics` remain live-peer views:
 removal drops their rows, so absence after departure proves no historical absence.

@@ -325,6 +325,26 @@ impl ActorBunchDropReasons {
     }
 }
 
+/// Why a reliable actor bunch never reached the session: the transport's
+/// own drop decisions, classified by header flag. No payload or sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReliableActorDropReason {
+    QueueRefusal,
+    PackageMapExports,
+    MustBeMappedGuids,
+    /// Open, close or paused on a client actor bunch.
+    OtherUnsupportedHeader,
+    PartialPolicy,
+    PartialReassembly,
+}
+
+/// One reliable actor bunch the transport dropped, by channel index only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReliableActorDrop {
+    pub channel_index: u32,
+    pub reason: ReliableActorDropReason,
+}
+
 /// Reportable result of one datagram; no contents.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReceiveSummary {
@@ -377,6 +397,7 @@ pub struct PeerReceive {
     messages: Vec<Decoded>,
     actor_bunches: Vec<Bunch>,
     unreliable_actor_bunches: Vec<Bunch>,
+    reliable_actor_drops: Vec<ReliableActorDrop>,
 }
 
 impl std::fmt::Debug for PeerReceive {
@@ -410,6 +431,13 @@ impl PeerReceive {
     /// Bounded by the bunches one packet can carry.
     pub fn unreliable_actor_bunches(&self) -> &[Bunch] {
         &self.unreliable_actor_bunches
+    }
+
+    /// Reliable actor bunches this datagram's transport dropped (each also
+    /// counted in `actor_bunch_drop_reasons`), by channel and reason only.
+    /// Bounded by the bunches one packet can carry.
+    pub fn reliable_actor_drops(&self) -> &[ReliableActorDrop] {
+        &self.reliable_actor_drops
     }
 
     /// The delivered messages, consuming the result.
@@ -468,6 +496,9 @@ pub struct LabPeer {
     /// The datagram whose commit filled the sent-record ring, with its packet
     /// ID; see [`Self::full_ring_probe`] (N-021). One datagram at most.
     ring_probe: Option<(u32, Vec<u8>)>,
+    /// The current datagram's reliable actor drops, moved into its
+    /// [`PeerReceive`]; empty between receives.
+    reliable_actor_drops: Vec<ReliableActorDrop>,
 }
 
 /// Committed packets whose send instant is kept (UE keeps 256 lag slots).
@@ -516,6 +547,7 @@ impl LabPeer {
             failed: false,
             sent_at: VecDeque::new(),
             ring_probe: None,
+            reliable_actor_drops: Vec::new(),
         })
     }
 
@@ -768,6 +800,7 @@ impl LabPeer {
         pawn_capture: Option<&mut super::selected_rpc_capture::pawn_bunches::PawnBunchTap<'_>>,
     ) -> Result<PeerReceive> {
         self.ensure_usable()?;
+        self.reliable_actor_drops.clear();
         let (header, bunches) = self.read_bounded(datagram)?;
         let staged = self.stage(&bunches)?;
         let control_bunches = staged.len();
@@ -805,6 +838,7 @@ impl LabPeer {
                 messages: Vec::new(),
                 actor_bunches: Vec::new(),
                 unreliable_actor_bunches: Vec::new(),
+                reliable_actor_drops: Vec::new(),
             });
         };
         summary.disposition = PacketDisposition::Accepted {
@@ -885,6 +919,7 @@ impl LabPeer {
             messages,
             actor_bunches,
             unreliable_actor_bunches,
+            reliable_actor_drops: std::mem::take(&mut self.reliable_actor_drops),
         })
     }
 
@@ -931,6 +966,7 @@ impl LabPeer {
             // their sequence, so dropping one cannot leave a permanent gap.
             // Queue errors are non-mutating (sequencing::ReliableChannel).
             // Overflow is a bounded lab drop, not the control path's peer failure.
+            let channel_index = bunch.header.channel_index;
             match channel.receive_reliable(raw, bunch) {
                 Ok(ReliableReceive::Delivered(bunches)) => {
                     // The channel has already reconstructed wrap and drained
@@ -964,6 +1000,10 @@ impl LabPeer {
                         .actor_bunch_drop_reasons
                         .reliable_queue_refusal
                         .saturating_add(1);
+                    self.reliable_actor_drops.push(ReliableActorDrop {
+                        channel_index,
+                        reason: ReliableActorDropReason::QueueRefusal,
+                    });
                     accepted = false;
                 }
             }
@@ -998,6 +1038,16 @@ impl LabPeer {
                 .actor_bunch_drop_reasons
                 .unsupported_header
                 .saturating_add(1);
+            self.reliable_actor_drops.push(ReliableActorDrop {
+                channel_index: index,
+                reason: if h.has_package_map_exports {
+                    ReliableActorDropReason::PackageMapExports
+                } else if h.has_must_be_mapped_guids {
+                    ReliableActorDropReason::MustBeMappedGuids
+                } else {
+                    ReliableActorDropReason::OtherUnsupportedHeader
+                },
+            });
             return None;
         }
         if !h.partial {
@@ -1027,6 +1077,10 @@ impl LabPeer {
                 .actor_bunch_drop_reasons
                 .partial_policy
                 .saturating_add(1);
+            self.reliable_actor_drops.push(ReliableActorDrop {
+                channel_index: index,
+                reason: ReliableActorDropReason::PartialPolicy,
+            });
             return None;
         }
         let partial = self
@@ -1059,6 +1113,10 @@ impl LabPeer {
                     .actor_bunch_drop_reasons
                     .partial_reassembly
                     .saturating_add(1);
+                self.reliable_actor_drops.push(ReliableActorDrop {
+                    channel_index: index,
+                    reason: ReliableActorDropReason::PartialReassembly,
+                });
                 None
             }
         }

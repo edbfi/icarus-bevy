@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use anyhow::{Result, ensure};
 
 use super::actor_open::{
-    Block, BlockContent, BlockProperties, ComponentActorOpen, CustomField, OpenComponent,
-    OpenSubobject, Reference, compose_component_actor_open,
+    Block, BlockContent, BlockProperties, ComponentActorGuids, ComponentActorOpen, CustomField,
+    OpenComponent, OpenSubobject, Reference, compose_component_actor_open,
 };
 use super::archive::ByteOrder;
 use super::control_messages::ArchiveText;
@@ -674,6 +674,20 @@ pub fn compose_pawn_open(
     channel_index: u32,
     order: ByteOrder,
 ) -> Result<ComposedActorOpen> {
+    compose_pawn_open_with_guids(cache, exports, plan, state, channel_index, order)
+        .map(|(composed, _)| composed)
+}
+
+/// [`compose_pawn_open`], with the GUIDs the open used: per component in
+/// plan order, then the runtime inventories in content order.
+pub fn compose_pawn_open_with_guids(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    state: &PawnOpenState,
+    channel_index: u32,
+    order: ByteOrder,
+) -> Result<(ComposedActorOpen, ComponentActorGuids)> {
     for index in [
         plan.stat_container,
         plan.actor_state,
@@ -813,8 +827,7 @@ pub fn compose_pawn_open(
         subobjects,
         engine_net_version: plan.engine_net_version,
     };
-    let (composed, _) = compose_component_actor_open(cache, exports, &open, channel_index, order)?;
-    Ok(composed)
+    compose_component_actor_open(cache, exports, &open, channel_index, order)
 }
 
 /// Frame a pawn property update carrying only `bServerFrozenMovement`
