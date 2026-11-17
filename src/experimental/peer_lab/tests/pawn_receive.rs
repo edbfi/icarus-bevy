@@ -149,7 +149,8 @@ fn actor_row(index: u32, payload_bits: u64, reliable: bool, count: u64) -> PawnF
         relation: None,
         ordinal: None,
         index,
-        payload_bits,
+        min_payload_bits: payload_bits,
+        max_payload_bits: payload_bits,
         reliable,
         disposition: PawnFieldDisposition::Ignored,
         count,
@@ -205,6 +206,101 @@ fn reliable_actor_fields_are_ignored_rows_by_index_bits_and_count() {
         3
     );
     assert_eq!(session.lab.stats.pawn_moves_received, 0);
+}
+
+/// A call whose payload length varies keeps one row with its size range, so
+/// it cannot fill the table before the call under observation arrives.
+#[test]
+fn variable_payload_sizes_share_one_row_with_their_size_range() {
+    let mut session = Session::new(true);
+    for width in [8usize, 3, 20, 3] {
+        let payload = session.body(vec![block(
+            BlockTarget::Actor,
+            PAWN_FIELD_BOUND,
+            &[(12, width)],
+        )]);
+        let bunch = session.reliable(payload);
+        session.send(vec![bunch]);
+    }
+    let fields = session.lifetime();
+    assert_eq!(
+        fields.entries,
+        vec![PawnFieldSummary {
+            min_payload_bits: 3,
+            max_payload_bits: 20,
+            ..actor_row(12, 0, true, 4)
+        }]
+    );
+    assert_eq!(fields.overflow, 0);
+    assert!(no_unframed(&fields));
+    // Lifetime and live tables merge ranges the same way.
+    assert_eq!(session.live(), fields);
+}
+
+/// The observer and the move reader must frame the same field-39 occurrences
+/// in the same order, or a taken move would be reported Malformed. One
+/// unreliable bunch mixes a move, another actor field and a sub-object block.
+#[test]
+fn a_mixed_unreliable_bunch_keeps_the_move_recognized_beside_other_rows() {
+    let mut session = Session::new(true);
+    let inventory = session.mapped(PawnSubobjectRelation::PawnInventory, 0);
+    let inventory_bound = session
+        .lab
+        .pawn_open
+        .as_ref()
+        .unwrap()
+        .0
+        .content
+        .inventory_bound;
+    let mut writer = BitWriter::new();
+    for (index, payload) in [
+        (12, bits(8)),
+        (
+            SERVER_MOVE_PACKED_FIELD_INDEX,
+            authored_move(3.0, [100.0, 200.0, 300.0], Some(1)),
+        ),
+        (77, bits(5)),
+    ] {
+        write_field_header(
+            &mut writer,
+            &FieldHeader { index, payload },
+            PAWN_FIELD_BOUND,
+        )
+        .unwrap();
+    }
+    let actor = ContentBlock {
+        has_rep_layout: false,
+        target: BlockTarget::Actor,
+        payload: Payload::from_writer(writer),
+    };
+    let payload = session.body(vec![
+        block(subobject(inventory), inventory_bound, &[(2, 6)]),
+        actor,
+    ]);
+    session.send(vec![unreliable_bunch(session.channel, payload)]);
+    let fields = session.lifetime();
+    let [row] = fields.movement.as_slice() else {
+        panic!("one movement row: {:?}", fields.movement);
+    };
+    assert_eq!(row.disposition, PawnFieldDisposition::Recognized);
+    assert_eq!((row.count, row.reliable), (1, false));
+    assert_eq!(
+        fields.entries,
+        vec![
+            PawnFieldSummary {
+                target: PawnFieldTarget::Subobject,
+                relation: Some(PawnSubobjectRelation::PawnInventory),
+                ordinal: Some(0),
+                ..actor_row(2, 6, false, 1)
+            },
+            actor_row(12, 8, false, 1),
+            actor_row(77, 5, false, 1),
+        ]
+    );
+    assert!(no_unframed(&fields));
+    // The move was taken exactly once by the existing handling.
+    let moves = &session.lab.peers[&session.address].pawn_moves.counts;
+    assert_eq!((moves.moves, moves.malformed), (1, 0));
 }
 
 #[test]
@@ -319,7 +415,8 @@ fn subobject_blocks_report_bounded_relations_and_no_identifier() {
                 relation: Some(PawnSubobjectRelation::PawnInventory),
                 ordinal: Some(1),
                 index: 5,
-                payload_bits: 24,
+                min_payload_bits: 24,
+                max_payload_bits: 24,
                 reliable: true,
                 disposition: PawnFieldDisposition::Ignored,
                 count: 1,
@@ -329,7 +426,8 @@ fn subobject_blocks_report_bounded_relations_and_no_identifier() {
                 relation: Some(PawnSubobjectRelation::PawnComponent),
                 ordinal: Some(stat_ordinal),
                 index: 3,
-                payload_bits: 4,
+                min_payload_bits: 4,
+                max_payload_bits: 4,
                 reliable: true,
                 disposition: PawnFieldDisposition::Ignored,
                 count: 1,
@@ -373,7 +471,7 @@ fn subobject_blocks_report_bounded_relations_and_no_identifier() {
         &serde_json::to_value(session.lab.pawn_receive_diagnostics()).unwrap(),
         &mut found,
     );
-    const ALLOWED: [&str; 35] = [
+    const ALLOWED: [&str; 36] = [
         "reliable_bunches",
         "unreliable_bunches",
         "fields",
@@ -403,6 +501,7 @@ fn subobject_blocks_report_bounded_relations_and_no_identifier() {
         "ordinal",
         "index",
         "payload_bits",
+        "min_payload_bits",
         "max_payload_bits",
         "reliable",
         "disposition",

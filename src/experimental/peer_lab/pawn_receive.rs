@@ -64,7 +64,9 @@ pub enum PawnSkipReason {
     NoFieldIndexBound,
 }
 
-/// One distinct framed field key with its occurrence count.
+/// One distinct framed field key with its occurrence count. Payload size is
+/// not part of the key, so a call with a variable-length payload keeps one
+/// row and cannot fill the table by itself; the row keeps its size range.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct PawnFieldSummary {
     pub target: PawnFieldTarget,
@@ -74,7 +76,9 @@ pub struct PawnFieldSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ordinal: Option<u8>,
     pub index: u32,
-    pub payload_bits: u64,
+    /// Smallest and largest framed payload among the counted occurrences.
+    pub min_payload_bits: u64,
+    pub max_payload_bits: u64,
     pub reliable: bool,
     pub disposition: PawnFieldDisposition,
     pub count: u64,
@@ -240,11 +244,12 @@ impl PawnFieldDiagnostics {
                 && entry.relation == row.relation
                 && entry.ordinal == row.ordinal
                 && entry.index == row.index
-                && entry.payload_bits == row.payload_bits
                 && entry.reliable == row.reliable
                 && entry.disposition == row.disposition
         }) {
             entry.count = entry.count.saturating_add(row.count);
+            entry.min_payload_bits = entry.min_payload_bits.min(row.min_payload_bits);
+            entry.max_payload_bits = entry.max_payload_bits.max(row.max_payload_bits);
         } else if self.entries.len() < PAWN_FIELD_ENTRIES {
             self.entries.push(row);
         } else {
@@ -533,7 +538,8 @@ pub(in super::super) fn observe_pawn_bunch(
                     relation,
                     ordinal,
                     index: field.index,
-                    payload_bits: field_bits,
+                    min_payload_bits: field_bits,
+                    max_payload_bits: field_bits,
                     reliable,
                     disposition: PawnFieldDisposition::Ignored,
                     count: 1,
