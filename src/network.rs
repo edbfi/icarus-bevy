@@ -98,8 +98,8 @@ use crate::{
             PawnInventory, PawnOpenPlan, SlotItem,
         },
         peer_lab::{
-            ControllerReceiveDiagnostics, PeerLab, PeerLabAdmission, PeerLabConfig, PeerLabPlugin,
-            SessionCounts,
+            ControllerReceiveDiagnostics, PawnReceiveDiagnostics, PeerLab, PeerLabAdmission,
+            PeerLabConfig, PeerLabPlugin, SessionCounts,
         },
         prospect_info::{
             MissionHistoryRecord, PlayerHistoryEntry, SavedContainerManager, SavedItem,
@@ -1627,6 +1627,7 @@ pub fn apply_saved_game_state(
 struct ClosedSessions {
     sessions: SessionCounts,
     controller_receive: ControllerReceiveDiagnostics,
+    pawn_receive: PawnReceiveDiagnostics,
 }
 
 /// Peer-lab parameters for `network`: admission enabled with `max_players`
@@ -2975,6 +2976,19 @@ pub fn controller_receive_diagnostics(world: &World) -> Option<ControllerReceive
         })
 }
 
+/// Since-bind pawn-channel receive metadata, retained through teardown.
+/// None means the network layer was never installed, not zero received traffic.
+pub fn pawn_receive_diagnostics(world: &World) -> Option<PawnReceiveDiagnostics> {
+    world
+        .get_resource::<PeerLab>()
+        .map(PeerLab::pawn_receive_diagnostics)
+        .or_else(|| {
+            world
+                .get_resource::<ClosedSessions>()
+                .map(|closed| closed.pawn_receive.clone())
+        })
+}
+
 /// Stop admitting new sessions; live sessions are kept. Idempotent.
 pub fn stop_admission(world: &mut World) {
     if let Some(mut lab) = world.get_resource_mut::<PeerLab>() {
@@ -2989,10 +3003,12 @@ pub fn teardown(world: &mut World) -> Option<SessionCounts> {
         lab.shutdown();
         let counts = lab.session_counts();
         let controller_receive = lab.controller_receive_diagnostics();
+        let pawn_receive = lab.pawn_receive_diagnostics();
         drop(lab);
         world.insert_resource(ClosedSessions {
             sessions: counts,
             controller_receive,
+            pawn_receive,
         });
     }
     if let Some(mut registry) =
