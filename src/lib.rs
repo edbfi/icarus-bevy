@@ -35,6 +35,7 @@ pub mod native_world;
 pub mod network;
 pub mod pawn_stats;
 pub mod persistence;
+pub mod player_inventory_projection;
 pub mod preservation;
 pub mod preserved_session;
 pub mod prospect;
@@ -47,6 +48,10 @@ pub(crate) use scalar_owner_fixture as scalar;
 #[cfg(test)]
 #[path = "../tests/common/c001_inventory_owners.rs"]
 pub(crate) mod inventory_owner_fixture;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/pak_writer/mod.rs"]
+pub(crate) mod pak_writer;
 #[cfg(test)]
 #[path = "../tests/common/run_log.rs"]
 pub(crate) mod run_log;

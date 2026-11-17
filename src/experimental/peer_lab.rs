@@ -258,7 +258,7 @@ use super::pawn_open::{
     compose_pawn_open,
 };
 use super::pawn_restore::{
-    CurrentPawnState, compose_live_pawn_vitals_update, compose_restored_pawn_update,
+    CurrentPawnState, compose_live_pawn_bag_update, compose_restored_pawn_update,
     restore_saved_pawn,
 };
 use super::ping::PingEstimator;
@@ -690,6 +690,31 @@ impl PeerLabConfig {
     }
 }
 
+/// Bag projection counters (`network.player_inventory_projection`); counts
+/// only, never items, rows or slots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PlayerBagProjectionCounts {
+    /// Bag revisions converted into a connection's latest target.
+    pub revisions_observed: u64,
+    /// Reliable pawn updates that carried bag slot deltas.
+    pub updates_queued: u64,
+    /// Changed slots those updates carried.
+    pub slots_queued: u64,
+    /// Bag revisions the client already held, enqueued without an update.
+    pub revisions_already_held: u64,
+    /// Updates not queued for a transient reason (send pressure, an
+    /// unsettled channel); retried on ACK progress, never applied to native
+    /// state.
+    pub update_failures: u64,
+    /// Bags that could not be projected (no committed bag, or one that
+    /// differs from its validated binding); nothing is sent for them.
+    pub projection_errors: u64,
+    /// Sessions closed after a permanent bag failure (a projection error, a
+    /// composition error, or an update over
+    /// [`MAX_PLAYER_BAG_UPDATE_BYTES`] at one slot); never retried.
+    pub sessions_closed: u64,
+}
+
 /// Counters only; no addresses, payloads, cookies or field values.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PeerLabStats {
@@ -699,6 +724,9 @@ pub struct PeerLabStats {
     /// differs from the place their pawn already opened. Neither is moved.
     #[serde(skip)]
     pub checkpoint_locations_unapplied: u64,
+    /// Player inventory projection only (`SessionCounts::player_bag_projection`).
+    #[serde(skip)]
+    pub player_bag_projection: PlayerBagProjectionCounts,
     /// Datagrams taken from the socket, including rejected ones.
     pub received: u64,
     /// Longer than the maximum datagram size (possibly kernel-truncated).
@@ -1174,6 +1202,9 @@ pub struct SessionCounts {
     /// players whose stored location was left unapplied to their live pawn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_locations_unapplied: Option<u64>,
+    /// Present only with [`PeerLab::enable_player_inventory_projection`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_bag_projection: Option<PlayerBagProjectionCounts>,
     /// False after [`PeerLab::stop_admission`].
     pub admitting: bool,
     /// Peers currently in the table, in any login state.
@@ -2743,6 +2774,9 @@ struct PeerEntry {
     /// Baselines owned by the reliable queue; NAK retransmission stays there.
     queued_modifier_times: BTreeMap<i32, u16>,
     pawn_property_retry_ready: bool,
+    /// `network.player_inventory_projection` only: what this connection's
+    /// client holds of its own bag and the latest bag it should hold.
+    bag_projection: Option<crate::player_inventory_projection::PeerBagProjection>,
     pending_pawn_restore: Option<PendingPawnRestore>,
     pawn_restore_retry_ready: bool,
     /// The cookie that created this peer; compared only, never reported.
@@ -2948,6 +2982,25 @@ fn receive_pawn_moves(
         }
     }
 }
+
+/// Largest pawn update that carries bag slot deltas. The slot bound
+/// ([`crate::player_inventory_projection::MAX_SLOT_CHANGES_PER_UPDATE`]) keeps
+/// every update far below it; above it the update is recomposed with half
+/// the slots, down to one, and over it with one slot the player's session
+/// closes ([`PlayerBagProjectionCounts::sessions_closed`]).
+pub const MAX_PLAYER_BAG_UPDATE_BYTES: usize = 32 * 1024;
+
+/// Why a live pawn update was not queued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PawnUpdateRefusal {
+    /// Send pressure or a missing connection: retried on ACK progress.
+    Transient,
+    /// An update carrying the bag can never be composed or bounded.
+    PermanentBag,
+}
+
+/// Why the bag projection and returning-pawn restore refuse each other.
+const PROJECTION_FRESH_ONLY: &str = "the player inventory projection serves fresh checkpoint players only: it refuses returning characters, saved controllers, linked inventories and inventory or stat restore tables";
 
 /// Capacity planning may fill a cloned queue even when the live queue is
 /// empty. Only outstanding traffic that can drain makes a refusal retryable.
@@ -3515,6 +3568,12 @@ pub struct PeerLab {
     /// Checkpoint mode only: open the pawn in its legacy position before the
     /// client identifies itself ([`Self::enable_checkpoint_early_pawn`]).
     checkpoint_early_pawn: bool,
+    /// Session-only bag projection and the per-connection state every pawn
+    /// open starts from ([`Self::enable_player_inventory_projection`]).
+    player_bag_projection: Option<(
+        crate::player_inventory_projection::PlayerInventoryProjection,
+        crate::player_inventory_projection::PeerBagProjection,
+    )>,
     next_checkpoint_epoch: u64,
     authored_map_url: Option<String>,
     private_rpc82_capture: Option<super::selected_rpc_capture::PrivateRpc82Capture>,
@@ -3670,6 +3729,10 @@ impl PeerLab {
         ensure!(
             !self.checkpoint_early_pawn,
             "the private leave proof refuses the early checkpoint pawn"
+        );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "the private leave proof refuses the player inventory projection"
         );
         proof.health()?;
         if self.private_join_remaining.is_none() {
@@ -3851,6 +3914,162 @@ impl PeerLab {
     /// Whether checkpoint mode opens the pawn before identity.
     pub fn has_checkpoint_early_pawn(&self) -> bool {
         self.checkpoint_early_pawn
+    }
+
+    /// EXPERIMENTAL, default off (`network.player_inventory_projection`).
+    /// Append `projection`'s bound inventories, empty, to every pawn open
+    /// (after any the content already lists), then replicate each activated
+    /// player's own committed bag to that player's connection only: slot
+    /// deltas with F-978's keys at each new bag revision, coalesced to the
+    /// latest, in the reliable live pawn update, at most one update in flight
+    /// and at most [`MAX_SLOT_CHANGES_PER_UPDATE`] changed slots each. Read
+    /// only: nothing is applied to native state, stored or replayed. A
+    /// player's record waits for its first bag projection; nothing is sent
+    /// after the player's leave cut-off, and a bag that can never be sent
+    /// closes its session. Requires player checkpoints and the pawn open,
+    /// before peers; the private leave proof refuses it. Fresh checkpoint
+    /// players only: it and every returning-pawn input (returning characters,
+    /// saved controllers, linked inventories, inventory or stat restore
+    /// tables) refuse each other in either order, as those restores read the
+    /// content's inventory list without the bound ones. No client inventory
+    /// action is handled. Unqualified with a stock client.
+    ///
+    /// [`MAX_SLOT_CHANGES_PER_UPDATE`]: crate::player_inventory_projection::MAX_SLOT_CHANGES_PER_UPDATE
+    pub fn enable_player_inventory_projection(
+        &mut self,
+        projection: crate::player_inventory_projection::PlayerInventoryProjection,
+    ) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "the player inventory projection must precede peers"
+        );
+        ensure!(
+            self.checkpoint_initial_vitals.is_some(),
+            "the player inventory projection requires player checkpoints"
+        );
+        ensure!(
+            self.private_leave_proof.is_none(),
+            "the private leave proof refuses the player inventory projection"
+        );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "the player inventory projection is already enabled"
+        );
+        // Fresh checkpoint players only: a returning pawn's restore reads
+        // tables built for the content's inventory list before the bound
+        // inventories are appended, and would see a different list.
+        ensure!(
+            self.returning_characters.is_empty()
+                && self.saved_player_controllers.is_empty()
+                && self.linked_inventories.is_none()
+                && self.inventory_restore.is_none()
+                && self.stat_restore.is_none(),
+            "{PROJECTION_FRESH_ONLY}"
+        );
+        let Some((_, _, content)) = &mut self.pawn_open else {
+            bail!("the player inventory projection requires the pawn open");
+        };
+        let opened = projection.opened_inventories();
+        ensure!(
+            opened.iter().all(|bound| content
+                .inventories
+                .iter()
+                .all(|listed| listed.info_row != bound.info_row)),
+            "a projected inventory is already opened by the pawn content"
+        );
+        let first = content.inventories.len();
+        let template =
+            crate::player_inventory_projection::PeerBagProjection::opened(&projection, first)?;
+        content.inventories.extend(opened);
+        self.player_bag_projection = Some((projection, template));
+        Ok(())
+    }
+
+    /// Whether bags are projected to their owners' pawns.
+    pub fn has_player_inventory_projection(&self) -> bool {
+        self.player_bag_projection.is_some()
+    }
+
+    /// Bridge step: at each new committed bag revision of an activated,
+    /// still-eligible player, replace that connection's target with the bag's
+    /// wire slots. Reads only the connection's own bag; at most one lookup
+    /// per player record revision (every applied bag action advances it).
+    /// A bag that cannot be projected is permanent: that player's session
+    /// closes ([`Self::fail_player_bag`]) and is never retried.
+    fn refresh_bag_projections(&mut self, registry: &mut PlayerRegistry) {
+        let Some((projection, _)) = &self.player_bag_projection else {
+            return;
+        };
+        let mut permanent = Vec::new();
+        for (address, entry) in &mut self.peers {
+            // A leave cut-off freezes the player's state, bag included
+            // (the registry's activation refusal uses the same condition):
+            // nothing pending, split or new is enqueued after it.
+            if let (Some(epoch), Some(bag)) =
+                (entry.checkpoint_epoch, entry.bag_projection.as_mut())
+                && !bag.is_frozen()
+                && registry.is_leaving(epoch)
+            {
+                bag.freeze();
+            }
+            let eligible = entry.auth_accepted
+                && entry.auth_request.is_some()
+                && entry.admission.state == ClientLoginState::Joined
+                && entry.checkpoint_epoch.is_some()
+                && entry.checkpoint_active;
+            let (true, Some(player), Some(bag)) = (
+                eligible,
+                entry.checkpoint_projection,
+                entry.bag_projection.as_mut(),
+            ) else {
+                continue;
+            };
+            if !bag.needs_lookup(player.revision) {
+                continue;
+            }
+            // An activated player always has a bag, and a committed bag
+            // always matches its validated binding: either failure is
+            // permanent for this session.
+            let observed = registry
+                .inventory_bag(player.player_id)
+                .context("an activated player has no bag")
+                .and_then(|committed| {
+                    bag.observe(player.revision, committed.revision, || {
+                        projection.project(committed.inventories)
+                    })
+                });
+            match observed {
+                Ok(true) => {
+                    bump(&mut self.stats.player_bag_projection.revisions_observed);
+                    entry.pawn_property_retry_ready = true;
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    bump(&mut self.stats.player_bag_projection.projection_errors);
+                    permanent.push(*address);
+                }
+            }
+        }
+        for address in permanent {
+            self.fail_player_bag(registry, address);
+        }
+    }
+
+    /// Close a session whose bag can never be sent (projection, composition
+    /// or the byte bound at one slot), through the profile-exchange failure
+    /// path, detaching its epoch at once. Never retried.
+    fn fail_player_bag(&mut self, registry: &mut PlayerRegistry, address: SocketAddrV4) {
+        let epoch = self
+            .peers
+            .get(&address)
+            .and_then(|entry| entry.checkpoint_epoch);
+        if self.peers.contains_key(&address) {
+            bump(&mut self.stats.player_bag_projection.sessions_closed);
+        }
+        self.fail_profile_exchange(address);
+        if let Some(epoch) = epoch {
+            registry.detach(epoch);
+        }
     }
 
     /// Establish this interval's eligibility from one bounded auth-event drain.
@@ -4133,7 +4352,10 @@ impl PeerLab {
                 registry.detach(epoch);
             }
         }
-        self.update_pawn_properties();
+        self.refresh_bag_projections(registry);
+        for address in self.update_pawn_properties() {
+            self.fail_player_bag(registry, address);
+        }
     }
 
     fn refresh_checkpoint_projections(&mut self, registry: &PlayerRegistry) {
@@ -4358,6 +4580,7 @@ impl PeerLab {
             authored_controller_leave: None,
             checkpoint_initial_vitals: None,
             checkpoint_early_pawn: false,
+            player_bag_projection: None,
             next_checkpoint_epoch: 1,
             private_rpc82_capture: None,
             private_pawn_bunch_capture: None,
@@ -5125,6 +5348,10 @@ impl PeerLab {
             self.actor_uids.is_some(),
             "returning characters need actor UIDs"
         );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "{PROJECTION_FRESH_ONLY}"
+        );
         self.returning_characters = characters;
         Ok(())
     }
@@ -5138,6 +5365,10 @@ impl PeerLab {
         ensure!(
             self.peers.is_empty(),
             "saved controllers must precede connections"
+        );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "{PROJECTION_FRESH_ONLY}"
         );
         self.saved_player_controllers = controllers;
         Ok(())
@@ -5168,6 +5399,10 @@ impl PeerLab {
             self.peers.is_empty(),
             "configure inventory restore before admitting peers"
         );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "{PROJECTION_FRESH_ONLY}"
+        );
         self.inventory_restore = Some(tables);
         Ok(())
     }
@@ -5181,6 +5416,10 @@ impl PeerLab {
             self.peers.is_empty(),
             "configure stat restore before admitting peers"
         );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "{PROJECTION_FRESH_ONLY}"
+        );
         self.stat_restore = Some(tables);
         Ok(())
     }
@@ -5191,6 +5430,10 @@ impl PeerLab {
         ensure!(
             self.peers.is_empty(),
             "set the linked inventories before admitting peers"
+        );
+        ensure!(
+            self.player_bag_projection.is_none(),
+            "{PROJECTION_FRESH_ONLY}"
         );
         self.linked_inventories = Some(linked);
         Ok(())
@@ -5534,9 +5777,14 @@ impl PeerLab {
         Ok(())
     }
 
-    fn update_pawn_properties(&mut self) {
+    /// One live pawn update pass. Returns the sessions whose bag can never be
+    /// sent ([`Self::fail_player_bag`] closes them); transient refusals retry
+    /// on ACK progress as before.
+    #[must_use]
+    fn update_pawn_properties(&mut self) -> Vec<SocketAddrV4> {
+        let mut permanent = Vec::new();
         let Some((plan, channel, _)) = &self.pawn_open else {
-            return;
+            return permanent;
         };
         let early = self.checkpoint_early_pawn;
         let mut outgoing = Vec::new();
@@ -5592,34 +5840,99 @@ impl PeerLab {
                 entry.checkpoint_enqueued_revision = Some(projection.revision);
                 vital_due = None;
             }
-            if due.is_empty() && temperature_due.is_empty() && vital_due.is_none() {
+            // The player's own bag, toward its latest revision, only once its
+            // checkpoint is bound and activated (the bag is issued then), and
+            // never after its leave cut-off (`due` is false once frozen).
+            let bag_eligible = entry.auth_accepted
+                && entry.auth_request.is_some()
+                && entry.admission.state == ClientLoginState::Joined
+                && entry.checkpoint_epoch.is_some()
+                && entry.checkpoint_active;
+            let mut bag_due = Vec::new();
+            let mut bag_budget = crate::player_inventory_projection::MAX_SLOT_CHANGES_PER_UPDATE;
+            if bag_eligible
+                && let Some(bag) = entry.bag_projection.as_mut()
+                && bag.due()
+            {
+                match bag.deltas(bag_budget) {
+                    Ok(deltas) if deltas.is_empty() => {
+                        // The client already holds this revision's slots.
+                        bag.commit(Vec::new());
+                        bump(&mut self.stats.player_bag_projection.revisions_already_held);
+                    }
+                    Ok(deltas) => bag_due = deltas,
+                    Err(_) => {
+                        // The held state cannot reach the target: permanent.
+                        bump(&mut self.stats.player_bag_projection.projection_errors);
+                        permanent.push(*address);
+                        continue;
+                    }
+                }
+            }
+            if due.is_empty()
+                && temperature_due.is_empty()
+                && vital_due.is_none()
+                && bag_due.is_empty()
+            {
                 continue;
             }
             let sent = (|| {
-                let key = pawn_key(entry.connection_id.context("no pawn connection")?);
-                let mut cache = self.guid_cache.clone();
-                let mut exports = entry.exports.clone();
-                let update = compose_live_pawn_vitals_update(
-                    &mut cache,
-                    &mut exports,
-                    plan,
-                    key,
-                    (!temperature_due.is_empty()).then_some(&temperature_due),
-                    &due,
-                    vital_due
-                        .as_ref()
-                        .map(|projection| &projection.checkpoint.vitals),
-                    entry.peer.connection_byte_order(),
-                )?;
-                let sent = entry.peer.reliable_actor_update_datagrams(
-                    *channel,
-                    update.payload,
-                    update.exports.as_slice(),
-                )?;
-                commit_exports(&mut exports, &sent);
-                self.guid_cache = cache;
-                entry.exports = exports;
-                Ok::<_, anyhow::Error>(sent)
+                let key = pawn_key(entry.connection_id.ok_or(PawnUpdateRefusal::Transient)?);
+                loop {
+                    let mut cache = self.guid_cache.clone();
+                    let mut exports = entry.exports.clone();
+                    let update = compose_live_pawn_bag_update(
+                        &mut cache,
+                        &mut exports,
+                        plan,
+                        key,
+                        (!temperature_due.is_empty()).then_some(&temperature_due),
+                        &due,
+                        vital_due
+                            .as_ref()
+                            .map(|projection| &projection.checkpoint.vitals),
+                        &bag_due,
+                        entry.peer.connection_byte_order(),
+                    )
+                    .map_err(|_| {
+                        // Composition is a pure function of the state: an
+                        // update carrying the bag that fails never succeeds.
+                        if bag_due.is_empty() {
+                            PawnUpdateRefusal::Transient
+                        } else {
+                            PawnUpdateRefusal::PermanentBag
+                        }
+                    })?;
+                    if !bag_due.is_empty()
+                        && update.payload.bit_len() > MAX_PLAYER_BAG_UPDATE_BYTES * 8
+                    {
+                        // Halve the slots, down to one; over the bound with
+                        // one slot, the bag can never be sent.
+                        if bag_budget <= 1 {
+                            return Err(PawnUpdateRefusal::PermanentBag);
+                        }
+                        bag_budget /= 2;
+                        bag_due = entry
+                            .bag_projection
+                            .as_ref()
+                            .ok_or(PawnUpdateRefusal::PermanentBag)?
+                            .deltas(bag_budget)
+                            .map_err(|_| PawnUpdateRefusal::PermanentBag)?;
+                        continue;
+                    }
+                    let sent = entry
+                        .peer
+                        .reliable_actor_update_datagrams(
+                            *channel,
+                            update.payload,
+                            update.exports.as_slice(),
+                        )
+                        .map_err(|_| PawnUpdateRefusal::Transient)?;
+                    commit_exports(&mut exports, &sent);
+                    self.guid_cache = cache;
+                    entry.exports = exports;
+                    return Ok(sent);
+                }
             })();
             match sent {
                 Ok(sent) => {
@@ -5646,13 +5959,34 @@ impl PeerLab {
                             .merge(temperature_due);
                         bump(&mut self.stats.pawn_temperature_updates_queued);
                     }
+                    if !bag_due.is_empty() {
+                        let slots = bag_due
+                            .iter()
+                            .map(|delta| delta.changes.len() as u64)
+                            .sum::<u64>();
+                        let counts = &mut self.stats.player_bag_projection;
+                        bump(&mut counts.updates_queued);
+                        counts.slots_queued = counts.slots_queued.saturating_add(slots);
+                        if let Some(bag) = entry.bag_projection.as_mut() {
+                            bag.commit(bag_due);
+                            // A split bag continues once this update settles.
+                            entry.pawn_property_retry_ready |= bag.due();
+                        }
+                    }
                     outgoing.push((*address, sent));
                 }
-                Err(_) => {
+                Err(PawnUpdateRefusal::PermanentBag) => {
+                    // Nothing queued; the session closes, never retried.
+                    permanent.push(*address);
+                }
+                Err(PawnUpdateRefusal::Transient) => {
                     // No partial queue or baseline publication. ACK/NAK progress
                     // or an explicit refresh re-enables this connection's retry.
                     if !due.is_empty() {
                         bump(&mut self.stats.modifier_time_update_errors);
+                    }
+                    if !bag_due.is_empty() {
+                        bump(&mut self.stats.player_bag_projection.update_failures);
                     }
                     if !temperature_due.is_empty() {
                         bump(&mut self.stats.pawn_temperature_update_errors);
@@ -5670,6 +6004,7 @@ impl PeerLab {
             self.remove_peer(address);
             bump(&mut self.stats.peers_failed);
         }
+        permanent
     }
 
     /// F-950: the original's character restore frees the pawn's BeginPlay UID
@@ -7384,6 +7719,10 @@ impl PeerLab {
             checkpoint_locations_unapplied: self
                 .checkpoint_early_pawn
                 .then_some(self.stats.checkpoint_locations_unapplied),
+            player_bag_projection: self
+                .player_bag_projection
+                .as_ref()
+                .map(|_| self.stats.player_bag_projection),
             admitting: self.admitting,
             active_peers: self.peers.len(),
             peak_peers: self.peak_peers,
@@ -8030,6 +8369,7 @@ impl PeerLab {
                         restored_modifier_ticks: BTreeMap::new(),
                         queued_modifier_times: BTreeMap::new(),
                         pawn_property_retry_ready: false,
+                        bag_projection: None,
                         pending_pawn_restore: None,
                         pawn_restore_retry_ready: false,
                         cookie,
@@ -9301,6 +9641,12 @@ impl PeerLab {
                     // The early pawn's checkpoint vitals precede its record.
                     && (!self.checkpoint_early_pawn
                         || entry.checkpoint_enqueued_revision.is_some())
+                    // So does the first projection of the player's own bag.
+                    && (self.player_bag_projection.is_none()
+                        || entry
+                            .bag_projection
+                            .as_ref()
+                            .is_some_and(|bag| bag.enqueued_revision().is_some()))
             })
             .map(|(address, _)| *address)
             .collect();
@@ -11498,6 +11844,11 @@ impl PeerLab {
             .as_ref()
             .map_or(0, |stats| stats.items.len() as u64);
         entry.pawn_character_state = Some(state.content.character_state);
+        // The open carried the bound inventories empty; the bag follows.
+        entry.bag_projection = self
+            .player_bag_projection
+            .as_ref()
+            .map(|(_, template)| template.clone());
         if !self.checkpoint_early_pawn
             && let Some(projection) = entry.checkpoint_projection
         {
@@ -12057,7 +12408,9 @@ impl PeerLab {
         self.retry_pawn_move_acks(Instant::now());
         self.retry_pending_player_history();
         if self.checkpoint_initial_vitals.is_none() {
-            self.update_pawn_properties();
+            // The bag projection requires checkpoints: no bag failure here.
+            let permanent = self.update_pawn_properties();
+            debug_assert!(permanent.is_empty());
         }
         self.send_acks();
         self.update_game_state();

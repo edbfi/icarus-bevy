@@ -70,6 +70,43 @@ impl Fixture {
         Self::build(true, None, true)
     }
 
+    /// Leave dispatch over a schema-15 bag world with
+    /// `network.player_inventory_projection` on, in either pawn order: the
+    /// starter bag was projected before the record.
+    fn projected(early: bool) -> Self {
+        use super::bag_projection_tests as bags;
+        let mut lab = lab();
+        lab.config.packet.sent_capacity = 16;
+        let selected = ReleaseProfile::fixture("3.0.36");
+        lab.config.local_network_version = Some(selected.pin.network_checksum);
+        lab.player_controller_open = selected
+            .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+            .unwrap();
+        let plan = plan();
+        lab.enable_authored_controller_leave(plan.clone()).unwrap();
+        if early {
+            lab.enable_checkpoint_early_pawn().unwrap();
+        }
+        lab.enable_player_inventory_projection(bags::projection())
+            .unwrap();
+        let mut app = bags::inventory_world(false);
+        let session = bags::join(&mut lab, &mut app, 1, ACCOUNT);
+        assert_eq!(session.log, ["bag", "finalised"]);
+        let epoch = lab.peers[&session.address].checkpoint_epoch.unwrap();
+        let raw = session.client.initial_reliable().1 + 1;
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+        Self {
+            lab,
+            app,
+            socket: session.socket,
+            address: session.address,
+            client: session.client,
+            raw,
+            epoch,
+            plan,
+        }
+    }
+
     fn build(
         enabled: bool,
         proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
@@ -1145,4 +1182,184 @@ fn early_pawn_leave_before_identity_is_ignored() {
         registry.leave_status(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch),
         None
     );
+}
+
+#[test]
+fn projected_bag_leave_keeps_types_ack_detach_and_sends_no_bag_after_cutoff() {
+    use super::bag_projection_tests::bag_deltas;
+    for early in [true, false] {
+        for kind in [
+            Kind::Quit,
+            Kind::ReturnToCharacterSelect,
+            Kind::ReturnToTitlescreen,
+        ] {
+            let mut f = Fixture::projected(early);
+            assert!(f.lab.has_player_inventory_projection());
+            assert_eq!(f.registry().activated_epochs(), vec![f.epoch]);
+            let connection = f.lab.peers[&f.address].connection_id.unwrap();
+            let projected = f.lab.session_counts().player_bag_projection.unwrap();
+            let bags = crate::simulation::capture(f.app.world_mut())
+                .unwrap()
+                .player_inventory;
+            let (_directory, mut writer) = f.writer();
+            let pinned = f.registry().projection(f.epoch).unwrap();
+            f.send(Request::Normal(Some(kind)));
+            f.bridge();
+            assert_eq!(f.phase(), Some(LeavePhase::Pending));
+            assert!(f.registry().activated_epochs().is_empty());
+            let before_receipt = f.deliver(true);
+            assert!(f.completions(&before_receipt).is_empty());
+            let receipt = f.save(&mut writer);
+            assert_eq!(
+                f.phase(),
+                Some(LeavePhase::Durable {
+                    generation: receipt.generation,
+                    tick: receipt.tick
+                })
+            );
+            f.bridge();
+            let completion = f.deliver(false);
+            assert_eq!(f.completions(&completion), vec![kind as u32]);
+            f.bridge();
+            assert!(f.lab.peers.contains_key(&f.address), "NAK is no settlement");
+            let packet = f
+                .lab
+                .peers
+                .get_mut(&f.address)
+                .unwrap()
+                .peer
+                .ack_packet()
+                .unwrap();
+            assert!(f.lab.send(&packet, f.address));
+            let repair = f.deliver(true);
+            assert_eq!(f.completions(&repair), vec![kind as u32]);
+            for bunches in [&before_receipt, &completion, &repair] {
+                assert!(bag_deltas(&f.lab, connection, bunches).is_empty());
+            }
+            assert_eq!(
+                f.lab.session_counts().player_bag_projection.unwrap(),
+                projected,
+                "the leave sends and observes no bag"
+            );
+            f.bridge();
+            assert!(!f.lab.peers.contains_key(&f.address));
+            assert!(f.registry().projection(f.epoch).is_none());
+            assert_eq!(f.phase(), None);
+            let counts = f.registry().leave_counts();
+            assert_eq!(
+                (
+                    counts.cutoffs_accepted,
+                    counts.durable,
+                    counts.detached_settled
+                ),
+                (1, 1, 1)
+            );
+            assert_eq!(
+                f.registry()
+                    .snapshot()
+                    .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+                    .unwrap()
+                    .checkpoint,
+                pinned.checkpoint
+            );
+            assert_eq!(
+                crate::simulation::capture(f.app.world_mut())
+                    .unwrap()
+                    .player_inventory,
+                bags,
+                "the projection never edits the pinned bag"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_bag_change_pending_at_the_leave_cutoff_is_never_sent() {
+    use super::bag_projection_tests::{act_at, bag_deltas, bridge as full_bridge, endpoint};
+    use crate::native_player_inventory::PlayerInventoryActionV1;
+    for early in [true, false] {
+        let mut f = Fixture::projected(early);
+        let connection = f.lab.peers[&f.address].connection_id.unwrap();
+        let player = f.lab.peers[&f.address]
+            .checkpoint_projection
+            .unwrap()
+            .player_id;
+        let projected = f.lab.session_counts().player_bag_projection.unwrap();
+        // A Use commits in the same interval as the leave request: no
+        // checkpoint bridge has projected it when the cut-off is taken.
+        let source = endpoint(&f.app, player, "bag", 0);
+        act_at(
+            &mut f.app,
+            &f.lab,
+            f.address,
+            PlayerInventoryActionV1::Use { source },
+        );
+        let bags = crate::simulation::capture(f.app.world_mut())
+            .unwrap()
+            .player_inventory;
+        let (_directory, mut writer) = f.writer();
+        f.send(Request::Normal(Some(Kind::Quit)));
+        f.bridge();
+        assert_eq!(f.phase(), Some(LeavePhase::Pending), "early {early}");
+        let mut after_cutoff = Vec::new();
+        // `run` bridges checkpoints after the leave bridge in every interval.
+        for _ in 0..3 {
+            full_bridge(&mut f.lab, &mut f.app);
+            after_cutoff.extend(f.deliver(true));
+        }
+        assert!(
+            bag_deltas(&f.lab, connection, &after_cutoff).is_empty(),
+            "the committed Use is not sent after the cut-off (early {early})"
+        );
+        let bag = f.lab.peers[&f.address].bag_projection.as_ref().unwrap();
+        assert!(bag.is_frozen() && !bag.due());
+        assert_eq!(bag.target_revision(), Some(1), "the Use is never looked up");
+        let receipt = f.save(&mut writer);
+        assert_eq!(
+            f.phase(),
+            Some(LeavePhase::Durable {
+                generation: receipt.generation,
+                tick: receipt.tick
+            })
+        );
+        f.bridge();
+        full_bridge(&mut f.lab, &mut f.app);
+        let completion = f.deliver(false);
+        after_cutoff.extend(completion.iter().cloned());
+        assert_eq!(f.completions(&completion), vec![Kind::Quit as u32]);
+        f.bridge();
+        let packet = f
+            .lab
+            .peers
+            .get_mut(&f.address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(f.lab.send(&packet, f.address));
+        let repair = f.deliver(true);
+        assert_eq!(f.completions(&repair), vec![Kind::Quit as u32]);
+        after_cutoff.extend(repair);
+        assert!(
+            bag_deltas(&f.lab, connection, &after_cutoff).is_empty(),
+            "no bag bytes after the cut-off (early {early})"
+        );
+        let counts = f.lab.session_counts().player_bag_projection.unwrap();
+        assert_eq!(
+            (counts.updates_queued, counts.revisions_observed),
+            (projected.updates_queued, projected.revisions_observed)
+        );
+        assert_eq!(counts.sessions_closed, 0);
+        f.bridge();
+        assert!(!f.lab.peers.contains_key(&f.address), "the leave completes");
+        assert!(f.registry().projection(f.epoch).is_none());
+        assert_eq!(f.registry().leave_counts().detached_settled, 1);
+        assert_eq!(
+            crate::simulation::capture(f.app.world_mut())
+                .unwrap()
+                .player_inventory,
+            bags,
+            "the store holds the committed bag, Use included"
+        );
+    }
 }

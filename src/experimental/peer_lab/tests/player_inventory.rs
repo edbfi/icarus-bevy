@@ -72,6 +72,7 @@ fn post_pawn_peer(config: PacketLabConfig) -> PeerEntry {
         restored_modifier_ticks: BTreeMap::new(),
         queued_modifier_times: BTreeMap::new(),
         pawn_property_retry_ready: false,
+        bag_projection: None,
         pending_pawn_restore: None,
         pawn_restore_retry_ready: false,
         cookie,

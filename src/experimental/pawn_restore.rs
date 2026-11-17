@@ -736,6 +736,58 @@ pub fn compose_live_pawn_vitals_update(
     vitals: Option<&super::pawn_open::CharacterVitals>,
     order: ByteOrder,
 ) -> Result<RestoredPawnUpdate> {
+    compose_live_pawn_bag_update(
+        cache,
+        exports,
+        plan,
+        key,
+        temperatures,
+        modifiers,
+        vitals,
+        &[],
+        order,
+    )
+}
+
+/// [`compose_live_pawn_vitals_update`] plus explicit slot deltas of inventories
+/// the pawn opened, as a restore sends them (F-978): each delta is relative to
+/// the slots and key its `opened` says the client holds, carries no weight,
+/// and goes on that inventory's runtime subobject after the character state
+/// and before the modifiers, as the restore orders them (F-1056). Without
+/// inventories the bytes equal [`compose_live_pawn_vitals_update`]'s. The
+/// caller owns which bag the deltas describe and their reliable delivery. On
+/// failure neither the GUID cache nor connection exports are changed.
+#[expect(clippy::too_many_arguments)]
+pub fn compose_live_pawn_bag_update(
+    cache: &mut NetGuidCache,
+    exports: &mut ConnectionExports,
+    plan: &PawnOpenPlan,
+    key: ActorKey,
+    temperatures: Option<&PawnTemperatureState>,
+    modifiers: &[RestoredModifier],
+    vitals: Option<&super::pawn_open::CharacterVitals>,
+    inventories: &[InventoryRestore],
+    order: ByteOrder,
+) -> Result<RestoredPawnUpdate> {
+    let mut seen_inventories = BTreeSet::new();
+    for inventory in inventories {
+        ensure!(
+            seen_inventories.insert(inventory.inventory),
+            "duplicate live inventory delta"
+        );
+        ensure!(
+            inventory.weight.is_none(),
+            "a live inventory delta carries no weight"
+        );
+        ensure!(
+            !inventory.changes.is_empty()
+                && inventory
+                    .changes
+                    .iter()
+                    .all(|(_, change)| matches!(change, SlotChange::Changed(_))),
+            "a live inventory delta changes known slots"
+        );
+    }
     let mut temperature_values = temperatures
         .map(PawnTemperatureState::values)
         .unwrap_or_default();
@@ -747,7 +799,7 @@ pub fn compose_live_pawn_vitals_update(
         );
     }
     ensure!(
-        !temperature_values.is_empty() || !modifiers.is_empty(),
+        !temperature_values.is_empty() || !modifiers.is_empty() || !inventories.is_empty(),
         "a live pawn update carries values"
     );
     if !temperature_values.is_empty() {
@@ -797,6 +849,21 @@ pub fn compose_live_pawn_vitals_update(
         )?);
         exported.push(reference);
     }
+    if !inventories.is_empty() {
+        let class = next_cache.export_static(&mut next_exports, &plan.content.inventory_class)?;
+        let class_guid = class.guid;
+        exported.push(class);
+        for inventory in inventories {
+            blocks.push(restored_inventory_block(
+                &mut next_cache,
+                plan,
+                key,
+                class_guid,
+                inventory,
+                &rep_codec,
+            )?);
+        }
+    }
     for modifier in modifiers {
         let class = next_cache.export_static(&mut next_exports, &modifier.class)?;
         let class_guid = class.guid;
@@ -832,4 +899,563 @@ pub fn compose_live_pawn_vitals_update(
 pub struct RestoredPawnUpdate {
     pub exports: Option<Payload>,
     pub payload: Payload,
+}
+
+#[cfg(test)]
+mod live_bag_update_tests {
+    //! Authored rows and slots only; decoded with the repository's readers.
+    use super::super::actor_channel::read_actor_bunch_body;
+    use super::super::pawn_open::{
+        CharacterVitals, FastArrayContent, PawnContent, PawnInventory, PawnOpenState, SlotItem,
+        compose_pawn_open,
+    };
+    use super::super::peer_lab::PeerLabAdmission;
+    use super::super::release::ReleaseProfile;
+    use super::super::rep_layout::read_rep_properties;
+    use super::super::rep_rpc::{
+        FAST_ARRAY_COUNT_CAP, FastArrayItem, FastArrayItemLayout, read_custom_delta_header,
+        read_fast_array_delta, read_field_header,
+    };
+    use super::*;
+
+    const KEY: ActorKey = ActorKey::Session(7);
+
+    fn plan() -> PawnOpenPlan {
+        ReleaseProfile::fixture("3.0.32")
+            .pawn_open_plan(PeerLabAdmission::default().map_url)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn empty(info_row: u8, slots: i32, query: u16) -> PawnInventory {
+        PawnInventory {
+            info_row,
+            current_weight: None,
+            slots: FastArrayContent {
+                replication_key: 2,
+                items: (0..slots)
+                    .map(|index| InventorySlot::empty(query, index))
+                    .collect(),
+            },
+        }
+    }
+
+    fn vitals() -> CharacterVitals {
+        CharacterVitals {
+            health: 90,
+            max_health: 100,
+            stamina: 100,
+            max_stamina: 100,
+            oxygen: 40,
+            max_oxygen: 100,
+            water: 50,
+            max_water: 100,
+            food: 60,
+            max_food: 100,
+            biome_row: 0,
+            growth_row: 0,
+        }
+    }
+
+    /// A pawn opened with one listed inventory and one projected (index 1),
+    /// its exports acked.
+    fn opened(order: ByteOrder) -> (PawnOpenPlan, NetGuidCache, ConnectionExports) {
+        let plan = plan();
+        let mut cache = NetGuidCache::new();
+        let mut exports = ConnectionExports::new();
+        compose_pawn_open(
+            &mut cache,
+            &mut exports,
+            &plan,
+            &PawnOpenState {
+                key: KEY,
+                controller: 2,
+                player_state: 4,
+                location: [0.0; 3],
+                content: PawnContent {
+                    inventories: vec![empty(0, 1, 9), empty(5, 3, 9)],
+                    ..PawnContent::default()
+                },
+            },
+            3,
+            order,
+        )
+        .unwrap();
+        exports.commit_bunch(1);
+        exports.received_ack(1);
+        (plan, cache, exports)
+    }
+
+    fn item(row: u16, count: i32) -> Option<SlotItem> {
+        Some(SlotItem {
+            dynamic: vec![(0, 0), (7, count)],
+            ..SlotItem::new(row).unwrap()
+        })
+    }
+
+    /// The held inventory 1 with `items`, at `key`.
+    fn held(items: [Option<SlotItem>; 3], key: i32) -> PawnInventory {
+        let mut inventory = empty(5, 3, 9);
+        for (slot, item) in inventory.slots.items.iter_mut().zip(items) {
+            slot.item = item;
+        }
+        inventory.slots.replication_key = key;
+        inventory
+    }
+
+    /// A delta from `from` to `to`, one key per changed slot (F-978).
+    fn delta(from: &PawnInventory, to: &PawnInventory) -> InventoryRestore {
+        let changes: Vec<_> = from
+            .slots
+            .items
+            .iter()
+            .zip(&to.slots.items)
+            .zip(1..)
+            .filter(|((before, after), _)| before != after)
+            .map(|((_, after), id)| (id, SlotChange::Changed(after.clone())))
+            .collect();
+        let mut restored = to.clone();
+        restored.slots.replication_key = from.slots.replication_key + changes.len() as i32;
+        InventoryRestore {
+            inventory: 1,
+            opened: from.clone(),
+            restored,
+            base_key: from.slots.replication_key,
+            changes,
+            weight: None,
+        }
+    }
+
+    /// Decode a live update: its CharacterState values (if any) and the
+    /// inventory-1 slot delta, checking the block's target and class.
+    fn decode(
+        plan: &PawnOpenPlan,
+        cache: &mut NetGuidCache,
+        exports: &ConnectionExports,
+        update: &RestoredPawnUpdate,
+        order: ByteOrder,
+    ) -> (BTreeMap<u32, RepValue>, FastArrayDelta) {
+        let codec = RepLayoutCodec {
+            actor: actor_codec(plan.engine_net_version, order),
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        let body =
+            read_actor_bunch_body(&mut update.payload.reader(), false, &codec.actor).unwrap();
+        let (vitals, inventory) = match body.blocks.as_slice() {
+            [state, inventory] => (
+                read_rep_properties(
+                    &mut state.payload.reader(),
+                    &plan.content.character_state_layout,
+                    &codec,
+                )
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|entry| (entry.handle, entry.value))
+                .collect(),
+                inventory,
+            ),
+            [inventory] => (BTreeMap::new(), inventory),
+            blocks => panic!("{} blocks", blocks.len()),
+        };
+        let BlockTarget::SubObject { object, class } = &inventory.target else {
+            panic!("inventory subobject block");
+        };
+        assert_eq!(object.guid, cache.subobject_guid(KEY, 1).unwrap());
+        let SubObjectClass::Class(class) = class else {
+            panic!("class-named inventory");
+        };
+        assert!(exports.is_acked(class.guid), "the open exported the class");
+        assert!(!inventory.has_rep_layout, "no weight property");
+        let mut reader = inventory.payload.reader();
+        let field = read_field_header(&mut reader, plan.content.inventory_bound, 1 << 20).unwrap();
+        assert!(reader.at_end());
+        assert_eq!(field.index, INVENTORY_SLOTS_FIELD_INDEX);
+        let mut field_reader = field.payload.reader();
+        read_custom_delta_header(&mut field_reader, plan.engine_net_version, 1).unwrap();
+        let delta = read_fast_array_delta(
+            &mut field_reader,
+            &FastArrayItemLayout::Delta(plan.content.slot_layout.clone()),
+            &codec,
+            FAST_ARRAY_COUNT_CAP,
+        )
+        .unwrap();
+        assert!(field_reader.at_end());
+        (vitals, delta)
+    }
+
+    /// Apply a decoded delta to the client's slot properties.
+    fn apply(client: &mut [BTreeMap<u32, RepValue>], delta: &FastArrayDelta) {
+        assert!(delta.deleted_ids.is_empty());
+        for (id, item) in &delta.changed {
+            let FastArrayItem::Delta(stream) = item else {
+                panic!("delta items");
+            };
+            let slot = &mut client[usize::try_from(*id - 1).unwrap()];
+            for entry in &stream.entries {
+                slot.insert(entry.handle, entry.value.clone());
+            }
+        }
+    }
+
+    fn client_of(inventory: &PawnInventory) -> Vec<BTreeMap<u32, RepValue>> {
+        inventory
+            .slots
+            .items
+            .iter()
+            .map(|slot| slot_values(slot).unwrap())
+            .collect()
+    }
+
+    /// FROZEN pre-projection reference: `compose_live_pawn_vitals_update`
+    /// exactly as it was at e9a36150, before the bag projection, kept
+    /// verbatim (renamed only) so the bag composer is checked against an
+    /// independent copy rather than against itself. Do not edit.
+    #[expect(clippy::too_many_arguments)]
+    fn head_vitals_update(
+        cache: &mut NetGuidCache,
+        exports: &mut ConnectionExports,
+        plan: &PawnOpenPlan,
+        key: ActorKey,
+        temperatures: Option<&PawnTemperatureState>,
+        modifiers: &[RestoredModifier],
+        vitals: Option<&super::super::pawn_open::CharacterVitals>,
+        order: ByteOrder,
+    ) -> Result<RestoredPawnUpdate> {
+        let mut temperature_values = temperatures
+            .map(PawnTemperatureState::values)
+            .unwrap_or_default();
+        if let Some(vitals) = vitals {
+            temperature_values.extend(vitals.values());
+            temperature_values.insert(
+                character_state_handle::CURRENT_ALIVE_STATE,
+                RepValue::Enum(u32::from(vitals.health < 1)),
+            );
+        }
+        ensure!(
+            !temperature_values.is_empty() || !modifiers.is_empty(),
+            "a live pawn update carries values"
+        );
+        if !temperature_values.is_empty() {
+            ensure!(
+                plan.actor_state < plan.components.len(),
+                "pawn component index out of range"
+            );
+        }
+        let mut uids = BTreeSet::new();
+        let mut subobjects = BTreeSet::new();
+        for modifier in modifiers {
+            ensure!(uids.insert(modifier.uid), "duplicate modifier UID");
+            ensure!(
+                subobjects.insert(modifier.subobject),
+                "duplicate modifier subobject"
+            );
+            ensure!(!modifier.class.is_empty(), "empty modifier class");
+        }
+        let codec = actor_codec(plan.engine_net_version, order);
+        let rep_codec = RepLayoutCodec {
+            actor: codec,
+            checksums: false,
+            limits: RepLayoutLimits::default(),
+        };
+        let mut next_cache = cache.clone();
+        let mut next_exports = exports.clone();
+        next_exports.begin_bunch();
+        let mut blocks = Vec::new();
+        let mut exported = Vec::new();
+        if !temperature_values.is_empty() {
+            let actor = next_cache.actor_guid(key)?;
+            let reference = component_reference(
+                &mut next_cache,
+                &mut next_exports,
+                key,
+                actor,
+                &plan.components[plan.actor_state],
+            )?;
+            blocks.push(rep_block(
+                BlockTarget::SubObject {
+                    object: NetGuidRef::plain(reference.guid),
+                    class: SubObjectClass::StablyNamed,
+                },
+                &temperature_values,
+                &plan.content.character_state_layout,
+                &rep_codec,
+            )?);
+            exported.push(reference);
+        }
+        for modifier in modifiers {
+            let class = next_cache.export_static(&mut next_exports, &modifier.class)?;
+            let class_guid = class.guid;
+            exported.push(class);
+            blocks.push(rep_block(
+                BlockTarget::SubObject {
+                    object: NetGuidRef::plain(next_cache.subobject_guid(key, modifier.subobject)?),
+                    class: SubObjectClass::Class(NetGuidRef::plain(class_guid)),
+                },
+                &BTreeMap::from([(8, RepValue::UInt16(modifier.remaining_tenths))]),
+                &modifier_state_component_rep_layout(),
+                &rep_codec,
+            )?);
+        }
+        let update = RestoredPawnUpdate {
+            exports: exports_of(&exported, &codec)?,
+            payload: encode_actor_bunch_body(
+                &ActorBunchBody {
+                    spawn: None,
+                    blocks,
+                },
+                &codec,
+            )?,
+        };
+        *cache = next_cache;
+        *exports = next_exports;
+        Ok(update)
+    }
+
+    #[test]
+    fn without_inventories_the_bytes_are_the_vitals_update() {
+        let mut dead = vitals();
+        dead.health = 0;
+        let temperature = PawnTemperatureState {
+            external: Some(21),
+            modified_external: None,
+            modified_internal: Some(-3),
+            internal: Some(19),
+        };
+        let cases: [(&str, CharacterVitals, Option<PawnTemperatureState>); 3] = [
+            ("living", vitals(), None),
+            ("dead", dead, None),
+            ("living with temperatures", vitals(), Some(temperature)),
+        ];
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let (plan, cache, exports) = opened(order);
+            for (name, vitals, temperatures) in &cases {
+                let (mut ref_cache, mut ref_exports) = (cache.clone(), exports.clone());
+                let reference = head_vitals_update(
+                    &mut ref_cache,
+                    &mut ref_exports,
+                    &plan,
+                    KEY,
+                    temperatures.as_ref(),
+                    &[],
+                    Some(vitals),
+                    order,
+                )
+                .unwrap();
+                for current in [true, false] {
+                    let (mut cache, mut exports) = (cache.clone(), exports.clone());
+                    let update = if current {
+                        compose_live_pawn_bag_update(
+                            &mut cache,
+                            &mut exports,
+                            &plan,
+                            KEY,
+                            temperatures.as_ref(),
+                            &[],
+                            Some(vitals),
+                            &[],
+                            order,
+                        )
+                    } else {
+                        compose_live_pawn_vitals_update(
+                            &mut cache,
+                            &mut exports,
+                            &plan,
+                            KEY,
+                            temperatures.as_ref(),
+                            &[],
+                            Some(vitals),
+                            order,
+                        )
+                    }
+                    .unwrap();
+                    let at = format!("{name}, {order:?}, bag composer {current}");
+                    assert_eq!(update.payload, reference.payload, "bytes: {at}");
+                    assert_eq!(update.exports, reference.exports, "exports: {at}");
+                    assert_eq!(
+                        format!("{cache:?}"),
+                        format!("{ref_cache:?}"),
+                        "GUID cache effect: {at}"
+                    );
+                    assert_eq!(
+                        format!("{exports:?}"),
+                        format!("{ref_exports:?}"),
+                        "connection export effect: {at}"
+                    );
+                }
+            }
+            // A dead player's update marks it dead; a living one alive.
+            let alive_state = |vitals: &CharacterVitals| {
+                let (mut cache, mut exports) = (cache.clone(), exports.clone());
+                let update = head_vitals_update(
+                    &mut cache,
+                    &mut exports,
+                    &plan,
+                    KEY,
+                    None,
+                    &[],
+                    Some(vitals),
+                    order,
+                )
+                .unwrap();
+                let codec = RepLayoutCodec {
+                    actor: actor_codec(plan.engine_net_version, order),
+                    checksums: false,
+                    limits: RepLayoutLimits::default(),
+                };
+                let body = read_actor_bunch_body(&mut update.payload.reader(), false, &codec.actor)
+                    .unwrap();
+                let [state] = body.blocks.as_slice() else {
+                    panic!("one CharacterState block");
+                };
+                read_rep_properties(
+                    &mut state.payload.reader(),
+                    &plan.content.character_state_layout,
+                    &codec,
+                )
+                .unwrap()
+                .entries
+                .into_iter()
+                .find(|entry| entry.handle == character_state_handle::CURRENT_ALIVE_STATE)
+                .unwrap()
+                .value
+            };
+            assert_eq!(alive_state(&vitals()), RepValue::Enum(0));
+            assert_eq!(alive_state(&dead), RepValue::Enum(1));
+        }
+    }
+
+    #[test]
+    fn slot_deltas_round_trip_after_the_vitals_in_both_byte_orders() {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let (plan, mut cache, mut exports) = opened(order);
+            // F-978: the client holds 2 + 3 after the open.
+            let open = held([None, None, None], 5);
+            let mut client = client_of(&open);
+            let starter = held([item(40, 3), None, item(41, 1)], 0);
+            let first = delta(&open, &starter);
+            assert_eq!(
+                (first.base_key, first.restored.slots.replication_key),
+                (5, 7)
+            );
+            let update = compose_live_pawn_bag_update(
+                &mut cache,
+                &mut exports,
+                &plan,
+                KEY,
+                None,
+                &[],
+                Some(&vitals()),
+                std::slice::from_ref(&first),
+                order,
+            )
+            .unwrap();
+            assert!(update.exports.is_none(), "every reference was acked");
+            let (values, decoded) = decode(&plan, &mut cache, &exports, &update, order);
+            let mut alive = vitals().values();
+            alive.insert(
+                character_state_handle::CURRENT_ALIVE_STATE,
+                RepValue::Enum(0),
+            );
+            assert_eq!(values, alive, "vitals first");
+            assert_eq!(
+                (decoded.array_replication_key, decoded.base_replication_key),
+                (7, 5)
+            );
+            assert_eq!(
+                decoded
+                    .changed
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>(),
+                [1, 3]
+            );
+            // A filled slot sends the item, its data, the flag and LastItem.
+            let FastArrayItem::Delta(stream) = &decoded.changed[0].1 else {
+                panic!("delta item");
+            };
+            assert_eq!(
+                stream.entries.iter().map(|e| e.handle).collect::<Vec<_>>(),
+                [2, 3, 10, 16]
+            );
+            apply(&mut client, &decoded);
+            assert_eq!(client, client_of(&starter), "{order:?}");
+            // Use empties slot 2 and the first stack drops to 2: +2.
+            let mut used = held([item(40, 2), None, None], 7);
+            let second = delta(&first.restored, &used);
+            used.slots.replication_key = 9;
+            let update = compose_live_pawn_bag_update(
+                &mut cache,
+                &mut exports,
+                &plan,
+                KEY,
+                None,
+                &[],
+                None,
+                std::slice::from_ref(&second),
+                order,
+            )
+            .unwrap();
+            let (values, decoded) = decode(&plan, &mut cache, &exports, &update, order);
+            assert!(values.is_empty(), "no character state block");
+            assert_eq!(
+                (decoded.array_replication_key, decoded.base_replication_key),
+                (9, 7)
+            );
+            let FastArrayItem::Delta(count) = &decoded.changed[0].1 else {
+                panic!("delta item");
+            };
+            assert_eq!(
+                count.entries.iter().map(|e| e.handle).collect::<Vec<_>>(),
+                [3],
+                "only the dynamic data changes with the count"
+            );
+            apply(&mut client, &decoded);
+            assert_eq!(client, client_of(&used), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn weights_added_slots_empty_or_repeated_deltas_refuse_without_state_change() {
+        let order = ByteOrder::Little;
+        let (plan, cache, exports) = opened(order);
+        let open = held([None, None, None], 5);
+        let good = delta(&open, &held([item(40, 1), None, None], 0));
+        let mut weighed = good.clone();
+        weighed.weight = Some(10);
+        let mut added = good.clone();
+        added.changes = vec![(4, SlotChange::Added(InventorySlot::empty(9, 3)))];
+        let mut unchanged = good.clone();
+        unchanged.changes.clear();
+        for (inventories, message) in [
+            (vec![weighed], "carries no weight"),
+            (vec![added], "changes known slots"),
+            (vec![unchanged], "changes known slots"),
+            (vec![good.clone(), good], "duplicate live inventory delta"),
+        ] {
+            let (mut after_cache, mut after_exports) = (cache.clone(), exports.clone());
+            let error = compose_live_pawn_bag_update(
+                &mut after_cache,
+                &mut after_exports,
+                &plan,
+                KEY,
+                None,
+                &[],
+                None,
+                &inventories,
+                order,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+            assert_eq!(
+                after_cache.subobject_guid(KEY, 1).unwrap(),
+                cache.clone().subobject_guid(KEY, 1).unwrap()
+            );
+            assert_eq!(
+                after_exports.bunch_exports().count(),
+                exports.bunch_exports().count()
+            );
+        }
+    }
 }

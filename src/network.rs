@@ -2391,6 +2391,8 @@ pub fn prepare_run_with_tick_hz(
     let mut tables =
         DataTables::runtime_bytes(catalog_path, &bytes).with_context(catalog_context)?;
     validate_runtime_tables(&mut tables).with_context(catalog_context)?;
+    // Session-only: validated for offline reopen too, bound into no digest.
+    let projection = player_inventory_projection(network, inventory.as_ref(), &mut tables)?;
     let initial_vitals = fresh_player_vitals(&mut tables)?;
     crate::native_players::PlayerCheckpoint {
         location_cm: [0.0; 3],
@@ -2460,6 +2462,13 @@ pub fn prepare_run_with_tick_hz(
         if network.checkpoint_pawn_before_identity {
             session.bound.lab.enable_checkpoint_early_pawn()?;
         }
+        if let Some(projection) = projection {
+            session
+                .bound
+                .lab
+                .enable_player_inventory_projection(projection)
+                .context("network.player_inventory_projection")?;
+        }
         if let Some(plan) = controller_leave {
             session.bound.lab.enable_authored_controller_leave(plan)?;
         }
@@ -2469,6 +2478,59 @@ pub fn prepare_run_with_tick_hz(
         None
     };
     Ok((session, Some(players)))
+}
+
+/// `network.player_inventory_projection` compiled against the bag recipe, the
+/// configured pak's row names (identities only, F-830, F-993) and the
+/// inventories the authored profile already opens; `None` when absent. A
+/// table the binding resolves must be in the pak.
+fn player_inventory_projection(
+    network: &NetworkConfig,
+    recipe: Option<&crate::native_player_inventory::CompiledPlayerInventoryRecipe>,
+    tables: &mut DataTables,
+) -> Result<Option<crate::player_inventory_projection::PlayerInventoryProjection>> {
+    use crate::player_inventory_projection::{
+        PlayerInventoryProjection, PlayerInventoryProjectionBinding, ProjectionCatalog,
+    };
+    let Some(path) = network.player_inventory_projection.as_deref() else {
+        return Ok(None);
+    };
+    let recipe =
+        recipe.context("network.player_inventory_projection requires network.player_inventory")?;
+    let binding = PlayerInventoryProjectionBinding::load(path).with_context(|| {
+        format!(
+            "load network.player_inventory_projection {}",
+            path.display()
+        )
+    })?;
+    let opened: Vec<u8> = pawn_content(Some(tables))?
+        .inventories
+        .iter()
+        .map(|inventory| inventory.info_row)
+        .collect();
+    let mut rows = |table: &str| -> Result<Vec<String>> {
+        ensure!(
+            tables.has_table(table),
+            "network.player_inventory_projection: the data.pak has no {table} table"
+        );
+        Ok(tables.rows(table)?.to_vec())
+    };
+    let (items_static, inventory_info, tag_queries) = (
+        rows(ITEMS_STATIC_TABLE)?,
+        rows(INVENTORY_INFO_TABLE)?,
+        rows(TAG_QUERIES_TABLE)?,
+    );
+    PlayerInventoryProjection::compile(
+        &binding,
+        recipe,
+        ProjectionCatalog {
+            items_static: &items_static,
+            inventory_info: &inventory_info,
+            tag_queries: &tag_queries,
+        },
+        &opened,
+    )
+    .map(Some)
 }
 
 /// One digest per authored input, so a reopen refusal names the input that
@@ -3028,6 +3090,127 @@ mod authored_preparation_tests {
                 .to_string()
                 .contains("checkpoint_pawn_before_identity requires player persistence")
         );
+    }
+
+    /// Offline preparation over an authored pak: the consumables example
+    /// recipe, `fresh_player_profile` and a binding naming authored rows.
+    fn projection_inputs(items_static: bool) -> (tempfile::TempDir, NetworkConfig) {
+        use crate::pak_writer::{fresh_join_pak_with, table_json};
+        let directory = tempfile::tempdir().unwrap();
+        let pak = directory.path().join("authored.pak");
+        let extra: Vec<(&str, Vec<u8>)> = if items_static {
+            vec![(
+                "Items/D_ItemsStatic.json",
+                table_json(&["ItemZero", "AuthoredWater", "Twice", "Twice"]),
+            )]
+        } else {
+            Vec::new()
+        };
+        std::fs::write(&pak, fresh_join_pak_with(&extra)).unwrap();
+        let gameplay = directory.path().join("authored.json");
+        let profile = crate::gameplay_profile::fresh_player_profile(
+            &mut crate::data_pak::DataPak::open(&pak).unwrap(),
+            &crate::gameplay_profile::FreshPlayerValues::default(),
+        )
+        .unwrap();
+        std::fs::write(&gameplay, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let network = NetworkConfig {
+            player_persistence: Some(crate::config::PlayerPersistenceConfig {
+                prospect_id: "authored-projection".into(),
+                map_url: "/Authored/Maps/Workshop".into(),
+                prospect_row: "AuthoredWorkshop".into(),
+                difficulty: 2,
+            }),
+            player_inventory: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("config/player-inventory-consumables.example.json"),
+            ),
+            release_profile: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
+            ),
+            data_pak: Some(pak),
+            authored_gameplay: Some(gameplay),
+            authored_world: Some(crate::authored_world_bootstrap::AuthoredWorldBootstrap {
+                seed: 42,
+                seed_initialised: true,
+                flod_tile_count: 0,
+                clock: None,
+            }),
+            ..Default::default()
+        };
+        (directory, network)
+    }
+
+    fn write_binding(directory: &tempfile::TempDir, info: &str, item: &str) -> std::path::PathBuf {
+        let path = directory.path().join("binding.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "format": 1,
+                "inventories": [{"inventory": "bag", "info_row": info, "slot_queries": ["Any"]}],
+                "items": [{"item": "authored-water", "row": item, "count_property": true,
+                           "dynamic": []}],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn inventory_projection_is_session_only_and_refuses_unbound_rows_at_startup() {
+        let (directory, mut network) = projection_inputs(true);
+        let prepare = |network: &NetworkConfig| {
+            prepare_run_with_tick_hz(network, peer_lab_config(network), 30).map(
+                |(session, players)| {
+                    assert!(session.is_none(), "offline preparation binds nothing");
+                    players.unwrap()
+                },
+            )
+        };
+        let without = prepare(&network).unwrap();
+        network.player_inventory_projection =
+            Some(write_binding(&directory, "Unused", "AuthoredWater"));
+        let with = prepare(&network).unwrap();
+        assert!(
+            with.context == without.context && with.inventory == without.inventory,
+            "the binding enters no player input or recipe digest"
+        );
+        for (info, item, message) in [
+            (
+                "Missing",
+                "AuthoredWater",
+                "has no D_InventoryInfo row \"Missing\"",
+            ),
+            ("Unused", "Missing", "has no D_ItemsStatic row \"Missing\""),
+            (
+                "Unused",
+                "Twice",
+                "lists D_ItemsStatic row \"Twice\" more than once",
+            ),
+        ] {
+            network.player_inventory_projection = Some(write_binding(&directory, info, item));
+            let error = format!("{:#}", prepare(&network).err().unwrap());
+            assert!(error.contains(message), "{message}: {error}");
+        }
+        // A pak without the item table cannot resolve any item row.
+        let (directory, mut network) = projection_inputs(false);
+        network.player_inventory_projection =
+            Some(write_binding(&directory, "Unused", "AuthoredWater"));
+        let error = format!("{:#}", prepare(&network).err().unwrap());
+        assert!(
+            error.contains("the data.pak has no D_ItemsStatic table"),
+            "{error}"
+        );
+        // Unparseable or missing binding files refuse naming the option.
+        std::fs::write(directory.path().join("binding.json"), b"{}").unwrap();
+        let error = format!("{:#}", prepare(&network).err().unwrap());
+        assert!(
+            error.contains("network.player_inventory_projection"),
+            "{error}"
+        );
+        network.player_inventory_projection = Some(directory.path().join("absent.json"));
+        assert!(prepare(&network).is_err());
     }
 
     #[test]
