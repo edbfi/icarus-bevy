@@ -42,25 +42,16 @@ The [native server runbook](docs/runbooks/native-server.md) covers configuration
 persistence, recovery and save inspection.
 
 **Experimental data inputs:** protocol row identities come from the free
-official dedicated server (Steam app 2089300). Gameplay values must be
-independently authored in `network.authored_gameplay`; packaged gameplay
-tables are not runtime inputs. Run
-`icarus-server install-official-data --data-dir DIR` once (and after official
-updates): it downloads those files anonymously from Steam without steamcmd or
-prompts. Nothing original is bundled with this repository.
+official dedicated server (Steam app 2089300);
+`icarus-server install-official-data --data-dir DIR` downloads them anonymously
+without steamcmd or prompts (rerun after official updates). Gameplay values
+must be independently authored in `network.authored_gameplay`; packaged
+gameplay tables are not runtime inputs. Nothing original is bundled here.
 
 ## Documentation
 
-| Read | For |
-| --- | --- |
-| [docs/README.md](docs/README.md) | map of every document and its rules |
-| [Plan](docs/linux-dedicated-server-plan.md) | goal, constraints, milestones, release targets |
-| [Status](docs/implementation-status.md) | summary, milestone state, next tasks |
-| [Gates](docs/gates.md) | preconditions that block actions |
-| [Ledgers](docs/ledgers/) | findings by area, unknowns, bugs, compatibility matrix |
-| [Specs](docs/specs/) | save-format and network facts |
-| [Research](docs/research/) | one digest per question cluster |
-| [Runbooks](docs/runbooks/) | server, synthetic workload, original-server launcher, REA tooling, research helpers |
+The [documentation map](docs/README.md) lists every document with its role and
+bound: plan, status, gates, ledgers, specs, research digests and runbooks.
 
 ## Contributing
 

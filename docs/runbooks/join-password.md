@@ -5,8 +5,8 @@
 F-1161 to F-1163, F-1167. Set `[network] join_password` for the native server;
 unset or empty disables password protection. Without `[network.hosting]`,
 `run` permits only loopback and publishes no Steam listing. Explicit hosting
-can bind publicly; [connected-run gates](../gates.md#before-any-original-server-or-client-run)
-apply, including the owner's word before a public passwordless launch.
+can bind publicly under the
+[connected-run gates](../gates.md#before-any-original-server-or-client-run).
 
 The probe accepts `--join-password-file work/<case>/join-password`: a regular
 UTF-8 file under the checkout's `work/`, without symlinks or traversal, mode

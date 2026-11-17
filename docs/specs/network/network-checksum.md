@@ -16,42 +16,40 @@ admission does not use this module.
 
 ## Confirmed
 
-- Default construction at `0x141f2b220` formats project/version inputs, calls
-  `0x141e28f90` and then `0x14139af80`. The transformation lowercases UTF-16
-  units `A` to `Z` only. The checksum consumes each nonzero UTF-16 unit as a
-  little-endian 32-bit value, stops at the first zero unit, complements the seed
-  before processing and complements the result afterward. All 256 table entries
-  at `0x145eed270` equal independently generated reflected CRC-32 entries for
+- Default construction at `0x141f2b220` formats project/version inputs, then
+  calls `0x141e28f90` and `0x14139af80`. The transformation lowercases only
+  UTF-16 units `A` to `Z`. The checksum consumes each nonzero UTF-16 unit as a
+  little-endian 32-bit value, stops at the first zero unit, and complements the
+  seed before and the result after processing. All 256 table entries at
+  `0x145eed270` equal independently generated reflected CRC-32 entries for
   polynomial `0xedb88320` (F-281).
-- The primitive and independent Python `zlib.crc32` oracle reproduce the early
-  checksum **1447163286** for project `Icarus`, version `1.0.0`, NetCL 0,
+- The primitive and an independent Python `zlib.crc32` oracle reproduce the
+  early checksum **1447163286** for project `Icarus`, version `1.0.0`, NetCL 0,
   EngineNetVer 17, GameNetVer 0. Supplementary characters contribute two
   separately expanded surrogate units, so UTF-32 encoding is not equivalent
   (F-254).
 - The log then sets ProjectVersion to `3.0.30.158174-rel-DangerousHorizons` and
-  invalidates the cached checksum; the early value must not be hard-coded as
+  invalidates the cached checksum, so the early value must not be hard-coded as
   the accepted game version (F-254).
 - Cache-valid storage is `0x146210cf0`, the cached checksum `0x146210cf4`, and
   the generation/comparison delegates `0x1462116a0` / `0x1462116b0`. Generation
   checks the cache before its callback-enable argument; an uncached call needs
   nonzero occupancy, a nonnull object and a successful virtual predicate.
-  Comparison has its own delegate checks and otherwise falls back to exact
-  32-bit equality (F-255).
+  Comparison has its own delegate checks, else exact 32-bit equality (F-255).
 - Setter `0x141f39000` ignores null/empty strings; nonempty input updates
-  project-version storage and clears cache-valid, even when the input already
-  points at the stored buffer. Caller `0x143996c54` supplies a string from a
+  project-version storage and clears cache-valid, even when it already points
+  at the stored buffer. Caller `0x143996c54` supplies a string from a
   `GeneralProjectSettings` default object (F-255).
-- On the wire both builds compare a Hello's version exactly: 3.0.31 answers its
-  own 2406501229 with a Challenge and 1379612455 with Upgrade, 3.0.30 the
-  reverse, each logging its value (F-689). A connected client needs a server of
-  its own build; the comparison is the server's, so a native server sets its
-  own policy (F-529).
+- On the wire both builds compare a Hello's version exactly and log it: 3.0.31
+  answers its own 2406501229 with a Challenge and 1379612455 with Upgrade,
+  3.0.30 the reverse (F-689). A client needs a server of its own build; the
+  comparison is the server's, so a native server sets its own policy (F-529).
 - Client build 25793767 builds the same string from its own inputs: image
   project name `Icarus`, engine protocol 17, a zero-filled game protocol
-  global, and NetCL taken from `-networkversionoverride=` or the
+  global, and NetCL from `-networkversionoverride=` or the
   `networkversionoverride` console variable, else 0. Hello sends this value
-  with the override delegate allowed; its project version is runtime state, so
-  a matching value needs the client's active version (F-541, F-542).
+  with the override delegate allowed; the project version is runtime state, so
+  a match needs the client's active version (F-541, F-542).
 - Exhaustive `.text` RIP-relative and `.rdata`/`.data` pointer scans across both
   binaries prove that `GetLocalNetworkVersionOverride` (`0x1463251b0` /
   `0x1462116a0`) and `IsNetworkCompatibleOverride` (`0x1463251c0` /
