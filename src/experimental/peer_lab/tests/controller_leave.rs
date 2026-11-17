@@ -62,6 +62,19 @@ impl Fixture {
         enabled: bool,
         proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
     ) -> Self {
+        Self::build(enabled, proof, false)
+    }
+
+    /// Leave dispatch with the early checkpoint pawn (no private proof).
+    fn early() -> Self {
+        Self::build(true, None, true)
+    }
+
+    fn build(
+        enabled: bool,
+        proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
+        early: bool,
+    ) -> Self {
         let (mut lab, mut registry) = (lab(), registry());
         lab.config.packet.sent_capacity = 16;
         // Retain the checkpoint fixture's authored opens, selecting the
@@ -74,6 +87,9 @@ impl Fixture {
         let plan = plan();
         if enabled {
             lab.enable_authored_controller_leave(plan.clone()).unwrap();
+        }
+        if early {
+            lab.enable_checkpoint_early_pawn().unwrap();
         }
         if let Some(proof) = proof {
             registry.enable_private_leave_proof(proof.clone()).unwrap();
@@ -982,4 +998,151 @@ fn aggregate_diagnostics_survive_teardown_and_final_writer_observation_without_p
     ] {
         assert!(!encoded.contains(&format!("\"{key}\"")));
     }
+}
+
+#[test]
+fn early_pawn_leave_keeps_types_ack_detach_and_cancel_suppression() {
+    for kind in [
+        Kind::Quit,
+        Kind::ReturnToCharacterSelect,
+        Kind::ReturnToTitlescreen,
+    ] {
+        let mut f = Fixture::early();
+        assert!(f.lab.has_checkpoint_early_pawn());
+        assert_eq!(f.registry().activated_epochs(), vec![f.epoch]);
+        let (_directory, mut writer) = f.writer();
+        let pinned = f.registry().projection(f.epoch).unwrap();
+        f.send(Request::Normal(Some(kind)));
+        f.bridge();
+        assert_eq!(f.phase(), Some(LeavePhase::Pending));
+        assert!(f.registry().activated_epochs().is_empty());
+        let before_receipt = f.deliver(true);
+        assert!(f.completions(&before_receipt).is_empty());
+        let receipt = f.save(&mut writer);
+        assert_eq!(
+            f.phase(),
+            Some(LeavePhase::Durable {
+                generation: receipt.generation,
+                tick: receipt.tick
+            })
+        );
+        f.bridge();
+        let completion = f.deliver(false);
+        assert_eq!(f.completions(&completion), vec![kind as u32]);
+        f.bridge();
+        assert!(f.lab.peers.contains_key(&f.address), "NAK is no settlement");
+        let packet = f
+            .lab
+            .peers
+            .get_mut(&f.address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(f.lab.send(&packet, f.address));
+        let repair = f.deliver(true);
+        assert_eq!(f.completions(&repair), vec![kind as u32]);
+        f.bridge();
+        assert!(!f.lab.peers.contains_key(&f.address));
+        assert!(f.registry().projection(f.epoch).is_none());
+        assert_eq!(f.phase(), None);
+        let counts = f.registry().leave_counts();
+        assert_eq!(
+            (
+                counts.cutoffs_accepted,
+                counts.durable,
+                counts.detached_settled
+            ),
+            (1, 1, 1)
+        );
+        let transport = f.lab.session_counts().controller_leave.unwrap();
+        assert_eq!(
+            (
+                transport.intents_accepted,
+                transport.completions_admitted,
+                transport.completion_prefix_acked
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            f.registry()
+                .snapshot()
+                .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+                .unwrap()
+                .checkpoint,
+            pinned.checkpoint
+        );
+    }
+    let mut f = Fixture::early();
+    let (_directory, mut writer) = f.writer();
+    f.send(Request::Normal(Some(Kind::Quit)));
+    f.bridge();
+    let before = f.registry().snapshot();
+    f.send(Request::Cancel);
+    f.bridge();
+    f.save(&mut writer);
+    for _ in 0..3 {
+        let received = f.deliver(true);
+        assert!(f.completions(&received).is_empty());
+        f.bridge();
+        assert!(matches!(f.phase(), Some(LeavePhase::Durable { .. })));
+        assert_eq!(f.registry().snapshot(), before);
+        assert!(f.lab.peers.contains_key(&f.address));
+    }
+    f.lab.remove_peer(f.address);
+    f.bridge();
+    assert_eq!(f.phase(), None);
+    let transport = f.lab.session_counts().controller_leave.unwrap();
+    assert_eq!(
+        (
+            transport.intents_accepted,
+            transport.cancel_suppressions,
+            transport.completions_admitted
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(f.registry().leave_counts().detached_settled, 1);
+}
+
+#[test]
+fn early_pawn_leave_before_identity_is_ignored() {
+    let (mut lab, mut registry) = (lab(), registry());
+    let selected = ReleaseProfile::fixture("3.0.36");
+    lab.config.local_network_version = Some(selected.pin.network_checksum);
+    lab.player_controller_open = selected
+        .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+        .unwrap();
+    lab.enable_authored_controller_leave(plan()).unwrap();
+    lab.enable_checkpoint_early_pawn().unwrap();
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    assert!(
+        lab.peers[&address]
+            .peer
+            .has_actor_channel(PAWN_CHANNEL_INDEX)
+    );
+    for request in [
+        Request::Normal(Some(Kind::Quit)),
+        Request::Cancel,
+        Request::Normal(Some(Kind::ReturnToTitlescreen)),
+    ] {
+        lab.controller_call(address, ControllerCall::Leave(request));
+        lab.bridge_controller_leaves(&mut registry);
+        assert!(lab.peers[&address].controller_leave.is_none());
+    }
+    assert_eq!(
+        lab.session_counts().controller_leave,
+        Some(Default::default())
+    );
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+    lab.bridge_controller_leaves(&mut registry);
+    assert_eq!(registry.activated_epochs(), vec![epoch]);
+    assert_eq!(registry.leave_counts(), Default::default());
+    assert_eq!(
+        registry.leave_status(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch),
+        None
+    );
 }

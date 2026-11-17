@@ -82,6 +82,15 @@ pub struct NetworkConfig {
     pub authored_world: Option<crate::authored_world_bootstrap::AuthoredWorldBootstrap>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub controller_startup: Vec<crate::experimental::peer_lab::ControllerStartupAction>,
+    /// EXPERIMENTAL, default false; requires `player_persistence`. Open the
+    /// pawn right after the controller, as without checkpoints, before the
+    /// client's Begin and character profile identify its checkpoint; then
+    /// publish the checkpoint's vitals to that pawn. A returning player's
+    /// stored location is left unapplied and counted. Session ordering only:
+    /// excluded from every player input digest, so stores reopen unchanged.
+    /// Refused by `run --private-leave-proof`. Unqualified with a stock client.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checkpoint_pawn_before_identity: bool,
     pub enabled: bool,
     /// IPv4 address to bind; nonloopback requires authenticated hosting.
     pub bind: Ipv4Addr,
@@ -194,6 +203,7 @@ impl Default for NetworkConfig {
             authored_world: None,
             enabled: false,
             controller_startup: Vec::new(),
+            checkpoint_pawn_before_identity: false,
             bind: Ipv4Addr::LOCALHOST,
             port: 17_777,
             max_players: 8,
@@ -263,6 +273,10 @@ impl NetworkConfig {
         ensure!(
             !self.authored_controller_leave || self.player_persistence.is_some(),
             "network.authored_controller_leave requires player persistence"
+        );
+        ensure!(
+            !self.checkpoint_pawn_before_identity || self.player_persistence.is_some(),
+            "network.checkpoint_pawn_before_identity requires player persistence"
         );
         if let Some(damage) = self.player_depletion_damage {
             damage.validate()?;
@@ -606,5 +620,63 @@ mod authored_clock_config_tests {
         assert!(config.validate().is_ok());
         config.network.player_persistence = None;
         assert!(config.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_early_pawn_config_tests {
+    use super::*;
+
+    fn persistent() -> NetworkConfig {
+        NetworkConfig {
+            release_profile: Some("authored-release.toml".into()),
+            data_pak: Some("authored.pak".into()),
+            authored_gameplay: Some("authored.json".into()),
+            player_persistence: Some(PlayerPersistenceConfig {
+                prospect_id: "authored".into(),
+                map_url: "/Authored/Map".into(),
+                prospect_row: "AuthoredRow".into(),
+                difficulty: 2,
+            }),
+            authored_world: Some(crate::authored_world_bootstrap::AuthoredWorldBootstrap {
+                seed: 42,
+                seed_initialised: true,
+                flod_tile_count: 0,
+                clock: None,
+            }),
+            ..NetworkConfig::default()
+        }
+    }
+
+    #[test]
+    fn default_off_omitted_when_false_and_requires_persistence() {
+        let parsed: ServerConfig = toml::from_str("").unwrap();
+        assert!(!parsed.network.checkpoint_pawn_before_identity);
+        let parsed: ServerConfig =
+            toml::from_str("[network]\ncheckpoint_pawn_before_identity = true\n").unwrap();
+        assert!(parsed.network.checkpoint_pawn_before_identity);
+        // Off, both serialized forms are exactly those of a config without the key.
+        let mut network = persistent();
+        let toml_before = toml::to_string(&network).unwrap();
+        let json_before = serde_json::to_vec(&network).unwrap();
+        assert!(!toml_before.contains("checkpoint_pawn_before_identity"));
+        network.checkpoint_pawn_before_identity = false;
+        assert_eq!(toml::to_string(&network).unwrap(), toml_before);
+        assert_eq!(serde_json::to_vec(&network).unwrap(), json_before);
+        assert!(network.validate().is_ok());
+        network.checkpoint_pawn_before_identity = true;
+        assert!(network.validate().is_ok());
+        let written = toml::to_string(&network).unwrap();
+        assert!(written.contains("checkpoint_pawn_before_identity = true"));
+        assert_eq!(toml::from_str::<NetworkConfig>(&written).unwrap(), network);
+        network.player_persistence = None;
+        assert_eq!(
+            network.validate().unwrap_err().to_string(),
+            "network.checkpoint_pawn_before_identity requires player persistence"
+        );
+        let mut plain = NetworkConfig::default();
+        assert!(plain.validate().is_ok());
+        plain.checkpoint_pawn_before_identity = true;
+        assert!(plain.validate().is_err());
     }
 }

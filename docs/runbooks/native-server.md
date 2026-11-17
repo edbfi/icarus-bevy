@@ -87,6 +87,12 @@ must fit both byte-order budgets before binding. Bootstrap supplies no terrain.
 reject after load, before binding/polling; stored state unchanged.
 Networking off: no actor bootstrap; player context is still validated.
 
+`network.checkpoint_pawn_before_identity` (default false; needs player
+persistence; F-1201): the pawn opens after the controller, before Begin, so
+`restart-pawn` can precede it. Stored vitals follow as a pawn update; saved
+locations stay unapplied (`checkpoint_locations_unapplied`).
+`--private-leave-proof` refuses it.
+
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
 CLI replaces TOML; `[]` disables. Needs release/controller plans and settled
 pawn/GUID for restart. Opens precede actions; `network_listening` lists them.

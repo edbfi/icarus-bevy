@@ -25,6 +25,12 @@ session_timeout_seconds = 30
 # and a qualified release. Stock-client leave remains unqualified.
 # authored_controller_leave = false
 
+# OPTIONAL with player_persistence: open the pawn right after the controller,
+# before the client's Begin identifies its checkpoint, then send its vitals as
+# a pawn update. Saved locations are not applied. run --private-leave-proof
+# refuses it. Unqualified with stock clients.
+# checkpoint_pawn_before_identity = false
+
 # OPTIONAL authored server-owned checkpoints, schema-14 stores only.
 # Requires release_profile, data_pak, authored_gameplay and authored_world.
 # Online use also requires authenticated hosting with the exact same context.
