@@ -1,9 +1,8 @@
 # Independent ICARUS Linux dedicated server
 
-The canonical plan: goal, constraints, milestones, exit criteria and release
-targets. See [implementation status](implementation-status.md) (what exists and
-what is next), [gates](gates.md) (the only home of preconditions that block
-actions), [architecture](architecture.md) and research rules in
+Goal, constraints, milestones, exit criteria and release targets. Related:
+[status](implementation-status.md), [gates](gates.md),
+[architecture](architecture.md) and research rules in
 [`.agents/rules/project.md`](../.agents/rules/project.md). This document
 authorizes no tool execution or target activity.
 

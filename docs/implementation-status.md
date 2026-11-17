@@ -5,7 +5,7 @@ Checkpoint: [findings](ledgers/findings/), [unknowns](ledgers/unknowns.md),
 
 Before restructure: 96ddb0b:docs/implementation-status.md
 
-Last reconciled: 2026-11-16
+Last reconciled: 2026-11-17
 
 ## Summary
 
@@ -17,7 +17,7 @@ Normal leave shows saving pending and returns to gameplay; Alt+F4 ends the
 session (F-1186). Foundation saves do not prove player persistence. Full
 compatibility remains unproven.
 
-Standing research authorization F-1175, renewed 2026-11-15 for offline and
+Standing research authorization F-1175, renewed 2026-11-17 for offline and
 online work, still requires scoped cases.
 Input parity F-828 forbids client dependencies. The user reports the supplied
 client/save pair compatible (F-421).
