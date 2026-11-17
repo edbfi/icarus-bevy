@@ -1327,3 +1327,843 @@ fn durable_authored_leave_backpressure_never_repeats_cutoff_and_detach_still_inv
         .settle_leave(PlayerKey::new(ACCOUNT, 3).unwrap(), epoch)
         .unwrap();
 }
+
+// Early checkpoint pawn (`network.checkpoint_pawn_before_identity`). Authored
+// loopback peers only: the order a stock client needs is inferred from
+// recorded runs (F-1036, F-1181, F-1185, F-1199), not shown here.
+
+fn spawn_points() -> SpawnConfig {
+    SpawnConfig {
+        points: vec![
+            SpawnPoint {
+                x: 100.0,
+                y: 200.0,
+                z: 300.0,
+                yaw: None,
+            },
+            SpawnPoint {
+                x: 400.0,
+                y: 500.0,
+                z: 600.0,
+                yaw: None,
+            },
+        ],
+    }
+}
+
+fn early_lab() -> PeerLab {
+    let mut lab = lab();
+    lab.enable_checkpoint_early_pawn().unwrap();
+    lab
+}
+
+/// As `run` composes them, the pawn's fresh character state and the
+/// checkpoint's initial vitals come from the same authored rows
+/// (`network::pawn_content`, `network::fresh_player_vitals`).
+fn production_content(lab: &mut PeerLab) {
+    lab.pawn_open.as_mut().unwrap().2.character_state = vitals().values();
+}
+
+/// Checkpoints with connected-player records, possession, the frozen
+/// release, ClientRestart startup and the production pawn content.
+fn stock_lab(early: bool) -> PeerLab {
+    let mut lab = record_lab(true);
+    lab.enable_spawn_points(&spawn_points()).unwrap();
+    lab.enable_player_checkpoints(vitals()).unwrap();
+    production_content(&mut lab);
+    lab.enable_controller_possession_properties().unwrap();
+    lab.enable_frozen_movement_release(Duration::ZERO).unwrap();
+    lab.enable_controller_startup(
+        &ReleaseProfile::fixture("3.0.32"),
+        vec![ControllerStartupAction::RestartPawn],
+    )
+    .unwrap();
+    if early {
+        lab.enable_checkpoint_early_pawn().unwrap();
+    }
+    lab
+}
+
+fn little() -> RepLayoutCodec {
+    RepLayoutCodec {
+        actor: actor_codec(17, ByteOrder::Little),
+        checksums: false,
+        limits: Default::default(),
+    }
+}
+
+/// The arguments of every controller ClientRestart (field 40) among `bunches`.
+fn restart_calls(lab: &PeerLab, bunches: &[Bunch]) -> Vec<Vec<RpcArgument>> {
+    use super::super::super::{actor_channel::BlockTarget, rep_rpc::parse_rpc_payload};
+    let channel = lab.player_controller_open.as_ref().unwrap().channel_index;
+    let codec = little();
+    let parameters = player_controller_rpc_parameters(40).unwrap();
+    bunches
+        .iter()
+        .filter(|b| {
+            b.header.channel_index == channel
+                && b.header.reliable
+                && !b.header.open
+                && !b.header.partial
+                && !b.header.has_package_map_exports
+        })
+        .filter_map(|b| read_actor_bunch_body(&mut b.payload.reader(), false, &codec.actor).ok())
+        .flat_map(|body| body.blocks)
+        .filter(|block| !block.has_rep_layout && block.target == BlockTarget::Actor)
+        .filter_map(|block| {
+            let field = read_field_header(
+                &mut block.payload.reader(),
+                lab.controller_startup_bound,
+                codec.actor.limits.max_payload_bits,
+            )
+            .ok()?;
+            (field.index == 40)
+                .then(|| parse_rpc_payload(&field.payload, &parameters, &codec).unwrap())
+        })
+        .collect()
+}
+
+fn restart_of(pawn: u32) -> Vec<RpcArgument> {
+    vec![RpcArgument::Sent(vec![RpcItem::Value(RepValue::Object(
+        super::super::super::actor_channel::NetGuidRef::plain(pawn),
+    ))])]
+}
+
+/// Reliable pawn property updates: whole bunches that are not opens, open
+/// continuations (partial parts) or export parts.
+fn pawn_updates(bunches: &[Bunch]) -> Vec<&Bunch> {
+    bunches
+        .iter()
+        .filter(|b| {
+            b.header.channel_index == PAWN_CHANNEL_INDEX
+                && b.header.reliable
+                && !b.header.open
+                && !b.header.partial
+                && !b.header.has_package_map_exports
+        })
+        .collect()
+}
+
+/// CharacterState values of one non-open pawn update in `order`.
+fn update_values(lab: &PeerLab, payload: &Payload, order: ByteOrder) -> BTreeMap<u32, RepValue> {
+    let plan = &lab.pawn_open.as_ref().unwrap().0;
+    let codec = RepLayoutCodec {
+        actor: actor_codec(plan.engine_net_version, order),
+        checksums: false,
+        limits: Default::default(),
+    };
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec.actor).unwrap();
+    let [block] = body.blocks.as_slice() else {
+        panic!("one CharacterState block");
+    };
+    read_rep_properties(
+        &mut block.payload.reader(),
+        &plan.content.character_state_layout,
+        &codec,
+    )
+    .unwrap()
+    .entries
+    .into_iter()
+    .map(|entry| (entry.handle, entry.value))
+    .collect()
+}
+
+fn with_alive(vitals: CharacterVitals) -> BTreeMap<u32, RepValue> {
+    let mut values = vitals.values();
+    values.insert(
+        h::CURRENT_ALIVE_STATE,
+        RepValue::Enum(u32::from(vitals.health < 1)),
+    );
+    values
+}
+
+/// What a stock-order synthetic join produced.
+struct StockJoin {
+    /// Kept open for the session's lifetime.
+    _socket: UdpSocket,
+    address: SocketAddrV4,
+    _client: PacketSequencer,
+    log: Vec<String>,
+    received: Vec<Bunch>,
+    pawn: Option<u32>,
+}
+
+/// A client that sends nothing until a controller ClientRestart (field 40)
+/// names the pawn it was opened; then Begin, then each profile answer, then
+/// the initialisation answers and friends list once they are requested. Each
+/// round is one app update (`poll`, then the checkpoint bridge) followed by
+/// the client's reply. Server transitions are logged after the update, wire
+/// arrivals after delivery, client calls as sent.
+fn stock_join(
+    lab: &mut PeerLab,
+    registry: &mut PlayerRegistry,
+    connection: u32,
+    rounds: usize,
+) -> StockJoin {
+    let (socket, address, mut client) = joined_peer(lab, connection, ACCOUNT, true);
+    assert!(lab.send_player_controller_open(address));
+    let records = lab.stats.connected_player_record_creations_sent;
+    let releases = lab.stats.frozen_movement_releases_sent;
+    let mut log = Vec::new();
+    let mut received = Vec::new();
+    let mut pawn = None;
+    let mut stage = 0;
+    let mut state = [false; 5];
+    for _ in 0..rounds {
+        lab.poll();
+        lab.bridge_player_checkpoints(registry);
+        let Some(entry) = lab.peers.get(&address) else {
+            log.push("closed".to_owned());
+            break;
+        };
+        let now = [
+            entry.checkpoint_epoch.is_some(),
+            entry.checkpoint_active,
+            entry.profiles.finalised,
+            lab.stats.connected_player_record_creations_sent > records,
+            lab.stats.frozen_movement_releases_sent > releases,
+        ];
+        for (index, name) in [
+            "reservation",
+            "activation",
+            "finalisation",
+            "record",
+            "frozen release",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if now[index] && !state[index] {
+                state[index] = true;
+                log.push(name.to_owned());
+            }
+        }
+        let bunches = deliver_bunches(lab, &socket, &mut client, |_| true);
+        for channel in open_channels(&bunches) {
+            log.push(format!("open {channel}"));
+            if channel == PAWN_CHANNEL_INDEX {
+                let pawn_open: Vec<_> = bunches
+                    .iter()
+                    .filter(|b| b.header.channel_index == PAWN_CHANNEL_INDEX)
+                    .cloned()
+                    .collect();
+                pawn = Some(
+                    read_spawn(&mut pawn_payload(&pawn_open).reader(), &little().actor)
+                        .unwrap()
+                        .actor
+                        .guid,
+                );
+            }
+        }
+        for arguments in restart_calls(lab, &bunches) {
+            assert_eq!(
+                Some(arguments),
+                pawn.map(restart_of),
+                "restart names the pawn"
+            );
+            log.push("restart".to_owned());
+        }
+        for _ in pawn_updates(&bunches) {
+            log.push("pawn update".to_owned());
+        }
+        received.extend(bunches);
+        match stage {
+            0 if log.iter().any(|event| event == "restart") => {
+                lab.controller_call(address, ControllerCall::Begin(3));
+                log.push("begin".to_owned());
+                stage = 1;
+            }
+            1 => {
+                lab.controller_call(
+                    address,
+                    ControllerCall::Profile(response(ProfileKind::User, 3)),
+                );
+                received.extend(deliver_bunches(lab, &socket, &mut client, |_| true));
+                lab.controller_call(
+                    address,
+                    ControllerCall::Profile(response(ProfileKind::Character, 3)),
+                );
+                log.push("profiles".to_owned());
+                stage = 2;
+            }
+            2 if lab.peers[&address].profiles.initialisation_requested => {
+                lab.controller_call(
+                    address,
+                    ControllerCall::Initialisation(InitialisationAnswer::Loadout),
+                );
+                lab.controller_call(
+                    address,
+                    ControllerCall::Initialisation(InitialisationAnswer::Bestiary),
+                );
+                lab.controller_call(address, ControllerCall::FriendsList);
+                log.push("initialisation".to_owned());
+                stage = 3;
+            }
+            _ => {}
+        }
+        if state[4] {
+            break;
+        }
+    }
+    StockJoin {
+        _socket: socket,
+        address,
+        _client: client,
+        log,
+        received,
+        pawn,
+    }
+}
+
+#[test]
+fn stock_order_client_waits_forever_without_the_early_pawn_and_enters_with_it() {
+    for early in [false, true] {
+        let (mut lab, mut registry) = (stock_lab(early), registry());
+        let extras = world_bootstrap(&mut lab);
+        let join = stock_join(&mut lab, &mut registry, 1, 24);
+        let address = join.address;
+        let mut opens = vec!["open 2".to_owned()];
+        if early {
+            opens.push("open 3".to_owned());
+        }
+        opens.extend(["open 4".to_owned(), "open 5".to_owned()]);
+        opens.extend(extras.iter().map(|channel| format!("open {channel}")));
+        if !early {
+            // The inferred circular wait: the pawn waits for Begin, ClientRestart
+            // for the pawn, and this client's Begin for ClientRestart.
+            assert_eq!(join.log, opens);
+            let entry = &lab.peers[&address];
+            assert!(!entry.peer.has_actor_channel(PAWN_CHANNEL_INDEX));
+            assert_eq!(entry.controller_startup_queued, 0);
+            assert_eq!(entry.controller_startup_pawn_guid, None);
+            assert_eq!(entry.checkpoint_epoch, None);
+            assert!(restart_calls(&lab, &join.received).is_empty());
+            assert!(registry.active_epochs().is_empty());
+            assert!(registry.snapshot().is_empty());
+            assert_eq!(lab.next_checkpoint_epoch, 1);
+            assert_eq!(lab.stats.pawn_opens_sent, 0);
+            assert_eq!(lab.stats.initialisation_slots_recorded, 0);
+            let readiness = lab.readiness_counts();
+            assert_eq!(readiness.initial_open_outcomes.pending.pawn, 1);
+            assert_eq!(readiness.controller_startup_actions_pending, 1);
+            continue;
+        }
+        let mut expected = opens;
+        expected.extend(
+            [
+                "restart",
+                "begin",
+                "profiles",
+                "reservation",
+                "initialisation",
+                "activation",
+                "finalisation",
+                "record",
+                "frozen release",
+            ]
+            .map(str::to_owned),
+        );
+        assert_eq!(join.log, expected);
+        assert_eq!(
+            lab.peers[&address].controller_startup_pawn_guid, join.pawn,
+            "ClientRestart named the opened pawn"
+        );
+        // A fresh player's checkpoint equals the open: no vitals update.
+        assert!(pawn_updates(&join.received).is_empty());
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let stored = registry.snapshot().projection(key).unwrap().checkpoint;
+        assert_eq!(stored.vitals, vitals());
+        assert_eq!(stored.location_cm, [100.0, 200.0, 300.0]);
+        assert_eq!(lab.stats.initialisation_slots_recorded, 1);
+        assert_eq!(lab.stats.pawn_spawns_configured, 1);
+        assert_eq!(lab.session_counts().checkpoint_locations_unapplied, Some(0));
+    }
+}
+
+#[test]
+fn early_fresh_pawn_open_is_the_legacy_open_and_needs_no_vitals_update() {
+    let open = |checkpoints: bool| {
+        let mut lab = record_lab(false);
+        lab.enable_spawn_points(&spawn_points()).unwrap();
+        production_content(&mut lab);
+        lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))
+            .unwrap();
+        lab.seed_actor_uids([crate::actor_uids::FIRST_NATIVE_OBJECT_ID])
+            .unwrap();
+        if checkpoints {
+            lab.enable_player_checkpoints(vitals()).unwrap();
+            lab.enable_checkpoint_early_pawn().unwrap();
+        }
+        let (socket, address, client, bunches) = peer(&mut lab, 1, ACCOUNT, true);
+        (lab, socket, address, client, bunches)
+    };
+    // Reliable sequence numbers start from each connection's own handshake
+    // seed; compare every other header field, the sequence offsets and payloads.
+    let pawn_bunches = |bunches: &[Bunch]| -> Vec<Bunch> {
+        bunches
+            .iter()
+            .filter(|b| b.header.channel_index == PAWN_CHANNEL_INDEX)
+            .cloned()
+            .collect()
+    };
+    let relative = |bunches: &[Bunch]| -> Vec<Bunch> {
+        let first = bunches[0].header.reliable_sequence_raw.unwrap();
+        bunches
+            .iter()
+            .cloned()
+            .map(|mut bunch| {
+                bunch.header.reliable_sequence_raw = bunch
+                    .header
+                    .reliable_sequence_raw
+                    .map(|raw| raw.wrapping_sub(first));
+                bunch
+            })
+            .collect()
+    };
+    let (legacy_lab, _legacy_socket, _, _, legacy) = open(false);
+    let (mut lab, socket, address, mut client, early) = open(true);
+    let legacy_pawn = pawn_bunches(&legacy);
+    assert!(legacy_pawn.first().is_some_and(|b| b.header.open));
+    assert_eq!(
+        relative(&pawn_bunches(&early)),
+        relative(&legacy_pawn),
+        "same open, byte for byte"
+    );
+    assert_eq!(open_channels(&early), open_channels(&legacy));
+    assert_eq!(
+        lab.claimed_actor_uids(),
+        legacy_lab.claimed_actor_uids(),
+        "same UID claim"
+    );
+    assert_eq!(lab.claimed_actor_uids().len(), 2);
+    let values = {
+        let plan = &lab.pawn_open.as_ref().unwrap().0;
+        let body = read_actor_bunch_body(
+            &mut pawn_payload(&legacy_pawn).reader(),
+            true,
+            &little().actor,
+        )
+        .unwrap();
+        read_rep_properties(
+            &mut body.blocks[1 + plan.actor_state].payload.reader(),
+            &plan.content.character_state_layout,
+            &little(),
+        )
+        .unwrap()
+        .entries
+    };
+    assert!(
+        values.iter().all(|e| e.handle != h::CURRENT_ALIVE_STATE),
+        "legacy open carries no alive state"
+    );
+    // Before identity: the point is committed, no checkpoint exists.
+    let entry = &lab.peers[&address];
+    assert_eq!(entry.checkpoint_epoch, None);
+    assert_eq!(
+        entry.placement.unwrap().location,
+        [100.0, 200.0, 300.0],
+        "committed at the controller open"
+    );
+    assert_eq!(lab.stats.pawn_spawns_configured, 1);
+    assert_eq!(lab.stats.pawn_opens_sent, 1);
+    assert!(registry_is_empty_after_bridges(&mut lab));
+    let mut registry = registry();
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+    let projection = registry.projection(epoch).unwrap();
+    assert!(projection.is_new);
+    assert_eq!(projection.checkpoint.location_cm, [100.0, 200.0, 300.0]);
+    assert_eq!(projection.checkpoint.vitals, vitals());
+    assert_eq!(
+        lab.peers[&address].checkpoint_enqueued_revision,
+        Some(projection.revision),
+        "equal to the open: published without an update"
+    );
+    let after = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let later = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    assert!(pawn_updates(&after).is_empty() && pawn_updates(&later).is_empty());
+    assert_eq!(lab.stats.pawn_spawns_configured, 1, "no second point");
+    assert_eq!(registry.snapshot().len(), 1);
+    assert_eq!(lab.session_counts().checkpoint_locations_unapplied, Some(0));
+    assert_eq!(
+        legacy_lab.session_counts().checkpoint_locations_unapplied,
+        None
+    );
+}
+
+/// No reservation can exist before identity, however often the bridge runs.
+fn registry_is_empty_after_bridges(lab: &mut PeerLab) -> bool {
+    let mut registry = registry();
+    for _ in 0..3 {
+        lab.bridge_player_checkpoints(&mut registry);
+        lab.retry_initial_opens();
+    }
+    lab.next_checkpoint_epoch == 1 && registry.active_epochs().is_empty()
+}
+
+#[test]
+fn early_returning_player_gets_one_vitals_update_before_its_record_and_keeps_its_location() {
+    let (mut lab, mut registry) = (stock_lab(true), registry());
+    let first = stock_join(&mut lab, &mut registry, 1, 24);
+    assert_eq!(first.log.last().map(String::as_str), Some("frozen release"));
+    let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+    let before = registry.snapshot().projection(key).unwrap();
+    let mut checkpoint = before.checkpoint;
+    checkpoint.vitals.health = 37;
+    checkpoint.vitals.oxygen = 69;
+    checkpoint.location_cm = [700.0, 800.0, 900.0];
+    registry.edit(key, before.revision, checkpoint).unwrap();
+    lab.remove_peer(first.address);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(registry.active_epochs().is_empty());
+    let join = stock_join(&mut lab, &mut registry, 2, 24);
+    let address = join.address;
+    // The open: fresh vitals at the second point, as without checkpoints.
+    let pawn_open: Vec<_> = join
+        .received
+        .iter()
+        .filter(|b| b.header.channel_index == PAWN_CHANNEL_INDEX)
+        .cloned()
+        .collect();
+    assert_first_pawn(
+        &lab,
+        &pawn_open,
+        PlayerCheckpoint {
+            location_cm: [400.0, 500.0, 600.0],
+            vitals: vitals(),
+        },
+    );
+    let at = |event: &str| join.log.iter().position(|e| e == event).unwrap();
+    assert_eq!(
+        join.log.iter().filter(|e| *e == "pawn update").count(),
+        1,
+        "exactly one reliable vitals update"
+    );
+    assert!(at("reservation") < at("pawn update"));
+    assert!(at("pawn update") < at("finalisation"));
+    assert!(at("finalisation") < at("record"));
+    assert!(at("record") < at("frozen release"));
+    let projection = registry
+        .projection(lab.peers[&address].checkpoint_epoch.unwrap())
+        .unwrap();
+    assert!(!projection.is_new);
+    assert_eq!(projection.checkpoint, checkpoint);
+    let [update] = pawn_updates(&join.received).try_into().unwrap();
+    assert_eq!(
+        update_values(&lab, &update.payload, ByteOrder::Little),
+        with_alive(checkpoint.vitals)
+    );
+    assert_eq!(
+        lab.peers[&address].checkpoint_enqueued_revision,
+        Some(projection.revision)
+    );
+    // Neither the live pawn nor the stored location moved; one count.
+    assert_eq!(
+        lab.peers[&address].placement.unwrap().location,
+        [400.0, 500.0, 600.0]
+    );
+    assert_eq!(
+        registry
+            .snapshot()
+            .projection(key)
+            .unwrap()
+            .checkpoint
+            .location_cm,
+        [700.0, 800.0, 900.0]
+    );
+    assert_eq!(lab.stats.checkpoint_locations_unapplied, 1);
+    assert_eq!(lab.session_counts().checkpoint_locations_unapplied, Some(1));
+    assert_eq!(lab.stats.pawn_spawns_configured, 2);
+    assert_eq!(lab.stats.pawn_spawns_saved, 0);
+    let text = serde_json::to_string(&lab.session_counts()).unwrap();
+    assert!(text.contains("\"checkpoint_locations_unapplied\":1"));
+}
+
+#[test]
+fn early_vitals_update_round_trips_in_both_byte_orders_and_marks_death() {
+    let (mut lab, mut registry) = (early_lab(), registry());
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    // The test pawn content carries no vitals, so the projection is sent.
+    let first = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    let [update] = pawn_updates(&first).try_into().unwrap();
+    assert_eq!(
+        update_values(&lab, &update.payload, ByteOrder::Little),
+        with_alive(vitals())
+    );
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+    let before = registry.snapshot().projection(key).unwrap();
+    let mut dead = before.checkpoint;
+    dead.vitals.health = 0;
+    registry.edit(key, before.revision, dead).unwrap();
+    lab.bridge_player_checkpoints(&mut registry);
+    let died = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    let [update] = pawn_updates(&died).try_into().unwrap();
+    let values = update_values(&lab, &update.payload, ByteOrder::Little);
+    assert_eq!(values[&h::CURRENT_ALIVE_STATE], RepValue::Enum(1));
+    assert_eq!(values, with_alive(dead.vitals));
+    // The same composer re-read in both byte orders.
+    let plan = &lab.pawn_open.as_ref().unwrap().0;
+    let connection = lab.peers[&address].connection_id.unwrap();
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        for health in [37, 0] {
+            let mut vitals = dead.vitals;
+            vitals.health = health;
+            let mut cache = lab.guid_cache.clone();
+            let mut exports = lab.peers[&address].exports.clone();
+            let update = compose_live_pawn_vitals_update(
+                &mut cache,
+                &mut exports,
+                plan,
+                pawn_key(connection),
+                None,
+                &[],
+                Some(&vitals),
+                order,
+            )
+            .unwrap();
+            let values = update_values(&lab, &update.payload, order);
+            assert_eq!(values, with_alive(vitals), "{order:?} health {health}");
+            assert_eq!(
+                values[&h::CURRENT_ALIVE_STATE],
+                RepValue::Enum(u32::from(health == 0))
+            );
+        }
+    }
+}
+
+fn fill_ring(lab: &mut PeerLab, address: SocketAddrV4) {
+    let capacity = lab.peers[&address].peer.config().sent_capacity;
+    let pending = lab.peers[&address]
+        .peer
+        .sequencer()
+        .notify()
+        .sent_records()
+        .len();
+    for _ in pending..capacity {
+        let datagram = lab
+            .peers
+            .get_mut(&address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(lab.send(&datagram, address));
+    }
+    assert!(lab.peers[&address].peer.full_ring_probe().is_some());
+}
+
+#[test]
+fn early_vitals_coalesce_under_pressure_and_loss_and_debit_only_after_activation() {
+    use crate::native_player_runtime::ConsumptionRates;
+    let (mut lab, mut registry) = (early_lab(), registry());
+    lab.config.packet.sent_capacity = 16;
+    let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+    let stored = registry.snapshot().projection(key).unwrap();
+    let mut checkpoint = stored.checkpoint;
+    checkpoint.vitals.health = 37;
+    registry.edit(key, stored.revision, checkpoint).unwrap();
+    lab.remove_peer(address);
+    lab.bridge_player_checkpoints(&mut registry);
+    // Returning: its pawn opens fresh, then pressure meets the first publication.
+    let (socket, address, mut client, _) = peer(&mut lab, 2, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, address, 3, 3);
+    fill_ring(&mut lab, address);
+    let rates = ConsumptionRates::new(1, 1, 1).unwrap();
+    for _ in 0..3 {
+        lab.bridge_player_checkpoints(&mut registry);
+        assert!(lab.peers[&address].checkpoint_epoch.is_some());
+        assert_eq!(lab.peers[&address].checkpoint_enqueued_revision, None);
+        assert!(!lab.peers[&address].checkpoint_active);
+    }
+    let reserved = registry.snapshot();
+    assert_eq!(registry.consume_activated(rates).unwrap(), 0);
+    assert_eq!(registry.snapshot(), reserved, "no debit before activation");
+    let current = registry.snapshot().projection(key).unwrap();
+    checkpoint.vitals.health = 23;
+    let latest = registry.edit(key, current.revision, checkpoint).unwrap();
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(lab.peers[&address].checkpoint_enqueued_revision, None);
+    // Capacity drains: only the latest values are published, once.
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(
+        lab.peers[&address].checkpoint_enqueued_revision,
+        Some(latest.revision)
+    );
+    let changed = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    let [update] = pawn_updates(&changed).try_into().unwrap();
+    assert_eq!(
+        update_values(&lab, &update.payload, ByteOrder::Little),
+        with_alive(checkpoint.vitals)
+    );
+    finish(&mut lab, &mut registry, &socket, &mut client, address);
+    // After activation, one debit; loss repair resends it without another.
+    assert_eq!(registry.consume_activated(rates).unwrap(), 1);
+    let charged = registry.snapshot();
+    let debited = charged.projection(key).unwrap();
+    assert_eq!(
+        debited.checkpoint.vitals.oxygen,
+        checkpoint.vitals.oxygen - 1
+    );
+    lab.bridge_player_checkpoints(&mut registry);
+    assert_eq!(
+        lab.peers[&address].checkpoint_enqueued_revision,
+        Some(debited.revision)
+    );
+    let lost = deliver_bunches(&mut lab, &socket, &mut client, |_| false);
+    let [lost_update] = pawn_updates(&lost).try_into().unwrap();
+    for _ in 0..3 {
+        lab.bridge_player_checkpoints(&mut registry);
+        assert_eq!(registry.snapshot(), charged);
+        assert_eq!(
+            lab.peers[&address].checkpoint_enqueued_revision,
+            Some(debited.revision)
+        );
+    }
+    let datagram = lab
+        .peers
+        .get_mut(&address)
+        .unwrap()
+        .peer
+        .ack_packet()
+        .unwrap();
+    assert!(lab.send(&datagram, address));
+    let repaired = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    let [repair] = pawn_updates(&repaired).try_into().unwrap();
+    assert_eq!(repair.payload, lost_update.payload);
+    assert_eq!(registry.snapshot(), charged, "never a second debit");
+}
+
+#[test]
+fn early_slot_disagreement_after_the_pawn_closes_and_frees_its_uid() {
+    for (begin, slot) in [(3, 4), (3, -1), (-2, -2)] {
+        let (mut lab, mut registry) = (early_lab(), registry());
+        lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))
+            .unwrap();
+        let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+        assert!(
+            lab.peers[&address]
+                .peer
+                .has_actor_channel(PAWN_CHANNEL_INDEX)
+        );
+        assert_eq!(lab.claimed_actor_uids().len(), 1);
+        identify(&mut lab, &socket, &mut client, address, begin, slot);
+        lab.bridge_player_checkpoints(&mut registry);
+        assert!(!lab.peers.contains_key(&address));
+        assert!(lab.claimed_actor_uids().is_empty(), "UID freed on removal");
+        assert!(registry.active_epochs().is_empty());
+        assert!(registry.snapshot().is_empty());
+        assert_eq!(lab.next_checkpoint_epoch, 1);
+    }
+}
+
+#[test]
+fn early_duplicate_live_key_refuses_without_evicting_the_first() {
+    let (mut lab, mut registry) = (early_lab(), registry());
+    let (socket, first, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    identify(&mut lab, &socket, &mut client, first, 3, 3);
+    lab.bridge_player_checkpoints(&mut registry);
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    let first_epoch = lab.peers[&first].checkpoint_epoch;
+    let (duplicate_socket, duplicate, mut duplicate_client, _) = peer(&mut lab, 2, ACCOUNT, true);
+    assert!(
+        lab.peers[&duplicate]
+            .peer
+            .has_actor_channel(PAWN_CHANNEL_INDEX)
+    );
+    identify(
+        &mut lab,
+        &duplicate_socket,
+        &mut duplicate_client,
+        duplicate,
+        3,
+        3,
+    );
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(!lab.peers.contains_key(&duplicate));
+    assert_eq!(lab.peers[&first].checkpoint_epoch, first_epoch);
+    assert!(lab.peers[&first].peer.has_actor_channel(PAWN_CHANNEL_INDEX));
+    assert_eq!(registry.active_epochs(), vec![first_epoch.unwrap()]);
+}
+
+#[test]
+fn early_revocation_between_pawn_and_begin_removes_the_peer_without_a_record() {
+    let (mut lab, mut registry) = (stock_lab(true), registry());
+    let (socket, address, mut client) = joined_peer(&mut lab, 1, ACCOUNT, true);
+    assert!(lab.send_player_controller_open(address));
+    deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+    assert!(
+        lab.peers[&address]
+            .peer
+            .has_actor_channel(PAWN_CHANNEL_INDEX)
+    );
+    let (auth, backend) = AuthClient::test_bridge(8);
+    lab.authenticator = Some(auth);
+    backend
+        .event(crate::steam_auth::AuthEvent {
+            request_id: 1,
+            outcome: AuthOutcome::Revoked,
+        })
+        .unwrap();
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(!lab.peers.contains_key(&address));
+    // A late Begin from the removed address reaches no session.
+    lab.controller_call(address, ControllerCall::Begin(3));
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(registry.active_epochs().is_empty());
+    assert!(registry.snapshot().is_empty());
+    assert_eq!(lab.next_checkpoint_epoch, 1);
+    assert_eq!(lab.stats.connected_player_records_created, 0);
+    assert_eq!(lab.stats.connected_player_record_creations_sent, 0);
+}
+
+#[test]
+fn early_client_without_begin_times_out_with_zero_reservations() {
+    let (mut lab, mut registry) = (early_lab(), registry());
+    lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))
+        .unwrap();
+    let (_socket, address, _client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    assert_eq!(lab.claimed_actor_uids().len(), 1);
+    for _ in 0..3 {
+        lab.bridge_player_checkpoints(&mut registry);
+        assert!(registry.active_epochs().is_empty());
+    }
+    let timeout = lab.config.idle_timeout;
+    let entry = lab.peers.get_mut(&address).unwrap();
+    entry.last_seen = Instant::now() - timeout - Duration::from_secs(1);
+    lab.poll();
+    assert!(!lab.peers.contains_key(&address));
+    assert_eq!(lab.stats.peers_expired, 1);
+    lab.bridge_player_checkpoints(&mut registry);
+    assert!(registry.active_epochs().is_empty());
+    assert!(registry.snapshot().is_empty());
+    assert_eq!(lab.next_checkpoint_epoch, 1);
+    assert!(lab.claimed_actor_uids().is_empty());
+}
+
+#[test]
+fn early_pawn_requires_checkpoints_before_peers() {
+    let mut plain = record_lab(false);
+    assert!(plain.enable_checkpoint_early_pawn().is_err());
+    assert!(!plain.has_checkpoint_early_pawn());
+    let mut lab = lab();
+    let (_socket, _address, _client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    assert!(lab.enable_checkpoint_early_pawn().is_err());
+    assert!(!lab.has_checkpoint_early_pawn());
+    assert_eq!(lab.session_counts().checkpoint_locations_unapplied, None);
+    assert!(
+        !serde_json::to_string(&lab.session_counts())
+            .unwrap()
+            .contains("checkpoint_locations_unapplied")
+    );
+}

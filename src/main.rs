@@ -1673,6 +1673,9 @@ fn run(
             if let Some(world) = &config.network.authored_world {
                 record["authored_world"] = json!(world);
             }
+            if config.network.checkpoint_pawn_before_identity {
+                record["checkpoint_pawn_before_identity"] = json!(true);
+            }
             if let Some(hosting) = &config.network.hosting {
                 record["hosting"] = json!({"seconds": hosting.seconds,
                     "auth_request_budget": icarus_bevy::steam_service::ServiceLimits::default().max_requests,

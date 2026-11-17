@@ -255,3 +255,43 @@ fn private_proof_first_pawn_pressure_prevents_activation_and_checks_actual_retry
         }
     }
 }
+
+/// The proof's first-pawn receipt binds an open composed from the bound
+/// reservation (vitals, location and alive state). The early pawn opens before
+/// any reservation exists, so the two refuse each other in either order.
+#[test]
+fn early_checkpoint_pawn_and_private_proof_refuse_each_other() {
+    let leave_lab = || {
+        let mut lab = lab();
+        let selected = ReleaseProfile::fixture("3.0.36");
+        lab.config.local_network_version = Some(selected.pin.network_checksum);
+        lab.player_controller_open = selected
+            .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+            .unwrap();
+        lab.enable_authored_controller_leave(plan()).unwrap();
+        lab
+    };
+    let (_first_directory, first) = proof();
+    let mut lab = leave_lab();
+    lab.enable_private_leave_proof(first.clone()).unwrap();
+    assert!(
+        lab.enable_checkpoint_early_pawn()
+            .unwrap_err()
+            .to_string()
+            .contains("refuses the early checkpoint pawn")
+    );
+    assert!(!lab.has_checkpoint_early_pawn());
+    first.health().unwrap();
+    let (_second_directory, second) = proof();
+    let mut lab = leave_lab();
+    lab.enable_checkpoint_early_pawn().unwrap();
+    assert!(
+        lab.enable_private_leave_proof(second.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("refuses the early checkpoint pawn")
+    );
+    assert!(lab.private_leave_proof.is_none());
+    assert_eq!(lab.private_join_remaining, None);
+    second.health().unwrap();
+}

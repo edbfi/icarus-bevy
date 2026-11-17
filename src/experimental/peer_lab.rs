@@ -695,6 +695,10 @@ impl PeerLabConfig {
 pub struct PeerLabStats {
     #[serde(skip)]
     pub controller_leave: ControllerLeaveCounts,
+    /// Early checkpoint pawn only: returning players whose stored location
+    /// differs from the place their pawn already opened. Neither is moved.
+    #[serde(skip)]
+    pub checkpoint_locations_unapplied: u64,
     /// Datagrams taken from the socket, including rejected ones.
     pub received: u64,
     /// Longer than the maximum datagram size (possibly kernel-truncated).
@@ -1166,6 +1170,10 @@ impl PeerLabStats {
 pub struct SessionCounts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub controller_leave: Option<ControllerLeaveCounts>,
+    /// Present only with [`PeerLab::enable_checkpoint_early_pawn`]: returning
+    /// players whose stored location was left unapplied to their live pawn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_locations_unapplied: Option<u64>,
     /// False after [`PeerLab::stop_admission`].
     pub admitting: bool,
     /// Peers currently in the table, in any login state.
@@ -2845,6 +2853,23 @@ fn pawn_bunch_moves(
     Ok(moves)
 }
 
+/// Whether a pawn's composed character state already carries `vitals` and
+/// their alive state. An open without `CurrentAliveState`, as the legacy open
+/// is sent, counts only for a living (0) state; any other state is sent.
+fn vitals_carried(
+    carried: &BTreeMap<u32, RepValue>,
+    vitals: &super::pawn_open::CharacterVitals,
+) -> bool {
+    let alive = RepValue::Enum(u32::from(vitals.health < 1));
+    vitals
+        .values()
+        .iter()
+        .all(|(handle, value)| carried.get(handle) == Some(value))
+        && carried
+            .get(&super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE)
+            .map_or(alive == RepValue::Enum(0), |value| *value == alive)
+}
+
 /// Count one committed placement by source (F-1139).
 fn count_placement(stats: &mut PeerLabStats, resolution: &Resolution) {
     if resolution.saved_refused {
@@ -3487,6 +3512,9 @@ pub struct PeerLab {
     authored_controller_leave: Option<super::release::ControllerLeavePlan>,
     /// Authored checkpoint experiment; absent keeps the qualified ordering.
     checkpoint_initial_vitals: Option<super::pawn_open::CharacterVitals>,
+    /// Checkpoint mode only: open the pawn in its legacy position before the
+    /// client identifies itself ([`Self::enable_checkpoint_early_pawn`]).
+    checkpoint_early_pawn: bool,
     next_checkpoint_epoch: u64,
     authored_map_url: Option<String>,
     private_rpc82_capture: Option<super::selected_rpc_capture::PrivateRpc82Capture>,
@@ -3639,6 +3667,10 @@ impl PeerLab {
                 && self.checkpoint_initial_vitals.is_some(),
             "private leave proof requires authored checkpoints/leave before peers"
         );
+        ensure!(
+            !self.checkpoint_early_pawn,
+            "the private leave proof refuses the early checkpoint pawn"
+        );
         proof.health()?;
         if self.private_join_remaining.is_none() {
             self.enable_private_join_budget(1)?;
@@ -3787,6 +3819,40 @@ impl PeerLab {
         Ok(())
     }
 
+    /// EXPERIMENTAL, default off. In checkpoint mode, open the pawn right
+    /// after the controller, as the mode without checkpoints does, before the
+    /// client's Begin and character profile identify its checkpoint. The
+    /// controller open commits the spawn point; a fresh pawn opens with the
+    /// legacy content there. Once the checkpoint is reserved, its vitals reach
+    /// the live pawn through the coalesced reliable vitals update, and only if
+    /// they differ from what the open carried. A returning player's stored
+    /// location is never applied to the live pawn (no correction is written):
+    /// it is counted in `checkpoint_locations_unapplied`. Session ordering
+    /// only: nothing persisted changes. The private leave proof's receipts
+    /// bind a pawn composed from a bound reservation, so the two refuse each
+    /// other. Unqualified with a stock client.
+    pub fn enable_checkpoint_early_pawn(&mut self) -> Result<()> {
+        ensure!(
+            self.peers.is_empty() && self.peak_peers == 0,
+            "the early checkpoint pawn must precede peers"
+        );
+        ensure!(
+            self.checkpoint_initial_vitals.is_some(),
+            "the early checkpoint pawn requires player checkpoints"
+        );
+        ensure!(
+            self.private_leave_proof.is_none(),
+            "the private leave proof refuses the early checkpoint pawn"
+        );
+        self.checkpoint_early_pawn = true;
+        Ok(())
+    }
+
+    /// Whether checkpoint mode opens the pawn before identity.
+    pub fn has_checkpoint_early_pawn(&self) -> bool {
+        self.checkpoint_early_pawn
+    }
+
     /// Establish this interval's eligibility from one bounded auth-event drain.
     /// No reservation, activation, projection refresh or property publication.
     pub(crate) fn reconcile_player_authority(&mut self, registry: &mut PlayerRegistry) {
@@ -3915,6 +3981,17 @@ impl PeerLab {
                 }
             };
             if entry.checkpoint_epoch.is_none() {
+                // Early pawn: the controller open committed this connection's
+                // only placement, which the pawn shares. Wait for it; never
+                // peek or commit a second point.
+                let early_placement = if self.checkpoint_early_pawn {
+                    let Some(placement) = entry.placement else {
+                        continue;
+                    };
+                    Some(placement)
+                } else {
+                    None
+                };
                 let Some(next) = self.next_checkpoint_epoch.checked_add(1) else {
                     self.fail_profile_exchange(address);
                     continue;
@@ -3924,9 +4001,15 @@ impl PeerLab {
                 let Some(plan) = self.player_controller_open.as_ref() else {
                     continue;
                 };
-                let resolution = self.spawn.peek(None, plan.spawn_location);
+                let (reserved_at, resolution) = match early_placement {
+                    Some(placement) => (placement, None),
+                    None => {
+                        let resolution = self.spawn.peek(None, plan.spawn_location);
+                        (resolution.placement, Some(resolution))
+                    }
+                };
                 let initial = PlayerCheckpoint {
-                    location_cm: resolution.placement.location.map(f64::from),
+                    location_cm: reserved_at.location.map(f64::from),
                     vitals: initial_vitals,
                 };
                 let projection = match registry.reserve(key, epoch, initial) {
@@ -3956,22 +4039,38 @@ impl PeerLab {
                         return;
                     }
                 }
-                if projection.is_new {
-                    self.spawn.commit(&resolution);
-                    count_placement(&mut self.stats, &resolution);
+                if let Some(placement) = early_placement {
+                    // The live pawn stays where it opened and the stored
+                    // location is kept: no qualified correction writer exists.
+                    if !projection.is_new
+                        && projection.checkpoint.location_cm.map(|value| value as f32)
+                            != placement.location
+                    {
+                        bump(&mut self.stats.checkpoint_locations_unapplied);
+                    }
+                } else if let Some(resolution) = &resolution
+                    && projection.is_new
+                {
+                    self.spawn.commit(resolution);
+                    count_placement(&mut self.stats, resolution);
                 }
                 if let Some(entry) = self.peers.get_mut(&address) {
                     entry.checkpoint_epoch = Some(epoch);
                     entry.checkpoint_projection = Some(projection);
-                    entry.placement = Some(Placement {
-                        location: projection.checkpoint.location_cm.map(|value| value as f32),
-                        yaw: None,
-                        source: if projection.is_new {
-                            resolution.placement.source
-                        } else {
-                            PlacementSource::Saved
-                        },
-                    });
+                    if let Some(resolution) = &resolution {
+                        entry.placement = Some(Placement {
+                            location: projection.checkpoint.location_cm.map(|value| value as f32),
+                            yaw: None,
+                            source: if projection.is_new {
+                                resolution.placement.source
+                            } else {
+                                PlacementSource::Saved
+                            },
+                        });
+                    } else {
+                        // Publish the reserved vitals to the already open pawn.
+                        entry.pawn_property_retry_ready = true;
+                    }
                     if let Some(pending) = &mut entry.initial_opens {
                         pending.retry_ready = true;
                     }
@@ -4038,6 +4137,7 @@ impl PeerLab {
     }
 
     fn refresh_checkpoint_projections(&mut self, registry: &PlayerRegistry) {
+        let early = self.checkpoint_early_pawn;
         let mut stale = Vec::new();
         for (address, entry) in &mut self.peers {
             let Some(epoch) = entry.checkpoint_epoch else {
@@ -4052,7 +4152,9 @@ impl PeerLab {
                 }
                 // For a pending pawn only, placement must follow the latest
                 // committed checkpoint; never mutate placement of a live pawn.
-                if entry.checkpoint_enqueued_revision.is_none()
+                // The early pawn keeps its controller's committed placement.
+                if !early
+                    && entry.checkpoint_enqueued_revision.is_none()
                     && let Some(placement) = &mut entry.placement
                 {
                     placement.location =
@@ -4255,6 +4357,7 @@ impl PeerLab {
             private_expected_detach: None,
             authored_controller_leave: None,
             checkpoint_initial_vitals: None,
+            checkpoint_early_pawn: false,
             next_checkpoint_epoch: 1,
             private_rpc82_capture: None,
             private_pawn_bunch_capture: None,
@@ -5435,6 +5538,7 @@ impl PeerLab {
         let Some((plan, channel, _)) = &self.pawn_open else {
             return;
         };
+        let early = self.checkpoint_early_pawn;
         let mut outgoing = Vec::new();
         let mut failed = Vec::new();
         for (address, entry) in &mut self.peers {
@@ -5468,13 +5572,26 @@ impl PeerLab {
                 },
                 _ => PawnTemperatureState::default(),
             };
-            let vital_due = entry.checkpoint_projection.filter(|projection| {
+            let mut vital_due = entry.checkpoint_projection.filter(|projection| {
                 entry.auth_accepted
                     && entry.auth_request.is_some()
                     && entry.admission.state == ClientLoginState::Joined
                     && entry.checkpoint_epoch.is_some()
                     && entry.checkpoint_enqueued_revision != Some(projection.revision)
             });
+            // The early pawn opened before its checkpoint was known. A first
+            // projection equal to what that open carried needs no update.
+            if early
+                && entry.checkpoint_enqueued_revision.is_none()
+                && let Some(projection) = vital_due
+                && entry
+                    .pawn_character_state
+                    .as_ref()
+                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
+            {
+                entry.checkpoint_enqueued_revision = Some(projection.revision);
+                vital_due = None;
+            }
             if due.is_empty() && temperature_due.is_empty() && vital_due.is_none() {
                 continue;
             }
@@ -7264,6 +7381,9 @@ impl PeerLab {
                 .authored_controller_leave
                 .as_ref()
                 .map(|_| self.stats.controller_leave),
+            checkpoint_locations_unapplied: self
+                .checkpoint_early_pawn
+                .then_some(self.stats.checkpoint_locations_unapplied),
             admitting: self.admitting,
             active_peers: self.peers.len(),
             peak_peers: self.peak_peers,
@@ -9178,6 +9298,9 @@ impl PeerLab {
                 entry.profiles.completed
                     && !entry.profiles.finalised
                     && (self.checkpoint_initial_vitals.is_none() || entry.checkpoint_active)
+                    // The early pawn's checkpoint vitals precede its record.
+                    && (!self.checkpoint_early_pawn
+                        || entry.checkpoint_enqueued_revision.is_some())
             })
             .map(|(address, _)| *address)
             .collect();
@@ -10816,6 +10939,8 @@ impl PeerLab {
         let player_state_is_host = !self.peers.iter().any(|(other, peer)| {
             *other != address && peer.admission.state == ClientLoginState::Joined
         });
+        // Legacy and early-checkpoint modes open the pawn right after the controller.
+        let pawn_first = self.checkpoint_initial_vitals.is_none() || self.checkpoint_early_pawn;
         let Some(entry) = self.peers.get_mut(&address) else {
             return false;
         };
@@ -10823,7 +10948,7 @@ impl PeerLab {
             return false;
         }
         let mut remaining = VecDeque::from([InitialOpenStage::Controller]);
-        if self.pawn_open.is_some() && self.checkpoint_initial_vitals.is_none() {
+        if self.pawn_open.is_some() && pawn_first {
             remaining.push_back(InitialOpenStage::Pawn);
         }
         if self.game_state_open.is_some() {
@@ -10848,7 +10973,7 @@ impl PeerLab {
         remaining.extend(extras.into_iter().map(|(_, stage)| stage));
         // Checkpoint identity can arrive after independent world bootstrap.
         // Keep its gated pawn from withholding managers and quests before Begin.
-        if self.pawn_open.is_some() && self.checkpoint_initial_vitals.is_some() {
+        if self.pawn_open.is_some() && !pawn_first {
             remaining.push_back(InitialOpenStage::Pawn);
         }
         entry.initial_open_outcomes = InitialOpenOutcomes::default();
@@ -11006,6 +11131,7 @@ impl PeerLab {
             };
             let guids = pending.controller_guids;
             if self.checkpoint_initial_vitals.is_some()
+                && !self.checkpoint_early_pawn
                 && matches!(stage, InitialOpenStage::Pawn)
                 && self
                     .peers
@@ -11133,6 +11259,8 @@ impl PeerLab {
         // chooses the pawn checkpoint; the two wire locations may differ. Client
         // interpretation of that divergence is unqualified. New reservations commit
         // a point once, even if later cancelled; committed reconnects consume none.
+        // The early checkpoint pawn commits here as legacy does, one point per
+        // join, reconnects included; the pawn opens at the same place.
         let (placement, pending) = match entry.placement {
             Some(placement) => (placement, None),
             None => {
@@ -11164,9 +11292,10 @@ impl PeerLab {
                 return self.initial_open_failure(address, &error, channel);
             }
         };
-        // Legacy only: commit placement with GUIDs. Checkpoint bootstrap stays provisional.
+        // Legacy and early pawn: commit placement with GUIDs. Checkpoint
+        // bootstrap stays provisional.
         if let Some(resolution) = pending
-            && self.checkpoint_initial_vitals.is_none()
+            && (self.checkpoint_initial_vitals.is_none() || self.checkpoint_early_pawn)
         {
             self.spawn.commit(&resolution);
             count_placement(&mut self.stats, &resolution);
@@ -11218,7 +11347,9 @@ impl PeerLab {
             return InitialOpenOutcome::Failed;
         };
         let mut content = content.clone();
-        if self.checkpoint_initial_vitals.is_some() {
+        // The early pawn opens with the legacy content before identity; the
+        // reserved vitals follow as a live update when they differ.
+        if self.checkpoint_initial_vitals.is_some() && !self.checkpoint_early_pawn {
             let Some(projection) = entry.checkpoint_projection else {
                 return InitialOpenOutcome::Deferred;
             };
@@ -11367,7 +11498,9 @@ impl PeerLab {
             .as_ref()
             .map_or(0, |stats| stats.items.len() as u64);
         entry.pawn_character_state = Some(state.content.character_state);
-        if let Some(projection) = entry.checkpoint_projection {
+        if !self.checkpoint_early_pawn
+            && let Some(projection) = entry.checkpoint_projection
+        {
             entry.checkpoint_enqueued_revision = Some(projection.revision);
         }
         commit_exports(&mut exports, &sent);

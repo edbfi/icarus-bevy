@@ -2425,23 +2425,7 @@ pub fn prepare_run_with_tick_hz(
         CHARACTER_GROWTH_TABLE,
         growth_row,
     );
-    // One digest per authored input, so a reopen refusal names the input that
-    // changed. The release file is provenance, not an input: a store reopens
-    // under a new game release.
-    let digest = |part: Vec<u8>| -> [u8; 32] { Sha256::digest(part).into() };
-    let inputs = crate::native_players::PlayerInputs {
-        authored_gameplay: digest(bytes),
-        spawn: digest(serde_json::to_vec(&network.spawn)?),
-        authored_world: digest(serde_json::to_vec(&network.authored_world)?),
-        declaration: crate::native_player_runtime::player_inventory_declaration_digest(
-            declaration,
-            network.player_consumption,
-            network.player_depletion_damage,
-            tick_hz,
-            network.player_inventory_transfers,
-        )?,
-        initial_values: digest(serde_json::to_vec(&resolved_values)?),
-    };
+    let inputs = player_inputs(network, declaration, &bytes, &resolved_values, tick_hz)?;
     let context = crate::native_players::PlayerContext::new(
         declaration.prospect_id.encode_utf16().collect(),
         declaration.map_url.clone(),
@@ -2473,6 +2457,9 @@ pub fn prepare_run_with_tick_hz(
             .bound
             .lab
             .enable_player_checkpoints(initial_vitals)?;
+        if network.checkpoint_pawn_before_identity {
+            session.bound.lab.enable_checkpoint_early_pawn()?;
+        }
         if let Some(plan) = controller_leave {
             session.bound.lab.enable_authored_controller_leave(plan)?;
         }
@@ -2482,6 +2469,33 @@ pub fn prepare_run_with_tick_hz(
         None
     };
     Ok((session, Some(players)))
+}
+
+/// One digest per authored input, so a reopen refusal names the input that
+/// changed. The release file is provenance, not an input: a store reopens
+/// under a new game release. Session ordering options such as
+/// `controller_startup` and `checkpoint_pawn_before_identity` are not inputs.
+fn player_inputs(
+    network: &NetworkConfig,
+    declaration: &crate::config::PlayerPersistenceConfig,
+    gameplay: &[u8],
+    initial_values: &impl serde::Serialize,
+    tick_hz: u32,
+) -> Result<crate::native_players::PlayerInputs> {
+    let digest = |part: &[u8]| -> [u8; 32] { Sha256::digest(part).into() };
+    Ok(crate::native_players::PlayerInputs {
+        authored_gameplay: digest(gameplay),
+        spawn: digest(&serde_json::to_vec(&network.spawn)?),
+        authored_world: digest(&serde_json::to_vec(&network.authored_world)?),
+        declaration: crate::native_player_runtime::player_inventory_declaration_digest(
+            declaration,
+            network.player_consumption,
+            network.player_depletion_damage,
+            tick_hz,
+            network.player_inventory_transfers,
+        )?,
+        initial_values: digest(&serde_json::to_vec(initial_values)?),
+    })
 }
 
 fn read_gameplay_bytes(path: &std::path::Path) -> Result<Vec<u8>> {
@@ -2975,6 +2989,44 @@ mod authored_preparation_tests {
             prepared()
                 .bind_authenticated(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0), client)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn early_checkpoint_pawn_is_no_player_input_and_requires_persistence() {
+        let declaration = crate::config::PlayerPersistenceConfig {
+            prospect_id: "authored".into(),
+            map_url: "/Authored/Map".into(),
+            prospect_row: "AuthoredRow".into(),
+            difficulty: 2,
+        };
+        let mut network = NetworkConfig {
+            player_persistence: Some(declaration.clone()),
+            ..Default::default()
+        };
+        let inputs = |network: &NetworkConfig| {
+            player_inputs(
+                network,
+                &declaration,
+                b"authored",
+                &([100; 10], "Growth"),
+                30,
+            )
+            .unwrap()
+        };
+        let before = inputs(&network);
+        network.checkpoint_pawn_before_identity = true;
+        assert!(
+            inputs(&network) == before,
+            "session ordering never binds a player store"
+        );
+        network.player_persistence = None;
+        assert!(
+            network
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("checkpoint_pawn_before_identity requires player persistence")
         );
     }
 

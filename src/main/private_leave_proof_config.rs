@@ -14,6 +14,12 @@ pub(super) fn validate_config(config: &ServerConfig) -> Result<()> {
         config.network.player_inventory.is_none() && !config.network.player_inventory_transfers,
         "private leave proof requires schema 14"
     );
+    // Its first-pawn receipt binds an open composed from the bound
+    // reservation; the early pawn opens before any reservation exists.
+    ensure!(
+        !config.network.checkpoint_pawn_before_identity,
+        "private leave proof refuses the early checkpoint pawn"
+    );
     ensure!(
         config.network.enabled
             && config.network.authored_controller_leave
@@ -107,6 +113,26 @@ mod inventory_refusal_tests {
                 "private leave proof requires schema 14"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod early_pawn_refusal_tests {
+    use super::*;
+    #[test]
+    fn early_checkpoint_pawn_is_refused_before_proof_setup() {
+        let mut config = ServerConfig::default();
+        config.network.checkpoint_pawn_before_identity = true;
+        assert_eq!(
+            validate_config(&config).unwrap_err().to_string(),
+            "private leave proof refuses the early checkpoint pawn"
+        );
+        // Off, the refusal falls through to the existing proof prerequisites.
+        config.network.checkpoint_pawn_before_identity = false;
+        assert_eq!(
+            validate_config(&config).unwrap_err().to_string(),
+            "private proof configuration refused"
+        );
     }
 }
 
