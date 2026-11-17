@@ -59,7 +59,7 @@ unavailable.
   `CompletedAccolades: TArray<FAccoladeCompletedState>` `+0x00`,
   `PlayerTrackers: TMap<FPlayerTrackersRowHandle,int32>` `+0x10`, and
   `PlayerTaskListTrackers: TMap<FPlayerTrackersRowHandle,FTrackerTaskListProgress>`
-  `+0x60`). The release inspector reports `world_imported: false` (F-881), and
+  `+0x60`; F-738). The release inspector reports `world_imported: false` (F-881), and
   `inspect-save --stage-check --expect-prospect-name` passes all 12 supplied
   prospect files and 3 reference-server re-saves (`15 / 15`, `2,664..2,850`
   recorders, F-738).
