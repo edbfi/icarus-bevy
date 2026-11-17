@@ -171,7 +171,8 @@ scheduling or stock-client qualification.
   field-82 answer and before per-frame camera updates (F-1099; one 3.0.34
   session), about 20 s after the client reported itself unfrozen (F-1107).
 - After entry (S2): client moves are pawn field 39 (F-1129), answered only by
-  field-30 acks and rare corrections (F-1130, F-1132); silence does not fault
+  field-30 acks and rare corrections (F-1130, F-1132; correction layout
+  F-1204, codec F-1205); silence does not fault
   the client (F-1131). A new joiner's pawn is moved by the server before the
   unfreeze and arrives by drop pod (F-1134, F-1136); kill-Z is server-only
   (F-1137); native placement F-1138.
