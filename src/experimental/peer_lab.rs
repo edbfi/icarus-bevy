@@ -1886,6 +1886,8 @@ struct ConnectedPlayerReceipt {
 struct FrozenMovementRelease {
     /// When the record creation settled (the trigger); set once.
     record_acked_at: Option<Instant>,
+    /// The live peer reached the release pass after its record ACK.
+    service_pass_reached: bool,
     /// When the release falls due; set with `record_acked_at`.
     due_at: Option<Instant>,
     /// Due, or its latest copy NAKed, and not sent yet.
@@ -10458,6 +10460,7 @@ impl PeerLab {
             .filter_map(|(address, entry)| {
                 let held = located::release_held(entry, now);
                 let release = &mut entry.frozen_release;
+                release.service_pass_reached = release.record_acked_at.is_some();
                 if release.idle() && release.due(now) && !held {
                     release.pending = true;
                 }
@@ -15358,11 +15361,12 @@ mod tests {
     fn client_control_close_retains_record_ack_and_release_guards() {
         use FrozenReleaseState::{AwaitingDelay, Due, PendingSend};
         use OwnRecordAck::{Earlier, InClosePacket};
-        for (delay, hold_pawn, record_ack, state, pawn) in [
+        for (delay, hold_pawn, record_ack, service_pass_reached, state, pawn) in [
             (
                 Duration::ZERO,
                 false,
                 InClosePacket,
+                false,
                 Due,
                 ReleasePawnState::Settled,
             ),
@@ -15370,6 +15374,7 @@ mod tests {
                 Duration::ZERO,
                 true,
                 Earlier,
+                true,
                 PendingSend,
                 ReleasePawnState::ReliablePending,
             ),
@@ -15377,6 +15382,7 @@ mod tests {
                 Duration::from_secs(600),
                 false,
                 Earlier,
+                false,
                 AwaitingDelay,
                 ReleasePawnState::Settled,
             ),
@@ -15443,6 +15449,7 @@ mod tests {
                         pawn: Some(pawn),
                         relocation_held: false,
                         deferred: false,
+                        service_pass_reached: Some(service_pass_reached),
                     }),
                 })
             );
