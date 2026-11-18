@@ -1,9 +1,10 @@
 # Findings: Network controller
 
-Connected startup observations and controller receive boundaries.
+Connected startup observations, controller receive boundaries and the
+conditional controller leave contract.
 [Interpretation](../../runbooks/controller-receive.md).
 
-Last reconciled: 2026-11-17
+Last reconciled: 2026-11-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -15,3 +16,12 @@ Last reconciled: 2026-11-17
 | F-1203 | `status`/`stopped` `pawn_receive` keeps the first 64 pawn-channel field keys since bind (target, index, reliability, disposition; size range), movement apart, sub-objects as own-open ordinals; classes lacking a field bound and unframed bunches are only counted | measured | authored-test; M-1527; 6604142 | high; 13 tests; numbers/enums only; no call identity proof | U-038 | active |
 | F-1204 | 26613688 `ClientMoveResponsePacked` correction: clear ack bit, f32 TimeStamp, base/rotation/montage/source flags, NewLoc and NewVel 3x f32, optional rotation, base, bone, mode, base-relative; packed count <=2048; same as 26425113 | derived | static; M-1528/ev_3cda830d31da, M-1528/ev_eba251b382fd, M-1530 | high; instruction level; source group, TimeStamp origin open | U-038 | active |
 | F-1205 | Native move-response codec (strict reader, correction writer) re-encodes S2's 1,340 acks and 20 corrections bit for bit; source-flag corrections are refused; nothing sends a correction | measured | capture, authored-test; M-1531; 446d28f | high; one 3.0.34 session, little order; no client effect shown | U-038 | active |
+| F-1247 | 26613688 controller leave: the frozen 122-byte/34-instruction/126-p-code trace has two opaque edges and all three closures false; independent 908-byte listings do not expand it | derived | static; M-1460/ev_a40bde4cc914, M-1461, M-1462, M-1488/ev_2a71799cb7ec, M-1488/ev_601449ecca14 | bounded; earlier indirect edges/forward getter open (M-1488 to M-1491); F-1197 | U-038 | active |
+| F-1248 | Conditional BP_IcarusPlayerControllerSurvival_C inherits native survival: 155 native + 5 cooked properties + 22 functions = 182 fields/bound 183. Fields 148/149/150 are cancel/normal/no-save; 169 is uninspected return-focus | derived | static; M-1492, M-1493, M-1494 | 26613688; conditional on class cache; F-1197 | U-038 | active |
+| F-1249 | Controller cache misses inherit ClassReps and append local Net properties before non-overriding functions sorted by folded FName; function indices need counts, not a proved property permutation | derived | static; M-1492, M-1493, M-1494 | 26613688; export framing separate; F-1197 | U-038 | active |
+| F-1250 | Ordinary controller RPC 149: one enum argument, presence bit + 3 value bits if present (registered maxima 5 or 6; declared byte enum 0..5); 148/150 are empty. ReceivedRPC requires no error/exact consumption before dispatch | derived | static; M-1498/ev_8fb379f7c758 | 26613688; permission/hooks/GUID/reliable deferral remain; F-1197 | U-038 | active |
+| F-1251 | RPC 149 enum: cast-bit 17 clear, named memset and RET initializer conditionally preserve absent zero, distinct from explicit None; enum 6/7 refusal is authored only | derived | static; M-1498/ev_5d6f0416550b, M-1498/ev_fe828a00c89c, M-1498/ev_834aa65ff472, M-1498/ev_0fd716bd216a | 26613688; conditional; F-1197 | U-038 | active |
+| F-1252 | Completed ReplicatedLeftProspectSession at +0x95b is property handle 26, not RPC 26: inherited 15+2+2+0+6 then enum; cooked fields append. Metadata/scalar emission reuses F-703/F-704/F-846/F-1120 custom-struct rules | derived | static; M-1405, M-1492..M-1494, M-1498/ev_0fd716bd216a | 26613688; not fresh mutable layout/struct-ops/CDO proof; F-1197 | U-038 | active |
+| F-1253 | Checksum-off/nonshared leave property: flag 0 + packed 26 + enum 3 bits + packed 0 = 20 property bits; actor content adds rep-layout/actor flags + packed length = 30 | derived | static; M-1500 | 26613688; conditional codec; F-1197 | U-038 | active |
+| F-1254 | Archive slots, packed 7-bit groups/low-bit continuation and value/copy/send operands support the conditional 20/30-bit leave codec | derived | static; M-1500/ev_f461811e1d6e, M-1500/ev_214a079abf4d, M-1500/ev_c47f406ef20f, M-1500/ev_1bf96fac88a2 | active archive/vptr/settings, zeroed backing, selected profile remain conditions; canonical-varint rejection unproved | U-038 | active |
+| F-1255 | Leave listings: M-1499's eight match declaration/pdata unions; M-1501 retains a partial post-value switch, 8 padding bytes and 150-byte overflow lookahead outside its declaration. Calls stay opaque; one-byte imported bodies prove no coverage | derived | static; M-1499, M-1501 | 26613688; no full callback/overflow/scheduler or live class/cache/archive proof; F-1197 | U-038 | active |
