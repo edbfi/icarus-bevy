@@ -852,6 +852,51 @@ fn transfers_reach_each_owner_with_only_its_own_bag() {
 }
 
 #[test]
+fn bag_move_preserves_the_last_ack_slot_when_vitals_are_unchanged() {
+    let mut lab = projected_lab(true);
+    lab.config.packet.sent_capacity = 16;
+    let mut app = inventory_world(false);
+    let session = join(&mut lab, &mut app, 1, ACCOUNT);
+    let player = session.player_id(&lab);
+    let epoch = session.epoch(&lab);
+    let before = app
+        .world()
+        .resource::<PlayerRegistry>()
+        .projection(epoch)
+        .unwrap();
+    let action = PlayerInventoryActionV1::Move {
+        source: endpoint(&app, player, "bag", 0),
+        destination: slot_endpoint(&app, player, "bag", 1),
+    };
+    act(&mut app, &lab, &session, action);
+    let registry = app.world().resource::<PlayerRegistry>();
+    let after = registry.projection(epoch).unwrap();
+    assert!(after.revision > before.revision);
+    assert_eq!(after.checkpoint.vitals, before.checkpoint.vitals);
+    lab.refresh_checkpoint_projections(registry);
+    let entry = lab.peers.get_mut(&session.address).unwrap();
+    assert!(entry.peer.actor_channel_settled(PAWN_CHANNEL_INDEX));
+    let capacity = entry.peer.config().sent_capacity;
+    let occupied = entry.peer.sequencer().notify().sent_records().len();
+    assert!(occupied < capacity);
+    for _ in occupied..capacity - 1 {
+        entry.peer.ack_packet().unwrap();
+    }
+    entry.ack_pending = true;
+    lab.poll_with_checkpoint_retry(Some(registry));
+
+    let entry = &lab.peers[&session.address];
+    assert!(!entry.ack_pending);
+    assert_eq!(
+        entry.peer.sequencer().notify().sent_records().len(),
+        capacity
+    );
+    assert!(entry.peer.actor_channel_settled(PAWN_CHANNEL_INDEX));
+    assert_eq!(entry.checkpoint_enqueued_revision, Some(before.revision));
+    assert!(entry.pawn_property_retry_ready);
+}
+
+#[test]
 fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
     let mut lab = projected_lab(true);
     lab.config.packet.sent_capacity = 16;

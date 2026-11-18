@@ -1966,6 +1966,219 @@ fn fill_ring(lab: &mut PeerLab, address: SocketAddrV4) {
 }
 
 #[test]
+fn checkpoint_vitals_get_the_slot_before_the_standalone_ack() {
+    use super::super::super::{
+        packet::{Packet, PacketConfig, Receiver, read_packet, write_packet},
+        rep_rpc::{ControllerLeaveRequest, LeaveProspectSessionType},
+    };
+    use crate::{
+        config::ServerConfig,
+        native_player_runtime::{ConsumptionConfig, install_consumption},
+        simulation::{SimulationClock, build_app},
+    };
+    use bevy::time::TimeUpdateStrategy;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Work {
+        StagedVitals,
+        SupersededVitals,
+        LeaveCutoff,
+        LeaveIntent,
+        OtherProperties,
+        FixedTick,
+    }
+    use Work::*;
+    for (consuming, tick, work) in [
+        (false, false, StagedVitals),
+        (true, false, StagedVitals),
+        (true, true, StagedVitals),
+        (true, false, SupersededVitals),
+        (false, false, LeaveCutoff),
+        (false, false, LeaveIntent),
+        (true, false, OtherProperties),
+        (true, true, FixedTick),
+    ] {
+        let (mut lab, mut registry) = (early_lab(), registry());
+        lab.config.packet.sent_capacity = 16;
+        if work == LeaveIntent {
+            let release = ReleaseProfile::fixture("3.0.36");
+            lab.config.local_network_version = Some(release.pin.network_checksum);
+            lab.player_controller_open = release
+                .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+                .unwrap();
+            lab.enable_authored_controller_leave(release.controller_leave_plan().unwrap().unwrap())
+                .unwrap();
+        }
+        let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+        identify(&mut lab, &socket, &mut client, address, 3, 3);
+        lab.bridge_player_checkpoints(&mut registry);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        finish(&mut lab, &mut registry, &socket, &mut client, address);
+        // Isolate the ACK and pawn projections from periodic clock traffic.
+        lab.game_state_open = None;
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let epoch = lab.peers[&address].checkpoint_epoch.unwrap();
+        let baseline = registry.projection(epoch).unwrap();
+        let mut revision = baseline.revision;
+        if matches!(
+            work,
+            StagedVitals | SupersededVitals | LeaveCutoff | LeaveIntent
+        ) {
+            let mut checkpoint = baseline.checkpoint;
+            checkpoint.vitals.health -= 1;
+            let projection = registry.edit(key, revision, checkpoint).unwrap();
+            revision = projection.revision;
+            lab.refresh_checkpoint_projections(&registry);
+            if work == SupersededVitals {
+                checkpoint.vitals.health -= 1;
+                registry.edit(key, revision, checkpoint).unwrap();
+            } else if work == LeaveCutoff {
+                registry
+                    .request_leave(
+                        key,
+                        epoch,
+                        revision,
+                        Instant::now(),
+                        Duration::from_secs(60),
+                    )
+                    .unwrap();
+            } else if work == LeaveIntent {
+                lab.stage_authored_controller_leave(
+                    address,
+                    ControllerLeaveRequest::Normal(Some(LeaveProspectSessionType::Quit)),
+                );
+                assert!(
+                    lab.peers[&address]
+                        .controller_leave
+                        .as_ref()
+                        .unwrap()
+                        .awaiting_cutoff()
+                );
+                assert!(!registry.is_leaving(epoch));
+            }
+        }
+        let entry = lab.peers.get_mut(&address).unwrap();
+        assert!(entry.peer.actor_channel_settled(PAWN_CHANNEL_INDEX));
+        assert_eq!(entry.checkpoint_enqueued_revision, Some(baseline.revision));
+        if work == OtherProperties {
+            entry.pawn_temperature.as_mut().unwrap().internal = Some(42);
+            assert_ne!(entry.pawn_temperature, entry.queued_pawn_temperature);
+        }
+        assert!(entry.peer.sequencer().notify().sent_records().is_empty());
+        let capacity = entry.peer.config().sent_capacity;
+        // Leave room for both sends in the cutoff case so the full bridge
+        // would also expose a missing guard.
+        let occupied = capacity - usize::from(matches!(work, LeaveCutoff | LeaveIntent));
+        let first = entry.peer.ack_packet().unwrap();
+        for _ in 1..occupied {
+            entry.peer.ack_packet().unwrap();
+        }
+
+        // Notify one positive ACK in memory. The pawn and ACK-only send both
+        // fit the resulting slot, so the poll's order determines which wins.
+        let packet = read_packet(
+            &first,
+            &PacketConfig {
+                receiver: Receiver::Client,
+                ..lab.config.packet.packet
+            },
+        )
+        .unwrap();
+        let received = client.receive(&packet.header).unwrap().unwrap();
+        client.ack_seq(received.sequence, true).unwrap();
+        let ack = write_packet(
+            &Packet {
+                magic: 0,
+                header: client.header().unwrap(),
+                info: None,
+                bunches: Vec::new(),
+            },
+            &lab.config.packet.packet,
+        )
+        .unwrap();
+        lab.buffer[..ack.len()].copy_from_slice(&ack);
+        lab.data(address, ack.len(), Instant::now());
+        let entry = &lab.peers[&address];
+        assert!(entry.ack_pending);
+        assert_eq!(
+            entry.peer.sequencer().notify().sent_records().len(),
+            occupied - 1
+        );
+
+        let snapshot = WorldSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+            native_players: Some(registry.snapshot()),
+            ..Default::default()
+        };
+        let config = ServerConfig::default();
+        let mut app = build_app(&config, &snapshot).unwrap();
+        app.insert_resource(registry)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO))
+            .add_plugins(PeerLabPlugin);
+        if consuming {
+            install_consumption(
+                &mut app,
+                ConsumptionConfig {
+                    oxygen: i32::try_from(config.tick_hz).unwrap(),
+                    water: 0,
+                    food: 0,
+                },
+                config.tick_hz,
+            )
+            .unwrap();
+        }
+        app.update();
+        if tick {
+            app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        }
+        app.insert_resource(lab);
+        app.update();
+        assert_eq!(
+            app.world().resource::<SimulationClock>().tick,
+            u64::from(tick)
+        );
+
+        let lab = app.world().resource::<PeerLab>();
+        let entry = &lab.peers[&address];
+        let published = work == StagedVitals;
+        assert_eq!(
+            entry.peer.sequencer().notify().sent_records().len(),
+            occupied,
+            "{work:?}"
+        );
+        assert!(!entry.ack_pending);
+        assert_eq!(
+            entry.checkpoint_enqueued_revision,
+            Some(if published {
+                revision
+            } else {
+                baseline.revision
+            }),
+            "{work:?}"
+        );
+        assert_eq!(
+            entry.peer.actor_channel_settled(PAWN_CHANNEL_INDEX),
+            !published,
+            "{work:?}"
+        );
+        if tick {
+            let registry = app.world().resource::<PlayerRegistry>();
+            assert_eq!(
+                registry.projection(epoch).unwrap().revision,
+                revision + 1,
+                "{work:?}"
+            );
+        }
+        if work == OtherProperties {
+            assert_ne!(entry.pawn_temperature, entry.queued_pawn_temperature);
+        }
+        if matches!(work, LeaveCutoff | LeaveIntent) {
+            assert!(app.world().resource::<PlayerRegistry>().is_leaving(epoch));
+        }
+    }
+}
+
+#[test]
 fn early_vitals_coalesce_under_pressure_and_loss_and_debit_only_after_activation() {
     use crate::native_player_runtime::ConsumptionRates;
     let (mut lab, mut registry) = (early_lab(), registry());
