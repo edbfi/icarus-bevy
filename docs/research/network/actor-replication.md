@@ -32,7 +32,7 @@ F-1152. Authored speed stats accompany
 reported walk/look/sprint/jump after leaving a mountain spawn (F-1185);
 authoritative physics, collision and audio remain unqualified. Earlier
 zero-speed/provenance: F-1143/F-1147/F-1150 to F-1157/F-1164 to F-1166.
-Leave failure F-1186. With the early checkpoint pawn, a client reached finalisation and then disconnected during Preparing Geometry (F-1199).
+Leave failure F-1186. With the early checkpoint pawn, a client reached finalisation then disconnected during Preparing Geometry (F-1199). On the next sitting, the first own-record ACK and the control close arrived together. Pawn reliability was pending and the server had no post-ACK release pass before removal (F-1264). The client-side cause remains open.
 F-1172 reorders independent opens in authored tests; F-1188 proves no client
 persistence. Production leave remains default-off.
 
