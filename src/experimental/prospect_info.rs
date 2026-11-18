@@ -9,8 +9,8 @@
 //! nothing here reports them.
 use anyhow::{Context, Result, bail, ensure};
 
-use super::tagged::TagKind;
-use super::typed_value::{FixedStruct, Scalar, TypedTree, Value};
+use super::tagged::{TagKind, TagProfile, is_name, read_framed_header};
+use super::typed_value::{FixedStruct, Scalar, TypedProperty, TypedTree, Value};
 
 /// `EProspectState` enumerators, by value.
 pub const PROSPECT_STATES: [&str; 5] = [
@@ -828,21 +828,94 @@ pub struct SavedContainerManager {
     pub containers: Vec<SavedInventoryContainer>,
 }
 
+const INVENTORY_CONTAINERS: &str = "SavedInventoryContainers";
+const INVENTORY_CONTAINER_TYPE: &str = "SavedInventoryContainerData";
+const INVENTORY_INDEX: &str = "InventoryIndex";
+
+fn container_manager_fields(tree: &TypedTree) -> Fields<'_> {
+    Fields {
+        tree,
+        what: "IcarusContainerManagerRecorderComponent",
+    }
+}
+
+/// Borrow the typed inputs for native position planning. Omitted integers
+/// read as zero and an omitted container array reads as empty.
+pub(crate) fn saved_container_positions(
+    tree: &TypedTree,
+) -> Result<(i32, impl Iterator<Item = Result<i32>> + '_)> {
+    let fields = container_manager_fields(tree);
+    let count = fields.int("NumInventories")?;
+    let profile = TagProfile::MemoryArchive522;
+    let containers: &[TypedTree] = match tree.get(INVENTORY_CONTAINERS) {
+        Some(TypedProperty {
+            header,
+            value:
+                Value::StructArray {
+                    shared_header,
+                    elements,
+                    ..
+                },
+            ..
+        }) => {
+            let outer = read_framed_header(header, profile)?;
+            ensure!(
+                outer.kind == TagKind::Array
+                    && outer
+                        .extra
+                        .as_deref()
+                        .is_some_and(|name| is_name(name, "StructProperty")),
+                "{INVENTORY_CONTAINERS} must declare StructProperty elements"
+            );
+            let shared = read_framed_header(shared_header, profile)?;
+            ensure!(
+                shared.kind == TagKind::Struct
+                    && is_name(&shared.name, INVENTORY_CONTAINERS)
+                    && shared.index == 0
+                    && shared
+                        .extra
+                        .as_deref()
+                        .is_some_and(|name| is_name(name, INVENTORY_CONTAINER_TYPE)),
+                "{INVENTORY_CONTAINERS} has an unexpected shared struct header"
+            );
+            elements
+        }
+        None => &[],
+        _ => bail!("{INVENTORY_CONTAINERS} is not a struct array"),
+    };
+    let positions = containers.iter().map(move |tree| {
+        let mut indices = tree
+            .properties
+            .iter()
+            .filter(|property| is_name(&property.name, INVENTORY_INDEX));
+        let Some(property) = indices.next() else {
+            return Ok(0);
+        };
+        ensure!(
+            indices.next().is_none(),
+            "duplicate {INVENTORY_INDEX} property"
+        );
+        let header = read_framed_header(&property.header, profile)?;
+        match (header.kind, header.index, &property.value) {
+            (TagKind::Int, 0, Value::Scalar(Scalar::Int(value))) => Ok(*value),
+            _ => bail!("{INVENTORY_INDEX} must be an index-zero IntProperty"),
+        }
+    });
+    Ok((count, positions))
+}
+
 /// Type a `C016` (`IcarusContainerManagerRecorderComponent`) component's
 /// `NumInventories` and `SavedInventoryContainers`, in saved order;
 /// missing reads as empty.
 pub fn saved_container_manager(tree: &TypedTree) -> Result<SavedContainerManager> {
-    let fields = Fields {
-        tree,
-        what: "IcarusContainerManagerRecorderComponent",
-    };
+    let fields = container_manager_fields(tree);
     let containers = fields
-        .structs("SavedInventoryContainers")?
+        .structs(INVENTORY_CONTAINERS)?
         .iter()
         .map(|tree| {
             let fields = Fields {
                 tree,
-                what: "SavedInventoryContainerData",
+                what: INVENTORY_CONTAINER_TYPE,
             };
             let items = match fields.tagged("InventorySaveData", "InventorySaveData")? {
                 Some(data) => data
@@ -853,7 +926,7 @@ pub fn saved_container_manager(tree: &TypedTree) -> Result<SavedContainerManager
                 None => Vec::new(),
             };
             Ok(SavedInventoryContainer {
-                index: fields.int("InventoryIndex")?,
+                index: fields.int(INVENTORY_INDEX)?,
                 info: fields.name("InventoryInfo")?,
                 wants_tick: fields.bool("bInventoryWantsTick")?,
                 items,

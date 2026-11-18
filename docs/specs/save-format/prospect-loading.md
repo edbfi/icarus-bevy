@@ -119,6 +119,12 @@ Acceptance conditions for any importer
   with no restoration adapters or publication.
 - Native staging (`inspect-save --stage-check`):
   [envelope spec](prospect-envelope.md#candidate) (F-738).
+- For retained C016 managers, `import-save --dry-run` assesses the saved
+  container list (F-651). Gaps are empty positions. When every retained C016
+  has an assessable list, `container_positions` reports total occupied and
+  empty positions. A typed list with a negative count, conflicting declarations,
+  duplicate positions or an index outside the list adds `invalid_container_positions`.
+  Untyped recorders retain their existing blocker. Native owner binding remains open.
 - Cross-build classes/defaults/overrides: [restore rules](restore-rules.md)
   (F-902); constructor provenance: [C001 digest](../../research/save-format/c001-constructor.md)
   (F-905..F-910).

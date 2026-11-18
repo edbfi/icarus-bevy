@@ -1120,7 +1120,7 @@ fn budgeted_arrays_and_optional_gaps_preserve_legacy_typing() {
 }
 
 #[test]
-fn shared_header_declared_scratch_is_checked_before_typing() {
+fn shared_header_declared_size_is_charged_before_typing() {
     let payload = [
         1_i32.to_le_bytes().as_slice(),
         &named("Empty", STRUCT, &struct_ext("Demo"), END),
@@ -1130,8 +1130,8 @@ fn shared_header_declared_scratch_is_checked_before_typing() {
     let NodeValue::StructArray { shared_header, .. } = &mut input.tree.properties[0].value else {
         panic!("authored array did not frame");
     };
-    // The typed shared-header decoder uses this declared size to zero-fill its
-    // scratch record. Alter only that size in a public, caller-owned tree.
+    // Alter only the declared size in a public, caller-owned tree. This size
+    // still contributes to the conservative preflight requirement.
     let size_offset = string(b"Empty").len() + STRUCT.len();
     shared_header[size_offset..size_offset + 4].copy_from_slice(&i32::MAX.to_le_bytes());
     let mut budget = TypingBudget::new(64 * 1024, 100);

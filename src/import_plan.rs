@@ -16,11 +16,12 @@ use std::io::Read;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::experimental::prospect_info::saved_container_positions;
 use crate::experimental::recorders::{
     StagedProspectSaveState, StagedRecorderDecision, recorder_class_label,
 };
 use crate::experimental::restore_rules::OwnerResolvePolicy;
-use crate::experimental::tagged::TagKind;
+use crate::experimental::tagged::{TagKind, is_name};
 use crate::experimental::typed_value::{Item, Scalar, TypedProperty, TypedTree, Value};
 use crate::import_candidate::DecodedImportCandidate;
 use crate::prospect::EnvelopeInspection;
@@ -36,6 +37,7 @@ const ACTOR_CLASS: &str = "ActorClassName";
 const ACTOR_PATH: &str = "ActorPathName";
 const MOVED_TO_SUBLEVEL: &str = "bWasMovedToSubLevel";
 const ACTOR_TRANSFORM: &str = "ActorTransform";
+const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
 /// `UActorStateRecorderComponent::ObjectFName` (recorder `+0x148`): the
 /// owner's object name at record time (F-813).
 const OBJECT_NAME: &str = "ObjectFName";
@@ -430,6 +432,8 @@ pub enum ImportBlocker {
     /// Base recorder fields under an unexpected wire type, whose references
     /// and policies the plan could not read.
     UnexpectedBaseFieldTypes { fields: usize },
+    /// Typed container manager recorders whose list positions cannot be planned.
+    InvalidContainerPositions { recorders: usize },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -473,6 +477,13 @@ pub struct ActorPlan {
     /// Retained recorders by how restore finds their owner (`F-741`, `F-752`):
     /// `find_only` owners must already exist in the level.
     pub owner_resolution: BTreeMap<&'static str, usize>,
+}
+
+/// Saved and omitted positions in the container managers' declared lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ContainerPositionPlan {
+    pub occupied: u64,
+    pub empty: u64,
 }
 
 /// What a content reference names, judged only by the property it sits under
@@ -599,6 +610,10 @@ pub struct ImportPlan {
     pub recorders: RecorderPlan,
     pub base_fields: BaseFieldPlan,
     pub actors: ActorPlan,
+    /// List position totals when at least one C016 is retained and every
+    /// retained C016 has assessable, consistent topology.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_positions: Option<ContainerPositionPlan>,
     pub content: ContentPlan,
     /// Per class pseudonym.
     pub classes: BTreeMap<String, ClassPlan>,
@@ -637,6 +652,7 @@ pub fn plan_decoded_import(
         },
         base_fields: BaseFieldPlan::default(),
         actors: ActorPlan::default(),
+        container_positions: None,
         content: ContentPlan::default(),
         classes: BTreeMap::new(),
         blockers: Vec::new(),
@@ -704,6 +720,10 @@ pub fn plan_decoded_import(
             plan.content.unmapped_references += 1;
         }
     }
+    let mut container_positions = ContainerPositionPlan::default();
+    let mut container_recorders = 0;
+    let mut valid_container_recorders = 0;
+    let mut invalid_container_recorders = 0;
     for recorder in candidate.recorders() {
         let decision = recorder.decision();
         // A version-0 save drops every recorder unevaluated; its exact class
@@ -729,6 +749,8 @@ pub fn plan_decoded_import(
         if decision.physics_dynamic_tree {
             plan.recorders.physics_dynamic_trees += 1;
         }
+        let is_container_manager = is_name(recorder.class_units(), CONTAINER_MANAGER);
+        container_recorders += usize::from(is_container_manager);
         // Optional typing failures remain report blockers, not decode errors.
         let Some((typed, summary)) = recorder.typing().lossless() else {
             plan.recorders.untyped += 1;
@@ -740,6 +762,16 @@ pub fn plan_decoded_import(
         plan.recorders.uninterpreted_leaves += summary.uninterpreted;
         class_plan.uninterpreted_leaves += summary.uninterpreted;
 
+        if is_container_manager {
+            if let Some((occupied, empty)) = container_position_counts(&typed.tree) {
+                // The recorder cap (16,384) and i32 list lengths bound both totals.
+                container_positions.occupied += occupied;
+                container_positions.empty += empty;
+                valid_container_recorders += 1;
+            } else {
+                invalid_container_recorders += 1;
+            }
+        }
         base_fields(&typed.tree, &mut plan.base_fields);
         if defaults.is_actor_recorder {
             plan.actors.actor_recorders += 1;
@@ -836,8 +868,33 @@ pub fn plan_decoded_import(
             recorders: plan.actors.malformed_transforms,
         });
     }
+    if invalid_container_recorders > 0 {
+        plan.blockers
+            .push(ImportBlocker::InvalidContainerPositions {
+                recorders: invalid_container_recorders,
+            });
+    }
+    if container_recorders > 0 && valid_container_recorders == container_recorders {
+        plan.container_positions = Some(container_positions);
+    }
     plan.importable = plan.blockers.is_empty();
     Ok(plan)
+}
+
+/// Native planning requires a consistent sparse list. Only saved positions
+/// enter the set, so large declared lengths do not increase working memory.
+fn container_position_counts(tree: &TypedTree) -> Option<(u64, u64)> {
+    let (count, positions) = saved_container_positions(tree).ok()?;
+    let length = u64::try_from(count).ok()?;
+    let mut occupied = BTreeSet::new();
+    for position in positions {
+        let position = position.ok()?;
+        if !(0..count).contains(&position) || !occupied.insert(position) {
+            return None;
+        }
+    }
+    let occupied = u64::try_from(occupied.len()).ok()?;
+    Some((occupied, length - occupied))
 }
 
 fn owner_resolution(decision: &StagedRecorderDecision) -> &'static str {

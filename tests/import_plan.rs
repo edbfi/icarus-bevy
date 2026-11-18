@@ -5,6 +5,7 @@ use std::{fs, io::Write, process::Command};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, write::ZlibEncoder};
+use icarus_bevy::experimental::prospect_info::saved_container_manager;
 use icarus_bevy::experimental::recorders::{lookup_recorder_ctor_defaults, recorder_class_label};
 use icarus_bevy::import_candidate::{CandidateLimits, DecodedImportCandidate};
 use icarus_bevy::import_plan::{
@@ -17,6 +18,9 @@ use tempfile::TempDir;
 
 const ACTOR: &str = "/Script/Icarus.ActorStateRecorderComponent";
 const NO_RECORDER: &str = "/Script/Icarus.NoRecorderComponent";
+const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
+const CONTAINER_DATA: &str = "SavedInventoryContainerData";
+const CONTAINER_LIST: &str = "SavedInventoryContainers";
 const ROW: &str = "SecretRow_7";
 const PATH: &str = "/Game/Secret/Path.Secret_C";
 
@@ -37,11 +41,15 @@ fn fstring(value: &str) -> Vec<u8> {
 }
 
 fn tag(name: &str, kind: &str, extras: &[u8], payload: &[u8]) -> Vec<u8> {
+    indexed_tag(name, kind, 0, extras, payload)
+}
+
+fn indexed_tag(name: &str, kind: &str, index: i32, extras: &[u8], payload: &[u8]) -> Vec<u8> {
     [
         fstring(name).as_slice(),
         &fstring(kind),
         &i32::try_from(payload.len()).unwrap().to_le_bytes(),
-        &0_i32.to_le_bytes(),
+        &index.to_le_bytes(),
         extras,
         payload,
     ]
@@ -267,6 +275,46 @@ fn recorder_bytes(class: &str, bytes: &[u8]) -> Vec<u8> {
         end(),
     ]
     .concat()
+}
+
+fn recorder_fields(class: &str, fields: &[Vec<u8>]) -> Vec<u8> {
+    let bytes = [fields.concat(), end(), vec![0; 4]].concat();
+    recorder_bytes(class, &bytes)
+}
+
+fn inventory_count(count: i32) -> Vec<u8> {
+    tag("NumInventories", "IntProperty", &[0], &count.to_le_bytes())
+}
+
+fn inventory_index(index: i32) -> Vec<u8> {
+    tag("InventoryIndex", "IntProperty", &[0], &index.to_le_bytes())
+}
+
+fn saved_inventory_containers(element_type: &str, elements: &[Vec<u8>]) -> Vec<u8> {
+    let shared = struct_tag(CONTAINER_LIST, element_type, &elements.concat());
+    inventory_container_array("StructProperty", elements.len(), &shared)
+}
+
+fn inventory_container_array(inner_type: &str, count: usize, shared: &[u8]) -> Vec<u8> {
+    let count = i32::try_from(count).unwrap().to_le_bytes();
+    tag(
+        CONTAINER_LIST,
+        "ArrayProperty",
+        &[fstring(inner_type), vec![0]].concat(),
+        &[count.as_slice(), shared].concat(),
+    )
+}
+
+fn container_recorder(class: &str, count: Option<i32>, positions: &[Option<i32>]) -> Vec<u8> {
+    let mut fields: Vec<_> = count.map(inventory_count).into_iter().collect();
+    if !positions.is_empty() {
+        let elements: Vec<_> = positions
+            .iter()
+            .map(|position| [position.map(inventory_index).unwrap_or_default(), end()].concat())
+            .collect();
+        fields.push(saved_inventory_containers(CONTAINER_DATA, &elements));
+    }
+    recorder_fields(class, &fields)
 }
 
 fn envelope(version: i32, recorders: &[Vec<u8>]) -> Vec<u8> {
@@ -542,6 +590,252 @@ fn version_zero_and_all_invalid_saves_would_import_as_empty_worlds() {
         assert_eq!(plan.recorders.retained, 0);
         assert_eq!(plan.blockers, vec![ImportBlocker::NoRetainedRecorders]);
         assert!(!plan.importable);
+    }
+}
+
+#[test]
+fn container_positions_plan_counts_sparse_and_defaulted_slots() {
+    let sparse = container_recorder(CONTAINER_MANAGER, Some(4), &[Some(0), Some(2)]);
+    let omitted = container_recorder(CONTAINER_MANAGER, None, &[]);
+    let defaulted_index = container_recorder(CONTAINER_MANAGER, Some(1), &[None]);
+    let large = container_recorder(CONTAINER_MANAGER, Some(i32::MAX), &[]);
+    let source = envelope(
+        2,
+        &[
+            sparse,
+            omitted,
+            defaulted_index,
+            large.clone(),
+            large.clone(),
+            large,
+            // This recorder's fields have the same names but a different owner.
+            container_recorder(ACTOR, Some(-1), &[Some(-1)]),
+        ],
+    );
+    let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+    assert_eq!(plan.recorders.typed, 7);
+    assert!(plan.blockers.is_empty(), "{plan:?}");
+    assert!(plan.importable);
+    assert!(!plan.world_imported);
+    let counts = plan.container_positions.unwrap();
+    assert_eq!(counts.occupied, 3);
+    assert_eq!(counts.empty, 3 * u64::try_from(i32::MAX).unwrap() + 2);
+}
+
+#[test]
+fn container_positions_plan_blocks_unassessable_fields() {
+    let invalid_cases = [
+        vec![tag("NumInventories", "BoolProperty", &[0, 0], &[])],
+        vec![tag(
+            "SavedInventoryContainers",
+            "IntProperty",
+            &[0],
+            &0_i32.to_le_bytes(),
+        )],
+        vec![
+            inventory_count(1),
+            saved_inventory_containers("OtherContainerData", &[end()]),
+        ],
+        vec![
+            inventory_count(1),
+            saved_inventory_containers(
+                CONTAINER_DATA,
+                &[[tag("InventoryIndex", "BoolProperty", &[0, 0], &[]), end()].concat()],
+            ),
+        ],
+        vec![
+            inventory_count(2),
+            saved_inventory_containers(
+                CONTAINER_DATA,
+                &[[inventory_index(0), inventory_index(1), end()].concat()],
+            ),
+        ],
+    ];
+    let sparse = container_recorder(CONTAINER_MANAGER, Some(4), &[Some(0), Some(2)]);
+    for fields in invalid_cases {
+        let invalid = recorder_fields(CONTAINER_MANAGER, &fields);
+        let source = envelope_with_prospect_keys(
+            2,
+            &[sparse.clone(), invalid],
+            Some("AuthoredUnmappedProspect"),
+            None,
+        );
+        let plan = plan_import(source.as_slice(), &ContentCatalog::empty()).unwrap();
+        assert_eq!(plan.recorders.typed, 2);
+        assert_eq!(plan.recorders.uninterpreted_leaves, 0);
+        assert_eq!(
+            plan.blockers,
+            vec![
+                ImportBlocker::UnmappedContent {
+                    distinct: 1,
+                    references: 1,
+                },
+                ImportBlocker::InvalidContainerPositions { recorders: 1 },
+            ]
+        );
+        assert!(plan.container_positions.is_none());
+        assert!(!plan.importable);
+        assert!(!plan.world_imported);
+    }
+}
+
+fn assert_container_header_blocks_plan(array: Vec<u8>, position: i32, case: &str) {
+    let record = recorder_fields(CONTAINER_MANAGER, &[inventory_count(2), array]);
+    let source = envelope(2, &[record]);
+    let candidate = DecodedImportCandidate::decode(source.as_slice()).unwrap();
+    let (typed, summary) = candidate.recorders()[0].typing().lossless().unwrap();
+    assert_eq!(summary.uninterpreted, 0, "{case}");
+    let containers = saved_container_manager(&typed.tree).unwrap().containers;
+    assert_eq!(containers.len(), 1, "{case}");
+    assert_eq!(containers[0].index, position, "{case}");
+
+    let plan = plan_decoded_import(&candidate, &ContentCatalog::empty()).unwrap();
+    assert_eq!(
+        plan.blockers,
+        vec![ImportBlocker::InvalidContainerPositions { recorders: 1 }],
+        "{case}"
+    );
+    assert!(plan.container_positions.is_none(), "{case}");
+    assert!(!plan.importable, "{case}");
+}
+
+#[test]
+fn container_positions_plan_rejects_unqualified_array_headers() {
+    for (case, inner_type, shared_name, shared_index, struct_type) in [
+        (
+            "outer inner type",
+            "IntProperty",
+            CONTAINER_LIST,
+            0,
+            CONTAINER_DATA,
+        ),
+        (
+            "shared name",
+            "StructProperty",
+            "OtherContainers",
+            0,
+            CONTAINER_DATA,
+        ),
+        (
+            "shared index",
+            "StructProperty",
+            CONTAINER_LIST,
+            1,
+            CONTAINER_DATA,
+        ),
+        (
+            "shared struct type",
+            "StructProperty",
+            CONTAINER_LIST,
+            0,
+            "OtherContainerData",
+        ),
+    ] {
+        let shared = indexed_tag(
+            shared_name,
+            "StructProperty",
+            shared_index,
+            &[fstring(struct_type), vec![0; 17]].concat(),
+            &end(),
+        );
+        assert_container_header_blocks_plan(
+            inventory_container_array(inner_type, 1, &shared),
+            0,
+            case,
+        );
+    }
+}
+
+#[test]
+fn container_positions_plan_rejects_nonzero_inventory_index_tag_index() {
+    let index = indexed_tag(
+        "InventoryIndex",
+        "IntProperty",
+        1,
+        &[0],
+        &1_i32.to_le_bytes(),
+    );
+    let array = saved_inventory_containers(CONTAINER_DATA, &[[index, end()].concat()]);
+    assert_container_header_blocks_plan(array, 1, "InventoryIndex tag index");
+}
+
+#[test]
+fn container_positions_cli_keeps_topology_plans_read_only() {
+    let root = TempDir::new().unwrap();
+    let source_path = root.path().join("authored.json");
+    let destination = root.path().join("world");
+    fs::create_dir(&destination).unwrap();
+    let sentinel = destination.join("sentinel");
+    fs::write(&sentinel, b"prior world").unwrap();
+    let run = |dry_run: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+        command
+            .current_dir(root.path())
+            .args(["import-save", "--source"])
+            .arg(&source_path)
+            .arg("--destination")
+            .arg(&destination);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.output().unwrap()
+    };
+
+    let cases = [
+        (2, Some(4), &[Some(0), Some(2)][..], true),
+        (2, Some(4), &[Some(2), Some(2)], false),
+        (2, Some(4), &[Some(4)], false),
+        (2, Some(4), &[Some(-1)], false),
+        (2, Some(-1), &[], false),
+        (2, None, &[Some(0)], false),
+        (0, Some(-1), &[Some(-1)], false),
+    ];
+    for (version, count, positions, importable) in cases {
+        let record = container_recorder(CONTAINER_MANAGER, count, positions);
+        let source = envelope(version, &[record]);
+        fs::write(&source_path, &source).unwrap();
+
+        let dry = run(true);
+        assert!(dry.status.success(), "{:?}", dry.stderr);
+        assert!(dry.stderr.is_empty());
+        let report: Value = serde_json::from_slice(&dry.stdout).unwrap();
+        let blockers = if importable {
+            json!([])
+        } else if version == 0 {
+            json!([{"blocker": "no_retained_recorders"}])
+        } else {
+            json!([{"blocker": "invalid_container_positions", "recorders": 1}])
+        };
+        assert_eq!(report["blockers"], blockers, "{count:?}, {positions:?}");
+        assert_eq!(report["importable"], importable);
+        assert_eq!(report["world_imported"], false);
+        assert_eq!(
+            report["recorders"]["dropped_by_validate"],
+            u32::from(version == 0)
+        );
+        assert_eq!(report["recorders"]["typed"], u32::from(version != 0));
+        if importable {
+            assert_eq!(
+                report["container_positions"],
+                json!({"occupied": 2, "empty": 2})
+            );
+        } else {
+            assert!(report.get("container_positions").is_none());
+        }
+
+        let refusal = run(false);
+        assert!(!refusal.status.success());
+        assert!(refusal.stdout.is_empty());
+        let fatal: Value = serde_json::from_slice(&refusal.stderr).unwrap();
+        assert_eq!(fatal["event"], "fatal");
+        let message = fatal["error"].as_str().unwrap();
+        assert!(message.contains("no files were written"));
+        if !importable {
+            assert!(message.contains(&blockers.to_string()));
+        }
+        assert_eq!(fs::read(&source_path).unwrap(), source);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
     }
 }
 
@@ -827,8 +1121,7 @@ fn clean_catalog(extra: &str) -> String {
 // Minimal authored recorder framing for planning strings; these fixtures make
 // no claim about the wire types used by the original game.
 fn string_reference_source(fields: &[Vec<u8>]) -> Vec<u8> {
-    let bytes = [fields.concat(), end(), vec![0; 4]].concat();
-    envelope(2, &[recorder_bytes(ACTOR, &bytes)])
+    envelope(2, &[recorder_fields(ACTOR, fields)])
 }
 
 #[test]

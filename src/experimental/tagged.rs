@@ -191,17 +191,19 @@ pub(crate) enum ParsedRecord<'a> {
     Terminator(&'a [u8]),
 }
 
-/// Read one bounded header and its declared opaque payload, or a terminal name.
-/// The caller owns sequence/count/EOF policy. No property values are decoded.
-pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRecord<'_>> {
-    ensure!(
-        input.len() <= MAX_INPUT_BYTES,
-        "tag input exceeds 32 MiB limit"
-    );
-    let mut cursor = Cursor { input, position: 0 };
+pub(crate) struct PropertyHeader {
+    pub kind: TagKind,
+    pub name: Vec<u16>,
+    pub extra: Option<Vec<u16>>,
+    pub bool_value: Option<bool>,
+    pub index: i32,
+    pub payload_len: usize,
+}
+
+fn parse_header(cursor: &mut Cursor<'_>, profile: TagProfile) -> Result<Option<PropertyHeader>> {
     let name = cursor.name()?;
     if is_name(&name, "None") {
-        return Ok(ParsedRecord::Terminator(&input[..cursor.position]));
+        return Ok(None);
     }
     let type_offset = cursor.position;
     let type_name = cursor.name()?;
@@ -244,19 +246,55 @@ pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRec
             }
         }
     }
-    let payload_start = cursor.position;
-    let payload = cursor.take(usize::try_from(size)?)?;
-    Ok(ParsedRecord::Property(PropertyRecord {
-        tag: RootTag {
-            kind,
-            record: &input[..cursor.position],
-            header: &input[..payload_start],
-            payload,
-        },
+    Ok(Some(PropertyHeader {
+        kind,
         name,
         extra,
         bool_value,
         index,
+        payload_len: usize::try_from(size)?,
+    }))
+}
+
+/// Read metadata from an exact, already framed property header.
+pub(crate) fn read_framed_header(input: &[u8], profile: TagProfile) -> Result<PropertyHeader> {
+    let mut cursor = Cursor { input, position: 0 };
+    let header = parse_header(&mut cursor, profile)?.context("typed header is a terminator")?;
+    ensure!(
+        cursor.position == input.len(),
+        "typed header does not match its framed header"
+    );
+    ensure!(
+        input.len().saturating_add(header.payload_len) <= MAX_INPUT_BYTES,
+        "tag input exceeds 32 MiB limit"
+    );
+    Ok(header)
+}
+
+/// Read one bounded header and its declared opaque payload, or a terminal name.
+/// The caller owns sequence/count/EOF policy. No property values are decoded.
+pub(crate) fn read_record(input: &[u8], profile: TagProfile) -> Result<ParsedRecord<'_>> {
+    ensure!(
+        input.len() <= MAX_INPUT_BYTES,
+        "tag input exceeds 32 MiB limit"
+    );
+    let mut cursor = Cursor { input, position: 0 };
+    let Some(header) = parse_header(&mut cursor, profile)? else {
+        return Ok(ParsedRecord::Terminator(&input[..cursor.position]));
+    };
+    let payload_start = cursor.position;
+    let payload = cursor.take(header.payload_len)?;
+    Ok(ParsedRecord::Property(PropertyRecord {
+        tag: RootTag {
+            kind: header.kind,
+            record: &input[..cursor.position],
+            header: &input[..payload_start],
+            payload,
+        },
+        name: header.name,
+        extra: header.extra,
+        bool_value: header.bool_value,
+        index: header.index,
     }))
 }
 
