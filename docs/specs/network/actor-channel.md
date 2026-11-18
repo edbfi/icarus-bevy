@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-15.
+Last reconciled: 2026-11-18.
 
 ## Scope
 
@@ -27,44 +27,17 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   M-1488/ev_8018de4b3bea. Construction consumes descriptors; cached construction
   bypasses them. Counts alone grant no runtime bound. General ABI, traversal,
   immutability, clobber/alias/reentry remain open.
-- Frozen 122-byte/34-instruction/126-p-code trace has two opaque edges and all
-  three closures false (M-1460/ev_a40bde4cc914, M-1461). Independent 908-byte
-  listings do not expand it (M-1462; M-1488/ev_2a71799cb7ec,
-  M-1488/ev_601449ecca14). Earlier indirect edges/forward getter remain open
-  (M-1488 to M-1491).
-- Conditional `BP_IcarusPlayerControllerSurvival_C` inherits native survival:
-  155 native + 5 cooked properties + 22 functions = 182 fields/bound 183.
-  Fields 148/149/150 are cancel/normal/no-save; 169 is uninspected return-focus.
-  Cache misses inherit ClassReps and append local Net properties before
-  non-overriding functions sorted by folded FName. Function indices need counts,
-  not a proved property permutation; export framing is separate (M-1492 to M-1494).
-- Selected listings: 24 starts/2,834 instructions/11,427 instruction bytes;
-  no exhaustive flow or live dispatch (M-1493, M-1494).
-- Ordinary 149: one enum argument, presence bit + 3 value bits if present
-  (registered maxima 5 or 6; declared byte enum 0..5);
-  148/150 are empty. ReceivedRPC requires no error/exact consumption before
-  dispatch; permission/hooks/GUID/reliable deferral remain
-  (M-1498/ev_8fb379f7c758). Enum cast-bit 17 clear, named `memset` and RET
-  initializer conditionally preserve absent zero, distinct from explicit None
-  (M-1498/ev_5d6f0416550b, M-1498/ev_fe828a00c89c,
-  M-1498/ev_834aa65ff472, M-1498/ev_0fd716bd216a). Enum 6/7 refusal
-  is authored only.
-- Completed `ReplicatedLeftProspectSession` at +0x95b is property handle 26,
-  not RPC 26: inherited 15+2+2+0+6 then enum; cooked fields append. Current
-  metadata/scalar emission reuse F-703/F-704/F-846/F-1120 custom-struct rules,
-  not fresh mutable layout/struct-ops/CDO proof (M-1405; M-1492 to M-1494;
-  M-1498/ev_0fd716bd216a).
-- Checksum-off/nonshared: flag 0 + packed 26 + enum 3 bits + packed 0 = 20
-  property bits; actor content adds rep-layout/actor flags + packed length = 30.
-  Archive slots, packed 7-bit groups/low-bit continuation and value/copy/send
-  operands support this conditional codec (M-1500/ev_f461811e1d6e,
-  M-1500/ev_214a079abf4d, M-1500/ev_c47f406ef20f, M-1500/ev_1bf96fac88a2).
-  Active archive/vptr/settings, zeroed backing and selected profile remain
-  conditions; original canonical-varint rejection is unproved.
-- M-1499's eight listings match declaration/pdata unions; M-1501 retains partial
-  post-value switch, 8 padding bytes and 150-byte overflow lookahead outside
-  its declaration. Calls stay opaque; one-byte imported bodies prove no coverage.
-  No full callback/overflow/scheduler or live class/cache/archive proof follows.
+- F-1197 static detail: frozen trace and 908-byte listings F-1247; conditional
+  `BP_IcarusPlayerControllerSurvival_C` fields 148/149/150/169 and bound 183
+  F-1248; cache-miss ordering F-1249 (export framing is separate). Selected
+  listings: 24 starts/2,834 instructions/11,427 instruction bytes; no
+  exhaustive flow or live dispatch (M-1493, M-1494).
+- Ordinary 149 presence and enum bits, empty 148/150 and `ReceivedRPC`
+  consumption F-1250; absent-zero preservation and authored-only enum 6/7
+  refusal F-1251. Completed `ReplicatedLeftProspectSession` is property handle
+  26, not RPC 26 (F-1252); its checksum-off 20/30-bit encoding F-1253 and codec
+  support F-1254; listing coverage F-1255. No full callback/overflow/scheduler or
+  live class/cache/archive proof follows.
   Producer-ready/null-PropertyLink, editor/global/CDO and mutation stay open.
   Encoding permits a default-off scoped experiment; F-1177/durability/client
   limits stand.

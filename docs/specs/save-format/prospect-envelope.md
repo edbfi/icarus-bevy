@@ -4,7 +4,7 @@
 
 Experimental: envelope schema observed statically in build 25621760 (M-168) and
 confirmed against all twelve supplied prospect documents; the inner world is
-not interpreted. Last reconciled: 2026-11-10.
+not interpreted. Last reconciled: 2026-11-18.
 Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
@@ -33,20 +33,11 @@ unavailable.
   | `UncompressedLength` | `0x28` | Output size passed to `FCompression::UncompressMemory` |
   | `BinaryBlob` | `0x30` | Base64 input string |
 
-- `WriteToProspectBlob` (`0x1418fa200` server / `0x1418fa530` client) writes
-  `"actors"` into `Key`, compresses via `FCompression::CompressMemory` (`NAME_Zlib`
-  `0x101`) and at `0x1418fa48c..0x1418fa49a` stores `CompressedSize` to both
-  `TotalLength` (`+0x20`) and `DataLength` (`+0x24`). `ReadFromProspectBlob`
-  (`0x1418e6240` server / `0x1418e7680` client) pre-allocates `CompressedData`
-  to `TotalLength`, calls `FBase64::Decode` (`0x141efc520`, which resizes
-  `CompressedData` to `GetDecodedDataSize` `0x141f02ee0`) and ignores its
-  `bool` return, sign-extends `UncompressedLength` into `memset`, and passes
-  `CompressedSize = TotalLength` (not `CompressedData.Num()`) to
-  `FCompression::UncompressMemory` (`0x141f140f0`, `NAME_Zlib` `0x101`, window
-  bits 15). It hashes the output through `0x140accda0` (SHA-1 state initialized
-  by `0x141f2cf00`), compares with `Hash` and enters archive deserialization at
-  `0x1418ee4a0` (F-283, F-737; `evaluate_prospect_blob_decode` in
-  `experimental::restore_rules`).
+- `WriteToProspectBlob` stores `CompressedSize` to both `TotalLength` and
+  `DataLength` (F-1256); `ReadFromProspectBlob` decodes Base64 (F-1257),
+  decompresses `TotalLength` bytes with zlib (F-1258), checks SHA-1 and enters
+  archive deserialization (F-1259; F-283, F-737; `evaluate_prospect_blob_decode`
+  in `experimental::restore_rules`).
 - Supplied saves (M-118; intake, integrity and decoded sizes F-881): twelve
   BOM-marked UTF-16LE JSON prospect documents (one current, eleven backups;
   one backup equals current), raw 2,154,484 to 2,239,534 bytes, Base64-decoded
