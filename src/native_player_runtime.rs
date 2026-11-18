@@ -2386,7 +2386,8 @@ impl PlayerRegistry {
 /// (`network.checkpoint_saved_locations`) at an exclusive world boundary.
 /// Each save replaces only the location of the current record, under the
 /// rules of every other checkpoint edit, and is refused once its leave is cut
-/// off. Schema 14 commits in memory, as survival debits do; schemas 15/16
+/// off. A failed checkpoint writer refuses the whole batch, as it refuses
+/// inventory transfers and leave cut-offs: no later submission can publish it. Schema 14 commits in memory, as survival debits do; schemas 15/16
 /// stage every save and preflight the full generation once, as survival
 /// does, committing all or none. The next writer submission publishes them.
 /// The private leave proof refuses it: its journal binds every revision.
@@ -2402,6 +2403,10 @@ pub(crate) fn save_player_locations(
         anyhow::ensure!(
             registry.private_leave_proof.is_none(),
             "private leave proof refuses saved locations"
+        );
+        anyhow::ensure!(
+            !registry.writer_failed,
+            "player checkpoint writer failed; saved locations refused"
         );
         let (edits, outcomes) = registry.prepare_location_saves(saves);
         let staged = (!edits.is_empty() && registry.has_inventory()).then(|| registry.snapshot());
@@ -2911,5 +2916,38 @@ mod depletion_damage_tests {
             .is_err()
         );
         assert!(!app.world().contains_resource::<ConsumptionRuntime>());
+    }
+}
+
+#[cfg(test)]
+mod location_save_tests {
+    use super::*;
+
+    /// A failed checkpoint writer refuses every location save, as it refuses
+    /// inventory transfers and leave cut-offs; nothing changes.
+    #[test]
+    fn a_failed_writer_refuses_location_saves() {
+        let mut registry = super::consumption_tests::registry();
+        super::consumption_tests::attach(&mut registry, 1, 1);
+        let key = PlayerKey::new(1, 3).unwrap();
+        let mut world = World::new();
+        world.insert_resource(registry);
+        let save = |location_cm| LocationSave {
+            key,
+            epoch: 1,
+            location_cm,
+        };
+        assert_eq!(
+            save_player_locations(&mut world, &[save([110.0, 200.0, 300.0])]).unwrap(),
+            [LocationSaveOutcome::Saved]
+        );
+        world.resource_mut::<PlayerRegistry>().writer_failed = true;
+        let before = world.resource::<PlayerRegistry>().snapshot();
+        assert!(save_player_locations(&mut world, &[save([120.0, 200.0, 300.0])]).is_err());
+        assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+        assert_eq!(
+            before.projection(key).unwrap().checkpoint.location_cm,
+            [110.0, 200.0, 300.0]
+        );
     }
 }

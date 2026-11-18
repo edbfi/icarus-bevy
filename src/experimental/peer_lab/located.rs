@@ -11,6 +11,14 @@
 //! network owner is torn down. The original persists the owner's reported
 //! position at save (F-1135).
 //!
+//! A session saves only while its live pawn's position descends from the
+//! stored one: its checkpoint was new at this join, or the stored location
+//! matched where the pawn opened (or the gated pawn opened at it), or a
+//! relocation to it was applied. A returning session whose stored location
+//! was left unapplied, whose relocation is pending, failed or was refused
+//! never saves, so that location survives for the next join; each such save
+//! is counted `withheld`.
+//!
 //! Relocation answers the newest client move after the checkpoint is bound
 //! with one unreliable field-30 correction carrying that move's timestamp, the
 //! stored location raised by the saved-location clearance (F-1139), zero
@@ -57,9 +65,13 @@ pub struct SavedLocationCounts {
     /// Of those, the ones taken for a staged authored leave before its cut-off.
     pub saved_at_leave: u64,
     /// Eligible sessions whose save the registry refused (no activated
-    /// attachment, a leave already cut off, an invalid edit or a failed
-    /// world preflight); nothing changed for them.
+    /// attachment, a leave already cut off, a failed checkpoint writer, an
+    /// invalid edit or a failed world preflight); nothing changed for them.
     pub refused: u64,
+    /// Eligible sessions whose save was never offered because their pawn's
+    /// position does not descend from the stored location (left unapplied,
+    /// a relocation pending, failed or refused); the stored one is kept.
+    pub withheld: u64,
 }
 
 /// Live relocations ([`PeerLab::enable_checkpoint_location_correction`]);
@@ -154,6 +166,8 @@ pub(super) fn relocating_move(
         && distance <= RELOCATION_TOLERANCE_CM
     {
         state.relocation = None;
+        // The pawn now stands at the stored location: saving may resume.
+        state.saves_location = true;
         state.location = Some((location, now));
         state.counts.positions_accepted = state.counts.positions_accepted.saturating_add(1);
         bump(&mut stats.pawn_move_positions_accepted);
@@ -163,38 +177,59 @@ pub(super) fn relocating_move(
     }
 }
 
+/// What one session offers a save pass.
+enum Offer {
+    /// Not eligible: unauthenticated, not joined or activated, or no
+    /// accepted location yet.
+    Nothing,
+    /// Eligible, but its pawn's position does not descend from the stored
+    /// location (`PawnMoves::saves_location`): counted `withheld`.
+    Withheld,
+    Save(LocationSave),
+}
+
 /// The save one session offers: an authenticated, joined, activated session
-/// with an accepted location and no pending relocation.
-fn location_save(entry: &PeerEntry) -> Option<LocationSave> {
-    if !(entry.auth_accepted
-        && entry.auth_request.is_some()
-        && entry.admission.state == ClientLoginState::Joined
-        && entry.checkpoint_active)
-        || entry.pawn_moves.relocation.is_some()
-    {
-        return None;
+/// with an accepted location, withheld unless its pawn's position descends
+/// from the stored location (never while a relocation is pending).
+fn location_save(entry: &PeerEntry) -> Offer {
+    let save = (|| {
+        if !(entry.auth_accepted
+            && entry.auth_request.is_some()
+            && entry.admission.state == ClientLoginState::Joined
+            && entry.checkpoint_active)
+        {
+            return None;
+        }
+        let (location_cm, _) = entry.pawn_moves.location?;
+        let slot = entry.profiles.character_slot?;
+        if entry.character_slot != Some(slot) {
+            return None;
+        }
+        Some(LocationSave {
+            key: PlayerKey::new(entry.auth_identity?, slot).ok()?,
+            epoch: entry.checkpoint_epoch?,
+            location_cm,
+        })
+    })();
+    match save {
+        None => Offer::Nothing,
+        Some(_) if !entry.pawn_moves.saves_location || entry.pawn_moves.relocation.is_some() => {
+            Offer::Withheld
+        }
+        Some(save) => Offer::Save(save),
     }
-    let (location_cm, _) = entry.pawn_moves.location?;
-    let slot = entry.profiles.character_slot?;
-    if entry.character_slot != Some(slot) {
-        return None;
-    }
-    Some(LocationSave {
-        key: PlayerKey::new(entry.auth_identity?, slot).ok()?,
-        epoch: entry.checkpoint_epoch?,
-        location_cm,
-    })
 }
 
 impl PeerLab {
     /// EXPERIMENTAL, default off (`network.checkpoint_saved_locations`). Save
     /// each activated player's last accepted move location (F-1128) as their
-    /// checkpoint's location: before a staged authored leave's cut-off, every
-    /// [`LOCATION_SAVE_INTERVAL`] and at teardown
-    /// ([`Self::bridge_saved_locations`]), never while a relocation is
-    /// pending. Requires player checkpoints and pawn move acknowledgements,
-    /// before peers; the private leave proof refuses it. Session behaviour
-    /// only: no player input, digest or schema changes.
+    /// checkpoint's location: before a staged authored leave's cut-off,
+    /// every [`LOCATION_SAVE_INTERVAL`] and at teardown
+    /// ([`Self::bridge_saved_locations`]), only while the pawn's position
+    /// descends from the stored one (module docs). Requires player
+    /// checkpoints and pawn move acknowledgements, before peers; the private
+    /// leave proof refuses it. Session behaviour only: no player input,
+    /// digest or schema changes.
     pub fn enable_checkpoint_saved_locations(&mut self) -> Result<()> {
         ensure!(
             self.peers.is_empty() && self.peak_peers == 0,
@@ -268,7 +303,10 @@ impl PeerLab {
 
     /// Collect at most one save per eligible session: every session when the
     /// periodic interval has passed (or `flush`), otherwise only sessions with
-    /// a staged leave not yet cut off. Bounded by the peer table.
+    /// a staged leave not yet cut off. Bounded by the peer table. The leave
+    /// bridge that follows in the same poll either cuts that leave off or,
+    /// refused, drops it (`bridge_controller_leaves`), so one staged leave
+    /// gets one such save; only the periodic pass repeats.
     pub(super) fn save_locations(
         &mut self,
         world: &mut bevy::prelude::World,
@@ -311,21 +349,25 @@ impl PeerLab {
         addresses.sort_unstable();
         let mut saves = Vec::new();
         let mut at_leave = Vec::new();
+        let counts = &mut self.stats.checkpoint_saved_locations;
         for address in addresses {
             let entry = &self.peers[&address];
             let leaving = leaving(entry);
             if !(periodic || leaving) {
                 continue;
             }
-            if let Some(save) = location_save(entry) {
-                saves.push(save);
-                at_leave.push(leaving);
+            match location_save(entry) {
+                Offer::Nothing => {}
+                Offer::Withheld => bump(&mut counts.withheld),
+                Offer::Save(save) => {
+                    saves.push(save);
+                    at_leave.push(leaving);
+                }
             }
         }
         if saves.is_empty() {
             return;
         }
-        let counts = &mut self.stats.checkpoint_saved_locations;
         match save_player_locations(world, &saves) {
             Ok(outcomes) => {
                 for (outcome, leaving) in outcomes.into_iter().zip(at_leave) {
@@ -424,7 +466,9 @@ impl PeerLab {
     }
 
     /// Give a pending relocation up: counted, the pawn left where its
-    /// client reports it, ordinary acknowledgements and bounds resume.
+    /// client reports it, ordinary acknowledgements and bounds resume from
+    /// the next move (a move held while pending was never checked, so it is
+    /// never acknowledged as good), and the session never saves its location.
     fn fail_relocation(&mut self, address: SocketAddrV4) {
         let Some(entry) = self.peers.get_mut(&address) else {
             return;
@@ -432,6 +476,7 @@ impl PeerLab {
         let Some(relocation) = entry.pawn_moves.relocation.take() else {
             return;
         };
+        entry.pawn_moves.unacked = false;
         bump(&mut self.stats.checkpoint_relocation.failed);
         bump(&mut self.stats.checkpoint_locations_unapplied);
         bevy::log::warn!(

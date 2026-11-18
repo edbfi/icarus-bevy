@@ -1981,6 +1981,11 @@ struct PawnMoves {
     /// The last correction sent; acknowledgements keep [`MOVE_ACK_INTERVAL`]
     /// from it as from each other.
     last_correction_at: Option<Instant>,
+    /// The live pawn's position descends from the stored checkpoint location
+    /// (a new checkpoint, the pawn opened at it, or a relocation applied), so
+    /// [`PeerLab::enable_checkpoint_saved_locations`] may save this session's
+    /// location. Set at the checkpoint's reservation; read by nothing else.
+    saves_location: bool,
 }
 
 /// One session's pawn move counters; counts and the movement mode only.
@@ -4333,13 +4338,18 @@ impl PeerLab {
                     }
                 }
                 let mut relocation = None;
+                // The gated pawn opens at the reserved checkpoint, so its
+                // position always descends from the stored location.
+                let mut descends = true;
                 if let Some(placement) = early_placement {
                     // The live pawn opened elsewhere: relocated by a
                     // correction with that option, otherwise left where it
-                    // opened and counted; the stored location is kept.
+                    // opened and counted; the stored location is kept, and
+                    // saved over only once a relocation is applied.
                     let stored = projection.checkpoint.location_cm.map(|value| value as f32);
                     if !projection.is_new && stored != placement.location {
                         relocation = self.start_relocation(stored, Instant::now());
+                        descends = false;
                     }
                 } else if let Some(resolution) = &resolution
                     && projection.is_new
@@ -4353,6 +4363,7 @@ impl PeerLab {
                     if relocation.is_some() {
                         entry.pawn_moves.relocation = relocation;
                     }
+                    entry.pawn_moves.saves_location = descends;
                     match &resolution {
                         // Gated pawn: it will open at the reserved checkpoint.
                         Some(resolution) => {

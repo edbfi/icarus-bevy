@@ -1530,3 +1530,70 @@ fn saved_locations_preflight_the_bag_world_and_project_nothing() {
         );
     }
 }
+
+/// On a schema 15 or 16 world, a location batch whose full-generation step
+/// fails returns an error and leaves the registry (players and bags) and the
+/// store exactly as before, including a batch mixing a valid save with an
+/// invalid one. The failure is injected as a domain entity with a non-finite
+/// position, which the generation's validation refuses: a location-only edit
+/// cannot fail it, as the edit rules check the same checkpoint bounds first.
+#[test]
+fn a_failed_location_preflight_changes_neither_registry_nor_store() {
+    use crate::{
+        native_player_runtime::{LocationSave, LocationSaveOutcome, save_player_locations},
+        persistence::SnapshotStore,
+        simulation::{DomainId, Position},
+    };
+    for transfers in [false, true] {
+        let mut lab = projected_lab(true);
+        let mut app = inventory_world(transfers);
+        let session = join(&mut lab, &mut app, 1, ACCOUNT);
+        let epoch = lab.peers[&session.address].checkpoint_epoch.unwrap();
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&capture(app.world_mut()).unwrap()).unwrap();
+        let stored = store.load().unwrap().unwrap();
+        let registry = |app: &App| {
+            let registry = app.world().resource::<PlayerRegistry>();
+            (registry.snapshot(), registry.inventory_snapshot())
+        };
+        let before = registry(&app);
+        let valid = LocationSave {
+            key,
+            epoch,
+            location_cm: [110.0, 200.0, 300.0],
+        };
+        let invalid = LocationSave {
+            key: PlayerKey::new(ACCOUNT + 1, 3).unwrap(),
+            epoch: 999,
+            location_cm: [f64::NAN; 3],
+        };
+        let bad = app
+            .world_mut()
+            .spawn((DomainId(77), Position([f32::NAN, 0.0, 0.0])))
+            .id();
+        for batch in [vec![valid], vec![valid, invalid], vec![invalid, valid]] {
+            assert!(
+                save_player_locations(app.world_mut(), &batch).is_err(),
+                "transfers {transfers}"
+            );
+            assert!(registry(&app) == before, "transfers {transfers}");
+            let reloaded = store.load().unwrap().unwrap();
+            assert_eq!(reloaded.snapshot, stored.snapshot);
+            assert_eq!(reloaded.selected_generation, stored.selected_generation);
+        }
+        // Without the defect, the same mixed batch commits only the valid save.
+        app.world_mut().despawn(bad);
+        assert_eq!(
+            save_player_locations(app.world_mut(), &[invalid, valid]).unwrap(),
+            [LocationSaveOutcome::Refused, LocationSaveOutcome::Saved]
+        );
+        let (players, bags) = registry(&app);
+        assert_eq!(
+            players.projection(key).unwrap().checkpoint.location_cm,
+            [110.0, 200.0, 300.0]
+        );
+        assert!(bags == before.1);
+    }
+}

@@ -2573,7 +2573,8 @@ fn saved_location_is_the_last_accepted_move_and_never_a_refused_or_based_one() {
         Some(SavedLocationCounts {
             saved: 1,
             saved_at_leave: 0,
-            refused: 0
+            refused: 0,
+            withheld: 0
         })
     );
     // A disconnect between passes keeps the last saved location; teardown
@@ -2864,6 +2865,19 @@ fn relocating_join(
     world: &mut bevy::prelude::World,
     stored: [f64; 3],
 ) -> StockJoin {
+    let join = returning_join(lab, world, stored);
+    assert!(lab.peers[&join.address].pawn_moves.relocation.is_some());
+    join
+}
+
+/// A returning player at `stored`: the first join stores the player, the
+/// stored location is edited, the second join opens at the second spawn
+/// point ([400, 500, 600]).
+fn returning_join(
+    lab: &mut PeerLab,
+    world: &mut bevy::prelude::World,
+    stored: [f64; 3],
+) -> StockJoin {
     let first = stock_join(lab, &mut world.resource_mut::<PlayerRegistry>(), 1, 24);
     lab.remove_peer(first.address);
     lab.bridge_player_checkpoints(&mut world.resource_mut::<PlayerRegistry>());
@@ -2875,17 +2889,16 @@ fn relocating_join(
         checkpoint.location_cm = stored;
         registry.edit(key, current.revision, checkpoint).unwrap();
     }
-    let join = stock_join(lab, &mut world.resource_mut::<PlayerRegistry>(), 2, 24);
-    assert!(lab.peers[&join.address].pawn_moves.relocation.is_some());
-    join
+    stock_join(lab, &mut world.resource_mut::<PlayerRegistry>(), 2, 24)
 }
 
 /// Lost corrections: resent only in answer to later moves, at most one per
 /// second; after five a later move still away gives the relocation up,
 /// counted in `failed` and `checkpoint_locations_unapplied`; nothing is
-/// acknowledged before, acknowledgements resume after, and the pawn stays
-/// where its client reports it. A NAKed correction is never resent by the
-/// transport.
+/// acknowledged before (the held move that ends it included), acknowledgements
+/// resume from the next checked move, and the pawn stays where its client
+/// reports it, which is never saved over the stored location. A NAKed
+/// correction is never resent by the transport.
 #[test]
 fn lost_corrections_are_resent_at_the_bounded_rate_then_given_up_and_counted() {
     use super::move_acks::authored_move;
@@ -2947,9 +2960,11 @@ fn lost_corrections_are_resent_at_the_bounded_rate_then_given_up_and_counted() {
         );
         assert_eq!(correction.location, [5000.0, 5000.0, 650.0]);
     }
-    // Given up at 5500 ms; the move that arrived then is acknowledged.
-    assert_eq!(acks.first().map(|(tick, _)| *tick), Some(5_500));
-    assert!(acks.iter().all(|(tick, _)| *tick >= 5_500));
+    // Given up at 5500 ms; the move held then is never acknowledged; the
+    // next one, checked as usual, is.
+    assert_eq!(acks.first().map(|(tick, _)| *tick), Some(5_750));
+    assert!(acks.iter().all(|(tick, _)| *tick >= 5_750));
+    assert_eq!(acks.first().map(|(_, timestamp)| *timestamp), Some(6.75));
     let counts = lab.session_counts();
     let relocation = counts.checkpoint_relocation.unwrap();
     assert_eq!(
@@ -2966,15 +2981,15 @@ fn lost_corrections_are_resent_at_the_bounded_rate_then_given_up_and_counted() {
     assert_eq!(lab.peers[&join.address].pawn_moves.relocation, None);
     // Bounds resume from the spawn point the client reports.
     assert!(lab.peers[&join.address].pawn_moves.location.is_some());
+    // That location is never saved: the stored one survives for the next join.
     let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+    let before = world.resource::<PlayerRegistry>().snapshot();
     lab.flush_saved_locations(&mut world);
-    let stored = world
-        .resource::<PlayerRegistry>()
-        .snapshot()
-        .projection(key)
-        .unwrap();
-    assert_eq!(stored.checkpoint.location_cm[2], 600.0);
-    assert!((stored.checkpoint.location_cm[0] - 400.0).abs() < 100.0);
+    assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+    let stored = before.projection(key).unwrap();
+    assert_eq!(stored.checkpoint.location_cm, [5000.0, 5000.0, 600.0]);
+    let saved = lab.session_counts().checkpoint_saved_locations.unwrap();
+    assert_eq!((saved.saved, saved.withheld), (0, 1));
 }
 
 /// The time bound: a relocation whose client stops moving after one
@@ -3170,4 +3185,366 @@ fn saved_locations_and_correction_need_their_prerequisites_before_peers() {
         assert_eq!(lab.stats.checkpoint_relocation.started, 0);
         assert_eq!(join.log.last().map(String::as_str), Some("frozen release"));
     }
+}
+
+/// The player's stored checkpoint.
+fn stored_checkpoint(world: &bevy::prelude::World) -> crate::native_players::PlayerProjection {
+    world
+        .resource::<PlayerRegistry>()
+        .snapshot()
+        .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+        .unwrap()
+}
+
+/// Accepted moves near the second spawn point, 150 ms apart from `start`.
+fn moves_near_spawn(lab: &mut PeerLab, join: &mut StockJoin, start: Instant, count: u16) {
+    use super::move_acks::authored_move;
+    for step in 0..count {
+        move_now(
+            lab,
+            &join._socket,
+            &mut join._client,
+            Some(authored_move(
+                20.0 + f32::from(step) * 0.15,
+                [410.0 + f32::from(step) * 10.0, 500.0, 600.0],
+                Some(1),
+            )),
+            start + Duration::from_millis(u64::from(step) * 150),
+        );
+    }
+}
+
+/// Rule: a session saves only when its pawn's position descends from the
+/// stored location. Correction off, a returning player whose stored location
+/// differs from where the early pawn opened walks near the spawn point; no
+/// periodic pass and no teardown saves over the stored location (each is
+/// counted `withheld`), and the next join still sees it.
+#[test]
+fn an_unapplied_stored_location_is_never_saved_over() {
+    let stored = [5000.0, 5000.0, 600.0];
+    let mut lab = saving_lab(false);
+    let mut world = registry_world(registry());
+    let mut join = returning_join(&mut lab, &mut world, stored);
+    assert_eq!(lab.peers[&join.address].pawn_moves.relocation, None);
+    assert!(!lab.peers[&join.address].pawn_moves.saves_location);
+    assert_eq!(lab.stats.checkpoint_locations_unapplied, 1);
+    let start = Instant::now();
+    moves_near_spawn(&mut lab, &mut join, start, 3);
+    assert_eq!(
+        lab.peers[&join.address]
+            .pawn_moves
+            .location
+            .map(|(at, _)| at),
+        Some([430.0, 500.0, 600.0])
+    );
+    let before = world.resource::<PlayerRegistry>().snapshot();
+    lab.save_locations(&mut world, start, false);
+    lab.save_locations(&mut world, start + LOCATION_SAVE_INTERVAL, false);
+    assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+    world.insert_resource(lab);
+    let counts = crate::network::teardown(&mut world).unwrap();
+    assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+    assert_eq!(stored_checkpoint(&world).checkpoint.location_cm, stored);
+    assert_eq!(
+        counts.checkpoint_saved_locations,
+        Some(SavedLocationCounts {
+            saved: 0,
+            saved_at_leave: 0,
+            refused: 0,
+            withheld: 3
+        })
+    );
+    // The next join still finds it: a correction lab relocates to it. The
+    // registry's epochs continue above the last lab's.
+    let mut next = saving_lab(true);
+    next.next_checkpoint_epoch = 3;
+    let join = stock_join(
+        &mut next,
+        &mut world.resource_mut::<PlayerRegistry>(),
+        1,
+        24,
+    );
+    assert_eq!(
+        next.peers[&join.address]
+            .pawn_moves
+            .relocation
+            .map(|relocation| relocation.target),
+        Some([5000.0, 5000.0, 650.0])
+    );
+}
+
+/// A relocation that fails by time, and one refused because its target is
+/// outside the placement bound, both leave the session withheld for good:
+/// the stored location is unchanged after periodic passes and teardown.
+#[test]
+fn a_failed_or_refused_relocation_never_saves_over_the_stored_location() {
+    use super::move_acks::authored_move;
+    // Failed by time (failure by attempts:
+    // `lost_corrections_are_resent_at_the_bounded_rate_then_given_up_and_counted`).
+    let stored = [5000.0, 5000.0, 600.0];
+    let mut lab = saving_lab(true);
+    let mut world = registry_world(registry());
+    let mut join = relocating_join(&mut lab, &mut world, stored);
+    let since = lab.peers[&join.address]
+        .pawn_moves
+        .relocation
+        .unwrap()
+        .since;
+    move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(3.0, [400.0, 500.0, 600.0], Some(1))),
+        since + Duration::from_millis(10),
+    );
+    lab.retry_pawn_move_acks(since + RELOCATION_TIMEOUT);
+    assert_eq!(lab.stats.checkpoint_relocation.failed, 1);
+    moves_near_spawn(
+        &mut lab,
+        &mut join,
+        since + RELOCATION_TIMEOUT + Duration::from_millis(200),
+        2,
+    );
+    assert!(lab.peers[&join.address].pawn_moves.location.is_some());
+    let before = world.resource::<PlayerRegistry>().snapshot();
+    lab.save_locations(&mut world, since + RELOCATION_TIMEOUT, false);
+    world.insert_resource(lab);
+    let counts = crate::network::teardown(&mut world).unwrap();
+    assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+    assert_eq!(stored_checkpoint(&world).checkpoint.location_cm, stored);
+    let saved = counts.checkpoint_saved_locations.unwrap();
+    assert_eq!((saved.saved, saved.withheld), (0, 2));
+    // Refused: the raised target exceeds the bound; counted unapplied.
+    let stored = [0.0, 0.0, 1_048_576.0];
+    let mut lab = saving_lab(true);
+    let mut world = registry_world(registry());
+    let mut join = returning_join(&mut lab, &mut world, stored);
+    assert_eq!(lab.peers[&join.address].pawn_moves.relocation, None);
+    assert_eq!(lab.stats.checkpoint_locations_unapplied, 1);
+    assert_eq!(lab.stats.checkpoint_relocation.started, 0);
+    moves_near_spawn(&mut lab, &mut join, Instant::now(), 2);
+    assert!(lab.peers[&join.address].pawn_moves.location.is_some());
+    let before = world.resource::<PlayerRegistry>().snapshot();
+    lab.flush_saved_locations(&mut world);
+    world.insert_resource(lab);
+    let counts = crate::network::teardown(&mut world).unwrap();
+    assert_eq!(world.resource::<PlayerRegistry>().snapshot(), before);
+    assert_eq!(stored_checkpoint(&world).checkpoint.location_cm, stored);
+    let saved = counts.checkpoint_saved_locations.unwrap();
+    assert_eq!((saved.saved, saved.withheld), (0, 2));
+}
+
+/// The positive cases of the rule: a new checkpoint saves, a returning
+/// player whose stored location is where the early pawn opened saves, and
+/// an applied relocation saves (the last two also with correction on).
+#[test]
+fn new_matched_and_applied_locations_are_saved() {
+    use super::move_acks::authored_move;
+    // New: the first join's checkpoint.
+    let mut lab = saving_lab(true);
+    let mut world = registry_world(registry());
+    let mut join = stock_join(&mut lab, &mut world.resource_mut::<PlayerRegistry>(), 1, 24);
+    assert!(lab.peers[&join.address].pawn_moves.saves_location);
+    move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(4.0, [110.0, 200.0, 300.0], Some(1))),
+        Instant::now(),
+    );
+    lab.flush_saved_locations(&mut world);
+    assert_eq!(
+        stored_checkpoint(&world).checkpoint.location_cm,
+        [110.0, 200.0, 300.0]
+    );
+    // Matched: stored exactly where the returning early pawn opens.
+    for correct in [false, true] {
+        let mut lab = saving_lab(correct);
+        let mut world = registry_world(registry());
+        let mut join = returning_join(&mut lab, &mut world, [400.0, 500.0, 600.0]);
+        let entry = &lab.peers[&join.address];
+        assert!(entry.pawn_moves.relocation.is_none() && entry.pawn_moves.saves_location);
+        assert_eq!(lab.stats.checkpoint_locations_unapplied, 0);
+        moves_near_spawn(&mut lab, &mut join, Instant::now(), 2);
+        lab.flush_saved_locations(&mut world);
+        assert_eq!(
+            stored_checkpoint(&world).checkpoint.location_cm,
+            [420.0, 500.0, 600.0],
+            "correct {correct}"
+        );
+        let saved = lab.session_counts().checkpoint_saved_locations.unwrap();
+        assert_eq!((saved.saved, saved.withheld), (1, 0));
+    }
+    // Applied: the relocation applies, then the client's reports are saved.
+    let mut lab = saving_lab(true);
+    let mut world = registry_world(registry());
+    let mut join = relocating_join(&mut lab, &mut world, [5000.0, 5000.0, 600.0]);
+    let start = Instant::now();
+    move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(2.5, [405.0, 500.0, 600.0], Some(1))),
+        start,
+    );
+    // Pending: the held move is not stored, so nothing is offered.
+    lab.flush_saved_locations(&mut world);
+    assert_eq!(
+        stored_checkpoint(&world).checkpoint.location_cm,
+        [5000.0, 5000.0, 600.0]
+    );
+    move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(2.7, [5000.0, 5000.0, 640.0], Some(3))),
+        start + Duration::from_millis(300),
+    );
+    assert_eq!(lab.stats.checkpoint_relocation.applied, 1);
+    assert!(lab.peers[&join.address].pawn_moves.saves_location);
+    lab.flush_saved_locations(&mut world);
+    assert_eq!(
+        stored_checkpoint(&world).checkpoint.location_cm,
+        [5000.0, 5000.0, 640.0]
+    );
+    let saved = lab.session_counts().checkpoint_saved_locations.unwrap();
+    assert_eq!((saved.saved, saved.withheld), (1, 0));
+}
+
+/// A move held while a relocation is pending was never checked or stored:
+/// when the relocation fails, by time here (by attempts in
+/// `lost_corrections_are_resent_at_the_bounded_rate_then_given_up_and_counted`),
+/// that pass acknowledges nothing; the next move, checked as usual, is
+/// acknowledged.
+#[test]
+fn a_move_held_when_its_relocation_fails_is_never_acknowledged() {
+    use super::move_acks::authored_move;
+    let mut lab = saving_lab(true);
+    let mut world = registry_world(registry());
+    let mut join = relocating_join(&mut lab, &mut world, [5000.0, 5000.0, 600.0]);
+    let since = lab.peers[&join.address]
+        .pawn_moves
+        .relocation
+        .unwrap()
+        .since;
+    let first = move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(3.0, [400.0, 500.0, 600.0], Some(1))),
+        since + Duration::from_millis(10),
+    );
+    assert!(matches!(
+        move_responses(&lab, &first).as_slice(),
+        [MoveResponse::Correction(_)]
+    ));
+    // Held, then the same pass gives the relocation up.
+    let held = lab.stats.checkpoint_relocation.moves_held;
+    let failing = move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(33.0, [90_000.0, 500.0, 600.0], Some(1))),
+        since + RELOCATION_TIMEOUT,
+    );
+    assert_eq!(lab.stats.checkpoint_relocation.moves_held, held + 1);
+    assert_eq!(lab.stats.checkpoint_relocation.failed, 1);
+    assert!(move_responses(&lab, &failing).is_empty());
+    assert!(!lab.peers[&join.address].pawn_moves.unacked);
+    // Nothing is due later either, until a new move arrives.
+    let idle = move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        None,
+        since + RELOCATION_TIMEOUT + Duration::from_millis(500),
+    );
+    assert!(move_responses(&lab, &idle).is_empty());
+    let next = move_now(
+        &mut lab,
+        &join._socket,
+        &mut join._client,
+        Some(authored_move(34.0, [401.0, 500.0, 600.0], Some(1))),
+        since + RELOCATION_TIMEOUT + Duration::from_secs(1),
+    );
+    assert_eq!(move_responses(&lab, &next), [MoveResponse::Ack(34.0)]);
+    assert_eq!(lab.stats.pawn_move_positions_accepted, 1);
+}
+
+/// Teardown, in `run`'s shutdown order (stop admission, drain the bridge,
+/// tear the network owner down, then the final writer submission), commits
+/// the last accepted move before the final store submission captures it.
+#[test]
+fn teardown_saves_the_last_accepted_move_before_the_final_store_submission() {
+    use super::move_acks::authored_move;
+    use crate::{
+        config::ServerConfig, native_player_runtime::CheckpointWriter, simulation::build_app,
+    };
+    let mut lab = saving_lab(false);
+    let snapshot = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+        native_players: Some(registry().snapshot()),
+        ..Default::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &snapshot).unwrap();
+    app.insert_resource(registry());
+    let mut join = stock_join(
+        &mut lab,
+        &mut app.world_mut().resource_mut::<PlayerRegistry>(),
+        1,
+        24,
+    );
+    let start = Instant::now();
+    for (step, x) in [110.0, 120.0, 135.0].into_iter().enumerate() {
+        move_now(
+            &mut lab,
+            &join._socket,
+            &mut join._client,
+            Some(authored_move(
+                4.0 + step as f32 * 0.15,
+                [x, 200.0, 300.0],
+                Some(1),
+            )),
+            start + Duration::from_millis(step as u64 * 150),
+        );
+    }
+    let last = lab.peers[&join.address].pawn_moves.location.unwrap().0;
+    assert_eq!(last, [135.0, 200.0, 300.0]);
+    app.insert_resource(lab);
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer =
+        CheckpointWriter::spawn(SnapshotStore::open(directory.path()).unwrap()).unwrap();
+    crate::network::stop_admission(app.world_mut());
+    crate::network::drain_player_bridge(app.world_mut());
+    let counts = crate::network::teardown(app.world_mut()).unwrap();
+    assert_eq!(counts.checkpoint_saved_locations.unwrap().saved, 1);
+    writer.submit(app.world_mut()).unwrap();
+    writer
+        .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let store = loop {
+        match SnapshotStore::open_existing(directory.path()) {
+            Ok(store) => break store,
+            Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+            Err(error) => panic!("checkpoint writer did not release store: {error:#}"),
+        }
+    };
+    let restored = store
+        .load()
+        .unwrap()
+        .unwrap()
+        .snapshot
+        .native_players
+        .unwrap();
+    assert_eq!(
+        restored
+            .projection(PlayerKey::new(ACCOUNT, 3).unwrap())
+            .unwrap()
+            .checkpoint
+            .location_cm,
+        last
+    );
 }
