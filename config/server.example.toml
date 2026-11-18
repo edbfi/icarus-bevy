@@ -29,6 +29,13 @@ port = 17777
 max_players = 8
 # Native inbound-idle / outstanding-delivery-progress timeout; removal is local.
 session_timeout_seconds = 30
+# OPTIONAL native limit on the wait for a joined client's Begin (its first
+# identifying call), from Join: 0 or absent means none; otherwise 5..=3600.
+# Past it the session is closed and its slot freed; nothing is stored. The
+# other bounds miss a client that keeps acknowledging but never sends Begin.
+# No recorded run measures how long a stock client takes to send Begin, so
+# any value is a guess. run --private-leave-proof refuses it.
+# begin_timeout_seconds = 0
 
 # OPTIONAL authored leave; requires player_persistence, authenticated hosting
 # and a qualified release. Stock-client leave remains unqualified.

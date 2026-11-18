@@ -1649,6 +1649,7 @@ pub fn peer_lab_config(network: &NetworkConfig) -> PeerLabConfig {
     PeerLabConfig {
         max_peers: 2 * (network.max_players + SPECTATOR_SLOTS) as usize,
         idle_timeout: network.session_timeout(),
+        begin_timeout: network.begin_timeout(),
         admission: Some(admission),
         ..PeerLabConfig::default()
     }

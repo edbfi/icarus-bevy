@@ -197,7 +197,7 @@ pub(super) struct Model {
 }
 
 /// One slot's properties as a client holds them; an unsent array is empty.
-fn slot_properties(slot: &InventorySlot) -> BTreeMap<u32, RepValue> {
+pub(super) fn slot_properties(slot: &InventorySlot) -> BTreeMap<u32, RepValue> {
     let mut values: BTreeMap<u32, RepValue> = [3, 7, 8]
         .into_iter()
         .map(|handle| {
@@ -316,6 +316,18 @@ pub(super) fn bag_deltas(
     connection: u32,
     bunches: &[Bunch],
 ) -> Vec<(usize, FastArrayDelta)> {
+    bag_deltas_in(lab, connection, 0..2, pawn_update_payloads(bunches))
+}
+
+/// [`bag_deltas`] over pawn update bodies already reassembled, for bound
+/// inventories at `connection`'s pawn subobjects `subobjects` (the content's
+/// own inventories precede them; this file's fixtures open none).
+pub(super) fn bag_deltas_in(
+    lab: &PeerLab,
+    connection: u32,
+    subobjects: std::ops::Range<u32>,
+    payloads: Vec<Payload>,
+) -> Vec<(usize, FastArrayDelta)> {
     let plan = &lab.pawn_open.as_ref().unwrap().0;
     let codec = RepLayoutCodec {
         actor: actor_codec(plan.engine_net_version, ByteOrder::Little),
@@ -324,11 +336,11 @@ pub(super) fn bag_deltas(
     };
     let mut cache = lab.guid_cache.clone();
     let key = pawn_key(connection);
-    let guids: Vec<u32> = (0..2)
+    let guids: Vec<u32> = subobjects
         .map(|index| cache.subobject_guid(key, index).unwrap())
         .collect();
     let mut deltas = Vec::new();
-    for payload in pawn_update_payloads(bunches) {
+    for payload in payloads {
         let body = read_actor_bunch_body(&mut payload.reader(), false, &codec.actor).unwrap();
         for block in body.blocks {
             let BlockTarget::SubObject { object, class } = &block.target else {

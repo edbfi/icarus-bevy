@@ -29,6 +29,13 @@ pub(super) fn validate_config(config: &ServerConfig) -> Result<()> {
             && !config.network.checkpoint_location_correction,
         "private leave proof refuses saved checkpoint locations and location correction"
     );
+    // Its one-join budget never refills, and removing its joined peer before
+    // a reservation fails the proof as abandoned; a Begin limit could only
+    // end the case, never let it complete.
+    ensure!(
+        config.network.begin_timeout_seconds == 0,
+        "private leave proof refuses the Begin timeout"
+    );
     ensure!(
         config.network.enabled
             && config.network.authored_controller_leave
@@ -186,6 +193,29 @@ mod saved_location_refusal_tests {
             "private leave proof refuses the early checkpoint pawn"
         );
         // Off, the refusal falls through to the existing prerequisites.
+        assert_eq!(
+            validate_config(&ServerConfig::default())
+                .unwrap_err()
+                .to_string(),
+            "private proof configuration refused"
+        );
+    }
+}
+
+#[cfg(test)]
+mod begin_timeout_refusal_tests {
+    use super::*;
+    #[test]
+    fn begin_timeout_is_refused_before_proof_setup() {
+        for seconds in [5, 3_600] {
+            let mut config = ServerConfig::default();
+            config.network.begin_timeout_seconds = seconds;
+            assert_eq!(
+                validate_config(&config).unwrap_err().to_string(),
+                "private leave proof refuses the Begin timeout"
+            );
+        }
+        // Absent (0), the refusal falls through to the existing prerequisites.
         assert_eq!(
             validate_config(&ServerConfig::default())
                 .unwrap_err()

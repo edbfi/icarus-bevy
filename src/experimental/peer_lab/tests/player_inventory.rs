@@ -79,6 +79,7 @@ fn post_pawn_peer(config: PacketLabConfig) -> PeerEntry {
         pawn_restore_retry_ready: false,
         cookie,
         last_seen: now,
+        joined_at: None,
         delivery_progress_at: None,
         ack_pending: false,
         ack_capacity_blocked: false,

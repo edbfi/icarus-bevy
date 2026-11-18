@@ -164,6 +164,13 @@
 //!   abandoned never gets its record (its client could not finalise it) and
 //!   is closed and removed in the same poll
 //!   (`peers_closed_by_possession_abandoned`). Not observed in the original.
+//! - Native policy, opt-in ([`PeerLabConfig::begin_timeout`], default off):
+//!   a joined session whose Begin (controller field 124) has recorded no
+//!   character slot within the limit, measured from Join, gets the same
+//!   best-effort control close and is removed (`peers_closed_awaiting_begin`),
+//!   however much it ACKs. No reservation precedes Begin, so nothing is
+//!   stored or detached. Not observed in the original; no recorded run
+//!   measures how long a stock client takes to send Begin.
 //! - After [`PeerLab::stop_admission`] no exact handshake form is answered
 //!   (`refused_draining`), so no peer is created or replaced; live peers keep
 //!   their packet state until [`PeerLab::shutdown`] notifies and removes them
@@ -629,6 +636,10 @@ pub struct PeerLabConfig {
     /// friends-query (N-019) local removal. Delivery progress uses ACK/NAK
     /// notifications, not incoming traffic alone.
     pub idle_timeout: Duration,
+    /// Native policy, `None` (the default) for no limit: the longest a joined
+    /// session may go without a recorded Begin before it is closed
+    /// ([`PeerLab::begin_timeout`]); nonzero when set.
+    pub begin_timeout: Option<Duration>,
     /// Caller-supplied local network version compared with each Hello version
     /// (plain equality); a mismatch is answered with Upgrade. `None` skips the
     /// comparison. `Debug` shows only whether it is set.
@@ -646,6 +657,7 @@ impl fmt::Debug for PeerLabConfig {
             .field("packet", &self.packet)
             .field("max_peers", &self.max_peers)
             .field("idle_timeout", &self.idle_timeout)
+            .field("begin_timeout", &self.begin_timeout)
             .field(
                 "local_network_version_set",
                 &self.local_network_version.is_some(),
@@ -665,6 +677,7 @@ impl Default for PeerLabConfig {
             }),
             max_peers: DEFAULT_MAX_PEERS,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            begin_timeout: None,
             local_network_version: None,
             admission: None,
         }
@@ -689,6 +702,10 @@ impl PeerLabConfig {
             "max_peers must be 1..={MAX_PEERS_LIMIT}"
         );
         ensure!(!self.idle_timeout.is_zero(), "idle timeout must be nonzero");
+        ensure!(
+            self.begin_timeout.is_none_or(|limit| !limit.is_zero()),
+            "begin timeout must be nonzero when set"
+        );
         let max = self.packet.packet.limits.max_packet_bytes;
         ensure!(
             (HANDSHAKE_BYTES as u32..=MAX_UDP_PAYLOAD_BYTES).contains(&max),
@@ -778,6 +795,10 @@ pub struct PeerLabStats {
     /// their possession update was abandoned: their client could never
     /// finalise the record, so it is never sent (F-1116).
     pub peers_closed_by_possession_abandoned: u64,
+    /// With [`PeerLabConfig::begin_timeout`], joined sessions closed for no
+    /// recorded Begin within it (`SessionCounts::closed_awaiting_begin`).
+    #[serde(skip)]
+    pub peers_closed_awaiting_begin: u64,
     /// Peers removed after a failed receive or ack.
     pub peers_failed: u64,
     /// Peers removed by ticket verification or a negative Steam auth outcome.
@@ -1262,6 +1283,10 @@ pub struct SessionCounts {
     pub closed_by_friends_query_timeout: u64,
     /// Native policy: possession update abandoned, so no record (F-1116).
     pub closed_by_possession_abandoned: u64,
+    /// Present only with [`PeerLabConfig::begin_timeout`]: joined sessions
+    /// closed for no recorded Begin within it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_awaiting_begin: Option<u64>,
     /// Sessions closed by a client control close bunch.
     pub closed_by_client: u64,
     /// Sessions closed after an Upgrade or Failure reply.
@@ -2826,6 +2851,9 @@ struct PeerEntry {
     /// The cookie that created this peer; compared only, never reported.
     cookie: [u8; 20],
     last_seen: Instant,
+    /// When this session reached the Joined login state; the start of
+    /// [`PeerLabConfig::begin_timeout`]'s wait for Begin.
+    joined_at: Option<Instant>,
     /// Native policy only: accepted inbound traffic does not reset delivery progress.
     delivery_progress_at: Option<Instant>,
     ack_pending: bool,
@@ -3811,6 +3839,13 @@ impl PeerLab {
         ensure!(
             self.player_bag_projection.is_none(),
             "the private leave proof refuses the player inventory projection"
+        );
+        // Its one-join budget never refills and removing its joined peer
+        // before a reservation fails it (`remove_peer`), so a Begin limit
+        // could only end the case.
+        ensure!(
+            self.config.begin_timeout.is_none(),
+            "the private leave proof refuses the Begin timeout"
         );
         proof.health()?;
         if self.private_join_remaining.is_none() {
@@ -7549,6 +7584,12 @@ impl PeerLab {
         self.pawn_move_acks
     }
 
+    /// The configured wait for Begin ([`PeerLabConfig::begin_timeout`]);
+    /// `None` without a limit.
+    pub fn begin_timeout(&self) -> Option<Duration> {
+        self.config.begin_timeout
+    }
+
     /// Configure validated spawn points before admission. Legacy joins commit
     /// one point for matching controller spawn/handle 19 and pawn spawn (F-1140).
     /// Checkpoint controllers only peek provisionally; new validated reservations
@@ -7855,6 +7896,10 @@ impl PeerLab {
             closed_by_delivery_stall: self.stats.peers_delivery_stalled,
             closed_by_friends_query_timeout: self.stats.peers_friends_query_expired,
             closed_by_possession_abandoned: self.stats.peers_closed_by_possession_abandoned,
+            closed_awaiting_begin: self
+                .config
+                .begin_timeout
+                .map(|_| self.stats.peers_closed_awaiting_begin),
             closed_by_client: self.stats.peers_closed_by_client,
             closed_by_reply: self.stats.peers_closed,
             closed_by_join_password: self.stats.peers_closed_by_join_password,
@@ -8403,6 +8448,56 @@ impl PeerLab {
         }
     }
 
+    /// Native policy ([`PeerLabConfig::begin_timeout`], default off): a joined
+    /// session that keeps ACKing but never sends Begin passes every other
+    /// bound (the idle timeout needs silence, the delivery bound stalled
+    /// ACKs, and the friends-query deadline starts only after Begin) and
+    /// would hold its player slot, channels and early pawn indefinitely.
+    /// Past the limit from Join with no Begin slot recorded (neither a
+    /// character slot nor one held for the PlayerState open), it gets the
+    /// best-effort control close [`Self::close_abandoned_possessions`] sends
+    /// and is removed. No reservation precedes Begin, so there is nothing to
+    /// detach or store. A peer joined without a stamp (none in production)
+    /// starts its wait at the first pass that sees it.
+    fn close_awaiting_begin(&mut self, now: Instant) {
+        let Some(limit) = self.config.begin_timeout else {
+            return;
+        };
+        let expired: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter_map(|(address, entry)| {
+                if entry.admission.state != ClientLoginState::Joined
+                    || entry.character_slot.is_some()
+                    || entry
+                        .initial_opens
+                        .as_ref()
+                        .is_some_and(|pending| pending.begin_slot.is_some())
+                {
+                    return None;
+                }
+                let since = *entry.joined_at.get_or_insert(now);
+                (now.saturating_duration_since(since) > limit).then_some(*address)
+            })
+            .collect();
+        for address in expired {
+            let Some(entry) = self.peers.get_mut(&address) else {
+                continue;
+            };
+            if entry.peer.has_received_client_packet() {
+                match entry.peer.reliable_control_close(CLOSE_REASON_DESTROYED) {
+                    Ok(datagram) => {
+                        self.send(&datagram, address);
+                    }
+                    Err(_) => bump(&mut self.stats.reply_errors),
+                }
+            }
+            if self.remove_peer(address).is_some() {
+                bump(&mut self.stats.peers_closed_awaiting_begin);
+            }
+        }
+    }
+
     /// Answer a handshake form; returns `false` when `bytes` is not one the
     /// authority answers.
     fn handshake(&mut self, address: SocketAddrV4, length: usize, now: Instant) -> bool {
@@ -8523,6 +8618,7 @@ impl PeerLab {
                         pawn_restore_retry_ready: false,
                         cookie,
                         last_seen: now,
+                        joined_at: None,
                         delivery_progress_at: None,
                         ack_pending: false,
                         ack_capacity_blocked: false,
@@ -11249,6 +11345,7 @@ impl PeerLab {
                     bump(&mut self.stats.duplicate_joins_ignored);
                     return None;
                 }
+                entry.joined_at = Some(Instant::now());
                 let options = entry.login_url_units.clone();
                 let ctx = JoinSpawnContext {
                     has_game_session: admission.has_game_session,
@@ -12538,6 +12635,7 @@ impl PeerLab {
         self.expire_idle(now);
         self.expire_stalled_delivery(now);
         self.expire_friends_queries(now);
+        self.close_awaiting_begin(now);
         let max = self.config.max_datagram_bytes();
         for _ in 0..PACKETS_PER_UPDATE {
             if !self.private_proof_ready() {
