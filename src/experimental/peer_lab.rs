@@ -1886,6 +1886,8 @@ struct ConnectedPlayerReceipt {
 struct FrozenMovementRelease {
     /// When the record creation settled (the trigger); set once.
     record_acked_at: Option<Instant>,
+    /// The live peer reached the release pass after its record ACK.
+    service_pass_reached: bool,
     /// When the release falls due; set with `record_acked_at`.
     due_at: Option<Instant>,
     /// Due, or its latest copy NAKed, and not sent yet.
@@ -4505,7 +4507,7 @@ impl PeerLab {
             }
         }
         self.refresh_bag_projections(registry);
-        for address in self.update_pawn_properties() {
+        for address in self.update_pawn_properties(Some(registry), false) {
             self.fail_player_bag(registry, address);
         }
     }
@@ -5936,9 +5938,15 @@ impl PeerLab {
 
     /// One live pawn update pass. Returns the sessions whose bag can never be
     /// sent ([`Self::fail_player_bag`] closes them); transient refusals retry
-    /// on ACK progress as before.
+    /// on ACK progress as before. The pre-ACK caller passes a registry and
+    /// sets `vitals_only` to send just changed checkpoint vitals. Without a
+    /// registry that mode cannot establish a current projection and sends nothing.
     #[must_use]
-    fn update_pawn_properties(&mut self) -> Vec<SocketAddrV4> {
+    fn update_pawn_properties(
+        &mut self,
+        registry: Option<&PlayerRegistry>,
+        vitals_only: bool,
+    ) -> Vec<SocketAddrV4> {
         let mut permanent = Vec::new();
         let Some((plan, channel, _)) = &self.pawn_open else {
             return permanent;
@@ -5951,18 +5959,68 @@ impl PeerLab {
             if !entry.pawn_property_retry_ready || !entry.peer.actor_channel_settled(*channel) {
                 continue;
             }
-            entry.pawn_property_retry_ready = false;
+            if vitals_only {
+                let notify = entry.peer.sequencer().notify();
+                if notify.sent_records().len() == notify.sent_capacity()
+                    || entry.checkpoint_enqueued_revision
+                        == entry
+                            .checkpoint_projection
+                            .map(|projection| projection.revision)
+                {
+                    continue;
+                }
+            }
+            let checkpoint = entry.checkpoint_projection.filter(|projection| {
+                entry.auth_accepted
+                    && entry.auth_request.is_some()
+                    && entry.admission.state == ClientLoginState::Joined
+                    && entry.controller_leave.is_none()
+                    && entry
+                        .checkpoint_epoch
+                        .zip(registry)
+                        .is_some_and(|(epoch, registry)| {
+                            !registry.is_leaving(epoch)
+                                && registry.projection(epoch) == Some(*projection)
+                        })
+            });
+            let mut vital_due = checkpoint.filter(|projection| {
+                entry.checkpoint_enqueued_revision != Some(projection.revision)
+            });
+            // A bag or location edit can advance the revision with no vital
+            // change. Only changed vital values may preempt a standalone ACK.
+            // The normal bridge also skips matching early opens and locations.
+            if (vitals_only
+                || (early && entry.checkpoint_enqueued_revision.is_none())
+                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
+                && let Some(projection) = vital_due
+                && entry
+                    .pawn_character_state
+                    .as_ref()
+                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
+            {
+                if !vitals_only {
+                    entry.checkpoint_enqueued_revision = Some(projection.revision);
+                }
+                vital_due = None;
+            }
+            if vitals_only && vital_due.is_none() {
+                continue;
+            }
+            if !vitals_only {
+                entry.pawn_property_retry_ready = false;
+            }
             let due: Vec<_> = entry
                 .restored_modifiers
                 .iter()
                 .filter(|modifier| {
-                    entry.queued_modifier_times.get(&modifier.uid)
-                        != Some(&modifier.remaining_tenths)
+                    !vitals_only
+                        && entry.queued_modifier_times.get(&modifier.uid)
+                            != Some(&modifier.remaining_tenths)
                 })
                 .cloned()
                 .collect();
             let temperature_due = match (entry.pawn_temperature, entry.queued_pawn_temperature) {
-                (Some(current), Some(queued)) => PawnTemperatureState {
+                (Some(current), Some(queued)) if !vitals_only => PawnTemperatureState {
                     external: current
                         .external
                         .filter(|_| current.external != queued.external),
@@ -5978,36 +6036,10 @@ impl PeerLab {
                 },
                 _ => PawnTemperatureState::default(),
             };
-            let mut vital_due = entry.checkpoint_projection.filter(|projection| {
-                entry.auth_accepted
-                    && entry.auth_request.is_some()
-                    && entry.admission.state == ClientLoginState::Joined
-                    && entry.checkpoint_epoch.is_some()
-                    && entry.checkpoint_enqueued_revision != Some(projection.revision)
-            });
-            // The early pawn opened before its checkpoint was known. A first
-            // projection equal to what that open carried needs no update.
-            // With saved locations, neither does a later location-only
-            // revision: the pawn already carries its vitals.
-            if ((early && entry.checkpoint_enqueued_revision.is_none())
-                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
-                && let Some(projection) = vital_due
-                && entry
-                    .pawn_character_state
-                    .as_ref()
-                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
-            {
-                entry.checkpoint_enqueued_revision = Some(projection.revision);
-                vital_due = None;
-            }
             // The player's own bag, toward its latest revision, only once its
             // checkpoint is bound and activated (the bag is issued then), and
             // never after its leave cut-off (`due` is false once frozen).
-            let bag_eligible = entry.auth_accepted
-                && entry.auth_request.is_some()
-                && entry.admission.state == ClientLoginState::Joined
-                && entry.checkpoint_epoch.is_some()
-                && entry.checkpoint_active;
+            let bag_eligible = !vitals_only && checkpoint.is_some() && entry.checkpoint_active;
             let mut bag_due = Vec::new();
             let mut bag_budget = crate::player_inventory_projection::MAX_SLOT_CHANGES_PER_UPDATE;
             if bag_eligible
@@ -6102,14 +6134,10 @@ impl PeerLab {
                         if let Some(values) = &mut entry.pawn_character_state {
                             let vitals = projection.checkpoint.vitals;
                             values.extend(vitals.values());
-                            // The update also sent the alive state; the
-                            // location-only check above compares it.
-                            if saved_locations {
-                                values.insert(
-                                    super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
-                                    RepValue::Enum(u32::from(vitals.health < 1)),
-                                );
-                            }
+                            values.insert(
+                                super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
+                                RepValue::Enum(u32::from(vitals.health < 1)),
+                            );
                         }
                     }
                     if !due.is_empty() {
@@ -10434,6 +10462,7 @@ impl PeerLab {
             .filter_map(|(address, entry)| {
                 let held = located::release_held(entry, now);
                 let release = &mut entry.frozen_release;
+                release.service_pass_reached = release.record_acked_at.is_some();
                 if release.idle() && release.due(now) && !held {
                     release.pending = true;
                 }
@@ -12648,9 +12677,14 @@ impl PeerLab {
     }
 
     /// One bounded update: expire idle peers, process at most
-    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks. The
-    /// [`PeerLabPlugin`] runs this once per app update.
+    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending ACKs and background
+    /// updates. The [`PeerLabPlugin`] retries staged checkpoint vitals between
+    /// the input and flush passes.
     pub fn poll(&mut self) {
+        self.poll_with_checkpoint_retry(None);
+    }
+
+    fn poll_with_checkpoint_retry(&mut self, registry: Option<&PlayerRegistry>) {
         if !self.private_proof_ready() {
             return;
         }
@@ -12734,7 +12768,16 @@ impl PeerLab {
         self.retry_pending_player_history();
         if self.checkpoint_initial_vitals.is_none() {
             // The bag projection requires checkpoints: no bag failure here.
-            let permanent = self.update_pawn_properties();
+            let permanent = self.update_pawn_properties(None, false);
+            debug_assert!(permanent.is_empty());
+        } else if let Some(registry) = registry
+            && self.private_proof_ready()
+        {
+            // The poll drained authentication and transport ACKs. Give a
+            // current staged vital update a chance to carry the ACK before a
+            // standalone packet can refill the ring, including on a zero-tick
+            // frame. The checkpoint bridge still stages fresh revisions.
+            let permanent = self.update_pawn_properties(Some(registry), true);
             debug_assert!(permanent.is_empty());
         }
         self.send_acks();
@@ -12982,7 +13025,7 @@ fn poll_peer_lab(world: &mut bevy::prelude::World) {
         if !consuming && let Some(registry) = world.get_resource::<PlayerRegistry>() {
             lab.refresh_checkpoint_projections(registry);
         }
-        lab.poll();
+        lab.poll_with_checkpoint_retry(world.get_resource::<PlayerRegistry>());
         // Saved locations (default off) precede the leave bridge, so a leave
         // staged in this poll is cut off with the location it carries.
         if lab.checkpoint_saved_locations {
@@ -15320,11 +15363,12 @@ mod tests {
     fn client_control_close_retains_record_ack_and_release_guards() {
         use FrozenReleaseState::{AwaitingDelay, Due, PendingSend};
         use OwnRecordAck::{Earlier, InClosePacket};
-        for (delay, hold_pawn, record_ack, state, pawn) in [
+        for (delay, hold_pawn, record_ack, service_pass_reached, state, pawn) in [
             (
                 Duration::ZERO,
                 false,
                 InClosePacket,
+                false,
                 Due,
                 ReleasePawnState::Settled,
             ),
@@ -15332,6 +15376,7 @@ mod tests {
                 Duration::ZERO,
                 true,
                 Earlier,
+                true,
                 PendingSend,
                 ReleasePawnState::ReliablePending,
             ),
@@ -15339,6 +15384,7 @@ mod tests {
                 Duration::from_secs(600),
                 false,
                 Earlier,
+                false,
                 AwaitingDelay,
                 ReleasePawnState::Settled,
             ),
@@ -15405,6 +15451,7 @@ mod tests {
                         pawn: Some(pawn),
                         relocation_held: false,
                         deferred: false,
+                        service_pass_reached: Some(service_pass_reached),
                     }),
                 })
             );

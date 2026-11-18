@@ -43,6 +43,10 @@ no wall-time catch-up/extra accumulator. Offline ticks advance day, charging no
 detached player. Restored sampling precedes Join/open/update; authored and legacy
 monotonic clocks exclude each other.
 
+Before fixed ticks, polling can use a newly freed send slot to carry the ACK
+with already staged, changed pawn vitals for a current, non-leaving epoch
+(F-1261). Bag-only revisions and new tick output follow the projection pass.
+
 ## Failed health
 
 Owner/Fixed-timestep checks precede Time/polling/batches, even offline without a
