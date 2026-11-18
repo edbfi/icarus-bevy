@@ -250,9 +250,10 @@ use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
 use super::game_state_open::{
-    ConnectedPlayerState, ConnectedPlayersPlan, GameStateOpenPlan, GameStateOpenState,
-    LockedMission, NetworkingStatus, active_prospect_update_values, class_default,
-    compose_connected_players_update, compose_game_state_open, compose_game_state_update,
+    ConnectedPlayerState, ConnectedPlayersPlan, GameStateManagers, GameStateOpenPlan,
+    GameStateOpenState, LockedMission, NetworkingStatus, active_prospect_update_values,
+    class_default, compose_connected_players_update, compose_game_state_open,
+    compose_game_state_update,
 };
 use super::handshake::decode;
 use super::handshake_lab::{
@@ -6917,54 +6918,80 @@ impl PeerLab {
         Ok(())
     }
 
-    /// Precompose current content without publishing GUIDs or exports. Runtime
-    /// checks still handle future GUID widths, changing values and queue pressure.
-    fn validate_manager_open_content(
-        &self,
-        plan: &ManagerOpenPlan,
-        key: ActorKey,
-        channel: u32,
+    /// Precompose the shared world opens without publishing GUIDs or exports.
+    /// Future player opens and runtime state changes can still change the sizes.
+    fn validate_world_open_sequence<'a>(
+        &'a self,
+        session: &GameStateSession,
+        managers: &GameStateManagers,
+        additional_managers: impl IntoIterator<Item = (ActorKey, &'a ManagerOpenPlan, u32)>,
+        additional_quests: impl IntoIterator<Item = (&'a QuestOpenPlan, u32)>,
     ) -> Result<()> {
-        for order in [
-            super::archive::ByteOrder::Little,
-            super::archive::ByteOrder::Big,
-        ] {
-            let open = compose_manager_open(
-                &mut self.guid_cache.clone(),
-                &mut ConnectionExports::new(),
-                plan,
-                key,
-                channel,
-                order,
-            )
-            .context("manager open content cannot be encoded")?;
-            ensure!(
-                open.bunch.payload.bit_len().div_ceil(8)
-                    <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
-                "manager open exceeds the bunch byte limit"
-            );
+        enum WorldOpen<'a> {
+            Manager(ActorKey, &'a ManagerOpenPlan),
+            Quest(&'a QuestOpenPlan),
         }
-        Ok(())
-    }
 
-    fn validate_quest_open_content(&self, plan: &QuestOpenPlan, channel: u32) -> Result<()> {
+        let mut state = session
+            .open_state(&session.state, self.started.elapsed().as_secs_f32())
+            .context("GameState open state cannot be assembled")?;
+        state.managers.clone_from(managers);
+        let mut opens: Vec<_> = self
+            .manager_opens
+            .iter()
+            .map(|(key, plan, channel)| (*key, plan, *channel))
+            .chain(additional_managers)
+            .map(|(key, plan, channel)| (channel, WorldOpen::Manager(key, plan)))
+            .chain(
+                self.quest_opens
+                    .iter()
+                    .map(|(plan, channel)| (plan, *channel))
+                    .chain(additional_quests)
+                    .map(|(plan, channel)| (channel, WorldOpen::Quest(plan))),
+            )
+            .collect();
+        // Join captures managers and quests together in ascending channel order.
+        opens.sort_unstable_by_key(|(channel, _)| *channel);
         for order in [
             super::archive::ByteOrder::Little,
             super::archive::ByteOrder::Big,
         ] {
-            let open = compose_quest_open(
-                &mut self.guid_cache.clone(),
-                &mut ConnectionExports::new(),
-                plan,
-                channel,
+            let mut cache = self.guid_cache.clone();
+            let mut exports = ConnectionExports::new();
+            // GameState references can assign manager GUIDs before their opens.
+            let open = compose_game_state_open(
+                &mut cache,
+                &mut exports,
+                &session.plan,
+                &state,
+                session.channel_index,
                 order,
             )
-            .context("quest open content cannot be encoded")?;
+            .context("GameState open content cannot be encoded")?;
             ensure!(
                 open.bunch.payload.bit_len().div_ceil(8)
                     <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
-                "quest open exceeds the bunch byte limit"
+                "GameState open exceeds the bunch byte limit"
             );
+            for (channel, plan) in &opens {
+                let (kind, open) = match plan {
+                    WorldOpen::Manager(key, plan) => (
+                        "manager",
+                        compose_manager_open(&mut cache, &mut exports, plan, *key, *channel, order),
+                    ),
+                    WorldOpen::Quest(plan) => (
+                        "quest",
+                        compose_quest_open(&mut cache, &mut exports, plan, *channel, order),
+                    ),
+                };
+                let open =
+                    open.with_context(|| format!("{kind} open content cannot be encoded"))?;
+                ensure!(
+                    open.bunch.payload.bit_len().div_ceil(8)
+                        <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                    "{kind} open exceeds the bunch byte limit"
+                );
+            }
         }
         Ok(())
     }
@@ -6976,9 +7003,9 @@ impl PeerLab {
     /// other than the GameState's, on a taken channel, or on duplicate manager
     /// or quest keys. Once any manager opens are configured, this method rejects
     /// replacement; use the additive
-    /// APIs to register further managers and quests. Content must encode in
-    /// both byte orders before publication. Nonempty registrations are refused
-    /// while any peer has initial opens pending.
+    /// APIs to register further managers and quests. The candidate GameState
+    /// and world opens must encode in both byte orders before publication.
+    /// Nonempty registrations are refused while any peer has initial opens pending.
     pub fn enable_manager_opens(
         &mut self,
         plans: Vec<(ManagerSlot, ManagerOpenPlan)>,
@@ -6994,12 +7021,14 @@ impl PeerLab {
         let Some(session) = &self.game_state_open else {
             bail!("the manager opens follow the GameState open");
         };
-        let level = session.plan.level.clone();
+        if plans.is_empty() {
+            return Ok(());
+        }
         let mut managers = session.state.managers.clone();
         let mut opens = Vec::new();
         for (channel, (slot, plan)) in (first_channel..).zip(plans) {
             ensure!(
-                plan.level == level,
+                plan.level == session.plan.level,
                 "a manager and the GameState name different levels"
             );
             ensure!(
@@ -7014,10 +7043,17 @@ impl PeerLab {
                         .all(|(quest, _)| quest.key != slot.key()),
                 "the manager key is already opened"
             );
-            self.validate_manager_open_content(&plan, slot.key(), channel)?;
             slot.reference_from(&mut managers);
             opens.push((slot.key(), plan, channel));
         }
+        self.validate_world_open_sequence(
+            session,
+            &managers,
+            opens
+                .iter()
+                .map(|(key, plan, channel)| (*key, plan, *channel)),
+            std::iter::empty(),
+        )?;
         if let Some(session) = &mut self.game_state_open {
             session.state.managers = managers;
         }
@@ -7032,43 +7068,8 @@ impl PeerLab {
     /// GameState's, on a taken channel or on unencodable content in either
     /// byte order. Refused while any peer has initial opens pending.
     pub fn add_manager_open(&mut self, slot: ManagerSlot, plan: ManagerOpenPlan) -> Result<u32> {
-        self.ensure_actor_registration_idle()?;
-        let Some(session) = &self.game_state_open else {
-            bail!("the manager opens follow the GameState open");
-        };
-        ensure!(
-            plan.level == session.plan.level,
-            "a manager and the GameState name different levels"
-        );
-        ensure!(
-            self.manager_opens
-                .iter()
-                .all(|(key, ..)| *key != slot.key())
-                && self
-                    .quest_opens
-                    .iter()
-                    .all(|(quest, _)| quest.key != slot.key()),
-            "the manager slot is already opened"
-        );
-        let channel = self
-            .manager_opens
-            .iter()
-            .map(|(.., channel)| *channel)
-            .chain(self.quest_opens.iter().map(|(_, channel)| *channel))
-            .max()
-            .context("a manager added after the enabled managers")?
-            .checked_add(1)
-            .context("manager channel overflow")?;
-        ensure!(
-            self.free_session_channel(channel),
-            "a manager channel collides with another channel or is out of range"
-        );
-        self.validate_manager_open_content(&plan, slot.key(), channel)?;
-        if let Some(session) = &mut self.game_state_open {
-            slot.reference_from(&mut session.state.managers);
-        }
-        self.manager_opens.push((slot.key(), plan, channel));
-        Ok(channel)
+        let (_, channel) = self.add_quest_opens_with_manager(Vec::new(), Some((slot, plan)))?;
+        Ok(channel.expect("the submitted manager has a channel"))
     }
 
     /// Record the release's base layout and component checksums for saved
@@ -7203,9 +7204,10 @@ impl PeerLab {
     /// (`F-934`), plus an optional trailing world manager (such as
     /// `ManagerSlot::Quest`), on consecutive channels after the enabled
     /// managers and quests. If any quest or the trailing manager fails level,
-    /// key-uniqueness, channel-capacity or content validation in either byte
-    /// order, no registration or GameState reference changes. Nonempty batches
-    /// are refused while any peer has initial opens pending.
+    /// key-uniqueness or channel-capacity checks, or the candidate GameState
+    /// and world opens fail content validation in either byte order, no
+    /// registration or GameState reference changes. Nonempty batches are
+    /// refused while any peer has initial opens pending.
     pub fn add_quest_opens_with_manager(
         &mut self,
         plans: Vec<QuestOpenPlan>,
@@ -7216,7 +7218,7 @@ impl PeerLab {
         }
         self.ensure_actor_registration_idle()?;
         let Some(session) = &self.game_state_open else {
-            bail!("the quest opens follow the GameState open");
+            bail!("actor registration requires a GameState open");
         };
         let first_channel = self
             .manager_opens
@@ -7230,7 +7232,11 @@ impl PeerLab {
                 "a quest actor added after the enabled managers"
             })?
             .checked_add(1)
-            .context("quest channel overflow")?;
+            .context(if plans.is_empty() {
+                "manager channel overflow"
+            } else {
+                "quest channel overflow"
+            })?;
         let mut quest_channels = Vec::with_capacity(plans.len());
         for (index, plan) in plans.iter().enumerate() {
             ensure!(
@@ -7255,7 +7261,8 @@ impl PeerLab {
             );
             quest_channels.push(channel);
         }
-        let manager_channel = match &manager {
+        let mut managers = session.state.managers.clone();
+        let proposed_manager = match &manager {
             Some((slot, plan)) => {
                 ensure!(
                     plan.level == session.plan.level,
@@ -7280,23 +7287,24 @@ impl PeerLab {
                     self.free_session_channel(channel),
                     "a manager channel collides with another channel or is out of range"
                 );
-                Some(channel)
+                slot.reference_from(&mut managers);
+                Some((slot.key(), plan, channel))
             }
             None => None,
         };
-        // Complete all content checks before publishing even the first quest.
-        for (plan, &channel) in plans.iter().zip(&quest_channels) {
-            self.validate_quest_open_content(plan, channel)?;
-        }
-        if let (Some((slot, plan)), Some(channel)) = (&manager, manager_channel) {
-            self.validate_manager_open_content(plan, slot.key(), channel)?;
-        }
+        self.validate_world_open_sequence(
+            session,
+            &managers,
+            proposed_manager,
+            plans.iter().zip(quest_channels.iter().copied()),
+        )?;
+        let manager_channel = proposed_manager.map(|(_, _, channel)| channel);
         for (plan, &channel) in plans.into_iter().zip(&quest_channels) {
             self.quest_opens.push((plan, channel));
         }
         if let (Some((slot, plan)), Some(channel)) = (manager, manager_channel) {
             if let Some(session) = &mut self.game_state_open {
-                slot.reference_from(&mut session.state.managers);
+                session.state.managers = managers;
             }
             self.manager_opens.push((slot.key(), plan, channel));
         }
@@ -13751,14 +13759,18 @@ mod tests {
     }
 
     fn prospect_refresh_lab() -> PeerLab {
+        let mut lab = unbound_prospect_refresh_lab();
+        lab.attach_listener(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0), None)
+            .unwrap();
+        lab
+    }
+
+    fn unbound_prospect_refresh_lab() -> PeerLab {
         use super::super::{game_state_open::GAME_STATE_CHANNEL_INDEX, release::ReleaseProfile};
-        let mut lab = PeerLab::bind(
-            0,
-            PeerLabConfig {
-                admission: Some(PeerLabAdmission::default()),
-                ..Default::default()
-            },
-        )
+        let mut lab = PeerLab::prepare(PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..Default::default()
+        })
         .unwrap();
         let profile = ReleaseProfile::fixture("3.0.32");
         let map = PeerLabAdmission::default().map_url;

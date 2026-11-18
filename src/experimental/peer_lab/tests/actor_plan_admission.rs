@@ -4,12 +4,13 @@ use super::super::super::{
     actor_open::BlockContent,
     archive::ByteOrder,
     control_messages::{NetIdType, NetIdValue, UniqueNetId},
+    game_state_open::handle,
     manager_open::PLAYER_HISTORY_HANDLE,
     packet::BitWriter,
     packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
     prospect_info::{PlayerHistoryEntry, SavedQuestVariable},
     quest_open::{StitchedQuest, quest_actor_handle},
-    rep_layout::RepLayoutLimits,
+    rep_layout::{RepCommand, RepLayoutLimits},
 };
 use super::*;
 
@@ -73,7 +74,7 @@ fn oversized_quest() -> QuestOpenPlan {
 struct AdmissionSnapshot {
     managers: Vec<(ActorKey, ManagerOpenPlan, u32)>,
     quests: Vec<(QuestOpenPlan, u32)>,
-    references: super::super::super::game_state_open::GameStateManagers,
+    references: GameStateManagers,
     values: BTreeMap<u32, RepValue>,
     quest_base: Option<QuestOpenBasePlan>,
     guids: String,
@@ -158,11 +159,178 @@ fn snapshot(lab: &PeerLab) -> AdmissionSnapshot {
 }
 
 fn admission_lab() -> PeerLab {
-    let mut lab = prospect_refresh_lab();
+    let mut lab = unbound_prospect_refresh_lab();
     lab.enable_actor_uids(crate::actor_uids::ActorUidLibrary::new(1))
         .unwrap();
     lab.seed_actor_uids([77]).unwrap();
     lab
+}
+
+#[test]
+fn unsupported_game_state_reference_rejects_the_whole_registration() {
+    let mut lab = admission_lab();
+    // The current GameState omits this handle. Only the new reference uses it.
+    lab.game_state_open.as_mut().unwrap().plan.layout
+        [handle::PLAYER_HISTORY_TRACKER as usize - 1] = RepCommand::Bool;
+    let radiation = manager(ManagerSlot::Radiation);
+    let history = manager(ManagerSlot::PlayerHistory);
+    let before = snapshot(&lab);
+    let error = lab
+        .enable_manager_opens(
+            vec![
+                (ManagerSlot::Radiation, radiation.clone()),
+                (ManagerSlot::PlayerHistory, history.clone()),
+            ],
+            6,
+        )
+        .unwrap_err();
+    let assert_game_state_error = |error: anyhow::Error| {
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("GameState open content cannot be encoded"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!(
+                "property handle {}",
+                handle::PLAYER_HISTORY_TRACKER
+            )),
+            "{error}"
+        );
+    };
+    assert_game_state_error(error);
+    assert_eq!(snapshot(&lab), before);
+
+    lab.enable_manager_opens(vec![(ManagerSlot::Radiation, radiation)], 6)
+        .unwrap();
+    let before = snapshot(&lab);
+    assert_game_state_error(
+        lab.add_manager_open(ManagerSlot::PlayerHistory, history.clone())
+            .unwrap_err(),
+    );
+    assert_eq!(snapshot(&lab), before);
+    assert_game_state_error(
+        lab.add_quest_opens_with_manager(
+            vec![quest(7001, Vec::new())],
+            Some((ManagerSlot::PlayerHistory, history)),
+        )
+        .unwrap_err(),
+    );
+    assert_eq!(snapshot(&lab), before);
+}
+
+#[test]
+fn interleaved_world_opens_carry_guid_widths_into_the_candidate_manager() {
+    let mut lab = admission_lab();
+    let shared_actor = ActorKey::Saved(7000);
+    let mut talent = manager(ManagerSlot::WorldTalent);
+    let mut history = manager(ManagerSlot::PlayerHistory);
+    for plan in [&mut talent, &mut history] {
+        plan.layout.push(RepCommand::Object);
+        plan.actors
+            .insert(u32::try_from(plan.layout.len()).unwrap(), shared_actor);
+    }
+    let radiation = manager(ManagerSlot::Radiation);
+    let first_quest = quest(7001, Vec::new());
+    lab.enable_manager_opens(vec![(ManagerSlot::Radiation, radiation.clone())], 6)
+        .unwrap();
+    assert_eq!(lab.add_quest_open(first_quest.clone()).unwrap(), 7);
+    assert_eq!(
+        lab.add_manager_open(ManagerSlot::WorldTalent, talent.clone())
+            .unwrap(),
+        8
+    );
+    for _ in 0..51 {
+        lab.guid_cache.assign_dynamic().unwrap();
+    }
+    let session = lab.game_state_open.as_ref().unwrap();
+    let mut state = session.open_state(&session.state, 0.0).unwrap();
+    ManagerSlot::PlayerHistory.reference_from(&mut state.managers);
+    let padded = |mut plan: ManagerOpenPlan, bytes| {
+        let mut payload = BitWriter::new();
+        payload.write_bytes(&vec![0; bytes]);
+        plan.components[0].block = Block::Encoded(BlockContent {
+            has_rep_layout: false,
+            payload: Payload::from_writer(payload),
+        });
+        plan
+    };
+    let sample_padding = MAX_CONSTRUCTED_BUNCH_BYTES / 2;
+    let sample_history = padded(history.clone(), sample_padding);
+    let mut padding = None;
+    for order in ORDERS {
+        let open_manager =
+            |cache: &mut NetGuidCache, plan: &ManagerOpenPlan, slot: ManagerSlot, channel| {
+                compose_manager_open(
+                    cache,
+                    &mut ConnectionExports::new(),
+                    plan,
+                    slot.key(),
+                    channel,
+                    order,
+                )
+                .unwrap()
+                .bunch
+                .payload
+                .bit_len()
+                .div_ceil(8)
+            };
+        let open_quest = |cache: &mut NetGuidCache| {
+            compose_quest_open(cache, &mut ConnectionExports::new(), &first_quest, 7, order)
+                .unwrap();
+        };
+        let mut cache = lab.guid_cache.clone();
+        compose_game_state_open(
+            &mut cache,
+            &mut ConnectionExports::new(),
+            &session.plan,
+            &state,
+            session.channel_index,
+            order,
+        )
+        .unwrap();
+        open_manager(&mut cache, &radiation, ManagerSlot::Radiation, 6);
+
+        // Replaying managers as a group would assign the shared reference
+        // before the quest, just below the packed GUID width boundary.
+        let mut grouped = cache.clone();
+        open_manager(&mut grouped, &talent, ManagerSlot::WorldTalent, 8);
+        open_quest(&mut grouped);
+        assert_eq!(grouped.actor_guid(shared_actor).unwrap(), 126);
+
+        open_quest(&mut cache);
+        open_manager(&mut cache, &talent, ManagerSlot::WorldTalent, 8);
+        assert_eq!(cache.actor_guid(shared_actor).unwrap(), 132);
+
+        let history_bytes = |cache: &mut NetGuidCache, plan: &ManagerOpenPlan| {
+            open_manager(cache, plan, ManagerSlot::PlayerHistory, 9)
+        };
+        let narrow_bytes = history_bytes(&mut grouped, &sample_history);
+        let exact_padding = sample_padding + (MAX_CONSTRUCTED_BUNCH_BYTES - narrow_bytes);
+        assert_eq!(*padding.get_or_insert(exact_padding), exact_padding);
+        let near_limit_history = padded(history.clone(), exact_padding);
+        assert_eq!(
+            history_bytes(&mut grouped, &near_limit_history),
+            MAX_CONSTRUCTED_BUNCH_BYTES
+        );
+        assert_eq!(
+            history_bytes(&mut cache, &near_limit_history),
+            MAX_CONSTRUCTED_BUNCH_BYTES + 1
+        );
+        assert!(
+            history_bytes(&mut lab.guid_cache.clone(), &near_limit_history)
+                <= MAX_CONSTRUCTED_BUNCH_BYTES
+        );
+    }
+    let before = snapshot(&lab);
+    let error = lab
+        .add_manager_open(
+            ManagerSlot::PlayerHistory,
+            padded(history, padding.unwrap()),
+        )
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("manager open exceeds the bunch byte limit"));
+    assert_eq!(snapshot(&lab), before);
 }
 
 #[test]
@@ -333,6 +501,8 @@ fn manager_admission_bounds_the_whole_bunch_even_when_each_block_fits() {
 fn deferred_join_refuses_registration_without_changing_its_plan_then_resumes() {
     for configured in [false, true] {
         let mut lab = admission_lab();
+        lab.attach_listener(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0), None)
+            .unwrap();
         // Every individual open fits this ring; filling it first models live
         // Welcome/ACK traffic delaying Join's controller, not an impossible plan.
         lab.config.packet.sent_capacity = 16;

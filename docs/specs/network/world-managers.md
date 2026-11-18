@@ -91,8 +91,12 @@ Framing is in [actor channel bunches](actor-channel.md).
   F-862, F-866, F-914, F-933, F-934). List gaps, unopenable/overflowing
   quests or unknown missions skip cleanly; 15-prospect counts: F-867, F-934.
 - Native `PeerLab` registration checks the GameState level, unique actor keys
-  and free channels within range, then encodes each proposed manager or quest
-  open in both byte orders and checks its payload against the 128 KiB bunch cap.
+  and free channels within range. In each byte order it encodes the candidate
+  GameState with its manager references, then the configured and proposed
+  managers and quests in channel order. One copy of the current GUID cache
+  carries allocations through each sequence. Every open must fit the 128 KiB
+  bunch cap. Future player opens can add GUID allocations, and runtime data can
+  change the payloads.
   A refusal commits no actor in the call, including an optional trailing
   manager, and leaves GameState references, live GUIDs and exports intact.
   `run` reports refused saved plans in `skipped_quests` or `skipped_managers`.
