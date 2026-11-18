@@ -39,8 +39,8 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 
 use super::actor_channel::{
-    ActorBunchBody, ActorChannelCodec, ActorChannelLimits, BlockTarget, CompressedRotator,
-    ContentBlock, encode_actor_bunch_body, read_packed, read_rotator, write_rotator,
+    ActorBunchBody, ActorChannelCodec, BlockTarget, CompressedRotator, ContentBlock,
+    encode_actor_bunch_body, read_packed, read_rotator, write_rotator,
 };
 use super::archive::ByteOrder;
 use super::packet::{BitReader, BitWriter, Payload};
@@ -355,7 +355,10 @@ pub struct RootMotionMontage {
     pub rotation: [u16; 3],
 }
 
-/// One `ClientMoveResponsePacked` correction (`bAckGoodMove` clear). Its
+/// One `ClientMoveResponsePacked` correction (`bAckGoodMove` clear), as
+/// F-1204 records for the pinned public server 26613688, whose addresses the
+/// comments in this module give; F-1205 records the check against captured
+/// responses. Its
 /// container bits, in order, as `FCharacterMoveResponseDataContainer::Serialize`
 /// (`0x1434b0c30`) writes them into the response bit writer:
 ///
@@ -431,7 +434,7 @@ impl MoveCorrection {
 }
 
 /// The optional parts a correction carries.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CorrectionPresence {
     pub rotation: bool,
     pub base: bool,
@@ -468,13 +471,7 @@ pub enum MoveResponse {
 /// version and name limits for the base bone.
 pub fn move_response_codec(engine_net_version: u32, order: ByteOrder) -> RepLayoutCodec {
     RepLayoutCodec {
-        actor: ActorChannelCodec {
-            engine_net_version,
-            exports_enabled: false,
-            has_level: true,
-            order,
-            limits: ActorChannelLimits::default(),
-        },
+        actor: super::session_open::actor_codec(engine_net_version, order),
         checksums: false,
         limits: RepLayoutLimits::default(),
     }
@@ -630,9 +627,13 @@ pub fn write_move_correction(
 }
 
 /// Write either response; an acknowledgement is [`write_good_move_ack`]'s.
+/// Refuses what [`read_move_response`] refuses.
 pub fn write_move_response(response: &MoveResponse, codec: &RepLayoutCodec) -> Result<Payload> {
     match response {
-        MoveResponse::Ack(timestamp) => Ok(write_good_move_ack(*timestamp, codec.actor.order)),
+        MoveResponse::Ack(timestamp) => Ok(write_good_move_ack(
+            finite(*timestamp, "move response timestamp")?,
+            codec.actor.order,
+        )),
         MoveResponse::Correction(correction) => write_move_correction(correction, codec),
     }
 }
@@ -703,11 +704,12 @@ fn read_correction(
     Ok(correction)
 }
 
-/// Read a field-30 payload strictly, an acknowledgement or a correction: a
-/// set presence bit, a canonical packed count of at most
+/// Read a field-30 payload strictly, an acknowledgement or a correction
+/// (F-1204, F-1205): a set presence bit, a canonical packed count of at most
 /// [`MAX_MOVE_RESPONSE_DATA_BITS`] equal to the remaining bits, and a
-/// container that consumes exactly those bits. Error messages carry no
-/// values.
+/// container that consumes exactly those bits. Either kind's timestamp must
+/// be finite, unlike [`read_good_move_ack`], which keeps the original's
+/// any-bit-pattern behaviour. Error messages carry no values.
 pub fn read_move_response(payload: &Payload, codec: &RepLayoutCodec) -> Result<MoveResponse> {
     let order = codec.actor.order;
     let mut reader = payload.reader();
@@ -727,7 +729,7 @@ pub fn read_move_response(payload: &Payload, codec: &RepLayoutCodec) -> Result<M
     let good = bit(&mut reader, "good move bit")?;
     let timestamp = f32::from_bits(read_u32(&mut reader, order, "move response timestamp")?);
     let response = if good {
-        MoveResponse::Ack(timestamp)
+        MoveResponse::Ack(finite(timestamp, "move response timestamp")?)
     } else {
         MoveResponse::Correction(read_correction(&mut reader, timestamp, codec)?)
     };
@@ -1606,6 +1608,19 @@ mod correction_tests {
                 );
                 let correction = write_move_correction(&falling(), &codec).unwrap();
                 assert!(read_good_move_ack(&correction, order).is_err());
+            }
+            // The strict reader and writer refuse a non-finite acknowledged
+            // timestamp, which the plain acknowledgement codec still copies.
+            for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let payload = write_good_move_ack(bad, order);
+                assert_eq!(
+                    read_good_move_ack(&payload, order).unwrap().to_bits(),
+                    bad.to_bits()
+                );
+                let error = read_move_response(&payload, &codec).unwrap_err();
+                assert!(error.to_string().contains("not finite"), "{error}");
+                let error = write_move_response(&MoveResponse::Ack(bad), &codec).unwrap_err();
+                assert!(error.to_string().contains("not finite"), "{error}");
             }
         }
     }
