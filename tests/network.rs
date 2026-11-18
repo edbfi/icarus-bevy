@@ -1036,15 +1036,24 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
     if let Err((stage, error)) = session_cycle(address, pinned, Duration::from_secs(3)) {
         panic!("{stage:?}: {error:#}");
     }
-    server.wait_for("status after both sessions closed", |record| {
+    let status = server.wait_for("status after both sessions closed", |record| {
         record["event"] == "status"
             && record["sessions"]["closed_by_client"] == 1
             && record["sessions"]["closed_by_reply"] == 1
     });
+    let close = &status["sessions"]["last_client_control_close"];
+    assert_eq!(close["reason"], 0);
+    assert_eq!(close["phase"], "awaiting_begin");
+    assert_eq!(close["own_record_ack"], "unacknowledged");
+    let release = &close["frozen_movement_release"];
+    assert_eq!(release["state"], "unscheduled");
+    assert_eq!(release["sent"], false);
+    assert!(release.get("pawn").is_none());
     sigterm(&server);
     assert!(server.wait_exit().success());
     let stopped = server.event("stopped");
     let sessions = &stopped["sessions"];
+    assert_eq!(&sessions["last_client_control_close"], close);
     for (field, value) in [
         ("upgrades_sent", 1),
         ("closed_by_reply", 1),
