@@ -121,7 +121,7 @@ All actions must settle without failure under the
 
 Pure plans precede state; wrong Hello → Upgrade. Poll ≤32 datagrams before
 ticks. Signals close/drain/save. `network_listening`: address/`version_check`;
-`status`/`stopped`: counts. Prospect/mode F-804; data F-993. No ACK/NAK progress
+`status` and `stopped` include counts and the [last client control close](network-readiness.md#readiness-counts). Prospect/mode F-804; data F-993. No ACK/NAK progress
 despite traffic causes `closed_by_delivery_stall`/`peers_delivery_stalled`, unlike idle
 (F-1013). Unanswered query: `closed_by_friends_query_timeout` despite ACKs
 (F-1115, N-019). Controller/possession/pawn ACKs precede records; abandonment
