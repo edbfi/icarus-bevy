@@ -6905,6 +6905,70 @@ impl PeerLab {
         }
     }
 
+    /// Initial stages capture indices once at Join. Appending would change the
+    /// GameState's references without adding matching stages to that sequence.
+    fn ensure_actor_registration_idle(&self) -> Result<()> {
+        ensure!(
+            self.peers
+                .values()
+                .all(|entry| entry.initial_opens.is_none()),
+            "actor registration cannot change while initial opens are pending"
+        );
+        Ok(())
+    }
+
+    /// Precompose current content without publishing GUIDs or exports. Runtime
+    /// checks still handle future GUID widths, changing values and queue pressure.
+    fn validate_manager_open_content(
+        &self,
+        plan: &ManagerOpenPlan,
+        key: ActorKey,
+        channel: u32,
+    ) -> Result<()> {
+        for order in [
+            super::archive::ByteOrder::Little,
+            super::archive::ByteOrder::Big,
+        ] {
+            let open = compose_manager_open(
+                &mut self.guid_cache.clone(),
+                &mut ConnectionExports::new(),
+                plan,
+                key,
+                channel,
+                order,
+            )
+            .context("manager open content cannot be encoded")?;
+            ensure!(
+                open.bunch.payload.bit_len().div_ceil(8)
+                    <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                "manager open exceeds the bunch byte limit"
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_quest_open_content(&self, plan: &QuestOpenPlan, channel: u32) -> Result<()> {
+        for order in [
+            super::archive::ByteOrder::Little,
+            super::archive::ByteOrder::Big,
+        ] {
+            let open = compose_quest_open(
+                &mut self.guid_cache.clone(),
+                &mut ConnectionExports::new(),
+                plan,
+                channel,
+                order,
+            )
+            .context("quest open content cannot be encoded")?;
+            ensure!(
+                open.bunch.payload.bit_len().div_ceil(8)
+                    <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                "quest open exceeds the bunch byte limit"
+            );
+        }
+        Ok(())
+    }
+
     /// After the GameState open, also open the world's managers (F-859) on
     /// each joined connection, after its PlayerState, on consecutive
     /// channels from `first_channel`, and reference them from the GameState
@@ -6912,7 +6976,9 @@ impl PeerLab {
     /// other than the GameState's, on a taken channel, or on duplicate manager
     /// or quest keys. Once any manager opens are configured, this method rejects
     /// replacement; use the additive
-    /// APIs to register further managers and quests.
+    /// APIs to register further managers and quests. Content must encode in
+    /// both byte orders before publication. Nonempty registrations are refused
+    /// while any peer has initial opens pending.
     pub fn enable_manager_opens(
         &mut self,
         plans: Vec<(ManagerSlot, ManagerOpenPlan)>,
@@ -6922,6 +6988,9 @@ impl PeerLab {
             self.manager_opens.is_empty(),
             "manager opens are already configured"
         );
+        if !plans.is_empty() {
+            self.ensure_actor_registration_idle()?;
+        }
         let Some(session) = &self.game_state_open else {
             bail!("the manager opens follow the GameState open");
         };
@@ -6945,6 +7014,7 @@ impl PeerLab {
                         .all(|(quest, _)| quest.key != slot.key()),
                 "the manager key is already opened"
             );
+            self.validate_manager_open_content(&plan, slot.key(), channel)?;
             slot.reference_from(&mut managers);
             opens.push((slot.key(), plan, channel));
         }
@@ -6959,8 +7029,10 @@ impl PeerLab {
     /// enabled managers and quests, on the channel after theirs, and reference
     /// it from the GameState open; returns the channel. Fails without enabled
     /// managers, on a slot already opened, on a level other than the
-    /// GameState's or on a taken channel.
+    /// GameState's, on a taken channel or on unencodable content in either
+    /// byte order. Refused while any peer has initial opens pending.
     pub fn add_manager_open(&mut self, slot: ManagerSlot, plan: ManagerOpenPlan) -> Result<u32> {
+        self.ensure_actor_registration_idle()?;
         let Some(session) = &self.game_state_open else {
             bail!("the manager opens follow the GameState open");
         };
@@ -6991,6 +7063,7 @@ impl PeerLab {
             self.free_session_channel(channel),
             "a manager channel collides with another channel or is out of range"
         );
+        self.validate_manager_open_content(&plan, slot.key(), channel)?;
         if let Some(session) = &mut self.game_state_open {
             slot.reference_from(&mut session.state.managers);
         }
@@ -7130,8 +7203,9 @@ impl PeerLab {
     /// (`F-934`), plus an optional trailing world manager (such as
     /// `ManagerSlot::Quest`), on consecutive channels after the enabled
     /// managers and quests. If any quest or the trailing manager fails level,
-    /// key-uniqueness or channel-capacity validation, neither `quest_opens`
-    /// nor `manager_opens` is modified.
+    /// key-uniqueness, channel-capacity or content validation in either byte
+    /// order, no registration or GameState reference changes. Nonempty batches
+    /// are refused while any peer has initial opens pending.
     pub fn add_quest_opens_with_manager(
         &mut self,
         plans: Vec<QuestOpenPlan>,
@@ -7140,6 +7214,7 @@ impl PeerLab {
         if plans.is_empty() && manager.is_none() {
             return Ok((Vec::new(), None));
         }
+        self.ensure_actor_registration_idle()?;
         let Some(session) = &self.game_state_open else {
             bail!("the quest opens follow the GameState open");
         };
@@ -7209,6 +7284,13 @@ impl PeerLab {
             }
             None => None,
         };
+        // Complete all content checks before publishing even the first quest.
+        for (plan, &channel) in plans.iter().zip(&quest_channels) {
+            self.validate_quest_open_content(plan, channel)?;
+        }
+        if let (Some((slot, plan)), Some(channel)) = (&manager, manager_channel) {
+            self.validate_manager_open_content(plan, slot.key(), channel)?;
+        }
         for (plan, &channel) in plans.into_iter().zip(&quest_channels) {
             self.quest_opens.push((plan, channel));
         }
@@ -22617,6 +22699,7 @@ mod tests {
             assert!(!text.contains("AuthoredUnreliable"));
         }
     }
+    mod actor_plan_admission;
     mod friends_query_deadline;
     mod level_visibility;
     mod lossy_join;

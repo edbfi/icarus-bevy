@@ -5008,9 +5008,80 @@ fn only_saved_controllers_choose_returning_history_and_duplicates_keep_their_nam
 }
 
 #[test]
+fn oversized_initial_history_is_rejected_before_registration() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        manager_open::{ManagerSlot, compose_manager_open},
+        prospect_info::PlayerHistoryEntry,
+        rep_layout::RepLayoutLimits,
+        session_open::{ConnectionExports, NetGuidCache},
+    };
+    let mut bound = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap();
+    let template = bound
+        .saved_managers
+        .iter()
+        .find(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+        .unwrap()
+        .1
+        .clone();
+    let plan = template
+        .clone()
+        .with_player_history(&vec![
+            PlayerHistoryEntry {
+                user_id: Vec::new(),
+                chr_slot: 0,
+                cached_character_name: Vec::new(),
+            };
+            usize::from(
+                RepLayoutLimits::default().max_array_elements
+            )
+        ])
+        .unwrap();
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let error = compose_manager_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &plan,
+            ManagerSlot::PlayerHistory.key(),
+            9,
+            order,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("property stream exceeds the entry limit"));
+    }
+    let before = bound.lab.manager_open_count();
+    let error = bound
+        .lab
+        .add_manager_open(ManagerSlot::PlayerHistory, plan)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("manager open content cannot be encoded"));
+    assert_eq!(bound.lab.manager_open_count(), before);
+    assert_eq!(bound.lab.peer_count(), 0);
+    assert!(bound.lab.claimed_actor_uids().is_empty());
+    assert_eq!(bound.lab.stats().manager_open_errors, 0);
+    assert_eq!(bound.lab.stats().peers_failed, 0);
+    assert_eq!(
+        bound
+            .lab
+            .add_manager_open(ManagerSlot::PlayerHistory, template)
+            .unwrap(),
+        9
+    );
+}
+
+#[test]
 fn history_bounds_count_errors_and_keep_the_completed_session() {
     use icarus_bevy::experimental::{
-        manager_open::ManagerSlot, prospect_info::PlayerHistoryEntry, rep_layout::RepLayoutLimits,
+        archive::ByteOrder,
+        manager_open::{ManagerSlot, compose_manager_open},
+        prospect_info::PlayerHistoryEntry,
+        rep_layout::RepLayoutLimits,
+        session_open::{ConnectionExports, NetGuidCache},
     };
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let pinned = profile.pin.network_checksum;
@@ -5021,7 +5092,10 @@ fn history_bounds_count_errors_and_keep_the_completed_session() {
     })
     .unwrap()
     .unwrap();
-    let entries: Vec<_> = (0..RepLayoutLimits::default().max_array_elements)
+    // The open also budgets two roles, two component references and History.
+    // This initial plan fits; one more entry fails full-open composition.
+    let count = (RepLayoutLimits::default().max_entries - 5) / 3;
+    let entries: Vec<_> = (0..count)
         .map(|index| PlayerHistoryEntry {
             user_id: format!("saved-{index}").encode_utf16().collect(),
             chr_slot: 0,
@@ -5037,6 +5111,17 @@ fn history_bounds_count_errors_and_keep_the_completed_session() {
         .clone()
         .with_player_history(&entries)
         .unwrap();
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        compose_manager_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &plan,
+            ManagerSlot::PlayerHistory.key(),
+            9,
+            order,
+        )
+        .unwrap();
+    }
     let channel = bound
         .lab
         .add_manager_open(ManagerSlot::PlayerHistory, plan)
