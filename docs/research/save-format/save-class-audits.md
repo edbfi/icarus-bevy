@@ -31,8 +31,8 @@ F-920.
 Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
 append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;
 M-1517 qualifies the repeated reader.
-F-1260 binds one removal caller and its 24-byte argument copy. Later calls can
-change the destination. Its final contents, owner/receiver, element storage,
+F-1260 binds a 24-byte copy into one removal caller’s stack argument.
+A later opaque call may alter the destination. Its final contents, owner/receiver, element storage,
 getter/class identity, ABI, aliases, lifetimes and client/runtime/import
 remain open ([boundary](../../specs/save-format/restore-rules.md#confirmed)).
 
