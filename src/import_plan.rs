@@ -25,7 +25,9 @@ use crate::experimental::typed_value::{Item, Scalar, TypedProperty, TypedTree, V
 use crate::import_candidate::DecodedImportCandidate;
 use crate::prospect::EnvelopeInspection;
 
+mod recorder_rows;
 mod world_catalog;
+use recorder_rows::{RecorderRowTable, RecorderRowTablesFile, RecorderRows, ScopedTableIssue};
 use world_catalog::{WorldCatalog, WorldCatalogFile};
 
 /// Base recorder fields: the policy, class and path every class saves, the
@@ -113,7 +115,7 @@ pub const MAX_CATALOG_REFERENCE_UNITS: usize = 1024;
 /// it lacks in the role it is used in blocks import.
 #[derive(Clone, Default)]
 pub struct ContentCatalog {
-    /// References that resolve in every role ([`Self::from_references`]).
+    /// Flat references that resolve in every role ([`Self::from_references`]).
     any: BTreeSet<Vec<u16>>,
     by_role: BTreeMap<ContentRole, BTreeSet<Vec<u16>>>,
     /// Row names of the official server's data tables, ASCII-lowercased:
@@ -122,6 +124,8 @@ pub struct ContentCatalog {
     data_rows: BTreeSet<Vec<u16>>,
     /// Pak rows from the unique D_ProspectList table only (F-911).
     prospect_rows: BTreeSet<Vec<u16>>,
+    /// Ordered membership for the two recorder fields with qualified tables.
+    recorder_rows: RecorderRows,
     /// Format-2 declarations resolve world references in their owning context.
     world: Option<WorldCatalog>,
 }
@@ -136,13 +140,16 @@ impl std::fmt::Debug for ContentCatalog {
 }
 
 /// Format 1 lists references by role. Format 2 adds scoped world declarations
-/// instead of the flat world-role lists. Instance names are never resolved.
+/// instead of the flat world-role lists. Either format can declare ordered
+/// recorder row tables. Instance names are never resolved.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CatalogFile {
     format: u32,
     #[serde(default)]
     references: CatalogReferences,
+    #[serde(default)]
+    row_tables: RecorderRowTablesFile,
     world: Option<WorldCatalogFile>,
 }
 
@@ -183,17 +190,15 @@ impl ContentCatalog {
         Self::default()
     }
 
-    /// References that resolve in every role.
+    /// Flat references that resolve in every role. Recorder fields with a
+    /// qualified table require an ordered declaration or pak table.
     pub fn from_references<'a>(references: impl IntoIterator<Item = &'a str>) -> Self {
         Self {
             any: references
                 .into_iter()
                 .map(|reference| reference.encode_utf16().collect())
                 .collect(),
-            by_role: BTreeMap::new(),
-            data_rows: BTreeSet::new(),
-            prospect_rows: BTreeSet::new(),
-            world: None,
+            ..Self::default()
         }
     }
 
@@ -234,6 +239,7 @@ impl ContentCatalog {
         }
         let mut catalog = Self {
             world: file.world.map(WorldCatalog::compile).transpose()?,
+            recorder_rows: RecorderRows::compile(file.row_tables)?,
             ..Self::default()
         };
         for (role, list) in [
@@ -291,8 +297,7 @@ impl ContentCatalog {
     /// Distinct authored reference spellings across every role, plus table row
     /// names not already represented by an authored reference. Table row names
     /// are deduplicated across tables and compared to authored references with
-    /// ASCII case folding. Authored spellings remain distinct because their
-    /// resolution is case-sensitive; counting does not change role resolution.
+    /// ASCII case folding. Distinct authored spellings are counted separately.
     pub fn len(&self) -> usize {
         let mut all: BTreeSet<&[u16]> = self.any.iter().map(Vec::as_slice).collect();
         for entries in self.by_role.values() {
@@ -301,6 +306,7 @@ impl ContentCatalog {
         if let Some(world) = &self.world {
             all.extend(world.references());
         }
+        all.extend(self.recorder_rows.authored_references());
         let authored_rows: BTreeSet<Vec<u16>> = all.iter().map(|units| fold_case(units)).collect();
         all.len() + self.data_rows.difference(&authored_rows).count()
     }
@@ -309,6 +315,7 @@ impl ContentCatalog {
         self.any.is_empty()
             && self.by_role.is_empty()
             && self.data_rows.is_empty()
+            && self.recorder_rows.authored_references().next().is_none()
             && self
                 .world
                 .as_ref()
@@ -317,8 +324,9 @@ impl ContentCatalog {
 
     /// Also resolve data-row references against every row of every data
     /// table in `pak` (F-828, F-840); returns the catalog, the number of
-    /// tables read and of JSON members skipped as not tables. A member that
-    /// cannot be read or parsed fails.
+    /// tables read and of JSON members skipped as non-tables. Each JSON
+    /// member is scanned by its indexed path. Recorder-specific fields also
+    /// require an unambiguous ordered table. Read and parse errors fail the scan.
     pub fn with_data_tables(
         mut self,
         pak: &mut crate::data_pak::DataPak,
@@ -329,8 +337,10 @@ impl ContentCatalog {
             .map(str::to_owned)
             .collect();
         let (mut read, mut skipped) = (0, 0);
+        let mut scoped_rows = BTreeMap::new();
         for member in members {
-            match pak.member_rows(&member)? {
+            let rows = pak.indexed_member_rows(&member)?;
+            match &rows {
                 Some(rows) => {
                     read += 1;
                     self.data_rows.extend(
@@ -339,6 +349,14 @@ impl ContentCatalog {
                     );
                 }
                 None => skipped += 1,
+            }
+            if let Some(table) = RecorderRowTable::for_pak_member(&member) {
+                // A second member with the same suffix makes the table
+                // ambiguous, including when either member has no rows array.
+                scoped_rows
+                    .entry(table)
+                    .and_modify(|rows| *rows = None)
+                    .or_insert(rows);
             }
         }
         // Use the same suffix lookup and ambiguity rejection as DataTables.
@@ -349,6 +367,7 @@ impl ContentCatalog {
                     .map(|row| fold_case(&row.encode_utf16().collect::<Vec<u16>>())),
             );
         }
+        self.recorder_rows.attach_pak(scoped_rows);
         Ok((self, read, skipped))
     }
 
@@ -400,13 +419,14 @@ impl ContentCatalog {
 
 /// `units` with ASCII letters lowercased.
 fn fold_case(units: &[u16]) -> Vec<u16> {
-    units
-        .iter()
-        .map(|unit| match u8::try_from(*unit) {
-            Ok(byte) => u16::from(byte.to_ascii_lowercase()),
-            Err(_) => *unit,
-        })
-        .collect()
+    units.iter().copied().map(ascii_lower_unit).collect()
+}
+
+fn ascii_lower_unit(unit: u16) -> u16 {
+    match u8::try_from(unit) {
+        Ok(byte) => u16::from(byte.to_ascii_lowercase()),
+        Err(_) => unit,
+    }
 }
 
 /// Why the plan cannot import. Details contain only counts.
@@ -426,6 +446,10 @@ pub enum ImportBlocker {
     UninterpretedValues { leaves: usize },
     /// Content references the native catalog does not define.
     UnmappedContent { distinct: usize, references: usize },
+    /// Unmapped recorder row references whose authored and pak tables disagree.
+    ConflictingRecorderRowTables { references: usize },
+    /// Present scoped recorder row fields that could not be read as names.
+    UnexpectedRecorderRowFieldTypes { fields: usize },
     /// Actor transforms with a non-finite component.
     NonFiniteTransforms { recorders: usize },
     /// Present actor transforms with an unexpected struct identity or shape.
@@ -662,6 +686,8 @@ pub fn plan_decoded_import(
     };
     let mut distinct: BTreeMap<Vec<u16>, bool> = BTreeMap::new();
     let mut role_distinct: BTreeMap<(ContentRole, Vec<u16>), bool> = BTreeMap::new();
+    let mut conflicting_recorder_rows = 0;
+    let mut unexpected_recorder_row_types = 0;
     let map = staged_import.prospect_map_name.clone();
     if catalog.world.is_some() && map.is_empty() {
         plan.blockers.push(ImportBlocker::MissingWorldMap);
@@ -735,6 +761,7 @@ pub fn plan_decoded_import(
         // identity remains in the candidate even when it is unregistered.
         let label = recorder_class_label(recorder.class_units())
             .unwrap_or_else(|| "unregistered".to_owned());
+        let row_table = RecorderRowTable::for_recorder(&label);
         let class_plan = plan.classes.entry(label).or_default();
         if !decision.retained {
             plan.recorders.dropped_by_validate += 1;
@@ -795,8 +822,12 @@ pub fn plan_decoded_import(
             }
         }
 
-        let mut references = References::default();
+        let mut references = References {
+            row_table,
+            ..References::default()
+        };
         references.tree(&typed.tree, None);
+        unexpected_recorder_row_types += references.unexpected_row_types;
         let owner_class = typed
             .tree
             .get(ACTOR_CLASS)
@@ -806,9 +837,19 @@ pub fn plan_decoded_import(
             });
         plan.content.name_references += references.names;
         plan.content.path_references += references.paths;
-        for (role, reference) in references.values {
+        for (role, row_table, reference) in references.values {
             plan.content.roles.entry(role).or_default().references += 1;
-            let mapped = catalog.contains_in_world(role, &reference, &map, owner_class);
+            let mapped = match row_table {
+                Some(table) => match catalog.recorder_rows.contains(table, &reference) {
+                    Ok(mapped) => mapped,
+                    Err(ScopedTableIssue::Unusable) => false,
+                    Err(ScopedTableIssue::Conflicting) => {
+                        conflicting_recorder_rows += 1;
+                        false
+                    }
+                },
+                None => catalog.contains_in_world(role, &reference, &map, owner_class),
+            };
             role_distinct
                 .entry((role, reference.clone()))
                 .and_modify(|all| *all &= mapped)
@@ -816,8 +857,7 @@ pub fn plan_decoded_import(
             if !role.resolves_against_catalog() {
                 continue;
             }
-            // A reference maps only where the catalog defines it in every
-            // role it is used in.
+            // A spelling maps only if all of its occurrences resolve.
             distinct
                 .entry(reference)
                 .and_modify(|all| *all &= mapped)
@@ -857,6 +897,18 @@ pub fn plan_decoded_import(
             distinct: plan.content.unmapped_distinct,
             references: plan.content.unmapped_references,
         });
+    }
+    if conflicting_recorder_rows > 0 {
+        plan.blockers
+            .push(ImportBlocker::ConflictingRecorderRowTables {
+                references: conflicting_recorder_rows,
+            });
+    }
+    if unexpected_recorder_row_types > 0 {
+        plan.blockers
+            .push(ImportBlocker::UnexpectedRecorderRowFieldTypes {
+                fields: unexpected_recorder_row_types,
+            });
     }
     if plan.base_fields.unexpected_types > 0 {
         plan.blockers.push(ImportBlocker::UnexpectedBaseFieldTypes {
@@ -996,9 +1048,11 @@ pub fn actor_transform(tree: &TypedTree) -> Option<[f32; 10]> {
 /// References with the role of the nearest enclosing property.
 #[derive(Default)]
 struct References {
+    row_table: Option<RecorderRowTable>,
+    unexpected_row_types: usize,
     names: usize,
     paths: usize,
-    values: Vec<(ContentRole, Vec<u16>)>,
+    values: Vec<(ContentRole, Option<RecorderRowTable>, Vec<u16>)>,
 }
 
 impl References {
@@ -1006,16 +1060,30 @@ impl References {
     /// of type `within` (empty when unknown).
     fn tree(&mut self, tree: &TypedTree, within: Option<&[u16]>) {
         for property in &tree.properties {
-            self.value(ContentRole::of(&property.name, within), &property.value);
+            // Staging enforces unique top-level names and index zero. Match
+            // the same exact name and scalar as TypedTree::get and Fields::name.
+            let row_table = self
+                .row_table
+                .filter(|table| within.is_none() && is_name(&property.name, table.field()));
+            if let Some(table) = row_table {
+                match &property.value {
+                    Value::Scalar(name @ Scalar::Name(_)) => {
+                        self.scalar(ContentRole::DataRow, Some(table), name);
+                    }
+                    _ => self.unexpected_row_types += 1,
+                }
+            } else {
+                self.value(ContentRole::of(&property.name, within), &property.value);
+            }
         }
     }
 
     fn value(&mut self, role: ContentRole, value: &Value) {
         match value {
-            Value::Scalar(scalar) => self.scalar(role, scalar),
+            Value::Scalar(scalar) => self.scalar(role, None, scalar),
             Value::ScalarArray { inner, items } => {
                 if matches!(inner, TagKind::Name | TagKind::String) {
-                    items.iter().for_each(|item| self.scalar(role, item));
+                    items.iter().for_each(|item| self.scalar(role, None, item));
                 }
             }
             Value::TaggedStruct { type_name, tree } => self.tree(tree, Some(type_name)),
@@ -1046,17 +1114,17 @@ impl References {
 
     fn item(&mut self, role: ContentRole, item: &Item) {
         match item {
-            Item::Scalar(scalar) => self.scalar(role, scalar),
+            Item::Scalar(scalar) => self.scalar(role, None, scalar),
             Item::Struct(tree) => self.tree(tree, Some(&[])),
             Item::UnnamedStruct(_) => {}
         }
     }
 
-    fn scalar(&mut self, role: ContentRole, scalar: &Scalar) {
+    fn scalar(&mut self, role: ContentRole, row_table: Option<RecorderRowTable>, scalar: &Scalar) {
         match scalar {
             Scalar::Name(units) if !units.is_empty() && !is_none(units) => {
                 self.names += 1;
-                self.values.push((role, units.clone()));
+                self.values.push((role, row_table, units.clone()));
             }
             Scalar::Str(units) if !units.is_empty() && !is_none(units) => {
                 let package_path = is_package_path(units);
@@ -1064,7 +1132,7 @@ impl References {
                     self.paths += 1;
                 }
                 if package_path || role != ContentRole::Unclassified {
-                    self.values.push((role, units.clone()));
+                    self.values.push((role, None, units.clone()));
                 }
             }
             _ => {}

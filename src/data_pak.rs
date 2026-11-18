@@ -366,7 +366,10 @@ impl DataPak {
             .filter(|(path, _)| path.as_str() == suffix || path.ends_with(&format!("/{suffix}")));
         let (_, entry) = matches.next().context("data pak member not found")?;
         ensure!(matches.next().is_none(), "data pak member is ambiguous");
-        let entry = *entry;
+        self.read_entry(*entry)
+    }
+
+    fn read_entry(&mut self, entry: Entry) -> Result<Vec<u8>> {
         let header_bytes = if entry.method == 0 {
             MEMBER_HEADER_BYTES
         } else {
@@ -462,17 +465,28 @@ impl DataPak {
         Ok(parsed.rows.into_iter().map(|row| row.name).collect())
     }
 
-    /// The row names of the data table at member path `member`, or `None`
-    /// when the member is JSON without a `Rows` array (not a table). Read
-    /// and size failures are errors.
-    pub fn member_rows(&mut self, member: &str) -> Result<Option<Vec<String>>> {
+    /// The row names of the member matched by path suffix, or `None` when
+    /// its JSON has no `Rows` field. Read, parse and size failures are errors.
+    pub fn member_rows(&mut self, suffix: &str) -> Result<Option<Vec<String>>> {
+        Self::parse_member_rows(&self.read(suffix)?)
+    }
+
+    /// Read row names from an exact mount-relative path listed by `members`.
+    pub(crate) fn indexed_member_rows(&mut self, path: &str) -> Result<Option<Vec<String>>> {
+        let entry = *self
+            .members
+            .get(path)
+            .context("data pak member not found")?;
+        Self::parse_member_rows(&self.read_entry(entry)?)
+    }
+
+    fn parse_member_rows(bytes: &[u8]) -> Result<Option<Vec<String>>> {
         #[derive(Deserialize)]
         struct Row {
             #[serde(rename = "Name")]
             name: String,
         }
-        let bytes = self.read(member)?;
-        let mut parsed: serde_json::Value = serde_json::from_slice(&bytes)
+        let mut parsed: serde_json::Value = serde_json::from_slice(bytes)
             .map_err(|error| crate::json_parse_error("invalid data table member", error))?;
         let Some(rows) = parsed.get_mut("Rows").map(serde_json::Value::take) else {
             return Ok(None);

@@ -119,6 +119,33 @@ Acceptance conditions for any importer
   `unresolved_prospect_info_enums` when a named or raw enum remains unknown
   after migration. Version 0 resets the prospect info before this check.
   Restoration adapters remain unqualified and native world publication stays disabled.
+- Dry-run row coverage checks the exact top-level field on each typed,
+  retained recorder of the specified class. Staging in `recorders.rs`
+  rejects duplicate top-level property names and nonzero array indices
+  before typing. A present field must decode as `NameProperty`. Otherwise
+  the plan reports `unexpected_recorder_row_field_types` with a field count.
+  Absent fields, empty names and `None` contribute zero references.
+  C019 `QuestName` requires `D_Quests` with ASCII case folding and an index below
+  65,535. C018 `FactionMissionName` requires
+  `D_FactionMissions` with exact case and an index from 0 through 255.
+  Each uses the first matching row in table order
+  ([quest and manager opens](../network/world-managers.md#confirmed)).
+  These occurrences contribute to the existing `data_row` counts and
+  `unmapped_content` blocker.
+- An authored format 1 or 2 catalog may declare either table in
+  `[row_tables]`, for example `D_Quests = ["AuthoredQuest"]` or
+  `D_FactionMissions = ["AuthoredMission"]`. Position in the array is the
+  zero-based index. Each array permits up to 65,536 names of 1 through 1,024
+  UTF-16 units. Repeated names use the first matching position. When both
+  sources supply ordered rows, the arrays must agree in length and at each
+  position under that table's lookup rules. Disagreement also reports
+  `conflicting_recorder_row_tables` with an affected reference count.
+  Ambiguous pak paths or a member without rows leave references to that
+  table unmapped. An absent pak member permits the authored table to supply
+  coverage. Flat authored `data_row` lists and the pak's all-table lookup
+  still serve generic references. The generic scan reads each listed JSON
+  member by its exact indexed path, so tables with the same filename all
+  contribute their rows. Any member read or parse error stops the scan.
 - Native staging (`inspect-save --stage-check`):
   [envelope spec](prospect-envelope.md#candidate) (F-738).
 - For retained C016 managers, `import-save --dry-run` assesses the saved

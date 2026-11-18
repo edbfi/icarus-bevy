@@ -21,6 +21,8 @@ const NO_RECORDER: &str = "/Script/Icarus.NoRecorderComponent";
 const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
 const CONTAINER_DATA: &str = "SavedInventoryContainerData";
 const CONTAINER_LIST: &str = "SavedInventoryContainers";
+const QUEST_MANAGER: &str = "/Script/Icarus.IcarusQuestManagerRecorderComponent";
+const QUEST: &str = "/Script/Icarus.IcarusQuestRecorderComponent";
 const ROW: &str = "SecretRow_7";
 const PATH: &str = "/Game/Secret/Path.Secret_C";
 
@@ -2206,6 +2208,706 @@ fn data_pak(root: &TempDir) -> std::path::PathBuf {
     )
     .unwrap();
     path
+}
+
+fn recorder_with_fields(class: &str, fields: &[Vec<u8>]) -> Vec<u8> {
+    recorder_bytes(class, &[fields.concat(), end(), vec![0; 4]].concat())
+}
+
+fn name_field(field: &str, value: &str) -> Vec<u8> {
+    tag(field, "NameProperty", &[0], &fstring(value))
+}
+
+fn quest_row_recorders(quest: &str, mission: &str) -> [Vec<u8>; 2] {
+    [
+        recorder_with_fields(QUEST, &[name_field("QuestName", quest)]),
+        recorder_with_fields(QUEST_MANAGER, &[name_field("FactionMissionName", mission)]),
+    ]
+}
+
+fn write_row_pak(path: &std::path::Path, tables: &[(&str, Vec<u8>)]) {
+    let members: Vec<_> = tables
+        .iter()
+        .map(|(name, rows)| (*name, rows.as_slice(), true))
+        .collect();
+    fs::write(path, pak_writer::write_pak(&members)).unwrap();
+}
+
+#[test]
+fn recorder_rows_require_their_own_tables_and_keep_per_occurrence_counts() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("rows.pak");
+    let lower = ROW.to_ascii_lowercase();
+    let [quest, manager] = quest_row_recorders(ROW, ROW);
+    let source = envelope(
+        2,
+        &[
+            quest,
+            manager,
+            recorder_with_fields(ACTOR, &[name_field("ItemRowName", ROW)]),
+        ],
+    );
+    for (quest_row, mission_row, quest_mapped, mission_mapped) in [
+        (None, None, false, false),
+        (Some("OtherQuest"), Some("OtherMission"), false, false),
+        (Some(lower.as_str()), None, true, false),
+        (None, Some(ROW), false, true),
+        (Some(lower.as_str()), Some(lower.as_str()), true, false),
+        (Some(lower.as_str()), Some(ROW), true, true),
+    ] {
+        let mut members = vec![("Items/D_Unrelated.json", pak_writer::table_json(&[ROW]))];
+        if let Some(row) = quest_row {
+            members.push(("Quests/D_Quests.json", pak_writer::table_json(&[row])));
+        }
+        if let Some(row) = mission_row {
+            members.push((
+                "Quests/D_FactionMissions.json",
+                pak_writer::table_json(&[row]),
+            ));
+        }
+        write_row_pak(&path, &members);
+        let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+        let (catalog, tables, skipped) = ContentCatalog::from_references([ROW])
+            .with_data_tables(&mut pak)
+            .unwrap();
+        assert_eq!((tables, skipped), (members.len(), 0));
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        let unmapped = usize::from(!quest_mapped) + usize::from(!mission_mapped);
+        assert_eq!(plan.recorders.retained, 3);
+        assert_eq!(plan.recorders.typed, 3);
+        assert_eq!(
+            plan.catalog_references,
+            if quest_row == Some("OtherQuest") {
+                3
+            } else {
+                1
+            }
+        );
+        assert_eq!(plan.content.distinct, 1);
+        assert_eq!(plan.content.name_references, 3);
+        assert_eq!(plan.content.unmapped_references, unmapped);
+        assert_eq!(
+            plan.classes["C019"].unmapped_references,
+            usize::from(!quest_mapped)
+        );
+        assert_eq!(
+            plan.classes["C018"].unmapped_references,
+            usize::from(!mission_mapped)
+        );
+        assert_eq!(
+            plan.content.roles[&ContentRole::DataRow],
+            RoleCount {
+                references: 3,
+                distinct: 1,
+                unmapped_distinct: usize::from(unmapped != 0),
+            }
+        );
+        assert_eq!(plan.importable, unmapped == 0);
+        assert_eq!(
+            plan.blockers,
+            if unmapped == 0 {
+                vec![]
+            } else {
+                vec![ImportBlocker::UnmappedContent {
+                    distinct: 1,
+                    references: unmapped,
+                }]
+            }
+        );
+    }
+}
+
+#[test]
+fn recorder_rows_qualify_only_the_expected_top_level_name_property() {
+    let catalog = ContentCatalog::parse(&format!(
+        "format = 1\n[references]\ndata_row = [\"{ROW}\"]\nunclassified = [\"{ROW}\"]\n"
+    ))
+    .unwrap();
+    let source = envelope(
+        2,
+        &[
+            recorder_with_fields(
+                ACTOR,
+                &[
+                    name_field("QuestName", ROW),
+                    name_field("FactionMissionName", ROW),
+                ],
+            ),
+            recorder_with_fields(
+                QUEST,
+                &[
+                    name_field("FactionMissionName", ROW),
+                    name_field("QuestName", "None"),
+                    struct_tag(
+                        "Other",
+                        "AuthoredRecord",
+                        &[name_field("QuestName", ROW), end()].concat(),
+                    ),
+                ],
+            ),
+            recorder_with_fields(
+                QUEST_MANAGER,
+                &[
+                    name_field("QuestName", ROW),
+                    name_field("FactionMissionName", ""),
+                    struct_tag(
+                        "Other",
+                        "AuthoredRecord",
+                        &[name_field("FactionMissionName", ROW), end()].concat(),
+                    ),
+                ],
+            ),
+        ],
+    );
+    let plan = plan_import(source.as_slice(), &catalog).unwrap();
+    assert!(plan.importable, "{:?}", plan.blockers);
+    assert_eq!(plan.recorders.typed, 3);
+    assert_eq!(plan.content.roles[&ContentRole::DataRow].references, 4);
+    assert_eq!(plan.content.roles[&ContentRole::Unclassified].references, 2);
+    assert_eq!(plan.content.name_references, 6);
+
+    let absent = envelope(
+        2,
+        &[
+            recorder_with_fields(QUEST, &[]),
+            recorder_with_fields(QUEST_MANAGER, &[]),
+        ],
+    );
+    let plan = plan_import(absent.as_slice(), &ContentCatalog::empty()).unwrap();
+    assert!(plan.importable, "{:?}", plan.blockers);
+    assert_eq!(plan.content.name_references, 0);
+    assert!(plan.content.roles.is_empty());
+}
+
+#[test]
+fn recorder_rows_duplicate_or_indexed_tags_fail_during_staging() {
+    let catalog = ContentCatalog::parse(&format!(
+        "format = 1\n[row_tables]\nD_Quests = ['{ROW}']\nD_FactionMissions = ['{ROW}']"
+    ))
+    .unwrap();
+    for (class, field) in [(QUEST, "QuestName"), (QUEST_MANAGER, "FactionMissionName")] {
+        let first = name_field(field, ROW);
+        let other = tag(field, "StrProperty", &[0], &fstring("PrivateWrongType"));
+        let mut indexed = first.clone();
+        let offset = fstring(field).len() + fstring("NameProperty").len() + 4;
+        indexed[offset..offset + 4].copy_from_slice(&1_i32.to_le_bytes());
+        for (fields, reason) in [
+            (
+                vec![first.clone(), other.clone()],
+                "duplicate staged recorder component property",
+            ),
+            (
+                vec![other, first],
+                "duplicate staged recorder component property",
+            ),
+            (
+                vec![indexed],
+                "invalid staged recorder component field header",
+            ),
+        ] {
+            let source = envelope(2, &[recorder_with_fields(class, &fields)]);
+            let error = format!(
+                "{:#}",
+                plan_import(source.as_slice(), &catalog).unwrap_err()
+            );
+            assert!(
+                error.contains("invalid staged FProspectSaveState"),
+                "{error}"
+            );
+            assert!(error.contains(reason), "{error}");
+            assert!(!error.contains(field));
+            assert!(!error.contains(ROW));
+            assert!(!error.contains("PrivateWrongType"));
+        }
+    }
+}
+
+#[test]
+fn recorder_rows_apply_first_match_and_native_index_bounds() {
+    use icarus_bevy::experimental::rep_layout::ICARUS_ROW_HANDLE_NONE;
+
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("bounds.pak");
+    let quest_none = usize::from(ICARUS_ROW_HANDLE_NONE);
+    let mission_last = usize::from(u8::MAX);
+    let mut quests = vec!["QuestPadding"; quest_none + 1];
+    quests[quest_none - 1] = "LastQuest";
+    quests[quest_none] = "SentinelQuest";
+    let mut missions = vec!["MissionPadding"; mission_last + 2];
+    missions[mission_last] = "LastMission";
+    missions[mission_last + 1] = "OverflowMission";
+    for duplicate_at_limit in [false, true] {
+        if duplicate_at_limit {
+            quests[7] = "SentinelQuest";
+            quests[quest_none] = "sentinelquest";
+            missions[7] = "OverflowMission";
+        }
+        write_row_pak(
+            &path,
+            &[
+                ("D_Quests.json", pak_writer::table_json(&quests)),
+                ("D_FactionMissions.json", pak_writer::table_json(&missions)),
+            ],
+        );
+        let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+        let (installed, ..) = ContentCatalog::empty().with_data_tables(&mut pak).unwrap();
+        let authored = ContentCatalog::parse(&format!(
+            "format = 1\n[row_tables]\nD_Quests = {}\nD_FactionMissions = {}\n",
+            serde_json::to_string(&quests).unwrap(),
+            serde_json::to_string(&missions).unwrap(),
+        ))
+        .unwrap();
+        let boundary_unmapped = usize::from(!duplicate_at_limit);
+        for catalog in [&authored, &installed] {
+            for (quest, mission, unmapped) in [
+                ("questpadding", "MissionPadding", 0),
+                ("LASTQUEST", "LastMission", 0),
+                ("SentinelQuest", "LastMission", boundary_unmapped),
+                ("LastQuest", "OverflowMission", boundary_unmapped),
+            ] {
+                let source = envelope(2, &quest_row_recorders(quest, mission));
+                let plan = plan_import(source.as_slice(), catalog).unwrap();
+                assert_eq!(plan.content.unmapped_references, unmapped);
+                assert_eq!(plan.importable, unmapped == 0, "{:?}", plan.blockers);
+            }
+        }
+    }
+}
+
+#[test]
+fn recorder_rows_authored_catalog_is_scoped_and_compatible_with_both_formats() {
+    let declarations = format!(
+        "[row_tables]\nD_Quests = [\"{}\"]\nD_FactionMissions = [\"{ROW}\"]\n",
+        ROW.to_ascii_lowercase()
+    );
+    for (source, catalog) in [
+        (
+            envelope(2, &quest_row_recorders(ROW, ROW)),
+            format!("format = 1\n{declarations}"),
+        ),
+        (
+            envelope_with_root_content(
+                2,
+                &quest_row_recorders(ROW, ROW),
+                None,
+                None,
+                Some("AuthoredMap"),
+                None,
+                &[],
+            ),
+            format!("format = 2\n[[world.maps]]\nname = \"AuthoredMap\"\n{declarations}"),
+        ),
+    ] {
+        let catalog = ContentCatalog::parse(&catalog).unwrap();
+        assert!(!catalog.is_empty());
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert!(plan.importable, "{:?}", plan.blockers);
+    }
+    let catalog = ContentCatalog::parse(&format!("format = 1\n{declarations}")).unwrap();
+    assert_eq!(catalog.len(), 2);
+    for fields in [
+        vec![name_field("ItemRowName", ROW)],
+        vec![
+            name_field("QuestName", ROW),
+            name_field("FactionMissionName", ROW),
+        ],
+    ] {
+        let source = envelope(2, &[recorder_with_fields(ACTOR, &fields)]);
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert_eq!(plan.content.unmapped_references, fields.len());
+    }
+}
+
+#[test]
+fn recorder_rows_reject_invalid_authored_declarations() {
+    for declaration in [
+        "D_Quests = ['PrivateName', '']",
+        "D_Unrelated = ['PrivateName']",
+    ] {
+        let error =
+            ContentCatalog::parse(&format!("format = 1\n[row_tables]\n{declaration}")).unwrap_err();
+        assert!(
+            !format!("{error:#}")
+                .to_ascii_lowercase()
+                .contains("privatename")
+        );
+    }
+    let long = "x".repeat(icarus_bevy::import_plan::MAX_CATALOG_REFERENCE_UNITS + 1);
+    let error = ContentCatalog::parse(&format!("format = 1\n[row_tables]\nD_Quests = ['{long}']"))
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("UTF-16 units"));
+    assert!(!format!("{error:#}").contains(long.as_str()));
+}
+
+#[test]
+fn recorder_rows_unusable_pak_tables_only_block_dependent_occurrences() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("ambiguous.pak");
+    let root_row = "RootScopedRow";
+    let other_row = "OtherScopedRow";
+    for (table, other, quest, mission) in [
+        ("D_Quests", "D_FactionMissions.json", ROW, other_row),
+        ("D_FactionMissions", "D_Quests.json", other_row, ROW),
+    ] {
+        let scoped = envelope(2, &quest_row_recorders(quest, mission));
+        let declarations = format!(
+            "format = 1\n[row_tables]\nD_Quests = ['{quest}']\nD_FactionMissions = ['{mission}']"
+        );
+        let first = format!("A/{table}.json");
+        let second = format!("B/{table}.json");
+        let root_member = format!("{table}.json");
+        let rows = pak_writer::table_json(&[ROW]);
+        let root_rows = pak_writer::table_json(&[root_row]);
+        let non_table = b"{}".to_vec();
+        let generic_rows: &[&str] = &[ROW];
+        let root_and_nested_rows: &[&str] = &[root_row, ROW];
+        for (mut members, counts, expected_rows) in [
+            (
+                vec![
+                    (first.as_str(), non_table.clone()),
+                    ("D_Generic.json", rows.clone()),
+                ],
+                (2, 1),
+                generic_rows,
+            ),
+            (
+                vec![(first.as_str(), rows.clone()), (&second, non_table)],
+                (2, 1),
+                generic_rows,
+            ),
+            (
+                vec![(first.as_str(), rows.clone()), (&second, rows.clone())],
+                (3, 0),
+                generic_rows,
+            ),
+            (
+                vec![
+                    (first.as_str(), rows.clone()),
+                    (&root_member, root_rows.clone()),
+                ],
+                (3, 0),
+                root_and_nested_rows,
+            ),
+        ] {
+            members.push((other, pak_writer::table_json(&[other_row])));
+            write_row_pak(&path, &members);
+            for catalog in [
+                ContentCatalog::empty(),
+                ContentCatalog::parse(&declarations).unwrap(),
+            ] {
+                let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+                let (catalog, read, skipped) = catalog.with_data_tables(&mut pak).unwrap();
+                assert_eq!((read, skipped), counts);
+                for row in expected_rows {
+                    let generic = envelope(
+                        2,
+                        &[recorder_with_fields(
+                            ACTOR,
+                            &[name_field("ItemRowName", row)],
+                        )],
+                    );
+                    let plan = plan_import(generic.as_slice(), &catalog).unwrap();
+                    assert_eq!(plan.content.roles[&ContentRole::DataRow].references, 1);
+                    assert!(plan.importable, "generic row {row}");
+                }
+                let plan = plan_import(scoped.as_slice(), &catalog).unwrap();
+                assert_eq!(plan.content.roles[&ContentRole::DataRow].references, 2);
+                assert_eq!(
+                    plan.classes["C019"].unmapped_references,
+                    usize::from(table == "D_Quests")
+                );
+                assert_eq!(
+                    plan.classes["C018"].unmapped_references,
+                    usize::from(table == "D_FactionMissions")
+                );
+                assert_eq!(
+                    plan.blockers,
+                    vec![ImportBlocker::UnmappedContent {
+                        distinct: 1,
+                        references: 1,
+                    }]
+                );
+            }
+        }
+
+        let malformed = b"{\"Rows\": [".to_vec();
+        for members in [
+            vec![(first.as_str(), malformed.clone())],
+            vec![(first.as_str(), rows.clone()), (&root_member, malformed)],
+        ] {
+            write_row_pak(&path, &members);
+            let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+            let error = ContentCatalog::empty()
+                .with_data_tables(&mut pak)
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("invalid data table member"));
+        }
+
+        let mut unreadable =
+            pak_writer::write_pak(&[(&root_member, &root_rows, false), (&first, &rows, true)]);
+        // Corrupt the first member's header size while leaving its index intact.
+        unreadable[8] ^= 1;
+        fs::write(&path, unreadable).unwrap();
+        let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+        assert_eq!(
+            pak.read(&root_member).unwrap_err().to_string(),
+            "data pak member is ambiguous"
+        );
+        assert_eq!(
+            pak.member_rows(&root_member).unwrap_err().to_string(),
+            "data pak member is ambiguous"
+        );
+        let error = ContentCatalog::empty()
+            .with_data_tables(&mut pak)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("pak member header disagrees with the index"));
+    }
+}
+
+#[test]
+fn recorder_rows_compare_authored_and_pak_order_using_each_tables_lookup() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("rows.pak");
+    let rows = pak_writer::table_json(&[ROW, "PrivateOther", ROW]);
+    write_row_pak(
+        &path,
+        &[
+            ("D_Quests.json", rows.clone()),
+            ("D_FactionMissions.json", rows),
+        ],
+    );
+    let mut pak = icarus_bevy::data_pak::DataPak::open(&path).unwrap();
+    let generic = envelope(
+        2,
+        &[recorder_with_fields(
+            ACTOR,
+            &[name_field("ItemRowName", ROW)],
+        )],
+    );
+    let source = envelope(2, &quest_row_recorders(ROW, ROW));
+    let same = format!("'{ROW}', 'PrivateOther', '{ROW}'");
+    let lower = format!("'{}', 'privateother', '{ROW}'", ROW.to_ascii_lowercase());
+    let reversed_order = format!("'PrivateOther', '{ROW}', '{ROW}'");
+    let shorter = format!("'{ROW}', 'PrivateOther'");
+    for (quest, mission, quest_conflicts, mission_conflicts) in [
+        (&same, &same, false, false),
+        (&lower, &same, false, false),
+        (&same, &lower, false, true),
+        (&reversed_order, &same, true, false),
+        (&same, &reversed_order, false, true),
+        (&shorter, &shorter, true, true),
+    ] {
+        let catalog = ContentCatalog::parse(&format!(
+            "format = 1\n[row_tables]\nD_Quests = [{quest}]\nD_FactionMissions = [{mission}]"
+        ))
+        .unwrap();
+        let (catalog, ..) = catalog.with_data_tables(&mut pak).unwrap();
+        assert!(
+            plan_import(generic.as_slice(), &catalog)
+                .unwrap()
+                .importable
+        );
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        let conflicts = usize::from(quest_conflicts) + usize::from(mission_conflicts);
+        assert_eq!(plan.importable, conflicts == 0);
+        assert_eq!(
+            plan.classes["C019"].unmapped_references,
+            usize::from(quest_conflicts)
+        );
+        assert_eq!(
+            plan.classes["C018"].unmapped_references,
+            usize::from(mission_conflicts)
+        );
+        if conflicts != 0 {
+            assert_eq!(
+                plan.blockers,
+                vec![
+                    ImportBlocker::UnmappedContent {
+                        distinct: 1,
+                        references: conflicts,
+                    },
+                    ImportBlocker::ConflictingRecorderRowTables {
+                        references: conflicts,
+                    },
+                ]
+            );
+        }
+    }
+}
+
+#[test]
+fn recorder_rows_import_cli_checks_pak_or_authored_membership_without_writing() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let destination = root.path().join("world");
+    let sentinel = destination.join("sentinel");
+    let pak = root.path().join("rows.pak");
+    let catalog = root.path().join("catalog.toml");
+    let bytes = envelope(2, &quest_row_recorders(ROW, ROW));
+    fs::write(&source, &bytes).unwrap();
+    fs::create_dir(&destination).unwrap();
+    fs::write(&sentinel, b"prior world").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+    command
+        .args(["import-save", "--dry-run", "--source"])
+        .arg(&source)
+        .arg("--destination")
+        .arg(&destination)
+        .arg("--data-pak")
+        .arg(&pak)
+        .arg("--catalog")
+        .arg(&catalog);
+    let flat = format!("format = 1\n[references]\ndata_row = [\"{ROW}\"]\n");
+    let authored =
+        format!("{flat}[row_tables]\nD_Quests = [\"{ROW}\"]\nD_FactionMissions = [\"{ROW}\"]\n");
+    let lower = ROW.to_ascii_lowercase();
+    for (members, declarations, unmapped, conflicts) in [
+        (
+            vec![("D_Unrelated.json", pak_writer::table_json(&[ROW]))],
+            &flat,
+            2,
+            0,
+        ),
+        (
+            vec![
+                ("D_Quests.json", pak_writer::table_json(&[&lower])),
+                ("D_FactionMissions.json", pak_writer::table_json(&[&lower])),
+            ],
+            &flat,
+            1,
+            0,
+        ),
+        (
+            vec![
+                ("D_Quests.json", pak_writer::table_json(&[&lower])),
+                ("D_FactionMissions.json", pak_writer::table_json(&[ROW])),
+            ],
+            &flat,
+            0,
+            0,
+        ),
+        (
+            vec![("D_Unrelated.json", pak_writer::table_json(&[ROW]))],
+            &authored,
+            0,
+            0,
+        ),
+        (
+            vec![
+                ("D_Quests.json", pak_writer::table_json(&[&lower])),
+                ("D_FactionMissions.json", pak_writer::table_json(&[&lower])),
+            ],
+            &authored,
+            1,
+            1,
+        ),
+    ] {
+        write_row_pak(&pak, &members);
+        fs::write(&catalog, declarations.as_bytes()).unwrap();
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["importable"], unmapped == 0, "{report}");
+        assert_eq!(report["world_imported"], false);
+        assert_eq!(report["content"]["distinct"], 1);
+        let mut blockers = Vec::new();
+        if unmapped != 0 {
+            blockers.push(
+                json!({"blocker": "unmapped_content", "distinct": 1, "references": unmapped}),
+            );
+        }
+        if conflicts != 0 {
+            blockers.push(
+                json!({"blocker": "conflicting_recorder_row_tables", "references": conflicts}),
+            );
+        }
+        assert_eq!(report["blockers"], json!(blockers));
+        for stream in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(stream).to_ascii_lowercase();
+            assert!(!text.contains(lower.as_str()));
+            assert!(!text.contains("questname"));
+            assert!(!text.contains("factionmissionname"));
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn recorder_rows_import_cli_reports_wrong_wire_kinds_without_disclosure() {
+    use icarus_bevy::experimental::prospect_info::{SavedQuestActor, SavedQuestManager};
+
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let destination = root.path().join("world");
+    let catalog = root.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        format!(
+            "format = 1\n[references]\ndata_row = ['{PATH}']\n[row_tables]\nD_Quests = ['{PATH}']\nD_FactionMissions = ['{PATH}']"
+        ),
+    )
+    .unwrap();
+    for (kind, payload) in [
+        ("StrProperty", fstring(PATH)),
+        ("IntProperty", 123_456_789_i32.to_le_bytes().to_vec()),
+    ] {
+        let bytes = envelope(
+            2,
+            &[
+                recorder_with_fields(QUEST, &[tag("QuestName", kind, &[0], &payload)]),
+                recorder_with_fields(
+                    QUEST_MANAGER,
+                    &[tag("FactionMissionName", kind, &[0], &payload)],
+                ),
+            ],
+        );
+        let candidate = DecodedImportCandidate::decode(bytes.as_slice()).unwrap();
+        let recorders = candidate.recorders();
+        let quest = &recorders[0].typing().lossless().unwrap().0.tree;
+        let manager = &recorders[1].typing().lossless().unwrap().0.tree;
+        for error in [
+            SavedQuestActor::from_tree(quest).unwrap_err(),
+            SavedQuestManager::from_tree(manager).unwrap_err(),
+        ] {
+            assert!(format!("{error:#}").contains("is not a NameProperty"));
+        }
+
+        fs::write(&source, &bytes).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .args(["import-save", "--dry-run", "--source"])
+            .arg(&source)
+            .arg("--destination")
+            .arg(&destination)
+            .arg("--catalog")
+            .arg(&catalog)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["importable"], false);
+        assert_eq!(report["world_imported"], false);
+        assert_eq!(report["recorders"]["typed"], 2);
+        for count in ["distinct", "name_references", "path_references"] {
+            assert_eq!(report["content"][count], 0);
+        }
+        assert_eq!(
+            report["blockers"],
+            json!([{"blocker": "unexpected_recorder_row_field_types", "fields": 2}])
+        );
+        for stream in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(stream).to_ascii_lowercase();
+            for private in [PATH, kind, "QuestName", "FactionMissionName", "123456789"] {
+                assert!(
+                    !text.contains(private.to_ascii_lowercase().as_str()),
+                    "{text}"
+                );
+            }
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(!destination.exists());
+    }
 }
 
 #[test]
