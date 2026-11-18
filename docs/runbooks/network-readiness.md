@@ -172,6 +172,11 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `pawn_move_positions_{accepted,rejected,skipped}`. `unreliable_actor_bunches` (probe
 opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
+`network.begin_timeout_seconds` (absent or 0: no limit; else 5 to 3600; F-1209)
+closes a joined session that has not sent Begin in that time, frees its slot
+and counts `closed_awaiting_begin`. No run has measured how long a stock client
+takes, so choose generously. `--private-leave-proof` refuses it. F-1208 is the
+loopback rehearsal of entry, leave, restart and rejoin; it stubs Steam.
 `checkpoint_saved_locations` (F-1206): `saved`, `saved_at_leave`, and per save
 pass (periodic, leave cut-off or teardown, not per session) `refused` and
 `withheld`. `checkpoint_relocation` (F-1207): `started`,
