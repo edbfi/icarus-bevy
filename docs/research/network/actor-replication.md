@@ -32,7 +32,7 @@ F-1152. Authored speed stats accompany
 reported walk/look/sprint/jump after leaving a mountain spawn (F-1185);
 authoritative physics, collision and audio remain unqualified. Earlier
 zero-speed/provenance: F-1143/F-1147/F-1150 to F-1157/F-1164 to F-1166.
-Leave failure F-1186. With the early checkpoint pawn, a client reached finalisation then disconnected during Preparing Geometry (F-1199). On the next sitting, the first own-record ACK and the control close arrived together. Pawn reliability was pending and the server had no post-ACK release pass before removal (F-1264). At the first finalised sample, the earlier locomotion run counted one History append and one movement release sent. The checkpoint run counted zero of each (M-1554). The samples leave wire order and the client-side cause open. In a paired rehearsal, History followed the legacy record. A staged checkpoint health update preceded its record and remained pending at close (F-1265).
+F-1186 covers the failed leave. F-1199 and F-1264 cover the two checkpoint sittings. F-1265 compares entry ordering on loopback. The stock pending payload and disconnect cause remain open (U-038).
 F-1172 reorders independent opens in authored tests; F-1188 proves no client
 persistence. Production leave remains default-off.
 
