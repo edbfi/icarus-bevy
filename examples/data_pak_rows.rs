@@ -6,6 +6,11 @@
 //! field or value of a row. Read-only, no network; the reader's own limits
 //! bound the pak and each table, and output stops after [`MAX_LINES`] lines.
 //!
+//! A unique name is not enough for a projection binding: startup also refuses
+//! a row past its row handle, that is a `D_InventoryInfo` row at index 256 or
+//! above, or a `D_TagQueries` or `D_ItemsStatic` row at index 65535 or above.
+//! The printed index shows which rows those are.
+//!
 //! ```text
 //! data_pak_rows --data-pak PATH                               # tables and row counts
 //! data_pak_rows --data-pak PATH --table NAME                  # row names in pak order
@@ -60,8 +65,10 @@ fn main() -> Result<()> {
 /// One line per data table: its name as bindings and `network` resolve it
 /// (the member's file stem; `DataPak::table_rows` reads `{table}.json`) and
 /// its row count. A stem shared by several members cannot be resolved by
-/// name and is marked `"ambiguous": true`; JSON members without `Rows` are
-/// not tables and are skipped.
+/// name and is marked `"ambiguous": true`. A member whose path is the tail of
+/// another member's path cannot even be read by name, so it is listed
+/// ambiguous without a row count. JSON members without `Rows` are not tables
+/// and are skipped.
 fn table_lines(pak: &mut DataPak) -> Result<Vec<serde_json::Value>> {
     let members: Vec<String> = pak.members().map(str::to_owned).collect();
     let mut stems: BTreeMap<String, usize> = BTreeMap::new();
@@ -72,18 +79,29 @@ fn table_lines(pak: &mut DataPak) -> Result<Vec<serde_json::Value>> {
             continue;
         };
         *stems.entry(stem.to_owned()).or_default() += 1;
+        // The reader matches members by path suffix, so this one is unreadable.
+        let shadowed = members
+            .iter()
+            .any(|other| other.ends_with(&format!("/{member}")));
+        if shadowed {
+            tables.push((stem.to_owned(), None));
+            continue;
+        }
         let rows = pak
             .member_rows(member)
             .with_context(|| format!("data table member {member}"))?;
         if let Some(rows) = rows {
-            tables.push((stem.to_owned(), rows.len()));
+            tables.push((stem.to_owned(), Some(rows.len())));
         }
     }
     tables.sort();
     Ok(tables
         .into_iter()
         .map(|(table, rows)| {
-            let mut line = json!({"table": table, "rows": rows});
+            let mut line = json!({"table": table});
+            if let Some(rows) = rows {
+                line["rows"] = json!(rows);
+            }
             if stems[&table] > 1 {
                 line["ambiguous"] = json!(true);
             }
@@ -219,6 +237,21 @@ mod tests {
         let lines = table_lines(&mut pak).unwrap();
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().all(|line| line["ambiguous"] == json!(true)));
+    }
+
+    #[test]
+    fn a_member_shadowed_by_a_longer_path_is_listed_ambiguous_without_rows() {
+        let (_dir, mut pak) = pak(&[
+            ("D_Same.json", pak_writer::table_json(&["One"])),
+            ("Sub/D_Same.json", pak_writer::table_json(&["Two", "Three"])),
+        ]);
+        assert_eq!(
+            text(&table_lines(&mut pak).unwrap(), MAX_LINES),
+            [
+                r#"{"ambiguous":true,"table":"D_Same"}"#,
+                r#"{"ambiguous":true,"rows":2,"table":"D_Same"}"#,
+            ]
+        );
     }
 
     #[test]
