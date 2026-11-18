@@ -1452,3 +1452,148 @@ fn projection_and_returning_pawn_inputs_refuse_each_other_in_either_order() {
         }
     }
 }
+
+/// `network.checkpoint_saved_locations` over a schema-15 bag world in both
+/// pawn orders: a save commits through the full-generation preflight; the
+/// location-only revision leaves the bag, its revision and its projection
+/// alone and sends neither a bag nor a vitals update.
+#[test]
+fn saved_locations_preflight_the_bag_world_and_project_nothing() {
+    use super::super::move_acks::authored_move;
+    for early in [true, false] {
+        let mut lab = projected_lab(early);
+        lab.enable_pawn_move_acks().unwrap();
+        lab.enable_checkpoint_saved_locations().unwrap();
+        let mut app = inventory_world(false);
+        let mut session = join(&mut lab, &mut app, 1, ACCOUNT);
+        let player = session.player_id(&lab);
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let projection = |app: &App| {
+            app.world()
+                .resource::<PlayerRegistry>()
+                .snapshot()
+                .projection(key)
+                .unwrap()
+        };
+        let bag_revision = |app: &App| {
+            app.world()
+                .resource::<PlayerRegistry>()
+                .inventory_bag(player)
+                .unwrap()
+                .revision
+        };
+        let before = projection(&app);
+        let bag_before = bag_revision(&app);
+        let queued = lab.stats.player_bag_projection;
+        let moved = super::move_now(
+            &mut lab,
+            &session.socket,
+            &mut session.client,
+            Some(authored_move(4.0, [110.0, 200.0, 300.0], Some(1))),
+            Instant::now(),
+        );
+        assert_eq!(session.apply(&lab, &moved), 0);
+        lab.flush_saved_locations(app.world_mut());
+        let saved = projection(&app);
+        assert_eq!(
+            saved.checkpoint.location_cm,
+            [110.0, 200.0, 300.0],
+            "early {early}"
+        );
+        assert_eq!(saved.checkpoint.vitals, before.checkpoint.vitals);
+        assert_eq!(saved.revision, before.revision + 1);
+        assert_eq!(bag_revision(&app), bag_before);
+        // The committed generation is capturable and holds the location.
+        let generation = capture(app.world_mut()).unwrap();
+        assert_eq!(
+            generation
+                .native_players
+                .unwrap()
+                .projection(key)
+                .unwrap()
+                .checkpoint
+                .location_cm,
+            [110.0, 200.0, 300.0]
+        );
+        bridge(&mut lab, &mut app);
+        let after = deliver_bunches(&mut lab, &session.socket, &mut session.client, |_| true);
+        assert_eq!(session.apply(&lab, &after), 0);
+        assert!(pawn_update_payloads(&after).is_empty(), "early {early}");
+        assert_eq!(lab.stats.player_bag_projection, queued);
+        assert_eq!(session.model.slots(), Model::of_bag(&app, player));
+        assert_eq!(
+            lab.session_counts()
+                .checkpoint_saved_locations
+                .unwrap()
+                .saved,
+            1
+        );
+    }
+}
+
+/// On a schema 15 or 16 world, a location batch whose full-generation step
+/// fails returns an error and leaves the registry (players and bags) and the
+/// store exactly as before, including a batch mixing a valid save with an
+/// invalid one. The failure is injected as a domain entity with a non-finite
+/// position, which the generation's validation refuses: a location-only edit
+/// cannot fail it, as the edit rules check the same checkpoint bounds first.
+#[test]
+fn a_failed_location_preflight_changes_neither_registry_nor_store() {
+    use crate::{
+        native_player_runtime::{LocationSave, LocationSaveOutcome, save_player_locations},
+        persistence::SnapshotStore,
+        simulation::{DomainId, Position},
+    };
+    for transfers in [false, true] {
+        let mut lab = projected_lab(true);
+        let mut app = inventory_world(transfers);
+        let session = join(&mut lab, &mut app, 1, ACCOUNT);
+        let epoch = lab.peers[&session.address].checkpoint_epoch.unwrap();
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(directory.path()).unwrap();
+        store.save(&capture(app.world_mut()).unwrap()).unwrap();
+        let stored = store.load().unwrap().unwrap();
+        let registry = |app: &App| {
+            let registry = app.world().resource::<PlayerRegistry>();
+            (registry.snapshot(), registry.inventory_snapshot())
+        };
+        let before = registry(&app);
+        let valid = LocationSave {
+            key,
+            epoch,
+            location_cm: [110.0, 200.0, 300.0],
+        };
+        let invalid = LocationSave {
+            key: PlayerKey::new(ACCOUNT + 1, 3).unwrap(),
+            epoch: 999,
+            location_cm: [f64::NAN; 3],
+        };
+        let bad = app
+            .world_mut()
+            .spawn((DomainId(77), Position([f32::NAN, 0.0, 0.0])))
+            .id();
+        for batch in [vec![valid], vec![valid, invalid], vec![invalid, valid]] {
+            assert!(
+                save_player_locations(app.world_mut(), &batch).is_err(),
+                "transfers {transfers}"
+            );
+            assert!(registry(&app) == before, "transfers {transfers}");
+            let reloaded = store.load().unwrap().unwrap();
+            assert_eq!(reloaded.snapshot, stored.snapshot);
+            assert_eq!(reloaded.selected_generation, stored.selected_generation);
+        }
+        // Without the defect, the same mixed batch commits only the valid save.
+        app.world_mut().despawn(bad);
+        assert_eq!(
+            save_player_locations(app.world_mut(), &[invalid, valid]).unwrap(),
+            [LocationSaveOutcome::Refused, LocationSaveOutcome::Saved]
+        );
+        let (players, bags) = registry(&app);
+        assert_eq!(
+            players.projection(key).unwrap().checkpoint.location_cm,
+            [110.0, 200.0, 300.0]
+        );
+        assert!(bags == before.1);
+    }
+}

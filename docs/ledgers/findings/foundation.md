@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-17
+Last reconciled: 2026-11-18
 
 F-968 is retired in favor of F-1175.
 
@@ -76,3 +76,5 @@ F-968 is retired in favor of F-1175.
 | F-1188 | Authored exact-writer leave: types 1/2/4, Cancel suppression, ACK/detach and detached settlement. Default-off private receipts bind readback/restart/first pawn before activation; totals survive teardown | measured | authored-test; M-1429, M-1497, M-1502, M-1503, M-1505, M-1506 | high; failed barriers retained; no live menu/full-save/power-loss proof | U-038 | active |
 | F-1200 | Once-only bags: conservation/preflight, durable edits, atomic capped Use; opt-in schema16 dual-authority transfers preserve owner flows/leave pins | measured | authored tests/runtime; M-1515, M-1516, M-1518, M-1519, M-1522 | high; four schema15 recovery cycles; no stock RPC, import, migration, client, power-loss or performance proof | U-025, U-038, U-045 | active |
 | F-1202 | Opt-in `player_inventory_projection` binds authored bag keys to pak row names and sends each owner's bag as coalesced slot deltas before the record (64 slots, 32 KiB; F-978 keys); weight and packaged values unsent; restore inputs and private proof refuse | measured | authored-test; M-1525; fa45fca | high; own reader; no client display, action or import proof | U-069, U-038 | active |
+| F-1206 | Opt-in `checkpoint_saved_locations` writes the last accepted move location into the checkpoint at leave cut-off, each 10 s and teardown via the vitals CAS/pin path, only while the pawn's position descends from the stored one (new, matched, relocated) | measured | authored-test; M-1532; e62d996 | high; else withheld; no schema change; proof refuses; no client | U-069, U-038 | active |
+| F-1207 | Opt-in `checkpoint_location_correction` answers a returning early pawn's move with a Falling, zero-velocity correction to the stored location +50 cm: <=1/s, 5 tries or 30 s, applied within 300 cm, release held <=5 s, acks paused while pending | measured | authored-test; M-1532; e62d996 | high; based/None-mode moves never apply; no client proof | U-069, U-038 | active |

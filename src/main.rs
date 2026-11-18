@@ -1684,6 +1684,12 @@ fn run(
             if config.network.checkpoint_pawn_before_identity {
                 record["checkpoint_pawn_before_identity"] = json!(true);
             }
+            if config.network.checkpoint_saved_locations {
+                record["checkpoint_saved_locations"] = json!(true);
+            }
+            if config.network.checkpoint_location_correction {
+                record["checkpoint_location_correction"] = json!(true);
+            }
             if config.network.player_inventory_projection.is_some() {
                 record["player_inventory_projection"] = json!(true);
             }

@@ -29,6 +29,13 @@ pub(super) struct Operation {
     pub(super) retry_ready: bool,
 }
 
+impl Operation {
+    /// A staged normal leave whose registry cut-off is not taken yet.
+    pub(super) fn awaiting_cutoff(&self) -> bool {
+        !self.cutoff
+    }
+}
+
 impl PeerLab {
     /// Whether an authored leave policy is installed.
     pub fn has_authored_controller_leave(&self) -> bool {

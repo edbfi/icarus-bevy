@@ -172,6 +172,12 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `pawn_move_positions_{accepted,rejected,skipped}`. `unreliable_actor_bunches` (probe
 opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
+`checkpoint_saved_locations` (F-1206): `saved`, `saved_at_leave`, and per save
+pass (periodic, leave cut-off or teardown, not per session) `refused` and
+`withheld`. `checkpoint_relocation` (F-1207): `started`,
+`corrections_{sent,deferred}`, `correction_errors`, `applied`, `failed`,
+`moves_held`; gauges `pending`, `releases_held`. Neither shows that a client
+applied a correction.
 `level_visibility` (probe-enabled, gated): `levels_visible`,
 `levels_with_actors`, `opens_{pending,awaiting_ack,settled,refused_waiting}`,
 `channels_held`, `channel_budget_remaining` (cap 128, 64 kept free). Counters

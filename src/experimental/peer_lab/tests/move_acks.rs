@@ -835,3 +835,128 @@ fn switch_off_moves_send_the_parent_commits_bunches() {
     let digests = move_session_digests(&mut production_on, pass);
     assert!(digests.iter().zip(PRODUCTION).all(|(on, off)| on != off));
 }
+
+/// A pending relocation (`network.checkpoint_location_correction`) replaces
+/// acknowledgements on the move path: the first move after it is answered by
+/// one correction with that move's timestamp; while pending nothing is
+/// acknowledged, stored or speed-checked; a world move near the target after
+/// the correction applies it, becomes the stored location and is
+/// acknowledged; F-1128's bounds resume from it. Injected here into a plain
+/// moving session; the checkpoint wiring is `player_checkpoints`'.
+#[test]
+fn a_pending_relocation_answers_with_corrections_and_suspends_acknowledgements() {
+    use super::super::super::character_move::{
+        MoveResponse, move_response_codec, read_move_response,
+    };
+    use super::super::located::Relocation;
+    let mut lab = moving_lab(true);
+    let (socket, address, mut client) = moving_peer(&mut lab);
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    // The first move is acknowledged as before.
+    let acked = move_at(
+        &mut lab,
+        &socket,
+        &mut client,
+        Some(authored_move(1.0, [0.0, 0.0, 100.0], Some(1))),
+        at(0),
+    );
+    assert_eq!(acked, [1.0]);
+    lab.checkpoint_location_correction = true;
+    let target = [90_000.0, 0.0, 150.0];
+    lab.peers.get_mut(&address).unwrap().pawn_moves.relocation =
+        Some(Relocation::pending(target, at(50)));
+    let (channel, engine) = pawn(&lab);
+    let codec = move_response_codec(engine, ByteOrder::Little);
+    let responses =
+        |lab: &mut PeerLab, client: &mut PacketSequencer, field: Option<Payload>, now: Instant| {
+            if let Some(field) = field {
+                send_at(
+                    lab,
+                    &socket,
+                    client,
+                    vec![unreliable_bunch(channel, move_bunch_payload(field, engine))],
+                    now,
+                );
+            }
+            lab.retry_pawn_move_acks(now);
+            deliver_bunches(lab, &socket, client, |_| true)
+                .iter()
+                .filter(|bunch| bunch.header.channel_index == channel)
+                .map(|bunch| {
+                    let body = super::super::super::actor_channel::read_actor_bunch_body(
+                        &mut bunch.payload.reader(),
+                        false,
+                        &codec.actor,
+                    )
+                    .unwrap();
+                    let mut reader = body.blocks[0].payload.reader();
+                    let field =
+                        read_field_header(&mut reader, PAWN_FIELD_BOUND, usize::MAX).unwrap();
+                    assert_eq!(field.index, CLIENT_MOVE_RESPONSE_PACKED_FIELD_INDEX);
+                    read_move_response(&field.payload, &codec).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+    // Nothing is answered before a move arrives after it began.
+    assert!(responses(&mut lab, &mut client, None, at(200)).is_empty());
+    let first = responses(
+        &mut lab,
+        &mut client,
+        Some(authored_move(1.3, [10.0, 0.0, 100.0], Some(1))),
+        at(300),
+    );
+    let [MoveResponse::Correction(correction)] = first.as_slice() else {
+        panic!("one correction: {first:?}");
+    };
+    assert_eq!(correction.timestamp, 1.3);
+    assert_eq!(correction.location, target);
+    assert_eq!(correction.velocity, [0.0; 3]);
+    assert_eq!(correction.mode, Some(3));
+    // Pending: no acknowledgement, nothing stored, the jump not refused.
+    for (ms, x) in [(450, 20.0), (600, 30.0)] {
+        let held = responses(
+            &mut lab,
+            &mut client,
+            Some(authored_move(
+                ms as f32 / 1000.0 + 1.0,
+                [x, 0.0, 100.0],
+                Some(1),
+            )),
+            at(ms),
+        );
+        assert!(held.is_empty());
+    }
+    assert_eq!(
+        lab.peers[&address].pawn_moves.location.map(|(at, _)| at),
+        Some([0.0, 0.0, 100.0])
+    );
+    assert_eq!(lab.stats.pawn_move_positions_rejected, 0);
+    assert_eq!(lab.stats.checkpoint_relocation.moves_held, 3);
+    // The client reports the target, 900 m from the stored location 0.45 s
+    // ago: applied, stored and acknowledged, never refused.
+    let applied = responses(
+        &mut lab,
+        &mut client,
+        Some(authored_move(1.75, [90_000.0, 0.0, 120.0], Some(3))),
+        at(750),
+    );
+    assert_eq!(applied, [MoveResponse::Ack(1.75)]);
+    assert_eq!(lab.peers[&address].pawn_moves.relocation, None);
+    assert_eq!(
+        lab.peers[&address].pawn_moves.location.map(|(at, _)| at),
+        Some([90_000.0, 0.0, 120.0])
+    );
+    assert_eq!(lab.stats.pawn_move_positions_rejected, 0);
+    assert_eq!(lab.stats.checkpoint_relocation.applied, 1);
+    // Bounds resume from there: a jump back is refused as before.
+    let refused = responses(
+        &mut lab,
+        &mut client,
+        Some(authored_move(1.9, [0.0, 0.0, 100.0], Some(1))),
+        at(900),
+    );
+    assert_eq!(refused, [MoveResponse::Ack(1.9)]);
+    assert_eq!(lab.stats.pawn_move_positions_rejected, 1);
+    assert_eq!(lab.stats.pawn_move_acks_sent, 3);
+}
