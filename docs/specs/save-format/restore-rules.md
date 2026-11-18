@@ -38,7 +38,10 @@ addresses retain helper names or stand alone.
 - C016 records list length and zero-based occupied positions (F-651).
   F-1266 corrects the stitching entry for historical server 25621760.
   Its later loop passes a guarded field and zero-based index to a direct
-  call. The callee and saved-position selector remain unidentified.
+  call. The callee checks that the signed index is nonnegative and below
+  the field used as the caller's loop bound. All three paths leave the
+  inspected fragment before an indexed element access or return. The receiver
+  type, callee identity and saved-position selector remain open.
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
