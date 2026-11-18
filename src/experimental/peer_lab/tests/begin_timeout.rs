@@ -230,6 +230,20 @@ fn absent_limit_keeps_a_session_without_begin_and_omits_its_count() {
     }
 }
 
+/// Without a controller open plan Begin can never arrive, so the limit closes
+/// no one, however long a joined session waits.
+#[test]
+fn without_a_controller_open_plan_the_limit_closes_no_one() {
+    let mut lab = limited(lab());
+    let (_socket, address, _client, _) = peer(&mut lab, 1, ACCOUNT, true);
+    let start = Instant::now();
+    stamp(&mut lab, address, start);
+    lab.player_controller_open = None;
+    lab.close_awaiting_begin(start + LIMIT * 100);
+    assert!(lab.has_peer(address));
+    assert_eq!(lab.stats.peers_closed_awaiting_begin, 0);
+}
+
 /// A real Join starts the wait; the close reaches a client whose packets the
 /// server has received. A zero limit is refused at bind.
 #[test]
@@ -251,6 +265,11 @@ fn a_join_starts_the_wait_and_a_zero_limit_is_refused() {
     assert!(entry.peer.has_received_client_packet());
     let joined = entry.joined_at.expect("Join stamps the wait");
     assert!(joined >= before);
+    // The limit acts only where a controller open, and so Begin, can exist.
+    lab.close_awaiting_begin(joined + LIMIT * 100);
+    assert!(lab.has_peer(address));
+    lab.player_controller_open = super::lab().player_controller_open.clone();
+    assert!(lab.player_controller_open.is_some());
     lab.close_awaiting_begin(joined + LIMIT);
     assert!(lab.has_peer(address));
     lab.close_awaiting_begin(joined + LIMIT + JUST_PAST);

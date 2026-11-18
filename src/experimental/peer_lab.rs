@@ -8463,6 +8463,11 @@ impl PeerLab {
         let Some(limit) = self.config.begin_timeout else {
             return;
         };
+        // Begin answers the controller open; with no open plan it can never
+        // arrive, and the limit must not close healthy sessions.
+        if self.player_controller_open.is_none() {
+            return;
+        }
         let expired: Vec<_> = self
             .peers
             .iter_mut()

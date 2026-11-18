@@ -439,6 +439,12 @@ impl NetworkConfig {
             "network.begin_timeout_seconds must be 0 (no limit) or \
              {MIN_BEGIN_TIMEOUT_SECONDS}..={MAX_BEGIN_TIMEOUT_SECONDS}"
         );
+        // Begin answers a controller open, which exists only with a release
+        // profile; without one the limit would close every joined session.
+        ensure!(
+            self.begin_timeout_seconds == 0 || self.release_profile.is_some(),
+            "network.begin_timeout_seconds requires network.release_profile"
+        );
         ensure!(
             self.server_frozen_movement_release_delay_ms <= MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS,
             "network.server_frozen_movement_release_delay_ms must be 0..={MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS}"
@@ -781,6 +787,13 @@ mod begin_timeout_config_tests {
         assert_eq!(parsed.network, network);
         assert_eq!(toml::to_string(&parsed.network).unwrap(), toml_before);
         assert_eq!(serde_json::to_vec(&parsed.network).unwrap(), json_before);
+        // Without a release profile no controller opens, so no Begin can come.
+        network.begin_timeout_seconds = 60;
+        assert_eq!(
+            network.validate().unwrap_err().to_string(),
+            "network.begin_timeout_seconds requires network.release_profile"
+        );
+        network.release_profile = Some("authored-release.toml".into());
         for seconds in [0, MIN_BEGIN_TIMEOUT_SECONDS, 60, MAX_BEGIN_TIMEOUT_SECONDS] {
             network.begin_timeout_seconds = seconds;
             assert!(network.validate().is_ok(), "{seconds}");
@@ -816,9 +829,11 @@ mod begin_timeout_config_tests {
             );
         }
         // Independent of the session timeout and of player persistence.
-        let parsed: ServerConfig =
-            toml::from_str("[network]\nsession_timeout_seconds = 600\nbegin_timeout_seconds = 5\n")
-                .unwrap();
+        let parsed: ServerConfig = toml::from_str(
+            "[network]\nrelease_profile = \"authored-release.toml\"\n\
+             session_timeout_seconds = 600\nbegin_timeout_seconds = 5\n",
+        )
+        .unwrap();
         assert!(parsed.validate().is_ok());
         assert_eq!(parsed.network.begin_timeout(), Some(Duration::from_secs(5)));
     }
