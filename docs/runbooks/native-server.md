@@ -90,11 +90,9 @@ Networking off: no actor bootstrap; player context is still validated.
 `network.checkpoint_pawn_before_identity` (default false; needs player
 persistence; F-1201): the pawn opens after the controller, before Begin, so
 `restart-pawn` can precede it. Stored vitals follow as a pawn update; saved
-locations stay unapplied (`checkpoint_locations_unapplied`).
+locations stay unapplied (`checkpoint_locations_unapplied`) unless the
+[restore option](authored-survival.md#saved-locations) (F-1206, F-1207) is on.
 `--private-leave-proof` refuses it.
-
-Saved player locations and their restore (F-1206, F-1207):
-[authored survival](authored-survival.md#saved-locations).
 
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
 CLI replaces TOML; `[]` disables. Needs release/controller plans and settled

@@ -2387,7 +2387,8 @@ impl PlayerRegistry {
 /// Each save replaces only the location of the current record, under the
 /// rules of every other checkpoint edit, and is refused once its leave is cut
 /// off. A failed checkpoint writer refuses the whole batch, as it refuses
-/// inventory transfers and leave cut-offs: no later submission can publish it. Schema 14 commits in memory, as survival debits do; schemas 15/16
+/// inventory transfers and leave cut-offs: no later submission can publish
+/// it. Schema 14 commits in memory, as survival debits do; schemas 15/16
 /// stage every save and preflight the full generation once, as survival
 /// does, committing all or none. The next writer submission publishes them.
 /// The private leave proof refuses it: its journal binds every revision.

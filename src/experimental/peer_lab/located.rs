@@ -64,13 +64,16 @@ pub struct SavedLocationCounts {
     pub saved: u64,
     /// Of those, the ones taken for a staged authored leave before its cut-off.
     pub saved_at_leave: u64,
-    /// Eligible sessions whose save the registry refused (no activated
-    /// attachment, a leave already cut off, a failed checkpoint writer, an
-    /// invalid edit or a failed world preflight); nothing changed for them.
+    /// Save passes in which the registry refused an eligible session's save
+    /// (no activated attachment, a leave already cut off, a failed checkpoint
+    /// writer, an invalid edit or a failed world preflight); nothing changed.
+    /// A pass is a periodic run, a leave cut-off or the teardown flush, so one
+    /// session can add several.
     pub refused: u64,
-    /// Eligible sessions whose save was never offered because their pawn's
-    /// position does not descend from the stored location (left unapplied,
-    /// a relocation pending, failed or refused); the stored one is kept.
+    /// Save passes in which an eligible session's save was never offered
+    /// because its pawn's position does not descend from the stored location
+    /// (left unapplied, a relocation pending, failed or refused); the stored
+    /// one is kept. Counted per pass, not per session.
     pub withheld: u64,
 }
 

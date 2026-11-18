@@ -88,9 +88,9 @@ location kept. `network.checkpoint_location_correction` (default false; needs
 returning player's live pawn to the stored location plus 50 cm with a Falling
 movement correction answering a client move: at most one per second, five
 attempts or 30 s, applied when a move reports within 300 cm; the frozen release
-waits at most 5 s. Counters: `sessions.checkpoint_saved_locations`
-(`saved`, `saved_at_leave`, `refused`, `withheld`) and
-`sessions.checkpoint_relocation`. `--private-leave-proof` refuses both.
+waits at most 5 s. [Counters](network-readiness.md):
+`sessions.checkpoint_saved_locations` and `sessions.checkpoint_relocation`.
+`--private-leave-proof` refuses both.
 
 ## Player inventory
 
