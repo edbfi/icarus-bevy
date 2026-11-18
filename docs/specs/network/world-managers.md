@@ -100,6 +100,8 @@ Framing is in [actor channel bunches](actor-channel.md).
   A refusal commits no actor in the call, including an optional trailing
   manager, and leaves GameState references, live GUIDs and exports intact.
   `run` reports refused saved plans in `skipped_quests` or `skipped_managers`.
+  Startup fails if registration refuses a release manager, configured FLOD
+  manager or fresh PlayerHistoryTracker.
 - Retry an invalid plan after correcting the reported error. If any peer has
   initial opens pending, retry nonempty registration once every peer's
   initial sequence has finished processing or the peer has closed. Registration
