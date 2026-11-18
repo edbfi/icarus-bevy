@@ -25,8 +25,10 @@ use crate::experimental::typed_value::{Item, Scalar, TypedProperty, TypedTree, V
 use crate::import_candidate::DecodedImportCandidate;
 use crate::prospect::EnvelopeInspection;
 
+mod container_links;
 mod recorder_rows;
 mod world_catalog;
+pub use container_links::ContainerLinkPlan;
 use recorder_rows::{RecorderRowTable, RecorderRowTablesFile, RecorderRows, ScopedTableIssue};
 use world_catalog::{WorldCatalog, WorldCatalogFile};
 
@@ -639,6 +641,9 @@ pub struct ImportPlan {
     /// retained C016 has assessable, consistent topology.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_positions: Option<ContainerPositionPlan>,
+    /// Save-local link observations from exact retained C026 recorders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character_container_links: Option<ContainerLinkPlan>,
     pub content: ContentPlan,
     /// Per class pseudonym.
     pub classes: BTreeMap<String, ClassPlan>,
@@ -678,6 +683,7 @@ pub fn plan_decoded_import(
         base_fields: BaseFieldPlan::default(),
         actors: ActorPlan::default(),
         container_positions: None,
+        character_container_links: None,
         content: ContentPlan::default(),
         classes: BTreeMap::new(),
         blockers: Vec::new(),
@@ -755,6 +761,7 @@ pub fn plan_decoded_import(
     let mut container_recorders = 0;
     let mut valid_container_recorders = 0;
     let mut invalid_container_recorders = 0;
+    let mut container_topology = None;
     for recorder in candidate.recorders() {
         let decision = recorder.decision();
         // A version-0 save drops every recorder unevaluated; its exact class
@@ -795,11 +802,15 @@ pub fn plan_decoded_import(
         class_plan.uninterpreted_leaves += summary.uninterpreted;
 
         if is_container_manager {
-            if let Some((occupied, empty)) = container_position_counts(&typed.tree) {
+            if let Some(topology) = ContainerTopology::from_tree(&typed.tree) {
                 // The recorder cap (16,384) and i32 list lengths bound both totals.
+                let (occupied, empty) = topology.counts();
                 container_positions.occupied += occupied;
                 container_positions.empty += empty;
                 valid_container_recorders += 1;
+                if container_recorders == 1 {
+                    container_topology = Some(topology);
+                }
             } else {
                 invalid_container_recorders += 1;
             }
@@ -934,24 +945,43 @@ pub fn plan_decoded_import(
     if container_recorders > 0 && valid_container_recorders == container_recorders {
         plan.container_positions = Some(container_positions);
     }
+    plan.character_container_links = container_links::assess(
+        candidate.recorders(),
+        container_topology
+            .as_ref()
+            .filter(|_| container_recorders == 1),
+    );
     plan.importable = plan.blockers.is_empty();
     Ok(plan)
 }
 
-/// Native planning requires a consistent sparse list. Only saved positions
-/// enter the set, so large declared lengths do not increase working memory.
-fn container_position_counts(tree: &TypedTree) -> Option<(u64, u64)> {
-    let (count, positions) = saved_container_positions(tree).ok()?;
-    let length = u64::try_from(count).ok()?;
-    let mut occupied = BTreeSet::new();
-    for position in positions {
-        let position = position.ok()?;
-        if !(0..count).contains(&position) || !occupied.insert(position) {
+/// The set contains only saved positions, regardless of the declared length.
+struct ContainerTopology {
+    length: i32,
+    occupied: BTreeSet<i32>,
+}
+
+impl ContainerTopology {
+    fn from_tree(tree: &TypedTree) -> Option<Self> {
+        let (length, positions) = saved_container_positions(tree).ok()?;
+        if length < 0 {
             return None;
         }
+        let mut occupied = BTreeSet::new();
+        for position in positions {
+            let position = position.ok()?;
+            if !(0..length).contains(&position) || !occupied.insert(position) {
+                return None;
+            }
+        }
+        Some(Self { length, occupied })
     }
-    let occupied = u64::try_from(occupied.len()).ok()?;
-    Some((occupied, length - occupied))
+
+    fn counts(&self) -> (u64, u64) {
+        // Each distinct position passed the range check.
+        let occupied = self.occupied.len() as u64;
+        (occupied, self.length as u64 - occupied)
+    }
 }
 
 fn owner_resolution(decision: &StagedRecorderDecision) -> &'static str {

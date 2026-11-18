@@ -2530,15 +2530,16 @@ pub fn advance_native_modifiers(world: &mut World, elapsed: std::time::Duration)
         .into_iter()
         .map(|owner| advance_captured_modifiers(owner, elapsed_nanos))
         .collect::<Result<Vec<_>>>()?;
+    // Capture clones the context's lifecycle, so preflight validates the
+    // staged owners and their world budget against the same lifecycle slots.
+    SnapshotStore::preflight(&snapshot)?;
+    let state = snapshot.native_modifiers.expect("prepared modifier world");
     let context = world.resource::<NativeLifecycleContext>();
-    state.validate(&context.lifecycle)?;
     let targets: Vec<_> = state
         .owners
         .iter()
         .map(|owner| context.live[&owner.owner.id])
         .collect();
-    SnapshotStore::preflight(&snapshot)?;
-    let state = snapshot.native_modifiers.expect("prepared modifier world");
     for (entity, state) in targets.into_iter().zip(state.owners) {
         world
             .get_mut::<ModifierOwnerState>(entity)
