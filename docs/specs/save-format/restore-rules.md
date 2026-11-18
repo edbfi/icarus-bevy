@@ -73,15 +73,19 @@ addresses retain helper names or stand alone.
   physical declarations F-1241. Framing and fixity receipts: M-1457,
   M-1458/ev_800189c44abc; M-1472 to M-1476.
   Return/this definitions, member widths/occupied storage, signatures/method effects,
-  actual caller/lowering, aggregate/static ABI, comparator associations,
+  aggregate/static ABI, comparator associations,
   native owner/receiver, overrides, coordinates, lifetimes and runtime/client/import
   compatibility stay open.
 - `UIcarusFunctionLibrary::RemoveModifierState` local selection (F-937) is
   F-1242; F-940's helper and entry sampling F-1243; selected call operands
   F-1244; population strides and getters F-1245; `STORE8`/`LOAD8` preservation
-  F-1246. Native element/row storage, requested 24-byte argument lowering, aliases,
-  class/effects and client helper remain open with F-1195's limits. M-1508 binds
-  static checks; M-1509/M-1510 record processes only.
+  F-1246. M-1508 binds static checks. M-1509/M-1510 record processes only.
+- The combined search reached its match cap (M-1540). The named server
+  dispatch wrapper passes a stack address to removal in RDX
+  (F-1260). Its helper copies three eight-byte values from another stack
+  location into that destination. Both modeled normal paths subsequently
+  pass the destination to an opaque call. Final argument contents, row and
+  actor identity, other callers, native storage and runtime effects stay open.
 
 ## Candidate
 

@@ -33,7 +33,7 @@ use bevy::prelude::App;
 
 use super::super::lossy_join::frozen_release;
 use super::super::move_acks::{authored_move, move_bunch_payload, unreliable_bunch};
-use super::bag_projection_tests::{bag_deltas_in, slot_properties};
+use super::bag_projection_tests::{BagDelta, bag_deltas_in, slot_properties};
 use super::*;
 use crate::{
     config::{ConfigOptions, ServerConfig},
@@ -185,14 +185,14 @@ impl Inputs {
             std::fs::write(
                 &binding,
                 serde_json::to_vec(&serde_json::json!({
-                    "format": 1,
+                    "format": 2,
                     "inventories": [{"inventory": "bag", "info_row": "Unused",
                                      "slot_queries": ["Any", "Any"]}],
                     "items": [
                         {"item": "water", "row": "AuthoredWater", "count_property": true,
-                         "dynamic": []},
+                         "dynamic": [], "unit_weight": 5},
                         {"item": "ration", "row": "AuthoredRation", "count_property": false,
-                         "dynamic": []}
+                         "dynamic": [], "unit_weight": 7}
                     ]
                 }))
                 .unwrap(),
@@ -1349,14 +1349,14 @@ fn vitals_update(lab: &PeerLab, payload: &Payload) -> Option<BTreeMap<u32, RepVa
     )
 }
 
-/// The client's projected bag after the slot deltas among `payloads`:
+/// The client's projected slots and weight after the deltas among `payloads`:
 /// opened empty at F-978's key (2 + slots), each delta checked against the
 /// key it holds. Subobject indices follow the content's own inventories.
 fn projected_bag(
     lab: &PeerLab,
     connection: u32,
     payloads: &[Payload],
-) -> Vec<BTreeMap<u32, RepValue>> {
+) -> (Vec<BTreeMap<u32, RepValue>>, i32) {
     let content = &lab.pawn_open.as_ref().unwrap().2;
     let bound = lab
         .player_bag_projection
@@ -1372,8 +1372,18 @@ fn projected_bag(
         .map(|index| slot_properties(&InventorySlot::empty(1, index)))
         .collect();
     let mut key = 2 + 2;
-    for (inventory, delta) in bag_deltas_in(lab, connection, first..first + 1, payloads.to_vec()) {
+    let mut current_weight = 0;
+    for BagDelta {
+        inventory,
+        weight,
+        slots: delta,
+    } in bag_deltas_in(lab, connection, first..first + 1, payloads.to_vec())
+    {
         assert_eq!(inventory, 0);
+        if let Some(weight) = weight {
+            assert_ne!(weight, current_weight);
+            current_weight = weight;
+        }
         assert_eq!(delta.base_replication_key, key, "base is the held key");
         assert_eq!(
             delta.array_replication_key,
@@ -1392,7 +1402,7 @@ fn projected_bag(
             }
         }
     }
-    slots
+    (slots, current_weight)
 }
 
 /// The authored starter bag by literal identities: `AuthoredWater` is
@@ -1801,7 +1811,7 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
 fn rehearsal_bag_projection_survives_leave_and_restart() {
     let inputs = Inputs::new(true);
     let mut server = Server::start(&inputs.config);
-    let expected = starter_bag_literal();
+    let expected = (starter_bag_literal(), 3 * 5 + 7);
     for process in 0..2 {
         let mut client = enter(&mut server, &inputs, Duration::from_secs(5));
         let connection = server.lab().peers[&client.address].connection_id.unwrap();
