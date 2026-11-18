@@ -46,6 +46,10 @@ impl Default for ServerConfig {
 pub const MAX_NETWORK_PLAYERS: u32 = 64;
 /// Largest accepted `network.session_timeout_seconds`.
 pub const MAX_SESSION_TIMEOUT_SECONDS: u64 = 600;
+/// Smallest nonzero `network.begin_timeout_seconds`.
+pub const MIN_BEGIN_TIMEOUT_SECONDS: u64 = 5;
+/// Largest accepted `network.begin_timeout_seconds` (one hour).
+pub const MAX_BEGIN_TIMEOUT_SECONDS: u64 = 3_600;
 /// Largest accepted `network.server_frozen_movement_release_delay_ms` (10 minutes).
 pub const MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS: u64 = 600_000;
 
@@ -140,6 +144,20 @@ pub struct NetworkConfig {
     /// with no ACK/NAK progress, or an unanswered friends query (N-019).
     /// Removal is local; reconnect may be needed.
     pub session_timeout_seconds: u64,
+    /// Native policy, default `0` (no limit, omitted when serialized): the
+    /// longest a joined session may go without its Begin
+    /// (`ServerBeginPlayerInitialisation`, controller field 124) recording a
+    /// character slot, measured from Join; otherwise
+    /// [`MIN_BEGIN_TIMEOUT_SECONDS`]`..=`[`MAX_BEGIN_TIMEOUT_SECONDS`]. A
+    /// session past it is sent a control close and removed: its player slot,
+    /// channels, identifiers and early pawn are released; nothing is stored,
+    /// since no reservation precedes Begin. The other bounds need a silent
+    /// client, stalled ACKs or a sent friends query, so without this a client
+    /// that keeps ACKing but never sends Begin holds its slot indefinitely.
+    /// No recorded run measures how long a stock client takes to send Begin,
+    /// so any value is a guess. `run --private-leave-proof` refuses it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub begin_timeout_seconds: u64,
     /// Optional release TOML (such as `config/release.toml`; relative paths use
     /// the working directory). When set, it is loaded and validated before the
     /// socket binds, and a Hello whose network version differs from its
@@ -240,6 +258,7 @@ impl Default for NetworkConfig {
             max_players: 8,
             join_password: JoinPassword::NONE,
             session_timeout_seconds: 30,
+            begin_timeout_seconds: 0,
             release_profile: None,
             data_pak: None,
             authored_gameplay: None,
@@ -414,6 +433,19 @@ impl NetworkConfig {
             "network.session_timeout_seconds must be 1..={MAX_SESSION_TIMEOUT_SECONDS}"
         );
         ensure!(
+            self.begin_timeout_seconds == 0
+                || (MIN_BEGIN_TIMEOUT_SECONDS..=MAX_BEGIN_TIMEOUT_SECONDS)
+                    .contains(&self.begin_timeout_seconds),
+            "network.begin_timeout_seconds must be 0 (no limit) or \
+             {MIN_BEGIN_TIMEOUT_SECONDS}..={MAX_BEGIN_TIMEOUT_SECONDS}"
+        );
+        // Begin answers a controller open, which exists only with a release
+        // profile; without one the limit would close every joined session.
+        ensure!(
+            self.begin_timeout_seconds == 0 || self.release_profile.is_some(),
+            "network.begin_timeout_seconds requires network.release_profile"
+        );
+        ensure!(
             self.server_frozen_movement_release_delay_ms <= MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS,
             "network.server_frozen_movement_release_delay_ms must be 0..={MAX_FROZEN_MOVEMENT_RELEASE_DELAY_MS}"
         );
@@ -451,6 +483,11 @@ impl NetworkConfig {
 
     pub fn session_timeout(&self) -> Duration {
         Duration::from_secs(self.session_timeout_seconds)
+    }
+
+    /// `network.begin_timeout_seconds` as a limit; `None` when `0`.
+    pub fn begin_timeout(&self) -> Option<Duration> {
+        (self.begin_timeout_seconds != 0).then(|| Duration::from_secs(self.begin_timeout_seconds))
     }
 
     pub fn server_frozen_movement_release_delay(&self) -> Duration {
@@ -589,6 +626,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 #[cfg(test)]
 mod authored_clock_config_tests {
     use super::*;
@@ -724,6 +765,77 @@ mod checkpoint_early_pawn_config_tests {
         assert!(plain.validate().is_ok());
         plain.checkpoint_pawn_before_identity = true;
         assert!(plain.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod begin_timeout_config_tests {
+    use super::*;
+
+    #[test]
+    fn default_absent_omitted_and_bounded() {
+        let parsed: ServerConfig = toml::from_str("").unwrap();
+        assert_eq!(parsed.network.begin_timeout_seconds, 0);
+        assert_eq!(parsed.network.begin_timeout(), None);
+        // Absent or 0, both serialized forms are exactly the default's.
+        let mut network = NetworkConfig::default();
+        let toml_before = toml::to_string(&network).unwrap();
+        let json_before = serde_json::to_vec(&network).unwrap();
+        assert!(!toml_before.contains("begin_timeout_seconds"));
+        let parsed: ServerConfig =
+            toml::from_str("[network]\nbegin_timeout_seconds = 0\n").unwrap();
+        assert_eq!(parsed.network, network);
+        assert_eq!(toml::to_string(&parsed.network).unwrap(), toml_before);
+        assert_eq!(serde_json::to_vec(&parsed.network).unwrap(), json_before);
+        // Without a release profile no controller opens, so no Begin can come.
+        network.begin_timeout_seconds = 60;
+        assert_eq!(
+            network.validate().unwrap_err().to_string(),
+            "network.begin_timeout_seconds requires network.release_profile"
+        );
+        network.release_profile = Some("authored-release.toml".into());
+        for seconds in [0, MIN_BEGIN_TIMEOUT_SECONDS, 60, MAX_BEGIN_TIMEOUT_SECONDS] {
+            network.begin_timeout_seconds = seconds;
+            assert!(network.validate().is_ok(), "{seconds}");
+            assert_eq!(
+                network.begin_timeout(),
+                (seconds != 0).then(|| Duration::from_secs(seconds))
+            );
+        }
+        let written = toml::to_string(&network).unwrap();
+        assert!(written.contains("begin_timeout_seconds = 3600"));
+        assert_eq!(toml::from_str::<NetworkConfig>(&written).unwrap(), network);
+        for seconds in [
+            1,
+            MIN_BEGIN_TIMEOUT_SECONDS - 1,
+            MAX_BEGIN_TIMEOUT_SECONDS + 1,
+            u64::MAX,
+        ] {
+            network.begin_timeout_seconds = seconds;
+            assert_eq!(
+                network.validate().unwrap_err().to_string(),
+                "network.begin_timeout_seconds must be 0 (no limit) or 5..=3600",
+                "{seconds}"
+            );
+        }
+        for invalid in [
+            "[network]\nbegin_timeout_seconds = -1\n",
+            "[network]\nbegin_timeout_seconds = \"5\"\n",
+            "[network]\nbegin_timeout_seconds = 5.0\n",
+        ] {
+            assert!(
+                toml::from_str::<ServerConfig>(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+        // Independent of the session timeout and of player persistence.
+        let parsed: ServerConfig = toml::from_str(
+            "[network]\nrelease_profile = \"authored-release.toml\"\n\
+             session_timeout_seconds = 600\nbegin_timeout_seconds = 5\n",
+        )
+        .unwrap();
+        assert!(parsed.validate().is_ok());
+        assert_eq!(parsed.network.begin_timeout(), Some(Duration::from_secs(5)));
     }
 }
 

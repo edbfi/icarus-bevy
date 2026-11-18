@@ -1681,6 +1681,9 @@ fn run(
             if let Some(world) = &config.network.authored_world {
                 record["authored_world"] = json!(world);
             }
+            if config.network.begin_timeout_seconds != 0 {
+                record["begin_timeout_seconds"] = json!(config.network.begin_timeout_seconds);
+            }
             if config.network.checkpoint_pawn_before_identity {
                 record["checkpoint_pawn_before_identity"] = json!(true);
             }

@@ -296,6 +296,42 @@ fn early_checkpoint_pawn_and_private_proof_refuse_each_other() {
     second.health().unwrap();
 }
 
+/// The proof's one-join budget never refills, and removing its joined peer
+/// before a reservation fails it as abandoned
+/// (`private_proof_cancel_or_abandoned_peer_never_completes_and_latches_dispatch`),
+/// so a Begin limit could only end the case: a lab bound with one refuses the
+/// proof before taking its join budget.
+#[test]
+fn begin_timeout_and_private_proof_refuse_each_other() {
+    let leave_lab = |limit: Option<Duration>| {
+        let mut lab = lab();
+        let selected = ReleaseProfile::fixture("3.0.36");
+        lab.config.local_network_version = Some(selected.pin.network_checksum);
+        lab.config.begin_timeout = limit;
+        lab.player_controller_open = selected
+            .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+            .unwrap();
+        lab.enable_authored_controller_leave(plan()).unwrap();
+        lab
+    };
+    let (_first_directory, first) = proof();
+    let mut lab = leave_lab(Some(Duration::from_secs(5)));
+    assert_eq!(
+        lab.enable_private_leave_proof(first.clone())
+            .unwrap_err()
+            .to_string(),
+        "the private leave proof refuses the Begin timeout"
+    );
+    assert!(lab.private_leave_proof.is_none());
+    assert_eq!(lab.private_join_remaining, None);
+    first.health().unwrap();
+    let (_second_directory, second) = proof();
+    let mut lab = leave_lab(None);
+    lab.enable_private_leave_proof(second.clone()).unwrap();
+    assert_eq!(lab.private_join_remaining, Some(1));
+    second.health().unwrap();
+}
+
 /// The proof's journal binds every revision between consumption and the
 /// cut-off, so saved locations and the proof refuse each other in either
 /// order, and the registry's location save refuses a proof registry.

@@ -25,8 +25,12 @@ const ACCOUNT: u64 = 76_561_197_960_265_770;
 
 #[path = "bag_projection.rs"]
 mod bag_projection_tests;
+#[path = "begin_timeout.rs"]
+mod begin_timeout;
 #[path = "controller_leave.rs"]
 mod controller_leave_tests;
+#[path = "restart_rehearsal.rs"]
+mod restart_rehearsal;
 
 fn vitals() -> CharacterVitals {
     CharacterVitals {

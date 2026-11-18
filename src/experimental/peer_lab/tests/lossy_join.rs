@@ -1106,7 +1106,8 @@ fn is_release(lab: &PeerLab, bunch: &Bunch) -> bool {
         && frozen_release(lab, &bunch.payload)
 }
 
-fn frozen_release(lab: &PeerLab, payload: &Payload) -> bool {
+/// Whether `payload` (a pawn bunch body) sets `bServerFrozenMovement` false.
+pub(super) fn frozen_release(lab: &PeerLab, payload: &Payload) -> bool {
     let Some((plan, _, _)) = &lab.pawn_open else {
         return false;
     };

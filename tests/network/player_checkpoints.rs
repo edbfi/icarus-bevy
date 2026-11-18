@@ -1056,3 +1056,72 @@ fn actual_offline_runner_refuses_release_bound_store_and_leaves_it_untouched() {
         manifest.as_bytes()
     );
 }
+
+/// `network.begin_timeout_seconds` reaches the lab only through
+/// `peer_lab_config` and live preparation, with or without player
+/// persistence; absent (0), the lab has no limit and its session counts no
+/// `closed_awaiting_begin`. A lab configuration not composed from the network
+/// configuration never carries it.
+#[test]
+fn begin_timeout_reaches_the_lab_only_through_live_preparation() {
+    let (_directory, mut config) = inputs();
+    fs::write(
+        config.data_pak.as_ref().unwrap(),
+        pak_writer::fresh_join_pak_with(&[(
+            "Prospects/D_ProspectList.json",
+            pak_writer::table_json(&["AuthoredWorkshop"]),
+        )]),
+    )
+    .unwrap();
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    config.enabled = true;
+    config.port = occupied.local_addr().unwrap().port();
+    let declaration = config.player_persistence.as_ref().unwrap();
+    config.hosting = Some(icarus_bevy::native_hosting::HostingConfig {
+        query_bind: "127.0.0.1".parse().unwrap(),
+        query_port: if config.port == 27015 { 27016 } else { 27015 },
+        private_ip: "127.0.0.1".parse().unwrap(),
+        seconds: 60,
+        name: "Authored workshop".into(),
+        map_url: declaration.map_url.clone(),
+        prospect_id: declaration.prospect_id.clone(),
+        prospect_row: declaration.prospect_row.clone(),
+        lobby_name: "Workshop".into(),
+        difficulty: declaration.difficulty,
+    });
+    assert_eq!(PeerLabConfig::default().begin_timeout, None);
+    for persistence in [true, false] {
+        if !persistence {
+            // The plain session path: loopback, no hosting or player state.
+            config.player_persistence = None;
+            config.authored_world = None;
+            config.hosting = None;
+        }
+        for seconds in [0, 5, 3_600] {
+            config.begin_timeout_seconds = seconds;
+            let expected = (seconds != 0).then(|| Duration::from_secs(seconds));
+            let lab_config = network::peer_lab_config(&config);
+            assert_eq!(lab_config.begin_timeout, expected);
+            let (session, players) = network::prepare_run(&config, lab_config).unwrap();
+            assert_eq!(players.is_some(), persistence);
+            let mut session = session.unwrap();
+            let lab = &session.session_mut().lab;
+            assert_eq!(lab.begin_timeout(), expected, "{persistence} {seconds}");
+            let counts = lab.session_counts();
+            assert_eq!(counts.closed_awaiting_begin, expected.map(|_| 0));
+            // Pure preparation: nothing bound.
+            assert!(lab.local_addr().is_err());
+            // The same preparation from a lab configuration that did not
+            // come from the network configuration has no limit.
+            let (session, _) = network::prepare_run(
+                &config,
+                PeerLabConfig {
+                    begin_timeout: None,
+                    ..lab_config
+                },
+            )
+            .unwrap();
+            assert_eq!(session.unwrap().session_mut().lab.begin_timeout(), None);
+        }
+    }
+}
