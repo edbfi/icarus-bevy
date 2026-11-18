@@ -202,6 +202,12 @@ use sha2::{Digest, Sha256};
 
 mod controller_leave;
 pub use controller_leave::ControllerLeaveCounts;
+mod located;
+pub use located::{
+    CheckpointRelocationCounts, LOCATION_SAVE_INTERVAL, MAX_RELOCATION_CORRECTIONS,
+    RELOCATION_RELEASE_HOLD, RELOCATION_RESEND_INTERVAL, RELOCATION_TIMEOUT,
+    RELOCATION_TOLERANCE_CM, SavedLocationCounts,
+};
 mod pawn_receive;
 use pawn_receive::{
     MoveOutcomes, PawnSubobjectMapping, observe_pawn_bunch, observe_pawn_transport_drop,
@@ -733,6 +739,13 @@ pub struct PeerLabStats {
     /// differs from the place their pawn already opened. Neither is moved.
     #[serde(skip)]
     pub checkpoint_locations_unapplied: u64,
+    /// Saved locations only (`SessionCounts::checkpoint_saved_locations`).
+    #[serde(skip)]
+    pub checkpoint_saved_locations: SavedLocationCounts,
+    /// Location correction only (`SessionCounts::checkpoint_relocation`);
+    /// its gauges stay zero here.
+    #[serde(skip)]
+    pub checkpoint_relocation: CheckpointRelocationCounts,
     /// Player inventory projection only (`SessionCounts::player_bag_projection`).
     #[serde(skip)]
     pub player_bag_projection: PlayerBagProjectionCounts,
@@ -1211,6 +1224,12 @@ pub struct SessionCounts {
     /// players whose stored location was left unapplied to their live pawn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_locations_unapplied: Option<u64>,
+    /// Present only with [`PeerLab::enable_checkpoint_saved_locations`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_saved_locations: Option<SavedLocationCounts>,
+    /// Present only with [`PeerLab::enable_checkpoint_location_correction`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_relocation: Option<CheckpointRelocationCounts>,
     /// Present only with [`PeerLab::enable_player_inventory_projection`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_bag_projection: Option<PlayerBagProjectionCounts>,
@@ -1955,6 +1974,13 @@ struct PawnMoves {
     placement: Option<([f64; 3], Instant)>,
     last_refusal_logged_at: Option<Instant>,
     counts: PawnMoveCounts,
+    /// A returning player's pending relocation
+    /// ([`PeerLab::enable_checkpoint_location_correction`]); always `None`
+    /// without it.
+    relocation: Option<located::Relocation>,
+    /// The last correction sent; acknowledgements keep [`MOVE_ACK_INTERVAL`]
+    /// from it as from each other.
+    last_correction_at: Option<Instant>,
 }
 
 /// One session's pawn move counters; counts and the movement mode only.
@@ -2969,6 +2995,10 @@ fn receive_pawn_moves(
         state.counts.moves = state.counts.moves.saturating_add(1);
         state.counts.mode = packed.new.mode;
         bump(&mut stats.pawn_moves_received);
+        // A pending relocation answers this newest move.
+        if let Some(relocation) = &mut state.relocation {
+            relocation.due = true;
+        }
         // Only a world location counts: no base, and a movement mode.
         if packed.new.base.is_some() || mode == MOVEMENT_MODE_NONE {
             state.counts.positions_skipped = state.counts.positions_skipped.saturating_add(1);
@@ -2976,6 +3006,10 @@ fn receive_pawn_moves(
             continue;
         }
         let location = packed.new.fields.location_cm();
+        if state.relocation.is_some() {
+            located::relocating_move(state, stats, location, now);
+            continue;
+        }
         match check_move_location(state.location.or(state.placement), location, now) {
             Ok(()) => {
                 state.location = Some((location, now));
@@ -3586,6 +3620,14 @@ pub struct PeerLab {
     /// Checkpoint mode only: open the pawn in its legacy position before the
     /// client identifies itself ([`Self::enable_checkpoint_early_pawn`]).
     checkpoint_early_pawn: bool,
+    /// Save accepted move locations into checkpoints
+    /// ([`Self::enable_checkpoint_saved_locations`]).
+    checkpoint_saved_locations: bool,
+    /// The last lab-wide periodic location save.
+    last_location_save_at: Option<Instant>,
+    /// Move a returning early pawn by a correction
+    /// ([`Self::enable_checkpoint_location_correction`]).
+    checkpoint_location_correction: bool,
     /// Session-only bag projection and the per-connection state every pawn
     /// open starts from ([`Self::enable_player_inventory_projection`]).
     player_bag_projection: Option<(
@@ -3745,6 +3787,17 @@ impl PeerLab {
                 && self.authored_controller_leave.is_some()
                 && self.checkpoint_initial_vitals.is_some(),
             "private leave proof requires authored checkpoints/leave before peers"
+        );
+        // Its journal binds every revision between consumption and the
+        // cut-off (`leave_runtime_proof`'s `Consumed`/`Cutoff` checks).
+        // Named before the early pawn, which correction requires.
+        ensure!(
+            !self.checkpoint_saved_locations,
+            "the private leave proof refuses saved checkpoint locations"
+        );
+        ensure!(
+            !self.checkpoint_location_correction,
+            "the private leave proof refuses checkpoint location correction"
         );
         ensure!(
             !self.checkpoint_early_pawn,
@@ -4279,14 +4332,14 @@ impl PeerLab {
                         return;
                     }
                 }
+                let mut relocation = None;
                 if let Some(placement) = early_placement {
-                    // The live pawn stays where it opened and the stored
-                    // location is kept: no qualified correction writer exists.
-                    if !projection.is_new
-                        && projection.checkpoint.location_cm.map(|value| value as f32)
-                            != placement.location
-                    {
-                        bump(&mut self.stats.checkpoint_locations_unapplied);
+                    // The live pawn opened elsewhere: relocated by a
+                    // correction with that option, otherwise left where it
+                    // opened and counted; the stored location is kept.
+                    let stored = projection.checkpoint.location_cm.map(|value| value as f32);
+                    if !projection.is_new && stored != placement.location {
+                        relocation = self.start_relocation(stored, Instant::now());
                     }
                 } else if let Some(resolution) = &resolution
                     && projection.is_new
@@ -4297,6 +4350,9 @@ impl PeerLab {
                 if let Some(entry) = self.peers.get_mut(&address) {
                     entry.checkpoint_epoch = Some(epoch);
                     entry.checkpoint_projection = Some(projection);
+                    if relocation.is_some() {
+                        entry.pawn_moves.relocation = relocation;
+                    }
                     match &resolution {
                         // Gated pawn: it will open at the reserved checkpoint.
                         Some(resolution) => {
@@ -4607,6 +4663,9 @@ impl PeerLab {
             authored_controller_leave: None,
             checkpoint_initial_vitals: None,
             checkpoint_early_pawn: false,
+            checkpoint_saved_locations: false,
+            last_location_save_at: None,
+            checkpoint_location_correction: false,
             player_bag_projection: None,
             next_checkpoint_epoch: 1,
             private_rpc82_capture: None,
@@ -5815,6 +5874,7 @@ impl PeerLab {
             return permanent;
         };
         let early = self.checkpoint_early_pawn;
+        let saved_locations = self.checkpoint_saved_locations;
         let mut outgoing = Vec::new();
         let mut failed = Vec::new();
         for (address, entry) in &mut self.peers {
@@ -5857,8 +5917,10 @@ impl PeerLab {
             });
             // The early pawn opened before its checkpoint was known. A first
             // projection equal to what that open carried needs no update.
-            if early
-                && entry.checkpoint_enqueued_revision.is_none()
+            // With saved locations, neither does a later location-only
+            // revision: the pawn already carries its vitals.
+            if ((early && entry.checkpoint_enqueued_revision.is_none())
+                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
                 && let Some(projection) = vital_due
                 && entry
                     .pawn_character_state
@@ -5967,7 +6029,16 @@ impl PeerLab {
                     if let Some(projection) = vital_due {
                         entry.checkpoint_enqueued_revision = Some(projection.revision);
                         if let Some(values) = &mut entry.pawn_character_state {
-                            values.extend(projection.checkpoint.vitals.values());
+                            let vitals = projection.checkpoint.vitals;
+                            values.extend(vitals.values());
+                            // The update also sent the alive state; the
+                            // location-only check above compares it.
+                            if saved_locations {
+                                values.insert(
+                                    super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
+                                    RepValue::Enum(u32::from(vitals.health < 1)),
+                                );
+                            }
                         }
                     }
                     if !due.is_empty() {
@@ -7454,6 +7525,10 @@ impl PeerLab {
             self.peers.is_empty() && self.peak_peers == 0,
             "pawn move acknowledgements are configured before admission"
         );
+        ensure!(
+            !self.checkpoint_saved_locations && !self.checkpoint_location_correction,
+            "saved checkpoint locations and location correction read pawn moves"
+        );
         self.pawn_move_acks = false;
         Ok(())
     }
@@ -7747,6 +7822,12 @@ impl PeerLab {
             checkpoint_locations_unapplied: self
                 .checkpoint_early_pawn
                 .then_some(self.stats.checkpoint_locations_unapplied),
+            checkpoint_saved_locations: self
+                .checkpoint_saved_locations
+                .then_some(self.stats.checkpoint_saved_locations),
+            checkpoint_relocation: self
+                .checkpoint_location_correction
+                .then(|| self.relocation_counts()),
             player_bag_projection: self
                 .player_bag_projection
                 .as_ref()
@@ -10196,7 +10277,9 @@ impl PeerLab {
     /// (`actor_channel_settled`): the client drops unreliable bunches on a
     /// channel it has not opened, and applies them at once, ahead of any
     /// reliable bunch still being repaired. Transport pressure holds it back
-    /// until ACK/NAK progress.
+    /// until ACK/NAK progress. A pending relocation
+    /// ([`Self::enable_checkpoint_location_correction`]) holds a due release
+    /// at most [`RELOCATION_RELEASE_HOLD`] (F-1134: correction, then unfreeze).
     fn retry_frozen_movement_release(&mut self) {
         if self.frozen_movement_release.is_none() {
             return;
@@ -10210,8 +10293,9 @@ impl PeerLab {
             .peers
             .iter_mut()
             .filter_map(|(address, entry)| {
+                let held = located::release_held(entry, now);
                 let release = &mut entry.frozen_release;
-                if release.idle() && release.due_at.is_some_and(|due| due <= now) {
+                if release.idle() && release.due_at.is_some_and(|due| due <= now) && !held {
                     release.pending = true;
                 }
                 let open = entry.controller_startup_pawn_guid.is_some()
@@ -10292,7 +10376,9 @@ impl PeerLab {
     /// clock): when a move arrived since the last acknowledgement, at least
     /// [`MOVE_ACK_INTERVAL`] after it, and with the pawn channel open and its
     /// reliable bunches all ACKed. Transport pressure holds it back until
-    /// ACK/NAK progress.
+    /// ACK/NAK progress. A pending relocation answers with corrections
+    /// instead ([`Self::retry_relocations`]); no move is acknowledged as good
+    /// while it is pending.
     fn retry_pawn_move_acks(&mut self, now: Instant) {
         if !self.pawn_move_acks {
             return;
@@ -10301,6 +10387,7 @@ impl PeerLab {
             return;
         };
         let channel = *channel;
+        self.retry_relocations(channel, now);
         let ready: Vec<SocketAddrV4> = self
             .peers
             .iter()
@@ -10308,8 +10395,12 @@ impl PeerLab {
                 let moves = &entry.pawn_moves;
                 (moves.unacked
                     && !moves.deferred
+                    && moves.relocation.is_none()
                     && moves
                         .last_ack_at
+                        .is_none_or(|at| now.saturating_duration_since(at) >= MOVE_ACK_INTERVAL)
+                    && moves
+                        .last_correction_at
                         .is_none_or(|at| now.saturating_duration_since(at) >= MOVE_ACK_INTERVAL)
                     && entry.controller_startup_pawn_guid.is_some()
                     && entry.peer.has_actor_channel(channel)
@@ -12756,6 +12847,11 @@ fn poll_peer_lab(world: &mut bevy::prelude::World) {
             lab.refresh_checkpoint_projections(registry);
         }
         lab.poll();
+        // Saved locations (default off) precede the leave bridge, so a leave
+        // staged in this poll is cut off with the location it carries.
+        if lab.checkpoint_saved_locations {
+            lab.bridge_saved_locations(world);
+        }
         if lab.authored_controller_leave.is_some()
             && let Some(mut registry) = world.get_resource_mut::<PlayerRegistry>()
         {

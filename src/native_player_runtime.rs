@@ -2307,6 +2307,129 @@ pub fn edit_player_checkpoint(
     Ok(projection)
 }
 
+/// One session location to commit into its player's checkpoint
+/// ([`save_player_locations`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LocationSave {
+    pub key: PlayerKey,
+    pub epoch: u64,
+    pub location_cm: [f64; 3],
+}
+
+/// What [`save_player_locations`] did with one save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocationSaveOutcome {
+    /// A new revision carries the location; nothing else changed.
+    Saved,
+    /// The checkpoint already holds it: no revision is consumed.
+    Unchanged,
+    /// Not an activated matching attachment, already cut off for leave, a
+    /// duplicate or an invalid edit: nothing changed.
+    Refused,
+}
+
+impl PlayerRegistry {
+    /// Prepare every save against the current records: the attachment must
+    /// match key and epoch, be activated and committed and not leaving; the
+    /// record's current checkpoint with only its location replaced passes the
+    /// ordinary edit rules (validation, compare-and-swap on the current
+    /// revision, same recipe, one revision). Nothing is mutated.
+    fn prepare_location_saves(
+        &self,
+        saves: &[LocationSave],
+    ) -> (
+        Vec<(usize, u64, PlayerCheckpoint)>,
+        Vec<LocationSaveOutcome>,
+    ) {
+        let mut edits = Vec::with_capacity(saves.len());
+        let mut outcomes = Vec::with_capacity(saves.len());
+        let mut keys = std::collections::BTreeSet::new();
+        for save in saves {
+            let outcome = (|| {
+                let held = self.attachments.get(&save.epoch)?;
+                if held.key != save.key
+                    || !held.activated
+                    || held.pending.is_some()
+                    || self.leaves.contains_key(&save.key)
+                    || !keys.insert(save.key)
+                {
+                    return None;
+                }
+                let index = self
+                    .snapshot
+                    .records
+                    .binary_search_by_key(&save.key, |record| record.key)
+                    .ok()?;
+                let record = &self.snapshot.records[index];
+                validate_selected_record(record, self.snapshot.high_water).ok()?;
+                self.snapshot
+                    .context()
+                    .check_rows(&record.checkpoint)
+                    .ok()?;
+                if record.checkpoint.location_cm == save.location_cm {
+                    return Some(LocationSaveOutcome::Unchanged);
+                }
+                let mut next = record.checkpoint;
+                next.location_cm = save.location_cm;
+                let revision = prepare_checkpoint_edit(record, record.revision, &next).ok()?;
+                edits.push((index, revision, next));
+                Some(LocationSaveOutcome::Saved)
+            })()
+            .unwrap_or(LocationSaveOutcome::Refused);
+            outcomes.push(outcome);
+        }
+        (edits, outcomes)
+    }
+}
+
+/// Commit session locations into their players' checkpoints
+/// (`network.checkpoint_saved_locations`) at an exclusive world boundary.
+/// Each save replaces only the location of the current record, under the
+/// rules of every other checkpoint edit, and is refused once its leave is cut
+/// off. Schema 14 commits in memory, as survival debits do; schemas 15/16
+/// stage every save and preflight the full generation once, as survival
+/// does, committing all or none. The next writer submission publishes them.
+/// The private leave proof refuses it: its journal binds every revision.
+pub(crate) fn save_player_locations(
+    world: &mut World,
+    saves: &[LocationSave],
+) -> anyhow::Result<Vec<LocationSaveOutcome>> {
+    let (edits, outcomes, staged) = {
+        let registry = world
+            .get_resource::<PlayerRegistry>()
+            .ok_or(PlayerError::Missing)?;
+        registry.proof_health()?;
+        anyhow::ensure!(
+            registry.private_leave_proof.is_none(),
+            "private leave proof refuses saved locations"
+        );
+        let (edits, outcomes) = registry.prepare_location_saves(saves);
+        let staged = (!edits.is_empty() && registry.has_inventory()).then(|| registry.snapshot());
+        (edits, outcomes, staged)
+    };
+    if edits.is_empty() {
+        return Ok(outcomes);
+    }
+    let commit = |players: &mut PlayerSnapshot| {
+        for (index, revision, checkpoint) in &edits {
+            let record = &mut players.records[*index];
+            record.checkpoint = *checkpoint;
+            record.revision = *revision;
+        }
+    };
+    let Some(mut players) = staged else {
+        commit(&mut world.resource_mut::<PlayerRegistry>().snapshot);
+        return Ok(outcomes);
+    };
+    commit(&mut players);
+    let mut generation = crate::simulation::capture(world)?;
+    generation.native_players = Some(players);
+    crate::persistence::SnapshotStore::preflight(&generation)?;
+    world.resource_mut::<PlayerRegistry>().snapshot =
+        generation.native_players.expect("preflight players");
+    Ok(outcomes)
+}
+
 #[cfg(test)]
 mod depletion_damage_tests {
     use super::*;

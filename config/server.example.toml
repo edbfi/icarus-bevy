@@ -39,6 +39,16 @@ session_timeout_seconds = 30
 # refuses it. Unqualified with stock clients.
 # checkpoint_pawn_before_identity = false
 
+# OPTIONAL with player_persistence and pawn_move_acks: save each player's last
+# accepted move location into their checkpoint (before an authored leave's
+# cut-off, every 10 s and at shutdown). No store or digest change.
+# checkpoint_saved_locations = false
+# OPTIONAL with checkpoint_pawn_before_identity and pawn_move_acks: move a
+# returning player's early pawn to its stored location by a movement
+# correction answering a client move; bounded resends, then counted unapplied.
+# Both: run --private-leave-proof refuses them. Unqualified with stock clients.
+# checkpoint_location_correction = false
+
 # OPTIONAL authored server-owned checkpoints, schema-14 stores only.
 # Requires release_profile, data_pak, authored_gameplay and authored_world.
 # Online use also requires authenticated hosting with the exact same context.

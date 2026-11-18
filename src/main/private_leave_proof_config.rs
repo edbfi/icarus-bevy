@@ -20,6 +20,15 @@ pub(super) fn validate_config(config: &ServerConfig) -> Result<()> {
         !config.network.checkpoint_pawn_before_identity,
         "private leave proof refuses the early checkpoint pawn"
     );
+    // Its journal requires the cut-off record to equal the last consumed one
+    // and each consumption to keep the location; a saved location between
+    // them is a revision it cannot account for. Correction needs the early
+    // pawn, refused above; both are named here regardless.
+    ensure!(
+        !config.network.checkpoint_saved_locations
+            && !config.network.checkpoint_location_correction,
+        "private leave proof refuses saved checkpoint locations and location correction"
+    );
     ensure!(
         config.network.enabled
             && config.network.authored_controller_leave
@@ -151,6 +160,37 @@ mod depletion_refusal_tests {
         assert_eq!(
             validate_config(&config).unwrap_err().to_string(),
             "private leave proof refuses depletion damage"
+        );
+    }
+}
+
+#[cfg(test)]
+mod saved_location_refusal_tests {
+    use super::*;
+    #[test]
+    fn saved_locations_and_correction_are_refused_before_proof_setup() {
+        let refusal =
+            "private leave proof refuses saved checkpoint locations and location correction";
+        for (saved, correction) in [(true, false), (false, true), (true, true)] {
+            let mut config = ServerConfig::default();
+            config.network.checkpoint_saved_locations = saved;
+            config.network.checkpoint_location_correction = correction;
+            assert_eq!(validate_config(&config).unwrap_err().to_string(), refusal);
+        }
+        // With the early pawn the early-pawn refusal comes first.
+        let mut config = ServerConfig::default();
+        config.network.checkpoint_pawn_before_identity = true;
+        config.network.checkpoint_location_correction = true;
+        assert_eq!(
+            validate_config(&config).unwrap_err().to_string(),
+            "private leave proof refuses the early checkpoint pawn"
+        );
+        // Off, the refusal falls through to the existing prerequisites.
+        assert_eq!(
+            validate_config(&ServerConfig::default())
+                .unwrap_err()
+                .to_string(),
+            "private proof configuration refused"
         );
     }
 }

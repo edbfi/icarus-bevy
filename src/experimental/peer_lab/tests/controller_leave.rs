@@ -62,12 +62,19 @@ impl Fixture {
         enabled: bool,
         proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
     ) -> Self {
-        Self::build(enabled, proof, false)
+        Self::build(enabled, proof, false, false)
     }
 
     /// Leave dispatch with the early checkpoint pawn (no private proof).
     fn early() -> Self {
-        Self::build(true, None, true)
+        Self::build(true, None, true, false)
+    }
+
+    /// [`Self::early`] with move reading, saved locations and live
+    /// relocation (`network.checkpoint_saved_locations`,
+    /// `network.checkpoint_location_correction`).
+    fn located() -> Self {
+        Self::build(true, None, true, true)
     }
 
     /// Leave dispatch over a schema-15 bag world with
@@ -111,6 +118,7 @@ impl Fixture {
         enabled: bool,
         proof: Option<crate::leave_runtime_proof::PrivateLeaveProof>,
         early: bool,
+        located: bool,
     ) -> Self {
         let (mut lab, mut registry) = (lab(), registry());
         lab.config.packet.sent_capacity = 16;
@@ -127,6 +135,11 @@ impl Fixture {
         }
         if early {
             lab.enable_checkpoint_early_pawn().unwrap();
+        }
+        if located {
+            lab.enable_pawn_move_acks().unwrap();
+            lab.enable_checkpoint_saved_locations().unwrap();
+            lab.enable_checkpoint_location_correction().unwrap();
         }
         if let Some(proof) = proof {
             registry.enable_private_leave_proof(proof.clone()).unwrap();
@@ -173,7 +186,10 @@ impl Fixture {
         self.app.world().resource::<PlayerRegistry>()
     }
 
+    /// The leave bridge, after the saved-location pass as in `poll_peer_lab`
+    /// (a no-op unless saved locations are on).
     fn bridge(&mut self) {
+        self.lab.bridge_saved_locations(self.app.world_mut());
         let mut registry = self.app.world_mut().resource_mut::<PlayerRegistry>();
         self.lab.bridge_controller_leaves(&mut registry);
     }
@@ -873,7 +889,7 @@ fn completion_ack_waits_for_earlier_reliable_bunch_but_not_later_traffic() {
     check_completion_gap(Fixture::new(true));
 }
 
-fn check_completion_gap(mut f: Fixture) {
+fn check_completion_gap(mut f: Fixture) -> Fixture {
     let (_directory, mut writer) = f.writer();
     let kind = if f.lab.private_leave_proof.is_some() {
         Kind::ReturnToCharacterSelect
@@ -960,6 +976,7 @@ fn check_completion_gap(mut f: Fixture) {
     assert!(!f.lab.peers.contains_key(&f.address));
     assert!(f.registry().projection(f.epoch).is_none());
     assert_eq!(f.phase(), None);
+    f
 }
 
 #[test]
@@ -1362,4 +1379,216 @@ fn a_bag_change_pending_at_the_leave_cutoff_is_never_sent() {
             "the store holds the committed bag, Use included"
         );
     }
+}
+
+/// Both location options on (with the early pawn and move reading): a normal
+/// leave saves the player's last accepted move location in the same pass,
+/// just before the cut-off, so the pinned and durable record carries it;
+/// refused and based moves never reach it; nothing after the cut-off does;
+/// leave types, completion, ACK, detach and Cancel suppression are unchanged.
+#[test]
+fn located_leave_saves_the_last_accepted_location_before_its_cutoff() {
+    let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+    for kind in [
+        Kind::Quit,
+        Kind::ReturnToCharacterSelect,
+        Kind::ReturnToTitlescreen,
+    ] {
+        let mut f = Fixture::located();
+        assert!(
+            f.lab.has_checkpoint_saved_locations() && f.lab.has_checkpoint_location_correction()
+        );
+        let (directory, mut writer) = f.writer();
+        let before = f.registry().projection(f.epoch).unwrap();
+        assert_eq!(before.checkpoint.location_cm, [100.0, 200.0, 300.0]);
+        super::located_moves(
+            &mut f.lab,
+            &f.socket,
+            &mut f.client,
+            Instant::now(),
+            [100.0, 200.0, 300.0],
+            4.0,
+        );
+        assert_eq!(f.lab.stats.pawn_move_positions_rejected, 1);
+        assert_eq!(f.lab.stats.pawn_move_positions_skipped, 1);
+        f.send(Request::Normal(Some(kind)));
+        f.bridge();
+        assert_eq!(f.phase(), Some(LeavePhase::Pending));
+        let status = f.registry().leave_status(key, f.epoch).unwrap();
+        // One revision for the location, then the cut-off pins it.
+        assert_eq!(status.revision, before.revision + 1);
+        let pinned = f.registry().snapshot().projection(key).unwrap();
+        assert_eq!(pinned.revision, status.revision);
+        assert_eq!(pinned.checkpoint.location_cm, [130.0, 200.0, 300.0]);
+        assert_eq!(pinned.checkpoint.vitals, before.checkpoint.vitals);
+        assert_eq!(
+            f.lab.session_counts().checkpoint_saved_locations,
+            Some(SavedLocationCounts {
+                saved: 1,
+                saved_at_leave: 1,
+                refused: 0
+            })
+        );
+        // An accepted move after the cut-off is refused at every pass.
+        super::move_now(
+            &mut f.lab,
+            &f.socket,
+            &mut f.client,
+            Some(super::super::move_acks::authored_move(
+                9.0,
+                [140.0, 200.0, 300.0],
+                Some(1),
+            )),
+            Instant::now(),
+        );
+        f.lab.flush_saved_locations(f.app.world_mut());
+        f.bridge();
+        assert_eq!(f.registry().snapshot().projection(key).unwrap(), pinned);
+        assert_eq!(f.registry().leave_counts().cutoffs_accepted, 1);
+        let refused = f.lab.session_counts().checkpoint_saved_locations.unwrap();
+        assert_eq!((refused.saved, refused.refused), (1, 1));
+        let receipt = f.save(&mut writer);
+        assert_eq!(
+            f.phase(),
+            Some(LeavePhase::Durable {
+                generation: receipt.generation,
+                tick: receipt.tick
+            })
+        );
+        f.bridge();
+        let completion = f.deliver(false);
+        assert_eq!(f.completions(&completion), vec![kind as u32]);
+        f.bridge();
+        assert!(f.lab.peers.contains_key(&f.address), "NAK is no settlement");
+        let packet = f
+            .lab
+            .peers
+            .get_mut(&f.address)
+            .unwrap()
+            .peer
+            .ack_packet()
+            .unwrap();
+        assert!(f.lab.send(&packet, f.address));
+        let repair = f.deliver(true);
+        assert_eq!(f.completions(&repair), vec![kind as u32]);
+        f.bridge();
+        assert!(!f.lab.peers.contains_key(&f.address));
+        assert_eq!(f.phase(), None);
+        let counts = f.registry().leave_counts();
+        assert_eq!(
+            (
+                counts.cutoffs_accepted,
+                counts.durable,
+                counts.detached_settled
+            ),
+            (1, 1, 1)
+        );
+        let transport = f.lab.session_counts().controller_leave.unwrap();
+        assert_eq!(
+            (
+                transport.intents_accepted,
+                transport.completions_admitted,
+                transport.completion_prefix_acked
+            ),
+            (1, 1, 1)
+        );
+        drop(writer);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let store = loop {
+            match SnapshotStore::open_existing(directory.path()) {
+                Ok(store) => break store,
+                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(error) => panic!("checkpoint writer did not release store: {error:#}"),
+            }
+        };
+        let restored = store
+            .load()
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .native_players
+            .unwrap();
+        assert_eq!(
+            restored.projection(key).unwrap().checkpoint,
+            pinned.checkpoint
+        );
+    }
+    // Cancel before admission suppresses the completion; the pinned
+    // location stands.
+    let mut f = Fixture::located();
+    let (_directory, mut writer) = f.writer();
+    super::move_now(
+        &mut f.lab,
+        &f.socket,
+        &mut f.client,
+        Some(super::super::move_acks::authored_move(
+            4.0,
+            [150.0, 200.0, 300.0],
+            Some(1),
+        )),
+        Instant::now(),
+    );
+    f.send(Request::Normal(Some(Kind::Quit)));
+    f.bridge();
+    let before = f.registry().snapshot();
+    assert_eq!(
+        before.projection(key).unwrap().checkpoint.location_cm,
+        [150.0, 200.0, 300.0]
+    );
+    f.send(Request::Cancel);
+    f.bridge();
+    f.save(&mut writer);
+    for _ in 0..3 {
+        let received = f.deliver(true);
+        assert!(f.completions(&received).is_empty());
+        f.bridge();
+        assert!(matches!(f.phase(), Some(LeavePhase::Durable { .. })));
+        assert_eq!(f.registry().snapshot(), before);
+    }
+    f.lab.remove_peer(f.address);
+    f.bridge();
+    assert_eq!(f.phase(), None);
+    let transport = f.lab.session_counts().controller_leave.unwrap();
+    assert_eq!(
+        (
+            transport.intents_accepted,
+            transport.cancel_suppressions,
+            transport.completions_admitted
+        ),
+        (1, 1, 0)
+    );
+}
+
+/// The completion-gap check with both location options on: the location
+/// saved before the cut-off adds no reliable traffic of its own, so the
+/// completion's receipt and its ACK prefix are unchanged.
+#[test]
+fn located_completion_ack_waits_for_earlier_reliable_bunch_but_not_later_traffic() {
+    let mut f = Fixture::located();
+    assert!(f.lab.has_checkpoint_saved_locations() && f.lab.has_checkpoint_location_correction());
+    let moved = super::move_now(
+        &mut f.lab,
+        &f.socket,
+        &mut f.client,
+        Some(super::super::move_acks::authored_move(
+            4.0,
+            [150.0, 200.0, 300.0],
+            Some(1),
+        )),
+        Instant::now(),
+    );
+    assert!(moved.iter().all(|bunch| !bunch.header.reliable));
+    let f = check_completion_gap(f);
+    let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+    assert_eq!(
+        f.registry()
+            .snapshot()
+            .projection(key)
+            .unwrap()
+            .checkpoint
+            .location_cm,
+        [150.0, 200.0, 300.0]
+    );
+    let saved = f.lab.session_counts().checkpoint_saved_locations.unwrap();
+    assert_eq!((saved.saved, saved.saved_at_leave), (1, 1));
 }

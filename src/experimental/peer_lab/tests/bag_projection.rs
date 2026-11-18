@@ -1452,3 +1452,81 @@ fn projection_and_returning_pawn_inputs_refuse_each_other_in_either_order() {
         }
     }
 }
+
+/// `network.checkpoint_saved_locations` over a schema-15 bag world in both
+/// pawn orders: a save commits through the full-generation preflight; the
+/// location-only revision leaves the bag, its revision and its projection
+/// alone and sends neither a bag nor a vitals update.
+#[test]
+fn saved_locations_preflight_the_bag_world_and_project_nothing() {
+    use super::super::move_acks::authored_move;
+    for early in [true, false] {
+        let mut lab = projected_lab(early);
+        lab.enable_pawn_move_acks().unwrap();
+        lab.enable_checkpoint_saved_locations().unwrap();
+        let mut app = inventory_world(false);
+        let mut session = join(&mut lab, &mut app, 1, ACCOUNT);
+        let player = session.player_id(&lab);
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let projection = |app: &App| {
+            app.world()
+                .resource::<PlayerRegistry>()
+                .snapshot()
+                .projection(key)
+                .unwrap()
+        };
+        let bag_revision = |app: &App| {
+            app.world()
+                .resource::<PlayerRegistry>()
+                .inventory_bag(player)
+                .unwrap()
+                .revision
+        };
+        let before = projection(&app);
+        let bag_before = bag_revision(&app);
+        let queued = lab.stats.player_bag_projection;
+        let moved = super::move_now(
+            &mut lab,
+            &session.socket,
+            &mut session.client,
+            Some(authored_move(4.0, [110.0, 200.0, 300.0], Some(1))),
+            Instant::now(),
+        );
+        assert_eq!(session.apply(&lab, &moved), 0);
+        lab.flush_saved_locations(app.world_mut());
+        let saved = projection(&app);
+        assert_eq!(
+            saved.checkpoint.location_cm,
+            [110.0, 200.0, 300.0],
+            "early {early}"
+        );
+        assert_eq!(saved.checkpoint.vitals, before.checkpoint.vitals);
+        assert_eq!(saved.revision, before.revision + 1);
+        assert_eq!(bag_revision(&app), bag_before);
+        // The committed generation is capturable and holds the location.
+        let generation = capture(app.world_mut()).unwrap();
+        assert_eq!(
+            generation
+                .native_players
+                .unwrap()
+                .projection(key)
+                .unwrap()
+                .checkpoint
+                .location_cm,
+            [110.0, 200.0, 300.0]
+        );
+        bridge(&mut lab, &mut app);
+        let after = deliver_bunches(&mut lab, &session.socket, &mut session.client, |_| true);
+        assert_eq!(session.apply(&lab, &after), 0);
+        assert!(pawn_update_payloads(&after).is_empty(), "early {early}");
+        assert_eq!(lab.stats.player_bag_projection, queued);
+        assert_eq!(session.model.slots(), Model::of_bag(&app, player));
+        assert_eq!(
+            lab.session_counts()
+                .checkpoint_saved_locations
+                .unwrap()
+                .saved,
+            1
+        );
+    }
+}

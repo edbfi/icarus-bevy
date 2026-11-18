@@ -208,6 +208,82 @@ fn controller_leave_installs_only_for_explicit_prepared_authenticated_player_ses
     }
 }
 
+/// `network.checkpoint_saved_locations` and
+/// `network.checkpoint_location_correction` reach the lab only through live
+/// preparation, after the early pawn and move reading they need; off, their
+/// counts are absent; the configuration refuses either without them.
+#[test]
+fn saved_locations_and_correction_reach_the_lab_only_through_live_preparation() {
+    let (_directory, mut config) = inputs();
+    fs::write(
+        config.data_pak.as_ref().unwrap(),
+        pak_writer::fresh_join_pak_with(&[(
+            "Prospects/D_ProspectList.json",
+            pak_writer::table_json(&["AuthoredWorkshop"]),
+        )]),
+    )
+    .unwrap();
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    config.enabled = true;
+    config.port = occupied.local_addr().unwrap().port();
+    let declaration = config.player_persistence.as_ref().unwrap();
+    config.hosting = Some(icarus_bevy::native_hosting::HostingConfig {
+        query_bind: "127.0.0.1".parse().unwrap(),
+        query_port: if config.port == 27015 { 27016 } else { 27015 },
+        private_ip: "127.0.0.1".parse().unwrap(),
+        seconds: 60,
+        name: "Authored workshop".into(),
+        map_url: declaration.map_url.clone(),
+        prospect_id: declaration.prospect_id.clone(),
+        prospect_row: declaration.prospect_row.clone(),
+        lobby_name: "Workshop".into(),
+        difficulty: declaration.difficulty,
+    });
+    config.pawn_move_acks = true;
+    config.checkpoint_pawn_before_identity = true;
+    for (saved, correction) in [(false, false), (true, false), (false, true), (true, true)] {
+        config.checkpoint_saved_locations = saved;
+        config.checkpoint_location_correction = correction;
+        let (session, players) =
+            network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
+        assert!(players.is_some());
+        let mut session = session.unwrap();
+        let lab = &session.session_mut().lab;
+        assert!(lab.has_pawn_move_acks() && lab.has_checkpoint_early_pawn());
+        assert_eq!(lab.has_checkpoint_saved_locations(), saved);
+        assert_eq!(lab.has_checkpoint_location_correction(), correction);
+        let counts = lab.session_counts();
+        assert_eq!(counts.checkpoint_saved_locations.is_some(), saved);
+        assert_eq!(counts.checkpoint_relocation.is_some(), correction);
+        assert_eq!(counts.checkpoint_locations_unapplied, Some(0));
+        // Pure preflight: nothing bound.
+        assert!(lab.local_addr().is_err());
+    }
+    // Without move reading (or, for correction, the early pawn) the
+    // configuration refuses before anything is prepared.
+    config.pawn_move_acks = false;
+    for (saved, correction) in [(true, false), (false, true)] {
+        config.checkpoint_saved_locations = saved;
+        config.checkpoint_location_correction = correction;
+        let error = network::prepare_run(&config, network::peer_lab_config(&config))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("network.pawn_move_acks"),
+            "{error:#}"
+        );
+    }
+    config.pawn_move_acks = true;
+    config.checkpoint_pawn_before_identity = false;
+    let error = network::prepare_run(&config, network::peer_lab_config(&config))
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("requires network.checkpoint_pawn_before_identity"),
+        "{error:#}"
+    );
+}
+
 #[test]
 fn offline_context_is_prepared_and_old_schema_is_never_promoted() {
     let (_directory, config) = inputs();

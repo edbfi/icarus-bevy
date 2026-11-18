@@ -295,3 +295,114 @@ fn early_checkpoint_pawn_and_private_proof_refuse_each_other() {
     assert_eq!(lab.private_join_remaining, None);
     second.health().unwrap();
 }
+
+/// The proof's journal binds every revision between consumption and the
+/// cut-off, so saved locations and the proof refuse each other in either
+/// order, and the registry's location save refuses a proof registry.
+#[test]
+fn saved_locations_and_private_proof_refuse_each_other() {
+    let leave_lab = || {
+        let mut lab = lab();
+        let selected = ReleaseProfile::fixture("3.0.36");
+        lab.config.local_network_version = Some(selected.pin.network_checksum);
+        lab.player_controller_open = selected
+            .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+            .unwrap();
+        lab.enable_authored_controller_leave(plan()).unwrap();
+        lab.enable_pawn_move_acks().unwrap();
+        lab
+    };
+    let (_first_directory, first) = proof();
+    let mut lab = leave_lab();
+    lab.enable_private_leave_proof(first.clone()).unwrap();
+    assert!(
+        lab.enable_checkpoint_saved_locations()
+            .unwrap_err()
+            .to_string()
+            .contains("refuses saved checkpoint locations")
+    );
+    assert!(!lab.has_checkpoint_saved_locations());
+    first.health().unwrap();
+    let (_second_directory, second) = proof();
+    let mut lab = leave_lab();
+    lab.enable_checkpoint_saved_locations().unwrap();
+    assert!(
+        lab.enable_private_leave_proof(second.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("refuses saved checkpoint locations")
+    );
+    assert!(lab.private_leave_proof.is_none());
+    second.health().unwrap();
+    let (_third_directory, third) = proof();
+    let mut registry = registry();
+    registry.enable_private_leave_proof(third.clone()).unwrap();
+    let mut world = bevy::prelude::World::new();
+    world.insert_resource(registry);
+    let error = crate::native_player_runtime::save_player_locations(&mut world, &[]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("private leave proof refuses saved locations")
+    );
+    third.health().unwrap();
+}
+
+/// Location correction and the proof refuse each other in either order,
+/// each naming correction itself (not only the early pawn it needs), and a
+/// refused enabling call leaves the other side as it was.
+#[test]
+fn location_correction_and_private_proof_refuse_each_other() {
+    let leave_lab = || {
+        let mut lab = lab();
+        let selected = ReleaseProfile::fixture("3.0.36");
+        lab.config.local_network_version = Some(selected.pin.network_checksum);
+        lab.player_controller_open = selected
+            .player_controller_open_plan(PeerLabAdmission::default().map_url, [0.0; 3])
+            .unwrap();
+        lab.enable_authored_controller_leave(plan()).unwrap();
+        lab.enable_pawn_move_acks().unwrap();
+        lab
+    };
+    let refusal = "the private leave proof refuses checkpoint location correction";
+    let (_first_directory, first) = proof();
+    let mut lab = leave_lab();
+    lab.enable_private_leave_proof(first.clone()).unwrap();
+    assert_eq!(
+        lab.enable_checkpoint_location_correction()
+            .unwrap_err()
+            .to_string(),
+        refusal
+    );
+    assert!(!lab.has_checkpoint_location_correction());
+    assert!(lab.private_leave_proof.is_some());
+    first.health().unwrap();
+    let (_second_directory, second) = proof();
+    let mut lab = leave_lab();
+    lab.enable_checkpoint_early_pawn().unwrap();
+    lab.enable_checkpoint_location_correction().unwrap();
+    assert_eq!(
+        lab.enable_private_leave_proof(second.clone())
+            .unwrap_err()
+            .to_string(),
+        refusal
+    );
+    assert!(lab.private_leave_proof.is_none());
+    assert_eq!(lab.private_join_remaining, None);
+    assert!(lab.has_checkpoint_location_correction());
+    second.health().unwrap();
+    // Both on: saving is named first.
+    let (_third_directory, third) = proof();
+    let mut lab = leave_lab();
+    lab.enable_checkpoint_early_pawn().unwrap();
+    lab.enable_checkpoint_saved_locations().unwrap();
+    lab.enable_checkpoint_location_correction().unwrap();
+    assert_eq!(
+        lab.enable_private_leave_proof(third.clone())
+            .unwrap_err()
+            .to_string(),
+        "the private leave proof refuses saved checkpoint locations"
+    );
+    assert!(lab.private_leave_proof.is_none());
+    third.health().unwrap();
+}

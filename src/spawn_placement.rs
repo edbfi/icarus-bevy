@@ -125,6 +125,18 @@ pub enum PlacementSource {
     Default,
 }
 
+/// Where a restored saved location places a pawn: raised by
+/// [`SAVED_LOCATION_CLEARANCE_CM`], or `None` when the result is not finite
+/// or exceeds [`SPAWN_COMPONENT_LIMIT_CM`] (F-1139). Shared by the opening
+/// placement and the early pawn's relocation target.
+pub fn saved_location_target([x, y, z]: [f32; 3]) -> Option<[f32; 3]> {
+    let raised = [x, y, z + SAVED_LOCATION_CLEARANCE_CM];
+    raised
+        .iter()
+        .all(|v| v.is_finite() && f64::from(v.abs()) <= SPAWN_COMPONENT_LIMIT_CM)
+        .then_some(raised)
+}
+
 /// One connection's resolved placement.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Placement {
@@ -173,12 +185,8 @@ impl SpawnResolver {
     /// points or the default follow). Nothing advances until [`Self::commit`].
     pub fn peek(&self, saved: Option<[f32; 3]>, default: [f32; 3]) -> Resolution {
         let mut saved_refused = false;
-        if let Some([x, y, z]) = saved {
-            let raised = [x, y, z + SAVED_LOCATION_CLEARANCE_CM];
-            if raised
-                .iter()
-                .all(|v| v.is_finite() && f64::from(v.abs()) <= SPAWN_COMPONENT_LIMIT_CM)
-            {
+        if let Some(saved) = saved {
+            if let Some(raised) = saved_location_target(saved) {
                 return Resolution {
                     placement: Placement {
                         location: raised,

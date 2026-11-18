@@ -100,6 +100,25 @@ pub struct NetworkConfig {
     /// Refused by `run --private-leave-proof`. Unqualified with a stock client.
     #[serde(default, skip_serializing_if = "is_false")]
     pub checkpoint_pawn_before_identity: bool,
+    /// EXPERIMENTAL, default false; requires `player_persistence` and
+    /// `pawn_move_acks`. Save each player's last accepted move location (the
+    /// session location F-1128 bounds) as their checkpoint's location, through
+    /// the ordinary checkpoint edit rules: before an authored leave's cut-off,
+    /// every 10 s and when the network owner stops; never while a relocation
+    /// is pending. No schema, input or digest changes, so stores reopen
+    /// unchanged with it off. Refused by `run --private-leave-proof`.
+    /// Unqualified with a stock client.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checkpoint_saved_locations: bool,
+    /// EXPERIMENTAL, default false; requires `checkpoint_pawn_before_identity`
+    /// and `pawn_move_acks`. A returning player whose stored location differs
+    /// from where the early pawn opened is moved there by a movement
+    /// correction (stored location raised 50 cm, zero velocity, Falling) in
+    /// answer to a client move, resent at a bounded rate until a move near it
+    /// arrives, and otherwise given up and counted. Session behaviour only.
+    /// Refused by `run --private-leave-proof`. Unqualified with a stock client.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checkpoint_location_correction: bool,
     pub enabled: bool,
     /// IPv4 address to bind; nonloopback requires authenticated hosting.
     pub bind: Ipv4Addr,
@@ -214,6 +233,8 @@ impl Default for NetworkConfig {
             enabled: false,
             controller_startup: Vec::new(),
             checkpoint_pawn_before_identity: false,
+            checkpoint_saved_locations: false,
+            checkpoint_location_correction: false,
             bind: Ipv4Addr::LOCALHOST,
             port: 17_777,
             max_players: 8,
@@ -287,6 +308,16 @@ impl NetworkConfig {
         ensure!(
             !self.checkpoint_pawn_before_identity || self.player_persistence.is_some(),
             "network.checkpoint_pawn_before_identity requires player persistence"
+        );
+        ensure!(
+            !self.checkpoint_saved_locations
+                || (self.player_persistence.is_some() && self.pawn_move_acks),
+            "network.checkpoint_saved_locations requires player persistence and network.pawn_move_acks"
+        );
+        ensure!(
+            !self.checkpoint_location_correction
+                || (self.checkpoint_pawn_before_identity && self.pawn_move_acks),
+            "network.checkpoint_location_correction requires network.checkpoint_pawn_before_identity and network.pawn_move_acks"
         );
         if let Some(damage) = self.player_depletion_damage {
             damage.validate()?;
@@ -764,5 +795,109 @@ mod player_inventory_projection_config_tests {
             plain.validate().unwrap_err().to_string(),
             "player inventory requires player persistence"
         );
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_location_config_tests {
+    use super::*;
+
+    fn persistent() -> NetworkConfig {
+        NetworkConfig {
+            release_profile: Some("authored-release.toml".into()),
+            data_pak: Some("authored.pak".into()),
+            authored_gameplay: Some("authored.json".into()),
+            player_persistence: Some(PlayerPersistenceConfig {
+                prospect_id: "authored".into(),
+                map_url: "/Authored/Map".into(),
+                prospect_row: "AuthoredRow".into(),
+                difficulty: 2,
+            }),
+            authored_world: Some(crate::authored_world_bootstrap::AuthoredWorldBootstrap {
+                seed: 42,
+                seed_initialised: true,
+                flod_tile_count: 0,
+                clock: None,
+            }),
+            ..NetworkConfig::default()
+        }
+    }
+
+    const SAVED: &str =
+        "network.checkpoint_saved_locations requires player persistence and network.pawn_move_acks";
+    const CORRECTION: &str = "network.checkpoint_location_correction requires network.checkpoint_pawn_before_identity and network.pawn_move_acks";
+
+    #[test]
+    fn both_default_off_are_omitted_when_false_and_parse_when_set() {
+        let parsed: ServerConfig = toml::from_str("").unwrap();
+        assert!(!parsed.network.checkpoint_saved_locations);
+        assert!(!parsed.network.checkpoint_location_correction);
+        let parsed: ServerConfig = toml::from_str(
+            "[network]\ncheckpoint_saved_locations = true\ncheckpoint_location_correction = true\n",
+        )
+        .unwrap();
+        assert!(parsed.network.checkpoint_saved_locations);
+        assert!(parsed.network.checkpoint_location_correction);
+        // Off, both serialized forms are exactly those without the keys.
+        let mut network = persistent();
+        network.pawn_move_acks = true;
+        network.checkpoint_pawn_before_identity = true;
+        let toml_before = toml::to_string(&network).unwrap();
+        let json_before = serde_json::to_vec(&network).unwrap();
+        for key in [
+            "checkpoint_saved_locations",
+            "checkpoint_location_correction",
+        ] {
+            assert!(!toml_before.contains(key));
+            assert!(!String::from_utf8_lossy(&json_before).contains(key));
+        }
+        network.checkpoint_saved_locations = false;
+        network.checkpoint_location_correction = false;
+        assert_eq!(toml::to_string(&network).unwrap(), toml_before);
+        assert_eq!(serde_json::to_vec(&network).unwrap(), json_before);
+        network.checkpoint_saved_locations = true;
+        network.checkpoint_location_correction = true;
+        assert!(network.validate().is_ok());
+        let written = toml::to_string(&network).unwrap();
+        assert!(written.contains("checkpoint_saved_locations = true"));
+        assert!(written.contains("checkpoint_location_correction = true"));
+        assert_eq!(toml::from_str::<NetworkConfig>(&written).unwrap(), network);
+    }
+
+    #[test]
+    fn each_refuses_without_its_prerequisites() {
+        // Saved locations: persistence and move reading.
+        let mut network = persistent();
+        network.checkpoint_saved_locations = true;
+        assert_eq!(network.validate().unwrap_err().to_string(), SAVED);
+        network.pawn_move_acks = true;
+        assert!(network.validate().is_ok());
+        let plain = NetworkConfig {
+            checkpoint_saved_locations: true,
+            pawn_move_acks: true,
+            ..NetworkConfig::default()
+        };
+        assert_eq!(plain.validate().unwrap_err().to_string(), SAVED);
+        // Correction: the early pawn and move reading, independently of saving.
+        let mut network = persistent();
+        network.checkpoint_location_correction = true;
+        network.pawn_move_acks = true;
+        assert_eq!(network.validate().unwrap_err().to_string(), CORRECTION);
+        network.checkpoint_pawn_before_identity = true;
+        assert!(network.validate().is_ok());
+        network.pawn_move_acks = false;
+        assert_eq!(network.validate().unwrap_err().to_string(), CORRECTION);
+        let plain = NetworkConfig {
+            checkpoint_location_correction: true,
+            checkpoint_pawn_before_identity: true,
+            pawn_move_acks: true,
+            ..NetworkConfig::default()
+        };
+        // Without persistence the early pawn's own refusal comes first.
+        assert_eq!(
+            plain.validate().unwrap_err().to_string(),
+            "network.checkpoint_pawn_before_identity requires player persistence"
+        );
+        assert!(NetworkConfig::default().validate().is_ok());
     }
 }

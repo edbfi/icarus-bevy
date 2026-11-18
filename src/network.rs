@@ -2463,6 +2463,21 @@ pub fn prepare_run_with_tick_hz(
         if network.checkpoint_pawn_before_identity {
             session.bound.lab.enable_checkpoint_early_pawn()?;
         }
+        // Both need move reading, enabled with the pawn above.
+        if network.checkpoint_saved_locations {
+            session
+                .bound
+                .lab
+                .enable_checkpoint_saved_locations()
+                .context("network.checkpoint_saved_locations")?;
+        }
+        if network.checkpoint_location_correction {
+            session
+                .bound
+                .lab
+                .enable_checkpoint_location_correction()
+                .context("network.checkpoint_location_correction")?;
+        }
         if let Some(projection) = projection {
             session
                 .bound
@@ -2537,7 +2552,10 @@ fn player_inventory_projection(
 /// One digest per authored input, so a reopen refusal names the input that
 /// changed. The release file is provenance, not an input: a store reopens
 /// under a new game release. Session ordering options such as
-/// `controller_startup` and `checkpoint_pawn_before_identity` are not inputs.
+/// `controller_startup` and `checkpoint_pawn_before_identity` are not inputs,
+/// nor are `checkpoint_saved_locations` (it changes the stored location's
+/// value over time, as edits change vitals, not its meaning) and
+/// `checkpoint_location_correction`.
 fn player_inputs(
     network: &NetworkConfig,
     declaration: &crate::config::PlayerPersistenceConfig,
@@ -3000,6 +3018,8 @@ pub fn stop_admission(world: &mut World) {
 /// Idempotent: a repeated call returns the same final counts.
 pub fn teardown(world: &mut World) -> Option<SessionCounts> {
     if let Some(mut lab) = world.remove_resource::<PeerLab>() {
+        // Saved locations (default off): each session's latest, before it closes.
+        lab.flush_saved_locations(world);
         lab.shutdown();
         let counts = lab.session_counts();
         let controller_receive = lab.controller_receive_diagnostics();
@@ -3278,6 +3298,57 @@ mod authored_preparation_tests {
             // Pure preparation: the occupied game port is never bound.
             assert!(lab.local_addr().is_err());
         }
+    }
+
+    /// Neither location option binds a player store: the player inputs and
+    /// the offline-prepared context are identical with them on, so a store
+    /// written with either reopens without it and the reverse.
+    #[test]
+    fn saved_locations_and_correction_are_no_player_inputs() {
+        let declaration = crate::config::PlayerPersistenceConfig {
+            prospect_id: "authored".into(),
+            map_url: "/Authored/Map".into(),
+            prospect_row: "AuthoredRow".into(),
+            difficulty: 2,
+        };
+        let mut network = NetworkConfig {
+            player_persistence: Some(declaration.clone()),
+            pawn_move_acks: true,
+            checkpoint_pawn_before_identity: true,
+            ..Default::default()
+        };
+        let inputs = |network: &NetworkConfig| {
+            player_inputs(
+                network,
+                &declaration,
+                b"authored",
+                &([100; 10], "Growth"),
+                30,
+            )
+            .unwrap()
+        };
+        let before = inputs(&network);
+        network.checkpoint_saved_locations = true;
+        network.checkpoint_location_correction = true;
+        assert!(inputs(&network) == before, "no player input");
+        let (_directory, mut network) = projection_inputs(true);
+        network.pawn_move_acks = true;
+        network.checkpoint_pawn_before_identity = true;
+        let prepare = |network: &NetworkConfig| {
+            let (session, players) =
+                prepare_run_with_tick_hz(network, peer_lab_config(network), 30).unwrap();
+            assert!(session.is_none(), "offline preparation binds nothing");
+            players.unwrap()
+        };
+        let without = prepare(&network);
+        network.checkpoint_saved_locations = true;
+        network.checkpoint_location_correction = true;
+        let with = prepare(&network);
+        assert!(with.context == without.context && with.inventory == without.inventory);
+        assert_eq!(
+            with.context.declaration_digest(),
+            without.context.declaration_digest()
+        );
     }
 
     #[test]
