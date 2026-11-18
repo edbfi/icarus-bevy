@@ -927,34 +927,11 @@ pub fn compose_pawn_move_ack(
     timestamp: f32,
     order: ByteOrder,
 ) -> Result<Payload> {
-    use super::actor_channel::{
-        ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body,
-    };
-    use super::character_move::write_good_move_ack;
-    use super::rep_rpc::{
-        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND,
-        CLIENT_MOVE_RESPONSE_PACKED_FIELD_INDEX, FieldHeader, write_field_header,
-    };
-    let codec = actor_codec(plan.engine_net_version, order);
-    let mut field = BitWriter::new();
-    write_field_header(
-        &mut field,
-        &FieldHeader {
-            index: CLIENT_MOVE_RESPONSE_PACKED_FIELD_INDEX,
-            payload: write_good_move_ack(timestamp, order),
-        },
-        BP_ICARUS_PLAYER_CHARACTER_SURVIVAL_FIELD_INDEX_BOUND,
-    )?;
-    encode_actor_bunch_body(
-        &ActorBunchBody {
-            spawn: None,
-            blocks: vec![ContentBlock {
-                has_rep_layout: false,
-                target: BlockTarget::Actor,
-                payload: Payload::from_writer(field),
-            }],
-        },
-        &codec,
+    use super::character_move::{compose_move_response_block, write_good_move_ack};
+    // One framing path for field-30 blocks, shared with corrections.
+    compose_move_response_block(
+        &write_good_move_ack(timestamp, order),
+        &actor_codec(plan.engine_net_version, order),
     )
 }
 
