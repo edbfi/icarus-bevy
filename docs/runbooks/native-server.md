@@ -279,8 +279,8 @@ Format 2 ([example](../../tests/import_plan.rs)) requires `[world]`; `[reference
 `unclassified`. Scope actor paths/tiles to root map, variables to classes:
 exact case, ≤1,024 UTF-16 units/ref, ≤4 MiB file. Duplicate definitions/undeclared
 placement classes reject before planning. `data.pak`: no world roles (F-916).
-`importable: true`: reference coverage, no geometry/adapters/gameplay parity;
-writes refused (`world_imported: false`).
+A positive plan requires catalog coverage and resolved effective prospect enums.
+Publication stays closed.
 
 `DecodedImportCandidate::decode`: plan/preserve, ≤256 MiB charged bytes/
 1,048,576 typed elements; release typing scratch. Exhaustion rejects all,

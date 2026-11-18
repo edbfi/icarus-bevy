@@ -115,8 +115,10 @@ Acceptance conditions for any importer
 - `DecodedImportCandidate` (F-920; limits:
   [native server](../../runbooks/native-server.md#supplied-saves)) retains
   migrated roots, exact recorder identities, decisions, optional typing and
-  unchanged preserved bytes from one decode; unknown root enums stay explicit,
-  with no restoration adapters or publication.
+  unchanged preserved bytes from one decode. The import plan reports
+  `unresolved_prospect_info_enums` when a named or raw enum remains unknown
+  after migration. Version 0 resets the prospect info before this check.
+  Restoration adapters remain unqualified and native world publication stays disabled.
 - Native staging (`inspect-save --stage-check`):
   [envelope spec](prospect-envelope.md#candidate) (F-738).
 - Cross-build classes/defaults/overrides: [restore rules](restore-rules.md)
