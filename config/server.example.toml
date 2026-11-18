@@ -21,6 +21,7 @@ status_interval_seconds = 10
 # unchanged. Fresh checkpoint players only: refuses a preserved world and an
 # authored Player row whose inventories enable the returning-pawn restore.
 # Client inventory actions are not handled; unqualified with stock clients.
+# List a pak's row names: cargo run --example data_pak_rows -- --data-pak PATH --table NAME
 # player_inventory_projection = "config/player-inventory-projection.example.json"
 enabled = false
 bind = "127.0.0.1"
