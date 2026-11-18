@@ -5,7 +5,7 @@ action. This is their only home; status, plan and digests link here.
 
 Before restructure: 96ddb0b:docs/gates.md
 
-Last reconciled: 2026-11-17
+Last reconciled: 2026-11-18
 
 ## Before any C001 original-code case
 
@@ -113,7 +113,7 @@ Last reconciled: 2026-11-17
 ## Before any original-server or client run
 
 - The standing instruction (given 2026-10-28, renewed through
-  2026-11-17; F-1175, M-1523) authorizes offline and online research,
+  2026-11-18; F-1175, M-1535) authorizes offline and online research,
   Steam/network access, matched official-server runs and connected
   stock-client scenarios against either server without per-scenario approval,
   replacing the connected-test deferral (F-421; U-038, U-047, U-052). Prefer

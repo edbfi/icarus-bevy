@@ -121,7 +121,7 @@ All actions must settle without failure under the
 
 Pure plans precede state; wrong Hello → Upgrade. Poll ≤32 datagrams before
 ticks. Signals close/drain/save. `network_listening`: address/`version_check`;
-`status`/`stopped`: counts. Prospect/mode F-804; data F-993. No ACK/NAK progress
+`status` and `stopped` include counts and the [last client control close](network-readiness.md#readiness-counts). Prospect/mode F-804; data F-993. No ACK/NAK progress
 despite traffic causes `closed_by_delivery_stall`/`peers_delivery_stalled`, unlike idle
 (F-1013). Unanswered query: `closed_by_friends_query_timeout` despite ACKs
 (F-1115, N-019). Controller/possession/pawn ACKs precede records; abandonment
@@ -279,8 +279,8 @@ Format 2 ([example](../../tests/import_plan.rs)) requires `[world]`; `[reference
 `unclassified`. Scope actor paths/tiles to root map, variables to classes:
 exact case, ≤1,024 UTF-16 units/ref, ≤4 MiB file. Duplicate definitions/undeclared
 placement classes reject before planning. `data.pak`: no world roles (F-916).
-`importable: true`: reference coverage, no geometry/adapters/gameplay parity;
-writes refused (`world_imported: false`).
+A positive plan requires catalog coverage and resolved effective prospect enums.
+Publication stays closed.
 
 `DecodedImportCandidate::decode`: plan/preserve, ≤256 MiB charged bytes/
 1,048,576 typed elements; release typing scratch. Exhaustion rejects all,

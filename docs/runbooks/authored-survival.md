@@ -43,6 +43,10 @@ no wall-time catch-up/extra accumulator. Offline ticks advance day, charging no
 detached player. Restored sampling precedes Join/open/update; authored and legacy
 monotonic clocks exclude each other.
 
+Before fixed ticks, polling can use a newly freed send slot to carry the ACK
+with already staged, changed pawn vitals for a current, non-leaving epoch
+(F-1261). Bag-only revisions and new tick output follow the projection pass.
+
 ## Failed health
 
 Owner/Fixed-timestep checks precede Time/polling/batches, even offline without a
@@ -121,8 +125,19 @@ own client: bound inventories open empty, then slot deltas precede the record.
 The binding names pak rows per recipe key (example:
 `config/player-inventory-projection.example.json`); unknown, duplicate or
 ambiguous rows, changeable slot counts and overflow refuse at startup.
-Session-only: no store byte changes. Weight is unsent, client inventory actions
-are unhandled, and restore inputs and `--private-leave-proof` refuse it.
+
+Format 1 omits `unit_weight` and sends slots only. Format 2 requires an
+independently authored integer `unit_weight` from 0 to 2,147,483,647 for each
+item. Each inventory's `CurrentWeight` is the sum of unit weight times stack
+count. Startup rejects a binding if the sum of the heaviest permitted stack in
+each slot exceeds 2,147,483,647. Each reliable page carries a changed total
+for the slots it leaves on the client, including explicit zero after a
+nonzero total. Unchanged totals are omitted. A split update can expose
+intermediate totals until all its slots arrive.
+
+The binding is session-only and can be changed across restarts of the same
+player store. Client inventory actions are unhandled. Returning-pawn inputs and
+`--private-leave-proof` refuse both formats.
 
 Stopped server: `apply-player-inventory` or `apply-player-inventory-transfer`,
 with `--data-dir STATE --request PRIVATE.json [--dry-run]`. Requests: named JSON

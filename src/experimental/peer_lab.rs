@@ -207,6 +207,11 @@ use bevy::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+mod close_diagnostic;
+pub use close_diagnostic::{
+    ClientControlClose, FrozenReleaseAtClose, FrozenReleaseState, OwnRecordAck, PlayerEntryPhase,
+    ReleasePawnState,
+};
 mod controller_leave;
 pub use controller_leave::ControllerLeaveCounts;
 mod located;
@@ -1236,8 +1241,7 @@ impl PeerLabStats {
     }
 }
 
-/// Session gauges and counters for status records; counts only, never
-/// addresses, identifiers or message fields.
+/// Session gauges, counters and bounded close metadata for status records.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SessionCounts {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1290,6 +1294,9 @@ pub struct SessionCounts {
     pub closed_awaiting_begin: Option<u64>,
     /// Sessions closed by a client control close bunch.
     pub closed_by_client: u64,
+    /// The last removal counted by `closed_by_client`, retained since bind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_client_control_close: Option<ClientControlClose>,
     /// Sessions closed after an Upgrade or Failure reply.
     pub closed_by_reply: u64,
     /// Sessions refused for a missing or wrong join password (each also
@@ -1880,6 +1887,8 @@ struct ConnectedPlayerReceipt {
 struct FrozenMovementRelease {
     /// When the record creation settled (the trigger); set once.
     record_acked_at: Option<Instant>,
+    /// The live peer reached the release pass after its record ACK.
+    service_pass_reached: bool,
     /// When the release falls due; set with `record_acked_at`.
     due_at: Option<Instant>,
     /// Due, or its latest copy NAKed, and not sent yet.
@@ -1899,6 +1908,10 @@ impl FrozenMovementRelease {
     /// Scheduled, not yet due, sent or abandoned.
     fn awaiting_delay(&self, now: Instant) -> bool {
         self.due_at.is_some_and(|due| due > now) && self.idle()
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.due_at.is_some_and(|due| due <= now)
     }
 
     /// Neither pending, sent nor abandoned.
@@ -2759,6 +2772,8 @@ struct PeerEntry {
     connected_player_receipts: Vec<ConnectedPlayerReceipt>,
     /// Records this connection created whose creation bunches settled.
     connected_player_creations_settled: usize,
+    /// A positive ACK settled this connection's own record creation.
+    own_record_acked: bool,
     /// The committed PlayerController open's actor and PlayerState GUIDs.
     controller_open_guids: Option<(u32, u32)>,
     /// Controller possession properties (F-1074): due once this session's
@@ -2917,6 +2932,14 @@ struct PeerEntry {
     game_state: Option<GameStateReplica>,
     /// Ping from the round trips of acked packets (F-815).
     ping: PingEstimator,
+}
+
+impl PeerEntry {
+    fn has_open_pawn(&self, channel: u32) -> bool {
+        self.controller_startup_pawn_guid.is_some()
+            && self.peer.has_actor_channel(channel)
+            && !self.peer.actor_channel_closing(channel)
+    }
 }
 
 /// The packed moves one client unreliable pawn bunch carries: each actor
@@ -3683,6 +3706,7 @@ pub struct PeerLab {
     peers: HashMap<SocketAddrV4, PeerEntry>,
     buffer: Vec<u8>,
     stats: PeerLabStats,
+    last_client_control_close: Option<ClientControlClose>,
     admitting: bool,
     peak_peers: usize,
     /// Opt-in PlayerController open after Join, and the driver-wide GUIDs.
@@ -4036,7 +4060,8 @@ impl PeerLab {
     /// player's own committed bag to that player's connection only: slot
     /// deltas with F-978's keys at each new bag revision, coalesced to the
     /// latest, in the reliable live pawn update, at most one update in flight
-    /// and at most [`MAX_SLOT_CHANGES_PER_UPDATE`] changed slots each. Read
+    /// and at most [`MAX_SLOT_CHANGES_PER_UPDATE`] changed slots each. Format
+    /// 2 carries changed authored weights for the slots left by each page. Read
     /// only: nothing is applied to native state, stored or replayed. A
     /// player's record waits for its first bag projection; nothing is sent
     /// after the player's leave cut-off, and a bag that can never be sent
@@ -4483,7 +4508,7 @@ impl PeerLab {
             }
         }
         self.refresh_bag_projections(registry);
-        for address in self.update_pawn_properties() {
+        for address in self.update_pawn_properties(Some(registry), false) {
             self.fail_player_bag(registry, address);
         }
     }
@@ -4726,6 +4751,7 @@ impl PeerLab {
             buffer: vec![0; config.max_datagram_bytes() + 1],
             config,
             stats: PeerLabStats::default(),
+            last_client_control_close: None,
             admitting: true,
             peak_peers: 0,
             player_controller_open: None,
@@ -5915,7 +5941,11 @@ impl PeerLab {
     /// sent ([`Self::fail_player_bag`] closes them); transient refusals retry
     /// on ACK progress as before.
     #[must_use]
-    fn update_pawn_properties(&mut self) -> Vec<SocketAddrV4> {
+    fn update_pawn_properties(
+        &mut self,
+        registry: Option<&PlayerRegistry>,
+        vitals_only: bool,
+    ) -> Vec<SocketAddrV4> {
         let mut permanent = Vec::new();
         let Some((plan, channel, _)) = &self.pawn_open else {
             return permanent;
@@ -5928,18 +5958,68 @@ impl PeerLab {
             if !entry.pawn_property_retry_ready || !entry.peer.actor_channel_settled(*channel) {
                 continue;
             }
-            entry.pawn_property_retry_ready = false;
+            if vitals_only {
+                let notify = entry.peer.sequencer().notify();
+                if notify.sent_records().len() == notify.sent_capacity()
+                    || entry.checkpoint_enqueued_revision
+                        == entry
+                            .checkpoint_projection
+                            .map(|projection| projection.revision)
+                {
+                    continue;
+                }
+            }
+            let checkpoint = entry.checkpoint_projection.filter(|projection| {
+                entry.auth_accepted
+                    && entry.auth_request.is_some()
+                    && entry.admission.state == ClientLoginState::Joined
+                    && entry.controller_leave.is_none()
+                    && entry
+                        .checkpoint_epoch
+                        .zip(registry)
+                        .is_some_and(|(epoch, registry)| {
+                            !registry.is_leaving(epoch)
+                                && registry.projection(epoch) == Some(*projection)
+                        })
+            });
+            let mut vital_due = checkpoint.filter(|projection| {
+                entry.checkpoint_enqueued_revision != Some(projection.revision)
+            });
+            // A bag or location edit can advance the revision with no vital
+            // change. Only changed vital values may preempt a standalone ACK.
+            // The normal bridge also skips matching early opens and locations.
+            if (vitals_only
+                || (early && entry.checkpoint_enqueued_revision.is_none())
+                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
+                && let Some(projection) = vital_due
+                && entry
+                    .pawn_character_state
+                    .as_ref()
+                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
+            {
+                if !vitals_only {
+                    entry.checkpoint_enqueued_revision = Some(projection.revision);
+                }
+                vital_due = None;
+            }
+            if vitals_only && vital_due.is_none() {
+                continue;
+            }
+            if !vitals_only {
+                entry.pawn_property_retry_ready = false;
+            }
             let due: Vec<_> = entry
                 .restored_modifiers
                 .iter()
                 .filter(|modifier| {
-                    entry.queued_modifier_times.get(&modifier.uid)
-                        != Some(&modifier.remaining_tenths)
+                    !vitals_only
+                        && entry.queued_modifier_times.get(&modifier.uid)
+                            != Some(&modifier.remaining_tenths)
                 })
                 .cloned()
                 .collect();
             let temperature_due = match (entry.pawn_temperature, entry.queued_pawn_temperature) {
-                (Some(current), Some(queued)) => PawnTemperatureState {
+                (Some(current), Some(queued)) if !vitals_only => PawnTemperatureState {
                     external: current
                         .external
                         .filter(|_| current.external != queued.external),
@@ -5955,36 +6035,10 @@ impl PeerLab {
                 },
                 _ => PawnTemperatureState::default(),
             };
-            let mut vital_due = entry.checkpoint_projection.filter(|projection| {
-                entry.auth_accepted
-                    && entry.auth_request.is_some()
-                    && entry.admission.state == ClientLoginState::Joined
-                    && entry.checkpoint_epoch.is_some()
-                    && entry.checkpoint_enqueued_revision != Some(projection.revision)
-            });
-            // The early pawn opened before its checkpoint was known. A first
-            // projection equal to what that open carried needs no update.
-            // With saved locations, neither does a later location-only
-            // revision: the pawn already carries its vitals.
-            if ((early && entry.checkpoint_enqueued_revision.is_none())
-                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
-                && let Some(projection) = vital_due
-                && entry
-                    .pawn_character_state
-                    .as_ref()
-                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
-            {
-                entry.checkpoint_enqueued_revision = Some(projection.revision);
-                vital_due = None;
-            }
             // The player's own bag, toward its latest revision, only once its
             // checkpoint is bound and activated (the bag is issued then), and
             // never after its leave cut-off (`due` is false once frozen).
-            let bag_eligible = entry.auth_accepted
-                && entry.auth_request.is_some()
-                && entry.admission.state == ClientLoginState::Joined
-                && entry.checkpoint_epoch.is_some()
-                && entry.checkpoint_active;
+            let bag_eligible = !vitals_only && checkpoint.is_some() && entry.checkpoint_active;
             let mut bag_due = Vec::new();
             let mut bag_budget = crate::player_inventory_projection::MAX_SLOT_CHANGES_PER_UPDATE;
             if bag_eligible
@@ -5993,7 +6047,8 @@ impl PeerLab {
             {
                 match bag.deltas(bag_budget) {
                     Ok(deltas) if deltas.is_empty() => {
-                        // The client already holds this revision's slots.
+                        // The client already holds this revision's slots and
+                        // therefore its weight.
                         bag.commit(Vec::new());
                         bump(&mut self.stats.player_bag_projection.revisions_already_held);
                     }
@@ -6078,14 +6133,10 @@ impl PeerLab {
                         if let Some(values) = &mut entry.pawn_character_state {
                             let vitals = projection.checkpoint.vitals;
                             values.extend(vitals.values());
-                            // The update also sent the alive state; the
-                            // location-only check above compares it.
-                            if saved_locations {
-                                values.insert(
-                                    super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
-                                    RepValue::Enum(u32::from(vitals.health < 1)),
-                                );
-                            }
+                            values.insert(
+                                super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
+                                RepValue::Enum(u32::from(vitals.health < 1)),
+                            );
                         }
                     }
                     if !due.is_empty() {
@@ -7954,7 +8005,7 @@ impl PeerLab {
         }
     }
 
-    /// Current session gauges and counters (counts only).
+    /// Current session gauges, counters and last client control close.
     pub fn session_counts(&self) -> SessionCounts {
         let mut counts = SessionCounts {
             controller_leave: self
@@ -7991,6 +8042,7 @@ impl PeerLab {
                 .begin_timeout
                 .map(|_| self.stats.peers_closed_awaiting_begin),
             closed_by_client: self.stats.peers_closed_by_client,
+            last_client_control_close: self.last_client_control_close,
             closed_by_reply: self.stats.peers_closed,
             closed_by_join_password: self.stats.peers_closed_by_join_password,
             upgrades_sent: self.stats.upgrades_sent,
@@ -8382,39 +8434,22 @@ impl PeerLab {
                         usize::from(!entry.profiles.has_bestiary);
                 }
             }
-            if entry.profiles.finalised {
-                counts.players_finalised += 1;
-            } else if entry.profiles.completed {
-                counts.players_awaiting_finalisation += 1;
-            } else if entry.profiles.has_loadout && entry.profiles.has_bestiary {
-                counts.players_awaiting_completion += 1;
-            } else if entry.profiles.initialisation_requested
-                || matches!(
-                    entry.pending_profile_exchange,
-                    Some(PendingProfileExchange::Initialisation)
-                )
-            {
-                counts.players_awaiting_initialisation += 1;
-            } else if entry.profiles.outstanding == Some(ProfileKind::Character)
-                || matches!(
-                    entry.pending_profile_exchange,
-                    Some(
-                        PendingProfileExchange::Request(ProfileKind::Character)
-                            | PendingProfileExchange::Publish(ProfileKind::Character, _)
-                    )
-                )
-            {
-                counts.players_awaiting_character_profile += 1;
-            } else if entry.character_slot.is_some() {
-                counts.players_awaiting_user_profile += 1;
-            } else if entry
-                .initial_opens
-                .as_ref()
-                .is_some_and(|pending| pending.begin_slot.is_some())
-            {
-                counts.players_begin_waiting_for_player_state += 1;
-            } else {
-                counts.players_awaiting_begin += 1;
+            match entry.entry_phase() {
+                PlayerEntryPhase::Unregistered => {}
+                PlayerEntryPhase::AwaitingBegin => counts.players_awaiting_begin += 1,
+                PlayerEntryPhase::BeginWaitingForPlayerState => {
+                    counts.players_begin_waiting_for_player_state += 1;
+                }
+                PlayerEntryPhase::AwaitingUserProfile => counts.players_awaiting_user_profile += 1,
+                PlayerEntryPhase::AwaitingCharacterProfile => {
+                    counts.players_awaiting_character_profile += 1;
+                }
+                PlayerEntryPhase::AwaitingInitialisation => {
+                    counts.players_awaiting_initialisation += 1;
+                }
+                PlayerEntryPhase::AwaitingCompletion => counts.players_awaiting_completion += 1,
+                PlayerEntryPhase::AwaitingFinalisation => counts.players_awaiting_finalisation += 1,
+                PlayerEntryPhase::Finalised => counts.players_finalised += 1,
             }
         }
         counts
@@ -8661,6 +8696,7 @@ impl PeerLab {
                         connected_players_retry_ready: false,
                         connected_player_receipts: Vec::new(),
                         connected_player_creations_settled: 0,
+                        own_record_acked: false,
                         controller_open_guids: None,
                         controller_possession_pending: false,
                         controller_possession_retry_ready: false,
@@ -8777,6 +8813,8 @@ impl PeerLab {
             return;
         };
         let mut close = false;
+        let mut close_reason = None;
+        let mut own_record_acked_now = false;
         let mut incarnation_released = false;
         let mut staged_calls = Vec::new();
         let mut capture = self.private_rpc82_capture.as_mut().and_then(|sink| {
@@ -8940,6 +8978,8 @@ impl PeerLab {
                                 }
                                 !pending.receipt.settled
                             });
+                            own_record_acked_now = own_settled && !entry.own_record_acked;
+                            entry.own_record_acked |= own_settled;
                             // The player's own record creation settled: its
                             // frozen-movement release is scheduled, once.
                             if own_settled
@@ -9142,6 +9182,7 @@ impl PeerLab {
                         if summary.control_close_seen {
                             bump(&mut self.stats.control_close_seen);
                             close = true;
+                            close_reason = received.control_close_reason();
                         }
                         self.stats.count_delivered(&summary.delivered);
                         self.stats.actor_bunches_ignored = self
@@ -9397,8 +9438,20 @@ impl PeerLab {
         }
         self.answer(address, &messages);
         // Decoded messages are dropped here; nothing of them is retained.
-        if close && self.remove_peer(address).is_some() {
+        if close && let Some(entry) = self.remove_peer(address) {
             bump(&mut self.stats.peers_closed_by_client);
+            self.last_client_control_close = Some(ClientControlClose {
+                reason: close_reason,
+                phase: entry.entry_phase(),
+                own_record_ack: self
+                    .connected_players
+                    .as_ref()
+                    .map(|_| entry.own_record_ack_at_close(own_record_acked_now)),
+                frozen_movement_release: self.frozen_movement_release.map(|_| {
+                    let pawn = self.pawn_open.as_ref().map(|(_, channel, _)| *channel);
+                    entry.frozen_release_at_close(pawn, now)
+                }),
+            });
         }
     }
 
@@ -10497,12 +10550,11 @@ impl PeerLab {
             .filter_map(|(address, entry)| {
                 let held = located::release_held(entry, now);
                 let release = &mut entry.frozen_release;
-                if release.idle() && release.due_at.is_some_and(|due| due <= now) && !held {
+                release.service_pass_reached = release.record_acked_at.is_some();
+                if release.idle() && release.due(now) && !held {
                     release.pending = true;
                 }
-                let open = entry.controller_startup_pawn_guid.is_some()
-                    && entry.peer.has_actor_channel(channel)
-                    && !entry.peer.actor_channel_closing(channel);
+                let open = entry.has_open_pawn(channel);
                 let release = &entry.frozen_release;
                 (release.pending
                     && !release.deferred
@@ -10523,10 +10575,7 @@ impl PeerLab {
         let Some(entry) = self.peers.get_mut(&address) else {
             return;
         };
-        if entry.controller_startup_pawn_guid.is_none()
-            || !entry.peer.has_actor_channel(channel)
-            || entry.peer.actor_channel_closing(channel)
-        {
+        if !entry.has_open_pawn(channel) {
             // No pawn left to release: abandoned.
             entry.frozen_release.pending = false;
             entry.frozen_release.failed = true;
@@ -12716,9 +12765,14 @@ impl PeerLab {
     }
 
     /// One bounded update: expire idle peers, process at most
-    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks. The
-    /// [`PeerLabPlugin`] runs this once per app update.
+    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending ACKs and background
+    /// updates. The [`PeerLabPlugin`] retries staged checkpoint vitals between
+    /// the input and flush passes.
     pub fn poll(&mut self) {
+        self.poll_with_checkpoint_retry(None);
+    }
+
+    fn poll_with_checkpoint_retry(&mut self, registry: Option<&PlayerRegistry>) {
         if !self.private_proof_ready() {
             return;
         }
@@ -12802,7 +12856,16 @@ impl PeerLab {
         self.retry_pending_player_history();
         if self.checkpoint_initial_vitals.is_none() {
             // The bag projection requires checkpoints: no bag failure here.
-            let permanent = self.update_pawn_properties();
+            let permanent = self.update_pawn_properties(None, false);
+            debug_assert!(permanent.is_empty());
+        } else if let Some(registry) = registry
+            && self.private_proof_ready()
+        {
+            // The poll drained authentication and transport ACKs. Give a
+            // current staged vital update a chance to carry the ACK before a
+            // standalone packet can refill the ring, including on a zero-tick
+            // frame. The checkpoint bridge still stages fresh revisions.
+            let permanent = self.update_pawn_properties(Some(registry), true);
             debug_assert!(permanent.is_empty());
         }
         self.send_acks();
@@ -13050,7 +13113,7 @@ fn poll_peer_lab(world: &mut bevy::prelude::World) {
         if !consuming && let Some(registry) = world.get_resource::<PlayerRegistry>() {
             lab.refresh_checkpoint_projections(registry);
         }
-        lab.poll();
+        lab.poll_with_checkpoint_retry(world.get_resource::<PlayerRegistry>());
         // Saved locations (default off) precede the leave bridge, so a leave
         // staged in this poll is cut off with the location it carries.
         if lab.checkpoint_saved_locations {
@@ -14947,6 +15010,16 @@ mod tests {
         client: &mut super::super::sequencing::PacketSequencer,
         delivered: impl Fn(usize) -> bool,
     ) -> Vec<super::super::packet::Bunch> {
+        deliver_bunches_and_reply(lab, socket, client, delivered, Vec::new())
+    }
+
+    fn deliver_bunches_and_reply(
+        lab: &mut PeerLab,
+        socket: &UdpSocket,
+        client: &mut super::super::sequencing::PacketSequencer,
+        delivered: impl Fn(usize) -> bool,
+        reply: Vec<super::super::packet::Bunch>,
+    ) -> Vec<super::super::packet::Bunch> {
         use super::super::packet::{Packet, Receiver, read_packet, write_packet};
         let SocketAddr::V4(address) = socket.local_addr().unwrap() else {
             unreachable!()
@@ -14970,13 +15043,13 @@ mod tests {
             client.ack_seq(received.sequence, delivered(index)).unwrap();
             bunches.extend(packet.bunches);
         }
-        if count > 0 {
+        if count > 0 || !reply.is_empty() {
             let bytes = write_packet(
                 &Packet {
                     magic: 0,
                     header: client.header().unwrap(),
                     info: None,
-                    bunches: vec![],
+                    bunches: reply,
                 },
                 &lab.config.packet.packet,
             )
@@ -14985,6 +15058,33 @@ mod tests {
             receive_authored_at(lab, socket, &bytes, Instant::now());
         }
         bunches
+    }
+
+    fn client_close_bunch(peer: &LabPeer, reason: u32) -> super::super::packet::Bunch {
+        use super::super::{
+            control_receive::INFERRED_CONTROL_NAME_INDEX,
+            packet::{BitWriter, Bunch, BunchHeader, Name},
+            sequencing::wire_reliable_sequence,
+        };
+        Bunch {
+            header: BunchHeader {
+                control: true,
+                open: false,
+                close: true,
+                close_reason: Some(reason),
+                paused: false,
+                reliable: true,
+                channel_index: peer.config().control_channel_index,
+                has_package_map_exports: false,
+                has_must_be_mapped_guids: false,
+                partial: false,
+                reliable_sequence_raw: Some(wire_reliable_sequence(peer.control_in_reliable() + 1)),
+                partial_initial: false,
+                partial_final: false,
+                channel_name: Some(Name::Hardcoded(INFERRED_CONTROL_NAME_INDEX)),
+            },
+            payload: Payload::from_writer(BitWriter::new()),
+        }
     }
 
     fn game_state_channel(lab: &PeerLab) -> u32 {
@@ -15340,8 +15440,114 @@ mod tests {
         assert_eq!(counts.frozen_movement_releases_sent, 1);
         assert_eq!(counts.frozen_movement_releases_acked, 1);
         assert_eq!(counts.frozen_movement_release_resends, 1);
-        lab.remove_peer(address).unwrap();
+        let close = client_close_bunch(&lab.peers[&address].peer, 0);
+        deliver_bunches_and_reply(&mut lab, &socket, &mut client, |_| true, vec![close]);
+        let close = lab.session_counts().last_client_control_close.unwrap();
+        assert_eq!(close.own_record_ack, Some(OwnRecordAck::Earlier));
+        let release = close.frozen_movement_release.unwrap();
+        assert_eq!(release.state, FrozenReleaseState::Acked);
+        assert!(release.sent);
+        assert_eq!(release.pawn, None);
         assert!(lab.frozen_movement_observations().is_empty());
+    }
+
+    #[test]
+    fn client_control_close_retains_record_ack_and_release_guards() {
+        use FrozenReleaseState::{AwaitingDelay, Due, PendingSend};
+        use OwnRecordAck::{Earlier, InClosePacket};
+        for (delay, hold_pawn, record_ack, service_pass_reached, state, pawn) in [
+            (
+                Duration::ZERO,
+                false,
+                InClosePacket,
+                false,
+                Due,
+                ReleasePawnState::Settled,
+            ),
+            (
+                Duration::ZERO,
+                true,
+                Earlier,
+                true,
+                PendingSend,
+                ReleasePawnState::ReliablePending,
+            ),
+            (
+                Duration::from_secs(600),
+                false,
+                Earlier,
+                false,
+                AwaitingDelay,
+                ReleasePawnState::Settled,
+            ),
+        ] {
+            let mut lab = record_lab(true);
+            lab.enable_frozen_movement_release(delay).unwrap();
+            let (socket, address, mut client) = record_peer(&mut lab, 1, "AuthoredCloseUser");
+            complete_record_player(&mut lab, address);
+            deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+            lab.controller_call(address, ControllerCall::FriendsList);
+            lab.finalise_connected_players();
+            assert_eq!(lab.stats.connected_player_record_creations_sent, 1);
+            assert_eq!(lab.stats.connected_player_record_creations_acked, 0);
+            if record_ack == Earlier {
+                deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+                assert_eq!(lab.stats.connected_player_record_creations_acked, 1);
+            }
+            if hold_pawn {
+                let (plan, channel, _) = lab.pawn_open.as_ref().unwrap();
+                let payload = compose_pawn_frozen_movement_update(
+                    plan,
+                    true,
+                    super::super::archive::ByteOrder::Little,
+                )
+                .unwrap();
+                let channel = *channel;
+                let pending = lab
+                    .peers
+                    .get_mut(&address)
+                    .unwrap()
+                    .peer
+                    .reliable_actor_bunch_datagrams(channel, payload)
+                    .unwrap();
+                lab.send_all(&pending, address);
+                lab.retry_frozen_movement_release();
+                assert!(lab.peers[&address].frozen_release.pending);
+                assert_eq!(lab.stats.frozen_movement_releases_sent, 0);
+            }
+
+            let close = client_close_bunch(&lab.peers[&address].peer, 14);
+            // For the reliable-pawn case, the close packet NAKs that update.
+            deliver_bunches_and_reply(&mut lab, &socket, &mut client, |_| !hold_pawn, vec![close]);
+            lab.retry_frozen_movement_release();
+
+            assert_eq!(lab.readiness_counts(), ReadinessCounts::default());
+            let counts = lab.session_counts();
+            assert_eq!(counts.active_peers, 0);
+            assert_eq!(counts.closed_by_client, 1);
+            assert_eq!(counts.connected_player_record_creations_acked, 1);
+            assert_eq!(counts.connected_player_records_removed, 1);
+            assert_eq!(counts.frozen_movement_releases_scheduled, 1);
+            assert_eq!(counts.frozen_movement_releases_sent, 0);
+            assert_eq!(counts.frozen_movement_release_errors, 0);
+            assert_eq!(counts.frozen_movement_release_sends_deferred, 0);
+            assert_eq!(
+                counts.last_client_control_close,
+                Some(ClientControlClose {
+                    reason: Some(14),
+                    phase: PlayerEntryPhase::Finalised,
+                    own_record_ack: Some(record_ack),
+                    frozen_movement_release: Some(FrozenReleaseAtClose {
+                        state,
+                        sent: false,
+                        pawn: Some(pawn),
+                        relocation_held: false,
+                        deferred: false,
+                        service_pass_reached: Some(service_pass_reached),
+                    }),
+                })
+            );
+        }
     }
 
     /// Off (the lab default) sends nothing; the release needs records.

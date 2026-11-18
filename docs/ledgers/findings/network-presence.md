@@ -5,7 +5,7 @@ how clients choose a connection route. IDs remain in the shared finding space.
 
 Before restructure: ab9f866:docs/ledgers/findings/network.md
 
-Last reconciled: 2026-11-14
+Last reconciled: 2026-11-18
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -136,4 +136,4 @@ Last reconciled: 2026-11-14
 | F-1171 | Hosting derives bounded deduplicated CM membership from accepted joined Steam IDs; removal/revocation clears it, changes refresh adverts; A2S/logs/Debug omit player IDs | measured | authored-test; M-1390; 1d50034 | high; synthetic identities/serialization; live CM membership/browser occupancy unqualified | U-038 | active |
 | F-1180 | Protected hosting hit a CM decode deadline before Welcome/password rejection; completed frames now get a separate 100 ms decode budget and retain FIFO | measured | live; M-1411/ev_7206823e3509; M-1413; authored-test; M-1412; a93179bf | high; 13 tests; malformed/logoff fatal; triggering packet and universal race resolution unproven | U-038 | active |
 | F-1181 | Stock client sees wrong-password denial; correct password reaches Welcome/Join and possession ACK, then stalls before Begin/profile calls; native saves/exits 0 | measured | live; M-1411/ev_cb6bdd83598f, M-1414; a93179bf | high; one protected 3.0.36 run; no world entry/movement/checkpoints; wrapper exits 1 after unit unload | U-038, U-080 | active |
-| F-1182 | Native lifetime metadata bounds field/skipped-block keys at 64/16, classifies committed-component ordinals and five actor-drop reasons, and survives peer removal | measured | authored-test; M-1415, M-1419 | high; 33 focused tests; numeric/enums only; skipped payloads stay opaque; no stock-client interpretation proof | U-038 | active |
+| F-1182 | Lifetime field/skipped keys (64/16), component ordinals and five actor-drop reasons survive removal. Last client control close retains wire reason, entry phase, own-record ACK timing, release guards and service after ACK | measured | authored-test; M-1415, M-1419, M-1538, M-1547 | high; synthetic peers; no client cause or payload interpretation | U-038 | active |

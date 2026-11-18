@@ -1036,15 +1036,25 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
     if let Err((stage, error)) = session_cycle(address, pinned, Duration::from_secs(3)) {
         panic!("{stage:?}: {error:#}");
     }
-    server.wait_for("status after both sessions closed", |record| {
+    let status = server.wait_for("status after both sessions closed", |record| {
         record["event"] == "status"
             && record["sessions"]["closed_by_client"] == 1
             && record["sessions"]["closed_by_reply"] == 1
     });
+    let close = &status["sessions"]["last_client_control_close"];
+    assert_eq!(close["reason"], 0);
+    assert_eq!(close["phase"], "awaiting_begin");
+    assert_eq!(close["own_record_ack"], "unacknowledged");
+    let release = &close["frozen_movement_release"];
+    assert_eq!(release["state"], "unscheduled");
+    assert_eq!(release["sent"], false);
+    assert!(release.get("pawn").is_none());
+    assert!(release.get("service_pass_reached").is_none());
     sigterm(&server);
     assert!(server.wait_exit().success());
     let stopped = server.event("stopped");
     let sessions = &stopped["sessions"];
+    assert_eq!(&sessions["last_client_control_close"], close);
     for (field, value) in [
         ("upgrades_sent", 1),
         ("closed_by_reply", 1),
@@ -4507,6 +4517,120 @@ fn production_bind_releases_frozen_movement_once_after_the_record_ack() {
         assert!(observation.pawn_inbound.last_bunch_ms.is_some());
         assert_eq!(lab.stats().pawn_bunches_received_reliable, 1);
         with_server(&mut app, move || client.close().unwrap());
+        if !release {
+            let close = counts(&app).last_client_control_close.unwrap();
+            let close = serde_json::to_value(close).unwrap();
+            assert_eq!(close["own_record_ack"], "earlier");
+            assert!(close.get("frozen_movement_release").is_none());
+        }
+    }
+}
+
+#[test]
+fn production_close_reports_the_release_service_pass_after_the_record_ack() {
+    #[derive(Debug, PartialEq, Eq)]
+    enum AckTiming {
+        InClosePacket,
+        QueuedTogether,
+        SplitPolls,
+    }
+
+    use AckTiming::{InClosePacket, QueuedTogether, SplitPolls};
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    for (timing, delay_ms, state) in [
+        (InClosePacket, 0, "due"),
+        (QueuedTogether, 0, "due"),
+        (SplitPolls, 0, "acked"),
+        (SplitPolls, 600_000, "awaiting_delay"),
+    ] {
+        let label = format!("{timing:?}, delay={delay_ms}ms");
+        let config = NetworkConfig {
+            release_profile: Some(release_toml()),
+            server_frozen_movement_release_delay_ms: delay_ms,
+            ..enabled(0)
+        };
+        let (mut app, address) = server_app(&config);
+        let ((mut client, datagrams), _) = with_server(&mut app, move || {
+            let (mut client, mut datagrams) = join_pinned_open(address, pinned, 32);
+            datagrams.extend(exchange_profiles(&mut client, engine, 9, 3));
+            datagrams.extend(replies(
+                client.collect(Duration::from_millis(250), 32).unwrap(),
+            ));
+            (client, datagrams)
+        });
+        let before = counts(&app);
+        assert_eq!(before.players_finalised, 1, "{label}");
+        assert_eq!(before.connected_player_record_creations_sent, 1, "{label}");
+        assert_eq!(before.connected_player_record_creations_acked, 0, "{label}");
+        assert!(frozen_movement_updates(&profile, &datagrams).is_empty());
+
+        let accepted = |app: &App| app.world().resource::<PeerLab>().stats().data_accepted;
+        let before_accepted = accepted(&app);
+        let ack_packet = (timing != InClosePacket).then(|| client.keepalive().unwrap());
+        let split = timing == SplitPolls;
+        let sent = split && delay_ms == 0;
+        let release_count = u64::from(sent);
+        if split {
+            app.update();
+            assert_eq!(accepted(&app) - before_accepted, 1, "{label}");
+            let live = counts(&app);
+            assert_eq!(live.active_peers, 1, "{label}");
+            assert_eq!(live.connected_player_record_creations_acked, 1, "{label}");
+            assert_eq!(live.frozen_movement_releases_sent, release_count, "{label}");
+            assert_eq!(live.frozen_movement_releases_acked, 0, "{label}");
+            let collected = client.collect(Duration::from_millis(250), 32).unwrap();
+            assert!(collected.acked.contains(&ack_packet.unwrap()), "{label}");
+            let expected: &[bool] = if sent { &[false] } else { &[] };
+            assert_eq!(
+                frozen_movement_updates(&profile, &replies(collected)),
+                expected,
+                "{label}"
+            );
+        }
+        let close_packet = client.close().unwrap();
+        assert_ne!(ack_packet, Some(close_packet), "{label}");
+        app.update();
+
+        assert_eq!(
+            accepted(&app) - before_accepted,
+            1 + u64::from(ack_packet.is_some()),
+            "{label}"
+        );
+        let status = counts(&app);
+        assert_eq!(status.active_peers, 0, "{label}");
+        assert_eq!(status.closed_by_client, 1, "{label}");
+        assert_eq!(status.connected_player_record_creations_acked, 1, "{label}");
+        assert_eq!(status.frozen_movement_releases_scheduled, 1, "{label}");
+        assert_eq!(
+            status.frozen_movement_releases_sent, release_count,
+            "{label}"
+        );
+        assert_eq!(
+            status.frozen_movement_releases_acked, release_count,
+            "{label}"
+        );
+        let close = serde_json::to_value(status.last_client_control_close.unwrap()).unwrap();
+        assert_eq!(close["reason"], 0, "{label}");
+        assert_eq!(close["phase"], "finalised", "{label}");
+        let record_ack = if timing == InClosePacket {
+            "in_close_packet"
+        } else {
+            "earlier"
+        };
+        assert_eq!(close["own_record_ack"], record_ack, "{label}");
+        let release = &close["frozen_movement_release"];
+        assert_eq!(release["state"], state, "{label}");
+        assert_eq!(release["service_pass_reached"], split, "{label}");
+        assert_eq!(release["sent"], sent, "{label}");
+        assert_eq!(release["deferred"], false, "{label}");
+        assert_eq!(release["relocation_held"], false, "{label}");
+        if sent {
+            assert!(release.get("pawn").is_none(), "{label}");
+        } else {
+            assert_eq!(release["pawn"], "settled", "{label}");
+        }
     }
 }
 

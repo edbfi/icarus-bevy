@@ -11,12 +11,15 @@
 //!
 //! The bound inventories open empty on every pawn (F-799's shape); a bag then
 //! reaches its owner as slot deltas with F-978's replication-key arithmetic.
+//! Format 2 adds authored `CurrentWeight` changes for the slots each delta
+//! leaves in the inventory.
 //! Nothing here mutates, retains or persists native state.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
     os::unix::fs::OpenOptionsExt,
     path::Path,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -81,6 +84,17 @@ pub struct ItemBinding {
     pub count_property: bool,
     /// Authored `(EDynamicItemProperties, value)` pairs; none are inferred.
     pub dynamic: Vec<DynamicProperty>,
+    /// Authored weight per unit. Required in format 2 and absent in format 1.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "unit_weight"
+    )]
+    pub unit_weight: Option<u32>,
+}
+
+fn unit_weight<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    u32::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +116,13 @@ pub struct ProjectionCatalog<'a> {
 struct BoundInventory {
     key: String,
     info_row: u8,
-    queries: Vec<u16>,
+    slots: Vec<BoundSlot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BoundSlot {
+    query_row: u16,
+    max_weight: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +137,7 @@ struct BoundItem {
 pub struct PlayerInventoryProjection {
     inventories: Vec<BoundInventory>,
     items: BTreeMap<String, BoundItem>,
+    unit_weights: Option<Arc<BTreeMap<u16, i32>>>,
 }
 
 impl PlayerInventoryProjectionBinding {
@@ -182,7 +203,11 @@ impl PlayerInventoryProjection {
         opened: &[u8],
     ) -> Result<Self> {
         const PREFIX: &str = "network.player_inventory_projection";
-        ensure!(binding.format == 1, "{PREFIX}: format must be 1");
+        ensure!(
+            matches!(binding.format, 1 | 2),
+            "{PREFIX}: format must be 1 or 2"
+        );
+        let weighted = binding.format == 2;
         ensure!(
             binding.inventories.len() <= MAX_BOUND_INVENTORIES,
             "{PREFIX}: more than {MAX_BOUND_INVENTORIES} inventories"
@@ -251,7 +276,7 @@ impl PlayerInventoryProjection {
                 crate::network::INVENTORY_INFO_TABLE,
                 bound.info_row
             );
-            let queries = bound
+            let slots = bound
                 .slot_queries
                 .iter()
                 .map(|query| {
@@ -261,13 +286,16 @@ impl PlayerInventoryProjection {
                         query,
                         NO_ROW,
                     )?;
-                    Ok(u16::try_from(row)?)
+                    Ok(BoundSlot {
+                        query_row: u16::try_from(row)?,
+                        max_weight: 0,
+                    })
                 })
                 .collect::<Result<_>>()?;
             inventories.push(BoundInventory {
                 key: key.to_owned(),
                 info_row: info,
-                queries,
+                slots,
             });
         }
         for key in recipe_inventories.keys() {
@@ -279,6 +307,7 @@ impl PlayerInventoryProjection {
         inventories.sort_by(|a, b| a.key.cmp(&b.key));
         let mut items = BTreeMap::new();
         let mut rows = BTreeSet::new();
+        let mut unit_weights = BTreeMap::new();
         for bound in &binding.items {
             let key = bound.item.as_str();
             let definition = recipe_items
@@ -288,12 +317,12 @@ impl PlayerInventoryProjection {
                 !items.contains_key(key),
                 "{PREFIX}: recipe item {key:?} is bound twice"
             );
-            let row = unique_row(
+            let row = u16::try_from(unique_row(
                 catalog.items_static,
                 crate::network::ITEMS_STATIC_TABLE,
                 &bound.row,
                 NO_ROW,
-            )?;
+            )?)?;
             ensure!(
                 rows.insert(row),
                 "{PREFIX}: {} row {:?} is bound twice",
@@ -304,6 +333,18 @@ impl PlayerInventoryProjection {
                 bound.count_property || definition.stack_limit == 1,
                 "{PREFIX}: recipe item {key:?} stacks above 1 and needs count_property"
             );
+            ensure!(
+                bound.unit_weight.is_some() == weighted,
+                "{PREFIX}: recipe item {key:?}: unit_weight is required in format 2 and forbidden in format 1"
+            );
+            if let Some(weight) = bound.unit_weight {
+                let weight = i32::try_from(weight).with_context(|| {
+                    format!(
+                        "{PREFIX}: recipe item {key:?}: unit_weight exceeds signed 32-bit range"
+                    )
+                })?;
+                unit_weights.insert(row, weight);
+            }
             let mut properties = BTreeSet::new();
             let mut dynamic = Vec::with_capacity(bound.dynamic.len() + 1);
             for entry in &bound.dynamic {
@@ -330,7 +371,7 @@ impl PlayerInventoryProjection {
             items.insert(
                 key.to_owned(),
                 BoundItem {
-                    row: u16::try_from(row)?,
+                    row,
                     count_property: bound.count_property,
                     dynamic,
                 },
@@ -342,7 +383,41 @@ impl PlayerInventoryProjection {
                 "{PREFIX}: recipe item {key:?} has no binding"
             );
         }
-        Ok(Self { inventories, items })
+        if weighted {
+            // Every intermediate page also mixes only valid slots. Bounding
+            // them independently covers any combination of held and new slots.
+            for inventory in &mut inventories {
+                let mut total = 0_i32;
+                for (slot, rule) in inventory
+                    .slots
+                    .iter_mut()
+                    .zip(&recipe_inventories[inventory.key.as_str()].slot_rules)
+                {
+                    let max_weight = rule
+                        .allowed_items
+                        .iter()
+                        .map(|key| {
+                            i64::from(unit_weights[&items[key].row])
+                                * i64::from(recipe_items[key.as_str()].stack_limit)
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    let overflow = || {
+                        format!(
+                            "{PREFIX}: recipe inventory {:?}: maximum CurrentWeight exceeds signed 32-bit range",
+                            inventory.key
+                        )
+                    };
+                    slot.max_weight = i32::try_from(max_weight).with_context(overflow)?;
+                    total = total.checked_add(slot.max_weight).with_context(overflow)?;
+                }
+            }
+        }
+        Ok(Self {
+            inventories,
+            items,
+            unit_weights: weighted.then(|| Arc::new(unit_weights)),
+        })
     }
 
     /// The bound inventories as every pawn opens them: empty, with the
@@ -356,10 +431,10 @@ impl PlayerInventoryProjection {
                 slots: FastArrayContent {
                     replication_key: crate::network::INVENTORY_SLOTS_REPLICATION_KEY,
                     items: bound
-                        .queries
+                        .slots
                         .iter()
                         .zip(0..)
-                        .map(|(query, index)| InventorySlot::empty(*query, index))
+                        .map(|(slot, index)| InventorySlot::empty(slot.query_row, index))
                         .collect(),
                 },
             })
@@ -395,25 +470,49 @@ impl PlayerInventoryProjection {
                     .find(|inventory| inventory.key == bound.key)
                     .context("a projected bag lacks a bound inventory")?;
                 ensure!(
-                    state.overflow.is_empty() && state.slots.len() == bound.queries.len(),
+                    state.overflow.is_empty() && state.slots.len() == bound.slots.len(),
                     "a projected bag inventory differs from its binding"
                 );
                 state
                     .slots
                     .iter()
-                    .zip(&bound.queries)
+                    .zip(&bound.slots)
                     .zip(0..)
-                    .map(|((stack, query), index)| {
-                        Ok(InventorySlot {
-                            query_row: *query,
+                    .map(|((stack, bound), index)| {
+                        let slot = InventorySlot {
+                            query_row: bound.query_row,
                             index,
                             item: stack.as_ref().map(|stack| self.item(stack)).transpose()?,
-                        })
+                        };
+                        if let Some(weights) = &self.unit_weights {
+                            ensure!(
+                                slot_weight(weights, &slot)? <= bound.max_weight,
+                                "a projected slot exceeds its maximum weight"
+                            );
+                        }
+                        Ok(slot)
                     })
                     .collect()
             })
             .collect()
     }
+}
+
+fn slot_weight(unit_weights: &BTreeMap<u16, i32>, slot: &InventorySlot) -> Result<i32> {
+    let Some(item) = &slot.item else {
+        return Ok(0);
+    };
+    let unit = unit_weights
+        .get(&item.row)
+        .context("a projected item has no unit weight")?;
+    let count = item
+        .dynamic
+        .iter()
+        .find_map(|&(property, value)| (property == ITEMABLE_STACK_PROPERTY).then_some(value))
+        .unwrap_or(1);
+    ensure!(count > 0, "a projected item has a non-positive count");
+    unit.checked_mul(count)
+        .context("a projected slot's weight overflows")
 }
 
 /// The key a client holds for an opened inventory's slots: the open's key
@@ -434,6 +533,8 @@ pub struct PeerBagProjection {
     subobjects: Vec<usize>,
     /// The client's slots and key per bound inventory.
     held: Vec<PawnInventory>,
+    /// Shared authored weights for this binding, when enabled.
+    unit_weights: Option<Arc<BTreeMap<u16, i32>>>,
     /// The latest bag revision and its wire slots.
     target: Option<(u64, Vec<Vec<InventorySlot>>)>,
     /// The bag revision the held state reached when last enqueued.
@@ -459,6 +560,7 @@ impl PeerBagProjection {
         Ok(Self {
             subobjects: (first_subobject..first_subobject + held.len()).collect(),
             held,
+            unit_weights: projection.unit_weights.clone(),
             target: None,
             enqueued: None,
             seen_player_revision: None,
@@ -500,12 +602,12 @@ impl PeerBagProjection {
         revision: u64,
         project: impl FnOnce() -> Result<Vec<Vec<InventorySlot>>>,
     ) -> Result<bool> {
-        self.seen_player_revision = Some(player_revision);
         if self
             .target
             .as_ref()
             .is_some_and(|(current, _)| *current == revision)
         {
+            self.seen_player_revision = Some(player_revision);
             return Ok(false);
         }
         let slots = project()?;
@@ -517,6 +619,7 @@ impl PeerBagProjection {
                     .all(|(target, held)| target.len() == held.slots.items.len()),
             "a projected bag differs from the opened inventories"
         );
+        self.seen_player_revision = Some(player_revision);
         self.target = Some((revision, slots));
         Ok(true)
     }
@@ -548,7 +651,9 @@ impl PeerBagProjection {
     /// The next update's slot deltas toward the target, at most
     /// `max_changes` changed slots (inventory, then slot order). Each delta's
     /// base is the key the client holds; its key adds one per changed slot
-    /// (F-978). Empty when the client already holds the target.
+    /// (F-978). Format 2 calculates the resulting weight from the slots in
+    /// this page and the held slots it leaves alone. Empty when the client
+    /// already holds the target.
     pub fn deltas(&self, max_changes: usize) -> Result<Vec<InventoryRestore>> {
         let Some((_, target)) = &self.target else {
             return Ok(Vec::new());
@@ -581,10 +686,22 @@ impl PeerBagProjection {
             let key = base
                 .checked_add(i32::try_from(changes.len())?)
                 .context("an inventory's replication key overflows")?;
+            let weight = self
+                .unit_weights
+                .as_ref()
+                .map(|weights| {
+                    items.iter().try_fold(0_i32, |total, slot| {
+                        total
+                            .checked_add(slot_weight(weights, slot)?)
+                            .context("a projected inventory's weight overflows")
+                    })
+                })
+                .transpose()?;
             deltas.push(InventoryRestore {
                 inventory: *subobject,
                 opened: held.clone(),
                 restored: PawnInventory {
+                    current_weight: weight,
                     slots: FastArrayContent {
                         replication_key: key,
                         items,
@@ -593,7 +710,7 @@ impl PeerBagProjection {
                 },
                 base_key: base,
                 changes,
-                weight: None,
+                weight,
             });
         }
         Ok(deltas)

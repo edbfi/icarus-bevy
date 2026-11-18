@@ -394,6 +394,7 @@ pub struct ReceiveSummary {
 /// decoded messages retain strings and field values.
 pub struct PeerReceive {
     summary: ReceiveSummary,
+    control_close_reason: Option<u32>,
     messages: Vec<Decoded>,
     actor_bunches: Vec<Bunch>,
     unreliable_actor_bunches: Vec<Bunch>,
@@ -412,6 +413,11 @@ impl std::fmt::Debug for PeerReceive {
 impl PeerReceive {
     pub fn summary(&self) -> &ReceiveSummary {
         &self.summary
+    }
+
+    /// First decoded control-channel close reason in this accepted datagram.
+    pub(crate) fn control_close_reason(&self) -> Option<u32> {
+        self.control_close_reason
     }
 
     /// Delivered messages in delivery order, matching `summary().delivered`.
@@ -450,6 +456,7 @@ impl PeerReceive {
 struct StagedControl {
     reliable_raw: Option<u32>,
     close: bool,
+    close_reason: Option<u32>,
     messages: Vec<Decoded>,
 }
 
@@ -774,6 +781,7 @@ impl LabPeer {
             staged.push(StagedControl {
                 reliable_raw: header.reliable_sequence_raw,
                 close: header.close,
+                close_reason: header.close_reason,
                 messages,
             });
         }
@@ -835,6 +843,7 @@ impl LabPeer {
         let Some(received) = self.fail_on_error(received)? else {
             return Ok(PeerReceive {
                 summary,
+                control_close_reason: None,
                 messages: Vec::new(),
                 actor_bunches: Vec::new(),
                 unreliable_actor_bunches: Vec::new(),
@@ -902,7 +911,7 @@ impl LabPeer {
             self.ring_probe = None;
         }
         let delivered = self.deliver(staged, &mut summary);
-        let messages = self.fail_on_error(delivered)?;
+        let (messages, control_close_reason) = self.fail_on_error(delivered)?;
         let (actor_bunches, unreliable_actor_bunches, actors_accepted) = self.deliver_actors(
             bunches,
             &mut summary,
@@ -916,6 +925,7 @@ impl LabPeer {
         summary.delivered = messages.iter().map(DeliveredSummary::of).collect();
         Ok(PeerReceive {
             summary,
+            control_close_reason,
             messages,
             actor_bunches,
             unreliable_actor_bunches,
@@ -1126,10 +1136,12 @@ impl LabPeer {
         &mut self,
         staged: Vec<StagedControl>,
         summary: &mut ReceiveSummary,
-    ) -> Result<Vec<Decoded>> {
+    ) -> Result<(Vec<Decoded>, Option<u32>)> {
         let mut messages = Vec::new();
+        let mut close_reason = None;
         for bunch in staged {
             summary.control_close_seen |= bunch.close;
+            close_reason = close_reason.or(bunch.close_reason);
             let Some(raw) = bunch.reliable_raw else {
                 // Unreliable control bunches are processed on arrival (F-537).
                 self.inspect_delivered_batch(&bunch.messages);
@@ -1147,7 +1159,7 @@ impl LabPeer {
                 ReliableReceive::Duplicate => summary.duplicate_reliable += 1,
             }
         }
-        Ok(messages)
+        Ok((messages, close_reason))
     }
 
     fn inspect_delivered_batch(&mut self, batch: &[Decoded]) {
