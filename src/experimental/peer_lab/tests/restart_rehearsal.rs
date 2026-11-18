@@ -95,6 +95,7 @@ use crate::{
 
 /// The operator's one spawn point (centimetres).
 const SPAWN: [f32; 3] = [1_000.0, -2_000.0, 300.0];
+const HOSTED_MAP_URL: &str = "/Authored/Maps/Workshop";
 /// Character slot every client begins with.
 const SLOT: i32 = 3;
 /// `network.session_timeout_seconds` of every scenario.
@@ -244,7 +245,7 @@ checkpoint_location_correction = true
 {inventory}
 [network.player_persistence]
 prospect_id = "rehearsal-workshop"
-map_url = "/Authored/Maps/Workshop"
+map_url = "{HOSTED_MAP_URL}"
 prospect_row = "AuthoredWorkshop"
 difficulty = 2
 
@@ -267,7 +268,7 @@ query_port = {query}
 private_ip = "127.0.0.1"
 seconds = 600
 name = "Rehearsal workshop"
-map_url = "/Authored/Maps/Workshop"
+map_url = "{HOSTED_MAP_URL}"
 prospect_id = "rehearsal-workshop"
 prospect_row = "AuthoredWorkshop"
 lobby_name = "Workshop"
@@ -655,10 +656,13 @@ struct Observed {
     log: Vec<String>,
     /// When each logged event was decoded or sent.
     at: Vec<Instant>,
+    welcome_map_url: Option<String>,
     /// The controller actor's GUID from its open.
     controller: Option<u32>,
     pawn: Option<u32>,
     pawn_location: Option<SpawnVector>,
+    /// The first pawn's spawn level resolved from received exports at open.
+    pawn_level_path: Option<String>,
     /// The pawn a controller ClientRestart (field 40) named.
     restart: Option<u32>,
     begin_sent: bool,
@@ -674,6 +678,19 @@ struct Observed {
 }
 
 impl Observed {
+    fn assert_hosted_map(&self) {
+        assert_eq!(
+            self.welcome_map_url.as_deref(),
+            Some(HOSTED_MAP_URL),
+            "Welcome names the configured hosted map"
+        );
+        assert_eq!(
+            self.pawn_level_path.as_deref(),
+            Some("/Authored/Maps/Workshop.Workshop.PersistentLevel"),
+            "the first pawn's level GUID resolves to the hosted map's PersistentLevel"
+        );
+    }
+
     fn position(&self, event: &str) -> usize {
         self.log
             .iter()
@@ -1048,7 +1065,8 @@ impl StockClient {
                 };
                 self.queue_control(login, false);
             }
-            ControlMessage::Welcome { .. } => {
+            ControlMessage::Welcome { map_url, .. } => {
+                self.seen.welcome_map_url = Some(String::from_utf16(map_url.units()).unwrap());
                 self.note("welcome");
                 self.queue_control(ControlMessage::Netspeed { rate: 100_000 }, false);
                 self.queue_control(ControlMessage::Join, false);
@@ -1240,6 +1258,13 @@ impl StockClient {
     fn on_pawn(&mut self, lab: &PeerLab, bunch: &ActorBunch) {
         if bunch.open {
             let spawn = read_spawn(&mut bunch.payload.reader(), &self.codec.actor).unwrap();
+            if self.seen.pawn.is_none() {
+                self.seen.pawn_level_path = spawn
+                    .dynamic
+                    .as_ref()
+                    .and_then(|dynamic| dynamic.level.as_ref())
+                    .and_then(|level| self.tracker.package_map().resolve_full_path(level.guid));
+            }
             self.seen.pawn = Some(spawn.actor.guid);
             self.seen.pawn_location = spawn.dynamic.and_then(|dynamic| dynamic.location);
             self.note("pawn open");
@@ -1537,6 +1562,7 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
     assert!(!server.reopened);
     let fresh = server.initial_vitals;
     let mut client = enter(&mut server, &inputs, Duration::from_secs(5));
+    client.seen.assert_hosted_map();
     assert_eq!(
         client.seen.pawn_location,
         Some(quantize_spawn_vector(SPAWN).unwrap()),
@@ -1636,6 +1662,7 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
     let stored = server.stored(key).unwrap();
     assert_eq!(stored.checkpoint, left);
     let mut client = enter(&mut server, &inputs, Duration::from_secs(10));
+    client.seen.assert_hosted_map();
     assert_eq!(
         client.seen.pawn_location,
         Some(quantize_spawn_vector(SPAWN).unwrap()),
