@@ -85,11 +85,26 @@ Framing is in [actor channel bunches](actor-channel.md).
   actors, keyed by position (`ActorKey::FlodTile`; `with_flod_tiles`).
 - `run` (`DEFAULT_MAX_CHANNELS = 256` so multi-stage `C019` DAGs and managers
   fit above `0..=8`, F-858) opens the radiation, world-talent and disaster
-  managers after each PlayerState, then atomically reserves and opens any
-  stitched `C019` quests with `QuestManager`, followed by
+  managers after the base Join opens through PlayerState (F-804), then
+  registers stitched `C019` quests with `QuestManager` as a batch, followed by
   InventoryContainerManager, PlayerHistoryTracker and FLOD (F-859, F-861,
   F-862, F-866, F-914, F-933, F-934). List gaps, unopenable/overflowing
   quests or unknown missions skip cleanly; 15-prospect counts: F-867, F-934.
+- Native `PeerLab` registration (F-1262) checks the GameState level, unique actor keys
+  and free channels within range. In each byte order it encodes the candidate
+  GameState with its manager references, then the configured and proposed
+  managers and quests in channel order. One copy of the current GUID cache
+  carries allocations through each sequence. Every open must fit the 128 KiB
+  bunch cap. Future player opens can add GUID allocations, and runtime data can
+  change the payloads.
+  A refusal commits no actor in the call, including an optional trailing
+  manager, and leaves GameState references, live GUIDs and exports intact.
+  `run` reports refused saved plans in `skipped_quests` or `skipped_managers`.
+- Retry an invalid plan after correcting the reported error. If any peer has
+  initial opens pending, retry nonempty registration once every peer's
+  initial sequence has finished processing or the peer has closed. Registration
+  can proceed with outstanding ACKs. New registrations apply to later joins.
+  Send time also checks size and queue capacity.
 
 ## Candidate
 

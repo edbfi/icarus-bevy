@@ -1049,6 +1049,7 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
     assert_eq!(release["state"], "unscheduled");
     assert_eq!(release["sent"], false);
     assert!(release.get("pawn").is_none());
+    assert!(release.get("service_pass_reached").is_none());
     sigterm(&server);
     assert!(server.wait_exit().success());
     let stopped = server.event("stopped");
@@ -4516,6 +4517,120 @@ fn production_bind_releases_frozen_movement_once_after_the_record_ack() {
         assert!(observation.pawn_inbound.last_bunch_ms.is_some());
         assert_eq!(lab.stats().pawn_bunches_received_reliable, 1);
         with_server(&mut app, move || client.close().unwrap());
+        if !release {
+            let close = counts(&app).last_client_control_close.unwrap();
+            let close = serde_json::to_value(close).unwrap();
+            assert_eq!(close["own_record_ack"], "earlier");
+            assert!(close.get("frozen_movement_release").is_none());
+        }
+    }
+}
+
+#[test]
+fn production_close_reports_the_release_service_pass_after_the_record_ack() {
+    #[derive(Debug, PartialEq, Eq)]
+    enum AckTiming {
+        InClosePacket,
+        QueuedTogether,
+        SplitPolls,
+    }
+
+    use AckTiming::{InClosePacket, QueuedTogether, SplitPolls};
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    let pinned = profile.pin.network_checksum;
+    let engine = profile.engine_network_version;
+    for (timing, delay_ms, state) in [
+        (InClosePacket, 0, "due"),
+        (QueuedTogether, 0, "due"),
+        (SplitPolls, 0, "acked"),
+        (SplitPolls, 600_000, "awaiting_delay"),
+    ] {
+        let label = format!("{timing:?}, delay={delay_ms}ms");
+        let config = NetworkConfig {
+            release_profile: Some(release_toml()),
+            server_frozen_movement_release_delay_ms: delay_ms,
+            ..enabled(0)
+        };
+        let (mut app, address) = server_app(&config);
+        let ((mut client, datagrams), _) = with_server(&mut app, move || {
+            let (mut client, mut datagrams) = join_pinned_open(address, pinned, 32);
+            datagrams.extend(exchange_profiles(&mut client, engine, 9, 3));
+            datagrams.extend(replies(
+                client.collect(Duration::from_millis(250), 32).unwrap(),
+            ));
+            (client, datagrams)
+        });
+        let before = counts(&app);
+        assert_eq!(before.players_finalised, 1, "{label}");
+        assert_eq!(before.connected_player_record_creations_sent, 1, "{label}");
+        assert_eq!(before.connected_player_record_creations_acked, 0, "{label}");
+        assert!(frozen_movement_updates(&profile, &datagrams).is_empty());
+
+        let accepted = |app: &App| app.world().resource::<PeerLab>().stats().data_accepted;
+        let before_accepted = accepted(&app);
+        let ack_packet = (timing != InClosePacket).then(|| client.keepalive().unwrap());
+        let split = timing == SplitPolls;
+        let sent = split && delay_ms == 0;
+        let release_count = u64::from(sent);
+        if split {
+            app.update();
+            assert_eq!(accepted(&app) - before_accepted, 1, "{label}");
+            let live = counts(&app);
+            assert_eq!(live.active_peers, 1, "{label}");
+            assert_eq!(live.connected_player_record_creations_acked, 1, "{label}");
+            assert_eq!(live.frozen_movement_releases_sent, release_count, "{label}");
+            assert_eq!(live.frozen_movement_releases_acked, 0, "{label}");
+            let collected = client.collect(Duration::from_millis(250), 32).unwrap();
+            assert!(collected.acked.contains(&ack_packet.unwrap()), "{label}");
+            let expected: &[bool] = if sent { &[false] } else { &[] };
+            assert_eq!(
+                frozen_movement_updates(&profile, &replies(collected)),
+                expected,
+                "{label}"
+            );
+        }
+        let close_packet = client.close().unwrap();
+        assert_ne!(ack_packet, Some(close_packet), "{label}");
+        app.update();
+
+        assert_eq!(
+            accepted(&app) - before_accepted,
+            1 + u64::from(ack_packet.is_some()),
+            "{label}"
+        );
+        let status = counts(&app);
+        assert_eq!(status.active_peers, 0, "{label}");
+        assert_eq!(status.closed_by_client, 1, "{label}");
+        assert_eq!(status.connected_player_record_creations_acked, 1, "{label}");
+        assert_eq!(status.frozen_movement_releases_scheduled, 1, "{label}");
+        assert_eq!(
+            status.frozen_movement_releases_sent, release_count,
+            "{label}"
+        );
+        assert_eq!(
+            status.frozen_movement_releases_acked, release_count,
+            "{label}"
+        );
+        let close = serde_json::to_value(status.last_client_control_close.unwrap()).unwrap();
+        assert_eq!(close["reason"], 0, "{label}");
+        assert_eq!(close["phase"], "finalised", "{label}");
+        let record_ack = if timing == InClosePacket {
+            "in_close_packet"
+        } else {
+            "earlier"
+        };
+        assert_eq!(close["own_record_ack"], record_ack, "{label}");
+        let release = &close["frozen_movement_release"];
+        assert_eq!(release["state"], state, "{label}");
+        assert_eq!(release["service_pass_reached"], split, "{label}");
+        assert_eq!(release["sent"], sent, "{label}");
+        assert_eq!(release["deferred"], false, "{label}");
+        assert_eq!(release["relocation_held"], false, "{label}");
+        if sent {
+            assert!(release.get("pawn").is_none(), "{label}");
+        } else {
+            assert_eq!(release["pawn"], "settled", "{label}");
+        }
     }
 }
 
@@ -5017,9 +5132,80 @@ fn only_saved_controllers_choose_returning_history_and_duplicates_keep_their_nam
 }
 
 #[test]
+fn oversized_initial_history_is_rejected_before_registration() {
+    use icarus_bevy::experimental::{
+        archive::ByteOrder,
+        manager_open::{ManagerSlot, compose_manager_open},
+        prospect_info::PlayerHistoryEntry,
+        rep_layout::RepLayoutLimits,
+        session_open::{ConnectionExports, NetGuidCache},
+    };
+    let mut bound = network::bind(&NetworkConfig {
+        release_profile: Some(release_toml()),
+        ..enabled(0)
+    })
+    .unwrap()
+    .unwrap();
+    let template = bound
+        .saved_managers
+        .iter()
+        .find(|(slot, _)| *slot == ManagerSlot::PlayerHistory)
+        .unwrap()
+        .1
+        .clone();
+    let plan = template
+        .clone()
+        .with_player_history(&vec![
+            PlayerHistoryEntry {
+                user_id: Vec::new(),
+                chr_slot: 0,
+                cached_character_name: Vec::new(),
+            };
+            usize::from(
+                RepLayoutLimits::default().max_array_elements
+            )
+        ])
+        .unwrap();
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        let error = compose_manager_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &plan,
+            ManagerSlot::PlayerHistory.key(),
+            9,
+            order,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("property stream exceeds the entry limit"));
+    }
+    let before = bound.lab.manager_open_count();
+    let error = bound
+        .lab
+        .add_manager_open(ManagerSlot::PlayerHistory, plan)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("manager open content cannot be encoded"));
+    assert_eq!(bound.lab.manager_open_count(), before);
+    assert_eq!(bound.lab.peer_count(), 0);
+    assert!(bound.lab.claimed_actor_uids().is_empty());
+    assert_eq!(bound.lab.stats().manager_open_errors, 0);
+    assert_eq!(bound.lab.stats().peers_failed, 0);
+    assert_eq!(
+        bound
+            .lab
+            .add_manager_open(ManagerSlot::PlayerHistory, template)
+            .unwrap(),
+        9
+    );
+}
+
+#[test]
 fn history_bounds_count_errors_and_keep_the_completed_session() {
     use icarus_bevy::experimental::{
-        manager_open::ManagerSlot, prospect_info::PlayerHistoryEntry, rep_layout::RepLayoutLimits,
+        archive::ByteOrder,
+        manager_open::{ManagerSlot, compose_manager_open},
+        prospect_info::PlayerHistoryEntry,
+        rep_layout::RepLayoutLimits,
+        session_open::{ConnectionExports, NetGuidCache},
     };
     let profile = ReleaseProfile::load(&release_toml()).unwrap();
     let pinned = profile.pin.network_checksum;
@@ -5030,7 +5216,10 @@ fn history_bounds_count_errors_and_keep_the_completed_session() {
     })
     .unwrap()
     .unwrap();
-    let entries: Vec<_> = (0..RepLayoutLimits::default().max_array_elements)
+    // The open also budgets two roles, two component references and History.
+    // This initial plan fits; one more entry fails full-open composition.
+    let count = (RepLayoutLimits::default().max_entries - 5) / 3;
+    let entries: Vec<_> = (0..count)
         .map(|index| PlayerHistoryEntry {
             user_id: format!("saved-{index}").encode_utf16().collect(),
             chr_slot: 0,
@@ -5046,6 +5235,17 @@ fn history_bounds_count_errors_and_keep_the_completed_session() {
         .clone()
         .with_player_history(&entries)
         .unwrap();
+    for order in [ByteOrder::Little, ByteOrder::Big] {
+        compose_manager_open(
+            &mut NetGuidCache::new(),
+            &mut ConnectionExports::new(),
+            &plan,
+            ManagerSlot::PlayerHistory.key(),
+            9,
+            order,
+        )
+        .unwrap();
+    }
     let channel = bound
         .lab
         .add_manager_open(ManagerSlot::PlayerHistory, plan)

@@ -48,6 +48,10 @@ pub struct FrozenReleaseAtClose {
     pub pawn: Option<ReleasePawnState>,
     pub relocation_held: bool,
     pub deferred: bool,
+    /// Whether the live peer reached the release pass after its first own-record ACK.
+    /// Absent until that ACK.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_pass_reached: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -159,6 +163,9 @@ impl PeerEntry {
             pawn,
             relocation_held: state == Due && located::release_held(self, now),
             deferred: release.deferred,
+            service_pass_reached: release
+                .record_acked_at
+                .map(|_| release.service_pass_reached),
         }
     }
 }

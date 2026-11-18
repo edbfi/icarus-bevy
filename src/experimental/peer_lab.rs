@@ -255,9 +255,10 @@ use super::control_messages::{
     ArchiveText, ControlFallback, ControlMessage, Decoded, NetIdValue, UniqueNetId,
 };
 use super::game_state_open::{
-    ConnectedPlayerState, ConnectedPlayersPlan, GameStateOpenPlan, GameStateOpenState,
-    LockedMission, NetworkingStatus, active_prospect_update_values, class_default,
-    compose_connected_players_update, compose_game_state_open, compose_game_state_update,
+    ConnectedPlayerState, ConnectedPlayersPlan, GameStateManagers, GameStateOpenPlan,
+    GameStateOpenState, LockedMission, NetworkingStatus, active_prospect_update_values,
+    class_default, compose_connected_players_update, compose_game_state_open,
+    compose_game_state_update,
 };
 use super::handshake::decode;
 use super::handshake_lab::{
@@ -1886,6 +1887,8 @@ struct ConnectedPlayerReceipt {
 struct FrozenMovementRelease {
     /// When the record creation settled (the trigger); set once.
     record_acked_at: Option<Instant>,
+    /// The live peer reached the release pass after its record ACK.
+    service_pass_reached: bool,
     /// When the release falls due; set with `record_acked_at`.
     due_at: Option<Instant>,
     /// Due, or its latest copy NAKed, and not sent yet.
@@ -4505,7 +4508,7 @@ impl PeerLab {
             }
         }
         self.refresh_bag_projections(registry);
-        for address in self.update_pawn_properties() {
+        for address in self.update_pawn_properties(Some(registry), false) {
             self.fail_player_bag(registry, address);
         }
     }
@@ -5938,7 +5941,11 @@ impl PeerLab {
     /// sent ([`Self::fail_player_bag`] closes them); transient refusals retry
     /// on ACK progress as before.
     #[must_use]
-    fn update_pawn_properties(&mut self) -> Vec<SocketAddrV4> {
+    fn update_pawn_properties(
+        &mut self,
+        registry: Option<&PlayerRegistry>,
+        vitals_only: bool,
+    ) -> Vec<SocketAddrV4> {
         let mut permanent = Vec::new();
         let Some((plan, channel, _)) = &self.pawn_open else {
             return permanent;
@@ -5951,18 +5958,68 @@ impl PeerLab {
             if !entry.pawn_property_retry_ready || !entry.peer.actor_channel_settled(*channel) {
                 continue;
             }
-            entry.pawn_property_retry_ready = false;
+            if vitals_only {
+                let notify = entry.peer.sequencer().notify();
+                if notify.sent_records().len() == notify.sent_capacity()
+                    || entry.checkpoint_enqueued_revision
+                        == entry
+                            .checkpoint_projection
+                            .map(|projection| projection.revision)
+                {
+                    continue;
+                }
+            }
+            let checkpoint = entry.checkpoint_projection.filter(|projection| {
+                entry.auth_accepted
+                    && entry.auth_request.is_some()
+                    && entry.admission.state == ClientLoginState::Joined
+                    && entry.controller_leave.is_none()
+                    && entry
+                        .checkpoint_epoch
+                        .zip(registry)
+                        .is_some_and(|(epoch, registry)| {
+                            !registry.is_leaving(epoch)
+                                && registry.projection(epoch) == Some(*projection)
+                        })
+            });
+            let mut vital_due = checkpoint.filter(|projection| {
+                entry.checkpoint_enqueued_revision != Some(projection.revision)
+            });
+            // A bag or location edit can advance the revision with no vital
+            // change. Only changed vital values may preempt a standalone ACK.
+            // The normal bridge also skips matching early opens and locations.
+            if (vitals_only
+                || (early && entry.checkpoint_enqueued_revision.is_none())
+                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
+                && let Some(projection) = vital_due
+                && entry
+                    .pawn_character_state
+                    .as_ref()
+                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
+            {
+                if !vitals_only {
+                    entry.checkpoint_enqueued_revision = Some(projection.revision);
+                }
+                vital_due = None;
+            }
+            if vitals_only && vital_due.is_none() {
+                continue;
+            }
+            if !vitals_only {
+                entry.pawn_property_retry_ready = false;
+            }
             let due: Vec<_> = entry
                 .restored_modifiers
                 .iter()
                 .filter(|modifier| {
-                    entry.queued_modifier_times.get(&modifier.uid)
-                        != Some(&modifier.remaining_tenths)
+                    !vitals_only
+                        && entry.queued_modifier_times.get(&modifier.uid)
+                            != Some(&modifier.remaining_tenths)
                 })
                 .cloned()
                 .collect();
             let temperature_due = match (entry.pawn_temperature, entry.queued_pawn_temperature) {
-                (Some(current), Some(queued)) => PawnTemperatureState {
+                (Some(current), Some(queued)) if !vitals_only => PawnTemperatureState {
                     external: current
                         .external
                         .filter(|_| current.external != queued.external),
@@ -5978,36 +6035,10 @@ impl PeerLab {
                 },
                 _ => PawnTemperatureState::default(),
             };
-            let mut vital_due = entry.checkpoint_projection.filter(|projection| {
-                entry.auth_accepted
-                    && entry.auth_request.is_some()
-                    && entry.admission.state == ClientLoginState::Joined
-                    && entry.checkpoint_epoch.is_some()
-                    && entry.checkpoint_enqueued_revision != Some(projection.revision)
-            });
-            // The early pawn opened before its checkpoint was known. A first
-            // projection equal to what that open carried needs no update.
-            // With saved locations, neither does a later location-only
-            // revision: the pawn already carries its vitals.
-            if ((early && entry.checkpoint_enqueued_revision.is_none())
-                || (saved_locations && entry.checkpoint_enqueued_revision.is_some()))
-                && let Some(projection) = vital_due
-                && entry
-                    .pawn_character_state
-                    .as_ref()
-                    .is_some_and(|carried| vitals_carried(carried, &projection.checkpoint.vitals))
-            {
-                entry.checkpoint_enqueued_revision = Some(projection.revision);
-                vital_due = None;
-            }
             // The player's own bag, toward its latest revision, only once its
             // checkpoint is bound and activated (the bag is issued then), and
             // never after its leave cut-off (`due` is false once frozen).
-            let bag_eligible = entry.auth_accepted
-                && entry.auth_request.is_some()
-                && entry.admission.state == ClientLoginState::Joined
-                && entry.checkpoint_epoch.is_some()
-                && entry.checkpoint_active;
+            let bag_eligible = !vitals_only && checkpoint.is_some() && entry.checkpoint_active;
             let mut bag_due = Vec::new();
             let mut bag_budget = crate::player_inventory_projection::MAX_SLOT_CHANGES_PER_UPDATE;
             if bag_eligible
@@ -6102,14 +6133,10 @@ impl PeerLab {
                         if let Some(values) = &mut entry.pawn_character_state {
                             let vitals = projection.checkpoint.vitals;
                             values.extend(vitals.values());
-                            // The update also sent the alive state; the
-                            // location-only check above compares it.
-                            if saved_locations {
-                                values.insert(
-                                    super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
-                                    RepValue::Enum(u32::from(vitals.health < 1)),
-                                );
-                            }
+                            values.insert(
+                                super::pawn_open::character_state_handle::CURRENT_ALIVE_STATE,
+                                RepValue::Enum(u32::from(vitals.health < 1)),
+                            );
                         }
                     }
                     if !due.is_empty() {
@@ -6930,6 +6957,96 @@ impl PeerLab {
         }
     }
 
+    /// Initial stages capture indices once at Join. Appending would change the
+    /// GameState's references without adding matching stages to that sequence.
+    fn ensure_actor_registration_idle(&self) -> Result<()> {
+        ensure!(
+            self.peers
+                .values()
+                .all(|entry| entry.initial_opens.is_none()),
+            "actor registration cannot change while initial opens are pending"
+        );
+        Ok(())
+    }
+
+    /// Precompose the shared world opens without publishing GUIDs or exports.
+    /// Future player opens and runtime state changes can still change the sizes.
+    fn validate_world_open_sequence<'a>(
+        &'a self,
+        session: &GameStateSession,
+        managers: &GameStateManagers,
+        additional_managers: impl IntoIterator<Item = (ActorKey, &'a ManagerOpenPlan, u32)>,
+        additional_quests: impl IntoIterator<Item = (&'a QuestOpenPlan, u32)>,
+    ) -> Result<()> {
+        enum WorldOpen<'a> {
+            Manager(ActorKey, &'a ManagerOpenPlan),
+            Quest(&'a QuestOpenPlan),
+        }
+
+        let mut state = session
+            .open_state(&session.state, self.started.elapsed().as_secs_f32())
+            .context("GameState open state cannot be assembled")?;
+        state.managers.clone_from(managers);
+        let mut opens: Vec<_> = self
+            .manager_opens
+            .iter()
+            .map(|(key, plan, channel)| (*key, plan, *channel))
+            .chain(additional_managers)
+            .map(|(key, plan, channel)| (channel, WorldOpen::Manager(key, plan)))
+            .chain(
+                self.quest_opens
+                    .iter()
+                    .map(|(plan, channel)| (plan, *channel))
+                    .chain(additional_quests)
+                    .map(|(plan, channel)| (channel, WorldOpen::Quest(plan))),
+            )
+            .collect();
+        // Join captures managers and quests together in ascending channel order.
+        opens.sort_unstable_by_key(|(channel, _)| *channel);
+        for order in [
+            super::archive::ByteOrder::Little,
+            super::archive::ByteOrder::Big,
+        ] {
+            let mut cache = self.guid_cache.clone();
+            let mut exports = ConnectionExports::new();
+            // GameState references can assign manager GUIDs before their opens.
+            let open = compose_game_state_open(
+                &mut cache,
+                &mut exports,
+                &session.plan,
+                &state,
+                session.channel_index,
+                order,
+            )
+            .context("GameState open content cannot be encoded")?;
+            ensure!(
+                open.bunch.payload.bit_len().div_ceil(8)
+                    <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                "GameState open exceeds the bunch byte limit"
+            );
+            for (channel, plan) in &opens {
+                let (kind, open) = match plan {
+                    WorldOpen::Manager(key, plan) => (
+                        "manager",
+                        compose_manager_open(&mut cache, &mut exports, plan, *key, *channel, order),
+                    ),
+                    WorldOpen::Quest(plan) => (
+                        "quest",
+                        compose_quest_open(&mut cache, &mut exports, plan, *channel, order),
+                    ),
+                };
+                let open =
+                    open.with_context(|| format!("{kind} open content cannot be encoded"))?;
+                ensure!(
+                    open.bunch.payload.bit_len().div_ceil(8)
+                        <= super::packet_lab::MAX_CONSTRUCTED_BUNCH_BYTES,
+                    "{kind} open exceeds the bunch byte limit"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// After the GameState open, also open the world's managers (F-859) on
     /// each joined connection, after its PlayerState, on consecutive
     /// channels from `first_channel`, and reference them from the GameState
@@ -6937,7 +7054,9 @@ impl PeerLab {
     /// other than the GameState's, on a taken channel, or on duplicate manager
     /// or quest keys. Once any manager opens are configured, this method rejects
     /// replacement; use the additive
-    /// APIs to register further managers and quests.
+    /// APIs to register further managers and quests. The candidate GameState
+    /// and world opens must encode in both byte orders before publication.
+    /// Nonempty registrations are refused while any peer has initial opens pending.
     pub fn enable_manager_opens(
         &mut self,
         plans: Vec<(ManagerSlot, ManagerOpenPlan)>,
@@ -6947,15 +7066,20 @@ impl PeerLab {
             self.manager_opens.is_empty(),
             "manager opens are already configured"
         );
+        if !plans.is_empty() {
+            self.ensure_actor_registration_idle()?;
+        }
         let Some(session) = &self.game_state_open else {
             bail!("the manager opens follow the GameState open");
         };
-        let level = session.plan.level.clone();
+        if plans.is_empty() {
+            return Ok(());
+        }
         let mut managers = session.state.managers.clone();
         let mut opens = Vec::new();
         for (channel, (slot, plan)) in (first_channel..).zip(plans) {
             ensure!(
-                plan.level == level,
+                plan.level == session.plan.level,
                 "a manager and the GameState name different levels"
             );
             ensure!(
@@ -6973,6 +7097,14 @@ impl PeerLab {
             slot.reference_from(&mut managers);
             opens.push((slot.key(), plan, channel));
         }
+        self.validate_world_open_sequence(
+            session,
+            &managers,
+            opens
+                .iter()
+                .map(|(key, plan, channel)| (*key, plan, *channel)),
+            std::iter::empty(),
+        )?;
         if let Some(session) = &mut self.game_state_open {
             session.state.managers = managers;
         }
@@ -6984,43 +7116,11 @@ impl PeerLab {
     /// enabled managers and quests, on the channel after theirs, and reference
     /// it from the GameState open; returns the channel. Fails without enabled
     /// managers, on a slot already opened, on a level other than the
-    /// GameState's or on a taken channel.
+    /// GameState's, on a taken channel or on unencodable content in either
+    /// byte order. Refused while any peer has initial opens pending.
     pub fn add_manager_open(&mut self, slot: ManagerSlot, plan: ManagerOpenPlan) -> Result<u32> {
-        let Some(session) = &self.game_state_open else {
-            bail!("the manager opens follow the GameState open");
-        };
-        ensure!(
-            plan.level == session.plan.level,
-            "a manager and the GameState name different levels"
-        );
-        ensure!(
-            self.manager_opens
-                .iter()
-                .all(|(key, ..)| *key != slot.key())
-                && self
-                    .quest_opens
-                    .iter()
-                    .all(|(quest, _)| quest.key != slot.key()),
-            "the manager slot is already opened"
-        );
-        let channel = self
-            .manager_opens
-            .iter()
-            .map(|(.., channel)| *channel)
-            .chain(self.quest_opens.iter().map(|(_, channel)| *channel))
-            .max()
-            .context("a manager added after the enabled managers")?
-            .checked_add(1)
-            .context("manager channel overflow")?;
-        ensure!(
-            self.free_session_channel(channel),
-            "a manager channel collides with another channel or is out of range"
-        );
-        if let Some(session) = &mut self.game_state_open {
-            slot.reference_from(&mut session.state.managers);
-        }
-        self.manager_opens.push((slot.key(), plan, channel));
-        Ok(channel)
+        let (_, channel) = self.add_quest_opens_with_manager(Vec::new(), Some((slot, plan)))?;
+        Ok(channel.expect("the submitted manager has a channel"))
     }
 
     /// Record the release's base layout and component checksums for saved
@@ -7155,8 +7255,10 @@ impl PeerLab {
     /// (`F-934`), plus an optional trailing world manager (such as
     /// `ManagerSlot::Quest`), on consecutive channels after the enabled
     /// managers and quests. If any quest or the trailing manager fails level,
-    /// key-uniqueness or channel-capacity validation, neither `quest_opens`
-    /// nor `manager_opens` is modified.
+    /// key-uniqueness or channel-capacity checks, or the candidate GameState
+    /// and world opens fail content validation in either byte order, no
+    /// registration or GameState reference changes. Nonempty batches are
+    /// refused while any peer has initial opens pending.
     pub fn add_quest_opens_with_manager(
         &mut self,
         plans: Vec<QuestOpenPlan>,
@@ -7165,8 +7267,9 @@ impl PeerLab {
         if plans.is_empty() && manager.is_none() {
             return Ok((Vec::new(), None));
         }
+        self.ensure_actor_registration_idle()?;
         let Some(session) = &self.game_state_open else {
-            bail!("the quest opens follow the GameState open");
+            bail!("actor registration requires a GameState open");
         };
         let first_channel = self
             .manager_opens
@@ -7180,7 +7283,11 @@ impl PeerLab {
                 "a quest actor added after the enabled managers"
             })?
             .checked_add(1)
-            .context("quest channel overflow")?;
+            .context(if plans.is_empty() {
+                "manager channel overflow"
+            } else {
+                "quest channel overflow"
+            })?;
         let mut quest_channels = Vec::with_capacity(plans.len());
         for (index, plan) in plans.iter().enumerate() {
             ensure!(
@@ -7205,7 +7312,8 @@ impl PeerLab {
             );
             quest_channels.push(channel);
         }
-        let manager_channel = match &manager {
+        let mut managers = session.state.managers.clone();
+        let proposed_manager = match &manager {
             Some((slot, plan)) => {
                 ensure!(
                     plan.level == session.plan.level,
@@ -7230,16 +7338,24 @@ impl PeerLab {
                     self.free_session_channel(channel),
                     "a manager channel collides with another channel or is out of range"
                 );
-                Some(channel)
+                slot.reference_from(&mut managers);
+                Some((slot.key(), plan, channel))
             }
             None => None,
         };
+        self.validate_world_open_sequence(
+            session,
+            &managers,
+            proposed_manager,
+            plans.iter().zip(quest_channels.iter().copied()),
+        )?;
+        let manager_channel = proposed_manager.map(|(_, _, channel)| channel);
         for (plan, &channel) in plans.into_iter().zip(&quest_channels) {
             self.quest_opens.push((plan, channel));
         }
         if let (Some((slot, plan)), Some(channel)) = (manager, manager_channel) {
             if let Some(session) = &mut self.game_state_open {
-                slot.reference_from(&mut session.state.managers);
+                session.state.managers = managers;
             }
             self.manager_opens.push((slot.key(), plan, channel));
         }
@@ -10434,6 +10550,7 @@ impl PeerLab {
             .filter_map(|(address, entry)| {
                 let held = located::release_held(entry, now);
                 let release = &mut entry.frozen_release;
+                release.service_pass_reached = release.record_acked_at.is_some();
                 if release.idle() && release.due(now) && !held {
                     release.pending = true;
                 }
@@ -12648,9 +12765,14 @@ impl PeerLab {
     }
 
     /// One bounded update: expire idle peers, process at most
-    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending acks. The
-    /// [`PeerLabPlugin`] runs this once per app update.
+    /// [`PACKETS_PER_UPDATE`] datagrams, then send pending ACKs and background
+    /// updates. The [`PeerLabPlugin`] retries staged checkpoint vitals between
+    /// the input and flush passes.
     pub fn poll(&mut self) {
+        self.poll_with_checkpoint_retry(None);
+    }
+
+    fn poll_with_checkpoint_retry(&mut self, registry: Option<&PlayerRegistry>) {
         if !self.private_proof_ready() {
             return;
         }
@@ -12734,7 +12856,16 @@ impl PeerLab {
         self.retry_pending_player_history();
         if self.checkpoint_initial_vitals.is_none() {
             // The bag projection requires checkpoints: no bag failure here.
-            let permanent = self.update_pawn_properties();
+            let permanent = self.update_pawn_properties(None, false);
+            debug_assert!(permanent.is_empty());
+        } else if let Some(registry) = registry
+            && self.private_proof_ready()
+        {
+            // The poll drained authentication and transport ACKs. Give a
+            // current staged vital update a chance to carry the ACK before a
+            // standalone packet can refill the ring, including on a zero-tick
+            // frame. The checkpoint bridge still stages fresh revisions.
+            let permanent = self.update_pawn_properties(Some(registry), true);
             debug_assert!(permanent.is_empty());
         }
         self.send_acks();
@@ -12982,7 +13113,7 @@ fn poll_peer_lab(world: &mut bevy::prelude::World) {
         if !consuming && let Some(registry) = world.get_resource::<PlayerRegistry>() {
             lab.refresh_checkpoint_projections(registry);
         }
-        lab.poll();
+        lab.poll_with_checkpoint_retry(world.get_resource::<PlayerRegistry>());
         // Saved locations (default off) precede the leave bridge, so a leave
         // staged in this poll is cut off with the location it carries.
         if lab.checkpoint_saved_locations {
@@ -13691,14 +13822,18 @@ mod tests {
     }
 
     fn prospect_refresh_lab() -> PeerLab {
+        let mut lab = unbound_prospect_refresh_lab();
+        lab.attach_listener(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0), None)
+            .unwrap();
+        lab
+    }
+
+    fn unbound_prospect_refresh_lab() -> PeerLab {
         use super::super::{game_state_open::GAME_STATE_CHANNEL_INDEX, release::ReleaseProfile};
-        let mut lab = PeerLab::bind(
-            0,
-            PeerLabConfig {
-                admission: Some(PeerLabAdmission::default()),
-                ..Default::default()
-            },
-        )
+        let mut lab = PeerLab::prepare(PeerLabConfig {
+            admission: Some(PeerLabAdmission::default()),
+            ..Default::default()
+        })
         .unwrap();
         let profile = ReleaseProfile::fixture("3.0.32");
         let map = PeerLabAdmission::default().map_url;
@@ -15320,11 +15455,12 @@ mod tests {
     fn client_control_close_retains_record_ack_and_release_guards() {
         use FrozenReleaseState::{AwaitingDelay, Due, PendingSend};
         use OwnRecordAck::{Earlier, InClosePacket};
-        for (delay, hold_pawn, record_ack, state, pawn) in [
+        for (delay, hold_pawn, record_ack, service_pass_reached, state, pawn) in [
             (
                 Duration::ZERO,
                 false,
                 InClosePacket,
+                false,
                 Due,
                 ReleasePawnState::Settled,
             ),
@@ -15332,6 +15468,7 @@ mod tests {
                 Duration::ZERO,
                 true,
                 Earlier,
+                true,
                 PendingSend,
                 ReleasePawnState::ReliablePending,
             ),
@@ -15339,6 +15476,7 @@ mod tests {
                 Duration::from_secs(600),
                 false,
                 Earlier,
+                false,
                 AwaitingDelay,
                 ReleasePawnState::Settled,
             ),
@@ -15405,6 +15543,7 @@ mod tests {
                         pawn: Some(pawn),
                         relocation_held: false,
                         deferred: false,
+                        service_pass_reached: Some(service_pass_reached),
                     }),
                 })
             );
@@ -22778,6 +22917,7 @@ mod tests {
             assert!(!text.contains("AuthoredUnreliable"));
         }
     }
+    mod actor_plan_admission;
     mod friends_query_deadline;
     mod level_visibility;
     mod lossy_join;

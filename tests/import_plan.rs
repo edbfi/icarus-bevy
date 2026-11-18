@@ -383,7 +383,16 @@ fn envelope_with_root_content(
         ));
     }
     info.push(end());
-    let info = info.concat();
+    envelope_with_prospect_info(version, recorders, &info.concat(), legacy, map)
+}
+
+fn envelope_with_prospect_info(
+    version: i32,
+    recorders: &[Vec<u8>],
+    info: &[u8],
+    legacy: Option<&str>,
+    map: Option<&str>,
+) -> Vec<u8> {
     let shared = tag(
         "StateRecorderBlobs",
         "StructProperty",
@@ -393,7 +402,7 @@ fn envelope_with_root_content(
     let count = i32::try_from(recorders.len()).unwrap().to_le_bytes();
     let mut roots = vec![
         tag("Version", "IntProperty", &[0], &version.to_le_bytes()),
-        struct_tag("ProspectInfo", "ProspectInfo", &info),
+        struct_tag("ProspectInfo", "ProspectInfo", info),
         tag(
             "StateRecorderBlobs",
             "ArrayProperty",
@@ -1116,6 +1125,100 @@ fn clean_catalog(extra: &str) -> String {
     format!(
         "format = 1\n[references]\nactor_class = [\"{ROW}\"]\nactor_path = [\"{PATH}\"]\nclass_variable = [\"bSecretFlag\"]\nunclassified = [\"SecretTile\", \"SecretQuestVar\"]\n{extra}"
     )
+}
+
+fn difficulty_source(version: i32, kind: &str, value: &[u8]) -> Vec<u8> {
+    let info = [
+        tag("ProspectDTKey", "StrProperty", &[0], &fstring(ROW)),
+        tag(
+            "Difficulty",
+            kind,
+            &[fstring("EMissionDifficulty"), vec![0]].concat(),
+            value,
+        ),
+        end(),
+    ]
+    .concat();
+    envelope_with_prospect_info(version, &[recorder(ACTOR, &CLEAN)], &info, None, None)
+}
+
+#[test]
+fn planner_checks_prospect_enums_after_version_migration() {
+    use icarus_bevy::experimental::recorders::StagedRootEnumValue;
+
+    let catalog =
+        ContentCatalog::parse(&clean_catalog(&format!("data_row = [\"{ROW}\"]\n"))).unwrap();
+    for version in [0, 1, 2] {
+        for (kind, payload, source_value, resolved) in [
+            (
+                "EnumProperty",
+                fstring("Hard"),
+                StagedRootEnumValue::Name(units("Hard")),
+                Some(3),
+            ),
+            (
+                "EnumProperty",
+                fstring("PrivateUnknownDifficulty"),
+                StagedRootEnumValue::Name(units("PrivateUnknownDifficulty")),
+                None,
+            ),
+            (
+                "ByteProperty",
+                vec![3],
+                StagedRootEnumValue::Byte(3),
+                Some(3),
+            ),
+            (
+                "ByteProperty",
+                vec![237],
+                StagedRootEnumValue::Byte(237),
+                None,
+            ),
+        ] {
+            let source = difficulty_source(version, kind, &payload);
+            let candidate = DecodedImportCandidate::decode(source.as_slice()).unwrap();
+            let roots = candidate.root_values();
+            assert!(candidate.recorders()[0].typing().lossless().is_some());
+            let plan = plan_decoded_import(&candidate, &catalog).unwrap();
+            assert_eq!(plan.recorders.untyped, 0);
+            assert_eq!(plan.recorders.uninterpreted_leaves, 0);
+            assert_eq!(plan.content.unmapped_references, 0);
+            assert!(!plan.world_imported);
+            let expected = if version == 0 {
+                assert_eq!(roots.resolved_prospect_info().unwrap().difficulty, 0);
+                assert_eq!(plan.recorders.retained, 0);
+                vec![ImportBlocker::NoRetainedRecorders]
+            } else {
+                assert_eq!(
+                    roots.resolved_prospect_info().map(|info| info.difficulty),
+                    resolved
+                );
+                assert_eq!(plan.recorders.typed, 1);
+                assert_eq!(plan.content.mapped_distinct, 5);
+                if resolved.is_some() {
+                    vec![]
+                } else {
+                    vec![ImportBlocker::UnresolvedProspectInfoEnums]
+                }
+            };
+            assert_eq!(plan.blockers, expected);
+            assert_eq!(plan.importable, expected.is_empty());
+            let [source_enum] = roots.source_enum_values() else {
+                panic!("expected one preserved source enum");
+            };
+            assert!(source_enum.source_value == source_value);
+            assert_eq!(source_enum.resolved_value, resolved);
+            assert_eq!(
+                candidate
+                    .preserved()
+                    .decode()
+                    .unwrap()
+                    .to_inner_payload()
+                    .unwrap(),
+                candidate.payload()
+            );
+        }
+    }
 }
 
 // Minimal authored recorder framing for planning strings; these fixtures make
@@ -2001,6 +2104,91 @@ fn import_cli_resolves_against_a_catalog_file() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid content catalog"), "{stderr}");
     assert!(!stderr.contains("Secret"), "{stderr}");
+}
+
+#[test]
+fn import_cli_reports_unresolved_prospect_enums_without_writing_or_disclosing_values() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source.json");
+    let catalog = root.path().join("catalog.toml");
+    let destination = root.path().join("destination");
+    let sentinel = destination.join("sentinel");
+    fs::write(
+        &catalog,
+        clean_catalog(&format!("data_row = [\"{ROW}\"]\n")),
+    )
+    .unwrap();
+    fs::create_dir(&destination).unwrap();
+    fs::write(&sentinel, b"prior world").unwrap();
+
+    for dry_run in [true, false] {
+        let [named, raw] = [
+            ("EnumProperty", fstring("PrivateUnknownDifficulty")),
+            ("ByteProperty", vec![237]),
+        ]
+        .map(|(kind, value)| {
+            let bytes = difficulty_source(2, kind, &value);
+            fs::write(&source, &bytes).unwrap();
+            let envelope: Value = serde_json::from_slice(&bytes).unwrap();
+            let blob = &envelope["ProspectBlob"];
+            let legacy_hash = blob["Hash"].as_str().unwrap();
+            let mut command = Command::new(env!("CARGO_BIN_EXE_icarus-server"));
+            command
+                .args(["import-save", "--source"])
+                .arg(&source)
+                .arg("--destination")
+                .arg(&destination)
+                .arg("--catalog")
+                .arg(&catalog);
+            if dry_run {
+                command.arg("--dry-run");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(output.status.success(), dry_run);
+            let json = if dry_run {
+                assert!(output.stderr.is_empty());
+                let mut report: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(report["importable"], false);
+                assert_eq!(report["world_imported"], false);
+                assert_eq!(report["envelope"]["legacy_sha1_matches"], true);
+                assert_eq!(
+                    report["blockers"],
+                    json!([{"blocker": "unresolved_prospect_info_enums"}])
+                );
+                // Validate the sizes of each encoding before comparing the reports.
+                let metadata = report["envelope"].as_object_mut().unwrap();
+                assert_eq!(
+                    metadata.remove("compressed_bytes").unwrap(),
+                    blob["TotalLength"]
+                );
+                assert_eq!(
+                    metadata.remove("payload_bytes").unwrap(),
+                    blob["UncompressedLength"]
+                );
+                report
+            } else {
+                assert!(output.stdout.is_empty());
+                let fatal: Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(fatal["event"], "fatal");
+                let message = fatal["error"].as_str().unwrap();
+                assert!(message.contains(
+                    r#"import blocked by [{"blocker":"unresolved_prospect_info_enums"}]"#
+                ));
+                fatal
+            };
+            for stream in [&output.stdout, &output.stderr] {
+                let text = String::from_utf8_lossy(stream);
+                assert!(!text.contains("PrivateUnknownDifficulty"));
+                assert!(!text.contains("Secret"));
+                assert!(!text.contains(legacy_hash));
+            }
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+            json
+        });
+        assert_eq!(named, raw, "CLI JSON differs for --dry-run={dry_run}");
+    }
 }
 
 /// A pak whose tables name the item row in another case (F-840).

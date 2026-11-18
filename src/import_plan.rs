@@ -2,14 +2,13 @@
 //! written, whether the save could be imported into a native world, and if not,
 //! report exactly which fields block it.
 //!
-//! The plan runs the importer acceptance conditions of the prospect-loading
-//! spec in order: stage and validate the full schema (`F-403`, `F-715` ..
-//! `F-738`), keep each recorder's `Validate` decision, type every recorder
-//! value losslessly, read the base recorder fields every class shares, and
-//! resolve each content reference (row names, object names,
-//! package paths) through a native [`ContentCatalog`]. Unmapped content is an
-//! incompatibility, never silently dropped. The plan never writes, and reports
-//! counts only: no class strings, names, paths or values.
+//! The plan applies the importer acceptance conditions of the prospect-loading
+//! spec. It stages and validates the full schema (`F-403`, `F-715` .. `F-738`),
+//! checks effective prospect enum mappings, keeps each recorder's `Validate`
+//! decision, types recorder values losslessly, reads shared base recorder
+//! fields, and resolves content references through a native [`ContentCatalog`].
+//! Unmapped content is an incompatibility. The plan never writes and reports
+//! only categories and counts.
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
@@ -410,12 +409,14 @@ fn fold_case(units: &[u16]) -> Vec<u16> {
         .collect()
 }
 
-/// Why the plan cannot import; each carries counts only.
+/// Why the plan cannot import. Details contain only counts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "blocker", rename_all = "snake_case")]
 pub enum ImportBlocker {
     /// Scoped world declarations need an explicit saved map identity.
     MissingWorldMap,
+    /// At least one effective `ProspectInfo` enum has no known mapping.
+    UnresolvedProspectInfoEnums,
     /// A prospect without any recorder that survives `Validate` would import
     /// as an empty world, which the acceptance conditions forbid.
     NoRetainedRecorders,
@@ -664,6 +665,10 @@ pub fn plan_decoded_import(
     let map = staged_import.prospect_map_name.clone();
     if catalog.world.is_some() && map.is_empty() {
         plan.blockers.push(ImportBlocker::MissingWorldMap);
+    }
+    if candidate.root_values().resolved_prospect_info().is_none() {
+        plan.blockers
+            .push(ImportBlocker::UnresolvedProspectInfoEnums);
     }
     // Root content stays outside recorder name/class counts. Only the
     // prospect key has a qualified table identity (F-911); the other row
