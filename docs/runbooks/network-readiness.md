@@ -167,14 +167,15 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `release_failed`, `pawn_inbound`, `pawn_moves`, `last_move_ack_ms`,
 `spawn` ([spawn placement](#spawn-placement)).
 
-`sessions.last_client_control_close` retains the latest `closed_by_client`
-event with wire `reason`, entry `phase` and first own-record ACK timing
-(`in_close_packet` or `earlier`). Close-packet ACKs apply before removal.
-The release snapshot, when enabled, shows `state`, `pawn`, `relocation_held`,
-`deferred` and `sent` (transport admission). `service_pass_reached` appears
-after the own-record ACK and reports whether the release pass saw the live
-peer, even during the delay. It is `false` when ACK and close share a receive
-drain, including in separate datagrams.
+`sessions.last_client_control_close` retains the wire `reason`, entry `phase`
+and first own-record ACK timing (`in_close_packet` or `earlier`). ACKs apply
+before removal. Release `state` is `unscheduled`, `awaiting_delay`, `due`,
+`pending_send`, `awaiting_ack`, `acked` or `failed`. The `pawn` values are
+`unavailable`, `reliable_pending` and `settled`. Flags include `relocation_held`,
+`deferred` and `sent` (transport admission). After the first own-record ACK,
+`service_pass_reached` is false if the close shares its receive drain, even in
+another datagram. A pass during the delay counts. The server snapshot alone
+cannot explain why the client closed.
 
 `pawn_move_acks` (F-1127, F-1128): `sessions_moving`, `awaiting_ack`,
 `deferred`, `positions_held`. Counters `pawn_moves_{received,malformed}`,

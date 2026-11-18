@@ -5938,7 +5938,9 @@ impl PeerLab {
 
     /// One live pawn update pass. Returns the sessions whose bag can never be
     /// sent ([`Self::fail_player_bag`] closes them); transient refusals retry
-    /// on ACK progress as before.
+    /// on ACK progress as before. The pre-ACK caller passes a registry and
+    /// sets `vitals_only` to send just changed checkpoint vitals. Without a
+    /// registry that mode cannot establish a current projection and sends nothing.
     #[must_use]
     fn update_pawn_properties(
         &mut self,
