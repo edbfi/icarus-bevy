@@ -34,8 +34,11 @@ addresses retain helper names or stand alone.
   F-1222 (F-645, F-902); `C031`/`C034` voxels F-1223 (F-645).
 - Stitching matches GUID plus ASCII `Stricmp` (F-663) per F-1224 (`C009` F-646;
   `C018`/`C019` F-650; `C027` F-676); GUID-only matches, `C013` `FLODTiles`
-  cleanup, `C016` and the `C026` life restore F-1225 (F-648, F-651, F-657,
-  F-716).
+  cleanup and the `C026` life restore F-1225 (F-648, F-657, F-716).
+- C016 records list length and zero-based occupied positions (F-651).
+  F-1266 corrects the stitching entry for historical server 25621760.
+  Its later loop passes a guarded field and zero-based index to a direct
+  call. The callee and saved-position selector remain unidentified.
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
@@ -93,6 +96,8 @@ addresses retain helper names or stand alone.
 
 ## Open questions
 
+- F-1266 leaves the C016 component and saved-position selector unresolved.
+  Native owner binding and current-release restoration remain open.
 - Data-table rows stay out of scope (F-660).
 
 ## Evidence

@@ -1243,8 +1243,7 @@ fn container_positions_keep_gaps() {
     assert_eq!(entries, [(0, &'a'), (2, &'c')]);
     assert_eq!(container_entries::<u8>(&[]).count(), 0);
 
-    // C016 UIcarusContainerManagerRecorderComponent::RecordOwnerState (0x1416f1be0 / 0x141702570)
-    // and Stitching (0x1416f8980 / 0x1417099d0).
+    // C016 recording preserves the full count and occupied positions (F-651).
     assert_eq!(
         evaluate_container_manager_record(false, &list),
         ContainerManagerRecordPlan {
@@ -1260,6 +1259,7 @@ fn container_positions_keep_gaps() {
             container_count: 4,
         }
     );
+    // Authored plan inputs supply the owner check and candidates (F-1266).
     assert_eq!(
         evaluate_container_manager_stitch(
             false,

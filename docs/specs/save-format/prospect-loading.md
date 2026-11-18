@@ -119,41 +119,40 @@ Acceptance conditions for any importer
   `unresolved_prospect_info_enums` when a named or raw enum remains unknown
   after migration. Version 0 resets the prospect info before this check.
   Restoration adapters remain unqualified and native world publication stays disabled.
-- Dry-run row coverage (F-1263) checks the exact top-level field on each typed,
-  retained recorder of the specified class. Staging in `recorders.rs`
-  rejects duplicate top-level property names and nonzero array indices
-  before typing. A present field must decode as `NameProperty`. Otherwise
-  the plan reports `unexpected_recorder_row_field_types` with a field count.
-  Absent fields, empty names and `None` contribute zero references.
-  C019 `QuestName` requires `D_Quests` with ASCII case folding and an index below
-  65,535. C018 `FactionMissionName` requires
-  `D_FactionMissions` with exact case and an index from 0 through 255.
-  Each uses the first matching row in table order
-  ([quest and manager opens](../network/world-managers.md#confirmed)).
-  These occurrences contribute to the existing `data_row` counts and
-  `unmapped_content` blocker.
-- An authored format 1 or 2 catalog may declare either table in
-  `[row_tables]`, for example `D_Quests = ["AuthoredQuest"]` or
-  `D_FactionMissions = ["AuthoredMission"]`. Position in the array is the
-  zero-based index. Each array permits up to 65,536 names of 1 through 1,024
-  UTF-16 units. Repeated names use the first matching position. When both
-  sources supply ordered rows, the arrays must agree in length and at each
-  position under that table's lookup rules. Disagreement also reports
-  `conflicting_recorder_row_tables` with an affected reference count.
-  Ambiguous pak paths or a member without rows leave references to that
-  table unmapped. An absent pak member permits the authored table to supply
-  coverage. Flat authored `data_row` lists and the pak's all-table lookup
-  still serve generic references. The generic scan reads each listed JSON
-  member by its exact indexed path, so tables with the same filename all
-  contribute their rows. Any member read or parse error stops the scan.
+- Dry-run quest checks cover typed, retained recorders (synthetic F-1263).
+  `recorders.rs` rejects duplicate top-level names and nonzero array
+  indices before typing. Wrong types for the required `NameProperty` fields
+  count toward `unexpected_recorder_row_field_types`. Absent fields, empty
+  names and `None` add no references. C019 `QuestName` takes the first ASCII
+  case-insensitive `D_Quests` match below index 65,535. C018
+  `FactionMissionName` takes the first exact `D_FactionMissions` match at 0–255
+  ([protocol](../network/world-managers.md#confirmed)). Both feed `data_row`
+  counts and `unmapped_content`.
+- Authored catalogs (formats 1 and 2) accept either table in `[row_tables]`
+  as an array of up to 65,536 names (1–1,024 UTF-16 units), indexed from zero.
+  When both sources supply rows, differing lengths or positions under table
+  lookup rules count affected references in `conflicting_recorder_row_tables`.
+  Ambiguous paths and rowless pak members leave references unmapped. Absent
+  members permit authored coverage. Generic lookup scans flat `data_row`
+  lists and all pak JSON tables by exact path, including duplicate filenames.
+  Read or parse errors stop the scan.
 - Native staging (`inspect-save --stage-check`):
   [envelope spec](prospect-envelope.md#candidate) (F-738).
-- For retained C016 managers, `import-save --dry-run` assesses the saved
-  container list (F-651). Gaps are empty positions. When every retained C016
-  has an assessable list, `container_positions` reports total occupied and
-  empty positions. A typed list with a negative count, conflicting declarations,
-  duplicate positions or an index outside the list adds `invalid_container_positions`.
-  Untyped recorders retain their existing blocker. Native owner binding remains open.
+- `import-save --dry-run` totals occupied and empty `container_positions`
+  when all retained C016 lists are assessable (F-651). Negative lengths,
+  conflicting declarations, duplicate or out-of-range positions in typed
+  lists add `invalid_container_positions`. Untyped recorders still block.
+- Retained exact C026 records enable count-only `character_container_links`.
+  Explicit `AssociatedInventoryId` −1 (selector 13, F-1066) counts as
+  `no_link`. With exactly one retained, assessable C016, nonnegative IDs
+  count as `occupied`, `unoccupied` (gap) or `out_of_range` by
+  `InventoryIndex` (default zero for a present entry).
+  A qualified array with no link selector adds no count. Unsupported arrays,
+  invalid selectors, duplicate or aliased selector 13, missing link values,
+  IDs below −1 and nonnegative IDs without that manager count as `unknown_items`.
+  Typing or inventory array failures count as `unknown_recorders`, slot array
+  failures as `unknown_inventories`. Live links and owner binding remain open
+  (U-069, U-045).
 - Cross-build classes/defaults/overrides: [restore rules](restore-rules.md)
   (F-902); constructor provenance: [C001 digest](../../research/save-format/c001-constructor.md)
   (F-905..F-910).

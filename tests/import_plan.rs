@@ -9,8 +9,8 @@ use icarus_bevy::experimental::prospect_info::saved_container_manager;
 use icarus_bevy::experimental::recorders::{lookup_recorder_ctor_defaults, recorder_class_label};
 use icarus_bevy::import_candidate::{CandidateLimits, DecodedImportCandidate};
 use icarus_bevy::import_plan::{
-    ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_decoded_import, plan_import,
-    planned_actors, planned_actors_from_candidate,
+    ContainerLinkPlan, ContentCatalog, ContentRole, ImportBlocker, RoleCount, plan_decoded_import,
+    plan_import, planned_actors, planned_actors_from_candidate,
 };
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
@@ -19,6 +19,7 @@ use tempfile::TempDir;
 const ACTOR: &str = "/Script/Icarus.ActorStateRecorderComponent";
 const NO_RECORDER: &str = "/Script/Icarus.NoRecorderComponent";
 const CONTAINER_MANAGER: &str = "/Script/Icarus.IcarusContainerManagerRecorderComponent";
+const CHARACTER: &str = "/Script/Icarus.PlayerStateRecorderComponent";
 const CONTAINER_DATA: &str = "SavedInventoryContainerData";
 const CONTAINER_LIST: &str = "SavedInventoryContainers";
 const QUEST_MANAGER: &str = "/Script/Icarus.IcarusQuestManagerRecorderComponent";
@@ -65,6 +66,21 @@ fn struct_tag(name: &str, type_name: &str, payload: &[u8]) -> Vec<u8> {
         &[fstring(type_name), vec![0; 17]].concat(),
         payload,
     )
+}
+
+fn struct_array(name: &str, element_type: &str, elements: &[Vec<u8>]) -> Vec<u8> {
+    let count = i32::try_from(elements.len()).unwrap().to_le_bytes();
+    let shared = struct_tag(name, element_type, &elements.concat());
+    tag(
+        name,
+        "ArrayProperty",
+        &[fstring("StructProperty"), vec![0]].concat(),
+        &[count.as_slice(), &shared].concat(),
+    )
+}
+
+fn int_tag(name: &str, value: i32) -> Vec<u8> {
+    tag(name, "IntProperty", &[0], &value.to_le_bytes())
 }
 
 fn end() -> Vec<u8> {
@@ -293,8 +309,7 @@ fn inventory_index(index: i32) -> Vec<u8> {
 }
 
 fn saved_inventory_containers(element_type: &str, elements: &[Vec<u8>]) -> Vec<u8> {
-    let shared = struct_tag(CONTAINER_LIST, element_type, &elements.concat());
-    inventory_container_array("StructProperty", elements.len(), &shared)
+    struct_array(CONTAINER_LIST, element_type, elements)
 }
 
 fn inventory_container_array(inner_type: &str, count: usize, shared: &[u8]) -> Vec<u8> {
@@ -848,6 +863,355 @@ fn container_positions_cli_keeps_topology_plans_read_only() {
         assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
     }
+}
+
+const LINK_CATALOG: &str = r#"
+format = 1
+[references]
+data_row = ["AuthoredContainerInfo", "AuthoredLinkedItem"]
+"#;
+const LINK_PLAYER: &str = "AuthoredLinkPlayer";
+
+fn struct_element(fields: &[Vec<u8>]) -> Vec<u8> {
+    [fields.concat(), end()].concat()
+}
+
+fn link_prospect(version: i32, recorders: &[Vec<u8>]) -> Vec<u8> {
+    let members = struct_array(
+        "AssociatedMembers",
+        "AssociatedMemberInfo",
+        &[struct_element(&[
+            tag("UserID", "StrProperty", &[0], &fstring(LINK_PLAYER)),
+            int_tag("ChrSlot", 3),
+        ])],
+    );
+    let info = struct_element(&[
+        tag(
+            "ProspectID",
+            "StrProperty",
+            &[0],
+            &fstring("AuthoredLinkProspect"),
+        ),
+        members,
+    ]);
+    envelope_with_prospect_info(version, recorders, &info, None, None)
+}
+
+fn character_with_inventories(class: &str, version: i32, inventories: Vec<u8>) -> Vec<u8> {
+    recorder_fields(
+        class,
+        &[
+            int_tag("PlayerStateRecorderVersion", version),
+            struct_tag(
+                "PlayerCharacterID",
+                "PlayerCharacterID",
+                &struct_element(&[
+                    tag("PlayerID", "StrProperty", &[0], &fstring(LINK_PLAYER)),
+                    int_tag("ChrSlot", 3),
+                ]),
+            ),
+            inventories,
+        ],
+    )
+}
+
+fn character_inventories(items: &[Vec<u8>]) -> Vec<u8> {
+    struct_array(
+        "SavedInventories",
+        "InventorySaveData",
+        &[struct_element(&[
+            int_tag("InventoryID", 2),
+            struct_array("Slots", "InventorySlotSaveData", items),
+        ])],
+    )
+}
+
+fn link_item(fields: &[Vec<u8>]) -> Vec<u8> {
+    let mut item = vec![
+        int_tag("Location", 11),
+        int_tag("ItemOwnerLookupId", 0),
+        tag(
+            "ItemStaticData",
+            "NameProperty",
+            &[0],
+            &fstring("AuthoredLinkedItem"),
+        ),
+        tag(
+            "ItemGuid",
+            "StrProperty",
+            &[0],
+            &fstring("AuthoredItemGuid"),
+        ),
+    ];
+    item.extend_from_slice(fields);
+    struct_element(&item)
+}
+
+fn dynamic_link(value: i32) -> Vec<u8> {
+    struct_array(
+        "DynamicData",
+        "InventorySlotDynamicData",
+        &[struct_element(&[
+            int_tag("Index", 13),
+            int_tag("Value", value),
+        ])],
+    )
+}
+
+#[test]
+fn character_container_links_cli_counts_a_position_and_preserves_paths() {
+    let root = TempDir::new().unwrap();
+    let source_path = root.path().join("link.json");
+    let destination = root.path().join("world");
+    let catalog = root.path().join("rows.toml");
+    let sentinel = destination.join("sentinel");
+    let containers = [0, 1].map(|position| {
+        struct_element(&[
+            inventory_index(position),
+            tag(
+                "InventoryInfo",
+                "NameProperty",
+                &[0],
+                &fstring("AuthoredContainerInfo"),
+            ),
+        ])
+    });
+    let manager = recorder_fields(
+        CONTAINER_MANAGER,
+        &[
+            inventory_count(2),
+            saved_inventory_containers(CONTAINER_DATA, &containers),
+        ],
+    );
+    let character = character_with_inventories(
+        CHARACTER,
+        1,
+        character_inventories(&[link_item(&[dynamic_link(1)])]),
+    );
+    let source = link_prospect(2, &[character, manager]);
+    fs::write(&source_path, &source).unwrap();
+    fs::write(&catalog, LINK_CATALOG).unwrap();
+    for existing in [false, true] {
+        if existing {
+            fs::create_dir(&destination).unwrap();
+            fs::write(&sentinel, b"prior world").unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root.path())
+            .args(["import-save", "--source"])
+            .arg(&source_path)
+            .arg("--destination")
+            .arg(&destination)
+            .arg("--catalog")
+            .arg(&catalog)
+            .arg("--dry-run")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert!(output.stderr.is_empty());
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["blockers"], json!([]));
+        assert_eq!(report["importable"], true);
+        assert_eq!(report["world_imported"], false);
+        assert_eq!(report["classes"]["C016"]["retained"], 1);
+        assert_eq!(report["classes"]["C026"]["retained"], 1);
+        assert_eq!(
+            report["container_positions"],
+            json!({"occupied": 2, "empty": 0})
+        );
+        assert_eq!(
+            report["character_container_links"],
+            json!({
+                "occupied": 1,
+                "no_link": 0,
+                "unoccupied": 0,
+                "out_of_range": 0,
+                "unknown_items": 0,
+                "unknown_recorders": 0,
+                "unknown_inventories": 0
+            })
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Authored"));
+        assert_eq!(fs::read(&source_path).unwrap(), source);
+        assert_eq!(fs::read(&catalog).unwrap(), LINK_CATALOG.as_bytes());
+        assert_eq!(destination.exists(), existing);
+        if existing {
+            assert_eq!(fs::read(&sentinel).unwrap(), b"prior world");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+    }
+}
+
+#[test]
+fn character_container_links_distinguish_sparse_positions_and_explicit_no_link() {
+    for (positions, expected) in [
+        (
+            &[Some(1)][..],
+            ContainerLinkPlan {
+                occupied: 1,
+                unoccupied: 1,
+                out_of_range: 1,
+                no_link: 1,
+                unknown_items: 1,
+                ..ContainerLinkPlan::default()
+            },
+        ),
+        (
+            &[None, Some(1)][..],
+            ContainerLinkPlan {
+                occupied: 2,
+                out_of_range: 1,
+                no_link: 1,
+                unknown_items: 1,
+                ..ContainerLinkPlan::default()
+            },
+        ),
+    ] {
+        let mut items = [-1, 0, 1, i32::MAX, -2]
+            .map(|value| link_item(&[dynamic_link(value)]))
+            .to_vec();
+        items.push(link_item(&[]));
+        let character = character_with_inventories(CHARACTER, 1, character_inventories(&items));
+        let manager = container_recorder(CONTAINER_MANAGER, Some(i32::MAX), positions);
+        let source = link_prospect(2, &[manager, character]);
+        let plan = plan_import(
+            source.as_slice(),
+            &ContentCatalog::parse(LINK_CATALOG).unwrap(),
+        )
+        .unwrap();
+        assert!(plan.importable, "{plan:?}");
+        assert!(!plan.world_imported);
+        assert_eq!(plan.character_container_links, Some(expected));
+    }
+}
+
+#[test]
+fn character_container_links_require_one_assessable_retained_manager() {
+    let character = character_with_inventories(
+        CHARACTER,
+        1,
+        character_inventories(&[
+            link_item(&[dynamic_link(1)]),
+            link_item(&[dynamic_link(-1)]),
+        ]),
+    );
+    let manager = container_recorder(CONTAINER_MANAGER, Some(2), &[Some(1)]);
+    let invalid = container_recorder(CONTAINER_MANAGER, Some(2), &[Some(1), Some(1)]);
+    let lookalike = container_recorder(ACTOR, Some(2), &[Some(1)]);
+    let catalog = ContentCatalog::parse(LINK_CATALOG).unwrap();
+    for (managers, blockers) in [
+        (vec![], vec![]),
+        (vec![lookalike], vec![]),
+        (vec![manager.clone(), manager], vec![]),
+        (
+            vec![invalid],
+            vec![ImportBlocker::InvalidContainerPositions { recorders: 1 }],
+        ),
+    ] {
+        let mut recorders = managers;
+        recorders.push(character.clone());
+        let source = link_prospect(2, &recorders);
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        assert_eq!(plan.blockers, blockers);
+        assert_eq!(plan.importable, blockers.is_empty());
+        assert!(!plan.world_imported);
+        assert_eq!(
+            plan.character_container_links,
+            Some(ContainerLinkPlan {
+                no_link: 1,
+                unknown_items: 1,
+                ..ContainerLinkPlan::default()
+            })
+        );
+    }
+}
+
+#[test]
+fn character_container_links_skip_dropped_and_other_recorders() {
+    let catalog = ContentCatalog::parse(LINK_CATALOG).unwrap();
+    for (root_version, character_version, class, retained) in
+        [(0, 1, CHARACTER, 0), (2, 0, CHARACTER, 1), (2, 1, ACTOR, 2)]
+    {
+        let character = character_with_inventories(
+            class,
+            character_version,
+            character_inventories(&[link_item(&[dynamic_link(1)])]),
+        );
+        let manager = container_recorder(CONTAINER_MANAGER, Some(2), &[Some(1)]);
+        let source = link_prospect(root_version, &[manager, character]);
+        let plan = plan_import(source.as_slice(), &catalog).unwrap();
+        let report = serde_json::to_value(&plan).unwrap();
+        assert_eq!(plan.recorders.retained, retained);
+        assert!(report.get("character_container_links").is_none());
+        assert!(!plan.world_imported);
+    }
+}
+
+#[test]
+fn character_container_links_count_unqualified_shapes_as_unknown() {
+    let manager = container_recorder(CONTAINER_MANAGER, Some(2), &[Some(0), Some(1)]);
+    let dynamic =
+        |entries: &[Vec<u8>]| struct_array("DynamicData", "InventorySlotDynamicData", entries);
+    let items = [
+        link_item(&[dynamic(&[struct_element(&[int_tag("Index", 13)])])]),
+        link_item(&[dynamic(&[struct_element(&[int_tag("Value", 0)])])]),
+        link_item(&[dynamic(&[struct_element(&[
+            int_tag("Index", 269),
+            int_tag("Value", 1),
+        ])])]),
+        link_item(&[dynamic(&[
+            struct_element(&[int_tag("Index", 13), int_tag("Value", -1)]),
+            struct_element(&[int_tag("Index", 13), int_tag("Value", 1)]),
+        ])]),
+        link_item(&[dynamic_link(1), dynamic_link(1)]),
+        link_item(&[dynamic(&[struct_element(&[
+            int_tag("Index", 13),
+            tag("Value", "UInt32Property", &[0], &1_u32.to_le_bytes()),
+        ])])]),
+        link_item(&[dynamic(&[struct_element(&[
+            int_tag("Index", 13),
+            indexed_tag("Value", "IntProperty", 1, &[0], &0_i32.to_le_bytes()),
+        ])])]),
+        link_item(&[struct_array(
+            "DynamicData",
+            "OtherDynamicData",
+            &[struct_element(&[int_tag("Index", 13), int_tag("Value", 1)])],
+        )]),
+        link_item(&[dynamic_link(1)]),
+    ];
+    let valid_slots = struct_array("Slots", "InventorySlotSaveData", &items);
+    let wrong_slots = struct_array("Slots", "OtherSlots", &[link_item(&[dynamic_link(1)])]);
+    let inventories = struct_array(
+        "SavedInventories",
+        "InventorySaveData",
+        &[
+            struct_element(&[valid_slots]),
+            struct_element(&[wrong_slots]),
+        ],
+    );
+    let character = character_with_inventories(CHARACTER, 1, inventories);
+    let unqualified_character = character_with_inventories(
+        CHARACTER,
+        1,
+        struct_array("SavedInventories", "OtherInventoryData", &[end()]),
+    );
+    let source = link_prospect(2, &[unqualified_character, character, manager]);
+    let plan = plan_import(
+        source.as_slice(),
+        &ContentCatalog::parse(LINK_CATALOG).unwrap(),
+    )
+    .unwrap();
+    assert!(plan.importable, "{plan:?}");
+    assert_eq!(
+        plan.character_container_links,
+        Some(ContainerLinkPlan {
+            occupied: 1,
+            unknown_items: items.len() - 1,
+            unknown_inventories: 1,
+            unknown_recorders: 1,
+            ..ContainerLinkPlan::default()
+        })
+    );
 }
 
 #[test]
