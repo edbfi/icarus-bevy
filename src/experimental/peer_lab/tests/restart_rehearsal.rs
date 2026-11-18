@@ -1952,6 +1952,7 @@ fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
                 Ok(())
             })
             .unwrap();
+        assert_eq!(naks.len(), held_packets.len());
         for sequence in held_packets {
             let bit = usize::from(sequence_difference(close.header.acked_sequence, sequence));
             assert!(
