@@ -121,12 +121,14 @@ fn binding() -> PlayerInventoryProjectionBinding {
                         value: 0,
                     },
                 ],
+                unit_weight: None,
             },
             ItemBinding {
                 item: "ration".into(),
                 row: "AuthoredRation".into(),
                 count_property: false,
                 dynamic: Vec::new(),
+                unit_weight: None,
             },
         ],
     }
@@ -134,6 +136,14 @@ fn binding() -> PlayerInventoryProjectionBinding {
 
 fn compiled() -> PlayerInventoryProjection {
     PlayerInventoryProjection::compile(&binding(), &recipe(), Catalog::new().view(), &[0]).unwrap()
+}
+
+fn weighted_binding(water: u32, ration: u32) -> PlayerInventoryProjectionBinding {
+    let mut weighted = binding();
+    weighted.format = 2;
+    weighted.items[0].unit_weight = Some(water);
+    weighted.items[1].unit_weight = Some(ration);
+    weighted
 }
 
 fn refusal(
@@ -173,6 +183,7 @@ fn bag(bag_slots: Vec<Option<StackV1>>, belt: Option<StackV1>) -> Vec<InventoryS
 #[test]
 fn binding_is_strict_bounded_json() {
     let text = serde_json::to_string(&binding()).unwrap();
+    assert!(!text.contains("unit_weight"));
     assert_eq!(
         PlayerInventoryProjectionBinding::parse(&text).unwrap(),
         binding()
@@ -209,11 +220,71 @@ fn binding_is_strict_bounded_json() {
 }
 
 #[test]
+fn weighted_bindings_require_explicit_bounded_integers() {
+    let weighted = weighted_binding(0, 5);
+    let text = serde_json::to_string(&weighted).unwrap();
+    assert_eq!(
+        PlayerInventoryProjectionBinding::parse(&text).unwrap(),
+        weighted
+    );
+    for invalid in ["null", "-1", "0.5", "4294967296"] {
+        let bad = text.replacen(
+            "\"unit_weight\":0",
+            &format!("\"unit_weight\":{invalid}"),
+            1,
+        );
+        assert!(
+            PlayerInventoryProjectionBinding::parse(&bad).is_err(),
+            "{bad}"
+        );
+    }
+    let recipe = recipe();
+    let catalog = Catalog::new();
+    let check = |binding, message| {
+        let error = refusal(&binding, &recipe, catalog.view(), &[0]);
+        assert!(error.contains(message), "{error}");
+    };
+    let mut legacy = weighted.clone();
+    legacy.format = 1;
+    check(legacy, "forbidden in format 1");
+    let mut missing = weighted;
+    missing.items[0].unit_weight = None;
+    check(missing, "required in format 2");
+    check(weighted_binding(0, 1 << 31), "unit_weight exceeds");
+    check(
+        weighted_binding(214_748_365, 0),
+        "maximum CurrentWeight exceeds",
+    );
+    check(
+        weighted_binding(100_000_000, 0),
+        "maximum CurrentWeight exceeds",
+    );
+    // The exact upper limit is valid for a single-stack belt. It would be
+    // too large if the bag also permitted this item in several slots.
+    let restricted = recipe_with(vec![
+        inventory("bag", 3, &["water"]),
+        inventory("belt", 1, &["ration"]),
+    ]);
+    let projection = PlayerInventoryProjection::compile(
+        &weighted_binding(0, i32::MAX as u32),
+        &restricted,
+        catalog.view(),
+        &[0],
+    )
+    .unwrap();
+    let mut peer = PeerBagProjection::opened(&projection, 0).unwrap();
+    let full_belt = bag(vec![None, None, None], stack(1, "ration", 1));
+    peer.observe(1, 1, || projection.project(&full_belt))
+        .unwrap();
+    assert_eq!(peer.deltas(1).unwrap()[0].weight, Some(i32::MAX));
+}
+
+#[test]
 fn shipped_example_binding_parses() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("config/player-inventory-projection.example.json");
     let example = PlayerInventoryProjectionBinding::load(&path).unwrap();
-    assert_eq!(example.format, 1);
+    assert_eq!(example.format, 2);
     let recipe = CompiledPlayerInventoryRecipe::load(
         &Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("config/player-inventory-consumables.example.json"),
@@ -283,7 +354,7 @@ fn unknown_duplicate_ambiguous_or_missing_bindings_refuse() {
         assert!(message.contains(expected), "{expected}: {message}");
         assert!(message.starts_with("network.player_inventory_projection"));
     };
-    check(&|b| b.format = 2, "format must be 1");
+    check(&|b| b.format = 3, "format must be 1 or 2");
     check(
         &|b| b.inventories[0].inventory = "pocket".into(),
         "unknown recipe inventory \"pocket\"",
@@ -583,4 +654,60 @@ fn coalesced_revisions_send_only_the_latest_difference() {
     assert!(peer.deltas(64).unwrap().is_empty());
     peer.commit(Vec::new());
     assert_eq!(peer.enqueued_revision(), Some(4));
+}
+
+#[test]
+fn recomposed_weighted_pages_use_the_held_slots_and_commit_only_when_enqueued() {
+    let projection = PlayerInventoryProjection::compile(
+        &weighted_binding(5, 0),
+        &recipe(),
+        Catalog::new().view(),
+        &[0],
+    )
+    .unwrap();
+    let mut peer = PeerBagProjection::opened(&projection, 4).unwrap();
+    let starter = bag(vec![stack(1, "water", 3), None, None], None);
+    peer.observe(1, 1, || projection.project(&starter)).unwrap();
+    peer.commit(peer.deltas(64).unwrap());
+    let moved = bag(
+        vec![None, None, stack(1, "water", 3)],
+        stack(2, "ration", 1),
+    );
+    peer.observe(2, 2, || projection.project(&moved)).unwrap();
+    let before = peer.clone();
+    let full = peer.deltas(64).unwrap();
+    assert_eq!(
+        full.iter().map(|delta| delta.weight).collect::<Vec<_>>(),
+        [Some(15), Some(0)]
+    );
+    let trimmed = peer.deltas(1).unwrap();
+    assert_eq!(trimmed[0].weight, Some(0), "only the cleared slot fits");
+    assert_eq!(trimmed[0].opened.current_weight, Some(15));
+    assert_eq!(
+        trimmed,
+        peer.deltas(1).unwrap(),
+        "a refused enqueue is retryable"
+    );
+    assert_eq!(peer, before);
+    peer.commit(trimmed);
+    assert_eq!(peer.enqueued_revision(), Some(1));
+    let tail = peer.deltas(64).unwrap();
+    assert_eq!(tail[0].opened.current_weight, Some(0));
+    assert_eq!(tail[0].weight, Some(15));
+    assert_eq!(tail[1].weight, Some(0));
+    peer.commit(tail);
+    assert_eq!(peer.enqueued_revision(), Some(2));
+    assert_eq!(peer.held()[0].current_weight, Some(15));
+    assert_eq!(peer.held()[1].current_weight, Some(0));
+
+    let before = peer.clone();
+    let oversized = bag(vec![stack(1, "water", 11), None, None], None);
+    assert!(
+        peer.observe(3, 3, || projection.project(&oversized))
+            .is_err()
+    );
+    assert_eq!(
+        peer, before,
+        "invalid weight leaves the held and target state intact"
+    );
 }

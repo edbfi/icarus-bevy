@@ -183,7 +183,7 @@ with matching Rustfmt and Clippy; commit `Cargo.lock`; use one toolchain for
 development, CI, benchmarks and releases. Routine stable upgrades are authorized
 and migrate APIs, pins and lockfile together; the Bevy skill and upgrade rules
 are in [`.agents/rules/project.md`](../.agents/rules/project.md). Python helpers
-target stable 3.15.0 under the basedpyright gate.
+target stable 3.15.2 under the basedpyright gate.
 
 ## Repository boundaries
 

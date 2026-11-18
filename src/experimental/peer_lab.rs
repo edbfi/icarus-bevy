@@ -4057,7 +4057,8 @@ impl PeerLab {
     /// player's own committed bag to that player's connection only: slot
     /// deltas with F-978's keys at each new bag revision, coalesced to the
     /// latest, in the reliable live pawn update, at most one update in flight
-    /// and at most [`MAX_SLOT_CHANGES_PER_UPDATE`] changed slots each. Read
+    /// and at most [`MAX_SLOT_CHANGES_PER_UPDATE`] changed slots each. Format
+    /// 2 carries changed authored weights for the slots left by each page. Read
     /// only: nothing is applied to native state, stored or replayed. A
     /// player's record waits for its first bag projection; nothing is sent
     /// after the player's leave cut-off, and a bag that can never be sent
@@ -6043,7 +6044,8 @@ impl PeerLab {
             {
                 match bag.deltas(bag_budget) {
                     Ok(deltas) if deltas.is_empty() => {
-                        // The client already holds this revision's slots.
+                        // The client already holds this revision's slots and
+                        // therefore its weight.
                         bag.commit(Vec::new());
                         bump(&mut self.stats.player_bag_projection.revisions_already_held);
                     }

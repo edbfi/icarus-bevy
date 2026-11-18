@@ -7,7 +7,8 @@ use crate::{
     config::ServerConfig,
     experimental::{
         actor_channel::{BlockTarget, SubObjectClass},
-        pawn_open::{SlotItem, slot_stream},
+        pawn_open::{INVENTORY_CURRENT_WEIGHT, SlotItem, slot_stream},
+        rep_layout::read_rep_properties,
         rep_rpc::{
             FAST_ARRAY_COUNT_CAP, FastArrayDelta, FastArrayItem, FastArrayItemLayout,
             read_custom_delta_header, read_fast_array_delta,
@@ -96,8 +97,12 @@ pub(super) fn bag_recipe() -> CompiledPlayerInventoryRecipe {
 
 /// An authored binding over an authored catalog (rows at known positions).
 pub(super) fn projection() -> PlayerInventoryProjection {
+    projection_with_weights(None)
+}
+
+fn projection_with_weights(weights: Option<[u32; 2]>) -> PlayerInventoryProjection {
     let binding = PlayerInventoryProjectionBinding {
-        format: 1,
+        format: if weights.is_some() { 2 } else { 1 },
         inventories: vec![
             InventoryBinding {
                 inventory: "bag".into(),
@@ -119,12 +124,14 @@ pub(super) fn projection() -> PlayerInventoryProjection {
                     property: 0,
                     value: 0,
                 }],
+                unit_weight: weights.map(|[water, _]| water),
             },
             ItemBinding {
                 item: "ration".into(),
                 row: "AuthoredRation".into(),
                 count_property: false,
                 dynamic: Vec::new(),
+                unit_weight: weights.map(|[_, ration]| ration),
             },
         ],
     };
@@ -164,10 +171,13 @@ pub(super) fn inventory_world(transfers: bool) -> App {
 /// The checkpoint lab in either pawn order with `run`'s pawn content and
 /// the projection enabled.
 fn projected_lab(early: bool) -> PeerLab {
+    projected_lab_with(early, projection())
+}
+
+fn projected_lab_with(early: bool, projection: PlayerInventoryProjection) -> PeerLab {
     let mut lab = if early { early_lab() } else { lab() };
     production_content(&mut lab);
-    lab.enable_player_inventory_projection(projection())
-        .unwrap();
+    lab.enable_player_inventory_projection(projection).unwrap();
     lab
 }
 
@@ -190,10 +200,11 @@ pub(super) struct Session {
     pub(super) model: Model,
 }
 
-/// The client's projected inventories: key and slot properties each.
+/// The client's projected inventories: key, slot properties and weight.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Model {
     inventories: Vec<(i32, Vec<BTreeMap<u32, RepValue>>)>,
+    weights: Vec<i32>,
 }
 
 /// One slot's properties as a client holds them; an unsent array is empty.
@@ -227,9 +238,10 @@ impl Model {
 
     /// [`Self::opened`] for another binding.
     fn opened_with(projection: &PlayerInventoryProjection) -> Self {
+        let opened = projection.opened_inventories();
         Self {
-            inventories: projection
-                .opened_inventories()
+            weights: vec![0; opened.len()],
+            inventories: opened
                 .iter()
                 .map(|inventory| {
                     (
@@ -308,14 +320,17 @@ pub(super) fn pawn_update_payloads(bunches: &[Bunch]) -> Vec<Payload> {
     payloads
 }
 
-/// The slot deltas of every bag update among `bunches` for `connection`'s
-/// pawn, by projected inventory (0 = bag, 1 = belt), checking each block's
-/// class and that no other subobject is addressed.
-pub(super) fn bag_deltas(
-    lab: &PeerLab,
-    connection: u32,
-    bunches: &[Bunch],
-) -> Vec<(usize, FastArrayDelta)> {
+/// The changes carried by one projected inventory's block.
+#[derive(Debug)]
+pub(super) struct BagDelta {
+    pub(super) inventory: usize,
+    pub(super) weight: Option<i32>,
+    pub(super) slots: FastArrayDelta,
+}
+
+/// The deltas of every bag update for `connection`'s pawn, by projected
+/// inventory (0 = bag, 1 = belt).
+pub(super) fn bag_deltas(lab: &PeerLab, connection: u32, bunches: &[Bunch]) -> Vec<BagDelta> {
     bag_deltas_in(lab, connection, 0..2, pawn_update_payloads(bunches))
 }
 
@@ -327,7 +342,7 @@ pub(super) fn bag_deltas_in(
     connection: u32,
     subobjects: std::ops::Range<u32>,
     payloads: Vec<Payload>,
-) -> Vec<(usize, FastArrayDelta)> {
+) -> Vec<BagDelta> {
     let plan = &lab.pawn_open.as_ref().unwrap().0;
     let codec = RepLayoutCodec {
         actor: actor_codec(plan.engine_net_version, ByteOrder::Little),
@@ -351,8 +366,20 @@ pub(super) fn bag_deltas_in(
                 continue;
             };
             assert!(matches!(class, SubObjectClass::Class(_)));
-            assert!(!block.has_rep_layout, "no weight is sent");
             let mut reader = block.payload.reader();
+            let weight = block.has_rep_layout.then(|| {
+                let stream =
+                    read_rep_properties(&mut reader, &plan.content.inventory_layout, &codec)
+                        .unwrap();
+                let [entry] = stream.entries.as_slice() else {
+                    panic!("one inventory property");
+                };
+                assert_eq!(entry.handle, INVENTORY_CURRENT_WEIGHT);
+                let RepValue::Int(weight) = entry.value else {
+                    panic!("CurrentWeight is signed 32-bit");
+                };
+                weight
+            });
             let field =
                 read_field_header(&mut reader, plan.content.inventory_bound, 1 << 20).unwrap();
             assert!(reader.at_end());
@@ -367,7 +394,11 @@ pub(super) fn bag_deltas_in(
             )
             .unwrap();
             assert!(field_reader.at_end());
-            deltas.push((index, delta));
+            deltas.push(BagDelta {
+                inventory: index,
+                weight,
+                slots: delta,
+            });
         }
     }
     deltas
@@ -378,7 +409,19 @@ impl Session {
     /// the client holds and the new key adds one per changed slot.
     pub(super) fn apply(&mut self, lab: &PeerLab, bunches: &[Bunch]) -> usize {
         let deltas = bag_deltas(lab, self.connection, bunches);
-        for (index, delta) in &deltas {
+        for BagDelta {
+            inventory: index,
+            weight,
+            slots: delta,
+        } in &deltas
+        {
+            if let Some(weight) = weight {
+                assert_ne!(
+                    self.model.weights[*index], *weight,
+                    "only changed weights are sent"
+                );
+                self.model.weights[*index] = *weight;
+            }
             let (key, slots) = &mut self.model.inventories[*index];
             assert_eq!(delta.base_replication_key, *key, "base is the held key");
             assert_eq!(
@@ -645,9 +688,9 @@ fn enabling_requires_checkpoints_and_the_pawn_before_peers_and_refuses_ambiguity
 fn off_the_open_and_the_store_are_unchanged_and_no_bag_is_sent() {
     // The same join with and without the projection: the pawn open differs
     // only by the bound inventories; every committed byte is identical.
-    let run = |projected: bool| {
-        let mut lab = if projected {
-            projected_lab(true)
+    let run = |binding: Option<PlayerInventoryProjection>| {
+        let mut lab = if let Some(binding) = binding {
+            projected_lab_with(true, binding)
         } else {
             let mut lab = early_lab();
             production_content(&mut lab);
@@ -678,8 +721,10 @@ fn off_the_open_and_the_store_are_unchanged_and_no_bag_is_sent() {
         let state = serde_json::to_vec(&capture(app.world_mut()).unwrap()).unwrap();
         (lab, open, received, state)
     };
-    let (off, off_open, off_received, off_state) = run(false);
-    let (on, on_open, on_received, on_state) = run(true);
+    let (off, off_open, off_received, off_state) = run(None);
+    let (on, on_open, on_received, on_state) = run(Some(projection()));
+    let (_, _, _, weighted_state) = run(Some(projection_with_weights(Some([3, 7]))));
+    assert_eq!(off_state, weighted_state, "unit weights are session-only");
     assert_eq!(
         off_state, on_state,
         "the projection never touches the store"
@@ -749,7 +794,7 @@ fn the_starter_bag_reaches_a_fresh_player_before_its_record_in_both_pawn_orders(
 #[test]
 fn every_bag_operation_projects_the_committed_bag_once() {
     for early in [true, false] {
-        let mut lab = projected_lab(early);
+        let mut lab = projected_lab_with(early, projection_with_weights(Some([5, 0])));
         let mut app = inventory_world(false);
         let mut session = join(&mut lab, &mut app, 1, ACCOUNT);
         let player = session.player_id(&lab);
@@ -787,7 +832,9 @@ fn every_bag_operation_projects_the_committed_bag_once() {
         ];
         // The client's slot changes each step: (bag key delta).
         let expected_changes = [2, 2, 2, 1];
-        for ((name, action), changes) in steps.iter().zip(expected_changes) {
+        for (((name, action), changes), weight) in
+            steps.iter().zip(expected_changes).zip([15, 15, 15, 10])
+        {
             let before = session.model.keys();
             let action = action(&app);
             act(&mut app, &lab, &session, action);
@@ -799,6 +846,7 @@ fn every_bag_operation_projects_the_committed_bag_once() {
                 "{name}: decoded equals the bag (early {early})"
             );
             assert_eq!(session.model.keys()[0], before[0] + changes, "{name}");
+            assert_eq!(session.model.weights, [weight, 0], "{name}");
             assert_eq!(session.model.keys()[1], before[1], "{name}: belt untouched");
         }
         // Use spent one water: the vitals and the bag moved together.
@@ -814,13 +862,15 @@ fn every_bag_operation_projects_the_committed_bag_once() {
 
 #[test]
 fn transfers_reach_each_owner_with_only_its_own_bag() {
-    let mut lab = projected_lab(true);
+    let mut lab = projected_lab_with(true, projection_with_weights(Some([5, 7])));
     let mut app = inventory_world(true);
     let mut first = join(&mut lab, &mut app, 1, ACCOUNT);
     let mut second = join(&mut lab, &mut app, 2, ACCOUNT + 1);
     let (a, b) = (first.player_id(&lab), second.player_id(&lab));
     assert_ne!(a, b);
     assert_eq!(second.model.slots(), Model::of_bag(&app, b));
+    assert_eq!(first.model.weights, [15, 7]);
+    assert_eq!(second.model.weights, [15, 7]);
     let request = PlayerInventoryTransferRequestV1 {
         source: endpoint(&app, a, "bag", 0),
         destination: slot_endpoint(&app, b, "bag", 1),
@@ -844,6 +894,8 @@ fn transfers_reach_each_owner_with_only_its_own_bag() {
     assert_eq!(second.apply(&lab, &to_second), 1);
     assert_eq!(first.model.slots(), Model::of_bag(&app, a));
     assert_eq!(second.model.slots(), Model::of_bag(&app, b));
+    assert_eq!(first.model.weights, [5, 7]);
+    assert_eq!(second.model.weights, [25, 7]);
     // Each connection's updates address only its own pawn's subobjects.
     assert!(bag_deltas(&lab, 2, &to_first).is_empty());
     assert!(bag_deltas(&lab, 1, &to_second).is_empty());
@@ -898,7 +950,7 @@ fn bag_move_preserves_the_last_ack_slot_when_vitals_are_unchanged() {
 
 #[test]
 fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
-    let mut lab = projected_lab(true);
+    let mut lab = projected_lab_with(true, projection_with_weights(Some([5, 7])));
     lab.config.packet.sent_capacity = 16;
     let mut app = inventory_world(false);
     let mut session = join(&mut lab, &mut app, 1, ACCOUNT);
@@ -919,6 +971,7 @@ fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
         Some(1),
         "nothing queued under pressure"
     );
+    assert_eq!(held.held()[0].current_weight, Some(15));
     let action = PlayerInventoryActionV1::Use {
         source: endpoint(&app, player, "bag", 1),
     };
@@ -966,6 +1019,7 @@ fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
         "the same bunch, resent"
     );
     assert_eq!(session.apply(&lab, &repaired), 1);
+    assert_eq!(session.model.weights, [10, 7]);
     assert_eq!(session.model.slots(), Model::of_bag(&app, player));
     assert_eq!(session.settle(&mut lab, &mut app, 3), 0);
     assert_eq!(capture(app.world_mut()).unwrap(), committed);
@@ -978,6 +1032,19 @@ fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
         counts.update_failures > 0,
         "pressure deferred, never dropped"
     );
+
+    let action = PlayerInventoryActionV1::Consume {
+        source: endpoint(&app, player, "bag", 1),
+        amount: 2,
+    };
+    act(&mut app, &lab, &session, action);
+    bridge(&mut lab, &mut app);
+    let emptied = deliver_bunches(&mut lab, &session.socket, &mut session.client, |_| true);
+    let [delta]: [BagDelta; 1] = bag_deltas(&lab, 1, &emptied).try_into().unwrap();
+    assert_eq!((delta.inventory, delta.weight), (0, Some(0)));
+    assert_eq!(session.apply(&lab, &emptied), 1);
+    assert_eq!(session.model.weights, [0, 7]);
+    assert_eq!(session.model.slots(), Model::of_bag(&app, player));
 }
 
 #[test]
@@ -1021,6 +1088,7 @@ fn restart_and_rejoin_project_the_retained_bag() {
         let mut lab = projected_lab(early);
         let mut app = inventory_world(false);
         let session = join(&mut lab, &mut app, 1, ACCOUNT);
+        assert_eq!(session.model.weights, [0, 0], "format 1 omits weight");
         let player = session.player_id(&lab);
         let action = PlayerInventoryActionV1::Split {
             source: endpoint(&app, player, "bag", 0),
@@ -1035,11 +1103,16 @@ fn restart_and_rejoin_project_the_retained_bag() {
         let stored = capture(app.world_mut()).unwrap();
         drop(app);
         let mut app = build_app(&ServerConfig::default(), &stored).unwrap();
-        let mut lab = projected_lab(early);
+        let mut lab = projected_lab_with(early, projection_with_weights(Some([11, 9])));
         let rejoined = join(&mut lab, &mut app, 2, ACCOUNT);
         assert_eq!(rejoined.player_id(&lab), player);
         assert_eq!(rejoined.model.slots(), retained, "early {early}");
         assert_eq!(rejoined.model.slots(), Model::of_bag(&app, player));
+        assert_eq!(
+            rejoined.model.weights,
+            [33, 9],
+            "derive from the new binding"
+        );
         assert_eq!(rejoined.log, ["bag", "finalised"]);
         // The rejoined client gets the retained bag once, from its fresh open.
         assert_eq!(rejoined.model.keys(), [2 + 3 + 2, 2 + 1 + 1]);
@@ -1158,7 +1231,7 @@ const WIDE_SLOTS: u16 = 70;
 
 fn wide_projection() -> PlayerInventoryProjection {
     let binding = PlayerInventoryProjectionBinding {
-        format: 1,
+        format: 2,
         inventories: vec![
             InventoryBinding {
                 inventory: "bag".into(),
@@ -1177,12 +1250,14 @@ fn wide_projection() -> PlayerInventoryProjection {
                 row: "AuthoredWater".into(),
                 count_property: true,
                 dynamic: Vec::new(),
+                unit_weight: Some(5),
             },
             ItemBinding {
                 item: "ration".into(),
                 row: "AuthoredRation".into(),
                 count_property: false,
                 dynamic: Vec::new(),
+                unit_weight: Some(7),
             },
         ],
     };
@@ -1238,6 +1313,7 @@ fn a_change_over_64_slots_splits_deterministically_with_chained_keys() {
         // slots (`Session::apply`); across the split the keys chain:
         // bag 2 + 70 opened, + 64, + 6; belt 2 + 1 opened, + 1.
         assert_eq!(session.model.keys(), [2 + 70 + 64 + 6, 2 + 1 + 1]);
+        assert_eq!(session.model.weights, [1050, 7]);
         assert_eq!(
             session.model.slots(),
             Model::of_bag_with(&wide_projection(), &app, player)
@@ -1298,14 +1374,21 @@ fn the_split_is_the_same_every_time() {
         }
         bag_deltas(&lab, 1, &received)
             .into_iter()
-            .map(|(index, delta)| {
-                (
-                    index,
-                    delta.base_replication_key,
-                    delta.array_replication_key,
-                    delta.changed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                )
-            })
+            .map(
+                |BagDelta {
+                     inventory,
+                     weight,
+                     slots: delta,
+                 }| {
+                    (
+                        inventory,
+                        weight,
+                        delta.base_replication_key,
+                        delta.array_replication_key,
+                        delta.changed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )
+                },
+            )
             .collect::<Vec<_>>()
     };
     let first = run();
@@ -1314,9 +1397,9 @@ fn the_split_is_the_same_every_time() {
     assert_eq!(
         first,
         [
-            (0, 72, 136, ids(1..=64)),
-            (0, 136, 142, ids(65..=70)),
-            (1, 3, 4, vec![1]),
+            (0, Some(950), 72, 136, ids(1..=64)),
+            (0, Some(1050), 136, 142, ids(65..=70)),
+            (1, Some(7), 3, 4, vec![1]),
         ]
     );
 }

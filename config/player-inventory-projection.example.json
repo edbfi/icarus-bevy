@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 2,
   "inventories": [{
     "inventory": "bag",
     "info_row": "REPLACE_WITH_D_InventoryInfo_ROW",
@@ -9,6 +9,7 @@
     "item": "authored-water",
     "row": "REPLACE_WITH_D_ItemsStatic_ROW",
     "count_property": true,
-    "dynamic": []
+    "dynamic": [],
+    "unit_weight": 5
   }]
 }

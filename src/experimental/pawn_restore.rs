@@ -751,9 +751,9 @@ pub fn compose_live_pawn_vitals_update(
 
 /// [`compose_live_pawn_vitals_update`] plus explicit slot deltas of inventories
 /// the pawn opened, as a restore sends them (F-978): each delta is relative to
-/// the slots and key its `opened` says the client holds, carries no weight,
-/// and goes on that inventory's runtime subobject after the character state
-/// and before the modifiers, as the restore orders them (F-1056). Without
+/// the slots and key its `opened` says the client holds. An authored weight
+/// change goes ahead of the slots on the same inventory subobject. Inventory
+/// blocks follow the character state and precede modifiers (F-1056). Without
 /// inventories the bytes equal [`compose_live_pawn_vitals_update`]'s. The
 /// caller owns which bag the deltas describe and their reliable delivery. On
 /// failure neither the GUID cache nor connection exports are changed.
@@ -776,8 +776,8 @@ pub fn compose_live_pawn_bag_update(
             "duplicate live inventory delta"
         );
         ensure!(
-            inventory.weight.is_none(),
-            "a live inventory delta carries no weight"
+            inventory.weight.is_none_or(|weight| weight >= 0),
+            "live inventory weight must be nonnegative"
         );
         ensure!(
             !inventory.changes.is_empty()
@@ -1034,6 +1034,7 @@ mod live_bag_update_tests {
         exports: &ConnectionExports,
         update: &RestoredPawnUpdate,
         order: ByteOrder,
+        weight: Option<i32>,
     ) -> (BTreeMap<u32, RepValue>, FastArrayDelta) {
         let codec = RepLayoutCodec {
             actor: actor_codec(plan.engine_net_version, order),
@@ -1067,8 +1068,16 @@ mod live_bag_update_tests {
             panic!("class-named inventory");
         };
         assert!(exports.is_acked(class.guid), "the open exported the class");
-        assert!(!inventory.has_rep_layout, "no weight property");
+        assert_eq!(inventory.has_rep_layout, weight.is_some());
         let mut reader = inventory.payload.reader();
+        if let Some(weight) = weight {
+            let properties =
+                read_rep_properties(&mut reader, &plan.content.inventory_layout, &codec).unwrap();
+            assert_eq!(
+                properties.entries,
+                [entry(INVENTORY_CURRENT_WEIGHT, RepValue::Int(weight))]
+            );
+        }
         let field = read_field_header(&mut reader, plan.content.inventory_bound, 1 << 20).unwrap();
         assert!(reader.at_end());
         assert_eq!(field.index, INVENTORY_SLOTS_FIELD_INDEX);
@@ -1352,7 +1361,7 @@ mod live_bag_update_tests {
             )
             .unwrap();
             assert!(update.exports.is_none(), "every reference was acked");
-            let (values, decoded) = decode(&plan, &mut cache, &exports, &update, order);
+            let (values, decoded) = decode(&plan, &mut cache, &exports, &update, order, None);
             let mut alive = vitals().values();
             alive.insert(
                 character_state_handle::CURRENT_ALIVE_STATE,
@@ -1397,7 +1406,7 @@ mod live_bag_update_tests {
                 order,
             )
             .unwrap();
-            let (values, decoded) = decode(&plan, &mut cache, &exports, &update, order);
+            let (values, decoded) = decode(&plan, &mut cache, &exports, &update, order, None);
             assert!(values.is_empty(), "no character state block");
             assert_eq!(
                 (decoded.array_replication_key, decoded.base_replication_key),
@@ -1417,19 +1426,55 @@ mod live_bag_update_tests {
     }
 
     #[test]
-    fn weights_added_slots_empty_or_repeated_deltas_refuse_without_state_change() {
+    fn live_weights_precede_slots_and_omit_equal_totals_in_both_byte_orders() {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let (plan, mut cache, mut exports) = opened(order);
+            let mut from = held([None, None, None], 5);
+            let cases = [
+                ([item(40, 1), None, None], 1_015, Some(1_015)),
+                ([None, item(40, 1), None], 1_015, None),
+                ([None, None, None], 0, Some(0)),
+            ];
+            for (items, weight, wire_weight) in cases {
+                let mut to = held(items, 0);
+                to.current_weight = Some(weight);
+                let mut change = delta(&from, &to);
+                change.weight = Some(weight);
+                let update = compose_live_pawn_bag_update(
+                    &mut cache,
+                    &mut exports,
+                    &plan,
+                    KEY,
+                    None,
+                    &[],
+                    None,
+                    std::slice::from_ref(&change),
+                    order,
+                )
+                .unwrap();
+                let (_, slots) = decode(&plan, &mut cache, &exports, &update, order, wire_weight);
+                let mut client = client_of(&from);
+                apply(&mut client, &slots);
+                assert_eq!(client, client_of(&to));
+                from = change.restored;
+            }
+        }
+    }
+
+    #[test]
+    fn added_slots_empty_or_repeated_deltas_refuse_without_state_change() {
         let order = ByteOrder::Little;
         let (plan, cache, exports) = opened(order);
         let open = held([None, None, None], 5);
         let good = delta(&open, &held([item(40, 1), None, None], 0));
-        let mut weighed = good.clone();
-        weighed.weight = Some(10);
         let mut added = good.clone();
         added.changes = vec![(4, SlotChange::Added(InventorySlot::empty(9, 3)))];
         let mut unchanged = good.clone();
         unchanged.changes.clear();
+        let mut negative = good.clone();
+        negative.weight = Some(-1);
         for (inventories, message) in [
-            (vec![weighed], "carries no weight"),
+            (vec![negative], "weight must be nonnegative"),
             (vec![added], "changes known slots"),
             (vec![unchanged], "changes known slots"),
             (vec![good.clone(), good], "duplicate live inventory delta"),
