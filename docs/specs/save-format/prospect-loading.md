@@ -119,7 +119,7 @@ Acceptance conditions for any importer
   `unresolved_prospect_info_enums` when a named or raw enum remains unknown
   after migration. Version 0 resets the prospect info before this check.
   Restoration adapters remain unqualified and native world publication stays disabled.
-- Dry-run row coverage checks the exact top-level field on each typed,
+- Dry-run row coverage (F-1263) checks the exact top-level field on each typed,
   retained recorder of the specified class. Staging in `recorders.rs`
   rejects duplicate top-level property names and nonzero array indices
   before typing. A present field must decode as `NameProperty`. Otherwise
