@@ -8,6 +8,9 @@ use std::time::Instant;
 pub struct ClientControlClose {
     pub reason: Option<u32>,
     pub phase: PlayerEntryPhase,
+    /// Any reliable part of an admitted live checkpoint pawn update still
+    /// awaits a positive ACK after the close datagram's transport processing.
+    pub checkpoint_pawn_update_pending: bool,
     /// Absent when connected-player records are disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own_record_ack: Option<OwnRecordAck>,

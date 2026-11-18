@@ -949,12 +949,92 @@ fn bag_move_preserves_the_last_ack_slot_when_vitals_are_unchanged() {
 }
 
 #[test]
+fn client_control_close_reports_bag_only_checkpoint_pawn_update_pending() {
+    for ack_update in [false, true] {
+        let mut lab = projected_lab(true);
+        lab.enable_pawn_move_acks().unwrap();
+        // This mode omits unchanged vitals even when a move advances the revision.
+        lab.enable_checkpoint_saved_locations().unwrap();
+        let mut app = inventory_world(false);
+        let mut session = join(&mut lab, &mut app, 1, ACCOUNT);
+        let player = session.player_id(&lab);
+        let epoch = session.epoch(&lab);
+        let before = lab.peers[&session.address].checkpoint_projection.unwrap();
+        assert!(
+            lab.peers[&session.address]
+                .peer
+                .actor_channel_settled(PAWN_CHANNEL_INDEX)
+        );
+        assert!(lab.session_counts().last_client_control_close.is_none());
+
+        let action = PlayerInventoryActionV1::Move {
+            source: endpoint(&app, player, "bag", 0),
+            destination: slot_endpoint(&app, player, "bag", 1),
+        };
+        act(&mut app, &lab, &session, action);
+        let after = app
+            .world()
+            .resource::<PlayerRegistry>()
+            .projection(epoch)
+            .unwrap();
+        assert!(after.revision > before.revision);
+        assert_eq!(after.checkpoint.vitals, before.checkpoint.vitals);
+        bridge(&mut lab, &mut app);
+
+        // Peer removal forgets the GUID before we can decode the sent update.
+        let bag_guid = lab
+            .guid_cache
+            .clone()
+            .subobject_guid(pawn_key(session.connection), 0)
+            .unwrap();
+        let close = client_close_bunch(&lab.peers[&session.address].peer, 14);
+        let bunches = deliver_bunches_and_reply(
+            &mut lab,
+            &session.socket,
+            &mut session.client,
+            |_| ack_update,
+            vec![close],
+        );
+        let [payload]: [Payload; 1] = pawn_update_payloads(&bunches).try_into().unwrap();
+        let engine = lab.pawn_open.as_ref().unwrap().0.engine_net_version;
+        let body = read_actor_bunch_body(
+            &mut payload.reader(),
+            false,
+            &actor_codec(engine, ByteOrder::Little),
+        )
+        .unwrap();
+        let [block] = body.blocks.as_slice() else {
+            panic!("expected only the bag block");
+        };
+        assert!(matches!(
+            &block.target,
+            BlockTarget::SubObject {
+                object,
+                class: SubObjectClass::Class(_),
+            } if object.guid == bag_guid
+        ));
+
+        assert!(!lab.has_peer(session.address));
+        let counts = lab.session_counts();
+        assert_eq!(counts.closed_by_client, 1);
+        let snapshot = counts.last_client_control_close.unwrap();
+        assert_eq!(snapshot.reason, Some(14));
+        let json = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            json["checkpoint_pawn_update_pending"].as_bool(),
+            Some(!ack_update)
+        );
+    }
+}
+
+#[test]
 fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
     let mut lab = projected_lab_with(true, projection_with_weights(Some([5, 7])));
     lab.config.packet.sent_capacity = 16;
     let mut app = inventory_world(false);
     let mut session = join(&mut lab, &mut app, 1, ACCOUNT);
     let player = session.player_id(&lab);
+    let starter_through = lab.peers[&session.address].checkpoint_pawn_update_through;
     fill_ring(&mut lab, session.address);
     // Two revisions while nothing can be queued: move, then use.
     let action = PlayerInventoryActionV1::Move {
@@ -979,6 +1059,10 @@ fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
     let committed = capture(app.world_mut()).unwrap();
     bridge(&mut lab, &mut app);
     assert_eq!(
+        lab.peers[&session.address].checkpoint_pawn_update_through,
+        starter_through
+    );
+    assert_eq!(
         lab.peers[&session.address]
             .bag_projection
             .as_ref()
@@ -992,6 +1076,13 @@ fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
     let lost = deliver_bunches(&mut lab, &session.socket, &mut session.client, |_| false);
     let [lost_update] = pawn_updates(&lost).try_into().unwrap();
     assert_eq!(bag_deltas(&lab, 1, &lost).len(), 1);
+    let entry = &lab.peers[&session.address];
+    let through = entry.checkpoint_pawn_update_through.unwrap().get();
+    assert!(
+        entry
+            .peer
+            .actor_reliable_pending_through(PAWN_CHANNEL_INDEX, through)
+    );
     assert_eq!(
         lab.peers[&session.address]
             .bag_projection
@@ -1017,6 +1108,11 @@ fn pressure_and_loss_coalesce_to_the_latest_revision_without_replaying_it() {
     assert_eq!(
         repair.payload, lost_update.payload,
         "the same bunch, resent"
+    );
+    assert!(
+        !lab.peers[&session.address]
+            .peer
+            .actor_reliable_pending_through(PAWN_CHANNEL_INDEX, through)
     );
     assert_eq!(session.apply(&lab, &repaired), 1);
     assert_eq!(session.model.weights, [10, 7]);

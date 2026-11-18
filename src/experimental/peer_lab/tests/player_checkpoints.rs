@@ -784,6 +784,7 @@ fn queue_pressure_coalesces_latest_vitals_without_advancing_enqueued_revision() 
     lab.bridge_player_checkpoints(&mut registry);
     deliver_bunches(&mut lab, &socket, &mut client, |_| true);
     finish(&mut lab, &mut registry, &socket, &mut client, address);
+    assert_eq!(lab.peers[&address].checkpoint_pawn_update_through, None);
     // Fill the actual packet ring without occupying the pawn's reliable
     // channel. Its default capacity is 256; a fixed 128 controller bunches
     // could not establish this pressure (and the actor window has its own
@@ -837,6 +838,7 @@ fn queue_pressure_coalesces_latest_vitals_without_advancing_enqueued_revision() 
         lab.peers[&address].checkpoint_enqueued_revision,
         Some(old.revision)
     );
+    assert_eq!(lab.peers[&address].checkpoint_pawn_update_through, None);
     deliver_bunches(&mut lab, &socket, &mut client, |_| true);
     lab.bridge_player_checkpoints(&mut registry);
     assert_eq!(
@@ -845,6 +847,116 @@ fn queue_pressure_coalesces_latest_vitals_without_advancing_enqueued_revision() 
     );
     let changed = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
     assert_eq!(health(&lab, &changed, false), 23);
+
+    // A real later temperature-only enqueue must leave the old bound alone.
+    let through = lab.peers[&address].checkpoint_pawn_update_through;
+    lab.refresh_pawn_temperature(
+        1,
+        PawnTemperatureState {
+            internal: Some(42),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    lab.bridge_player_checkpoints(&mut registry);
+    let entry = &lab.peers[&address];
+    assert_eq!(entry.checkpoint_pawn_update_through, through);
+    assert!(!entry.peer.actor_channel_settled(PAWN_CHANNEL_INDEX));
+    let close = client_close_bunch(&entry.peer, 14);
+    deliver_bunches_and_reply(&mut lab, &socket, &mut client, |_| false, vec![close]);
+    assert!(
+        !lab.session_counts()
+            .last_client_control_close
+            .unwrap()
+            .checkpoint_pawn_update_pending
+    );
+}
+
+#[test]
+fn client_control_close_reports_checkpoint_pawn_update_pending() {
+    for (ack_update, reuse_pawn_channel) in [(false, false), (true, false), (true, true)] {
+        let (mut lab, mut registry) = (lab(), registry());
+        let (socket, address, mut client, _) = peer(&mut lab, 1, ACCOUNT, true);
+        identify(&mut lab, &socket, &mut client, address, 3, 3);
+        lab.bridge_player_checkpoints(&mut registry);
+        deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+        finish(&mut lab, &mut registry, &socket, &mut client, address);
+        // Silence periodic clock traffic so packet positions reflect this test.
+        lab.game_state_open = None;
+        let key = PlayerKey::new(ACCOUNT, 3).unwrap();
+        let stored = registry.snapshot().projection(key).unwrap();
+        let mut checkpoint = stored.checkpoint;
+        checkpoint.vitals.health = 55;
+        registry.edit(key, stored.revision, checkpoint).unwrap();
+        lab.refresh_pawn_temperature(
+            1,
+            PawnTemperatureState {
+                internal: Some(42),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        lab.bridge_player_checkpoints(&mut registry);
+        assert_eq!(lab.stats.pawn_temperature_updates_queued, 1);
+        let entry = lab.peers.get_mut(&address).unwrap();
+        let update_packets = entry.peer.sequencer().notify().sent_records().len();
+        assert!(update_packets > 0);
+
+        // A later reliable close keeps the pawn channel unsettled even when
+        // the checkpoint update itself is fully ACKed.
+        let pawn_close = entry
+            .peer
+            .reliable_actor_close(PAWN_CHANNEL_INDEX, 1)
+            .unwrap();
+        assert!(lab.send(&pawn_close, address));
+        if reuse_pawn_channel {
+            let bunches = deliver_bunches(&mut lab, &socket, &mut client, |_| true);
+            assert_eq!(health(&lab, &bunches, false), 55);
+            let entry = lab.peers.get_mut(&address).unwrap();
+            assert_eq!(entry.checkpoint_pawn_update_through, None);
+            // Reuse the index under the same seeded sequence space, leaving
+            // the new channel's open unacknowledged.
+            let mut open = bunches
+                .into_iter()
+                .find(|bunch| bunch.header.close)
+                .unwrap();
+            open.header.open = true;
+            open.header.close = false;
+            open.header.close_reason = None;
+            let open = entry.peer.reliable_actor_open(&open, &[]).unwrap();
+            assert!(lab.send(&open, address));
+        }
+        let close = client_close_bunch(&lab.peers[&address].peer, 14);
+        let bunches = deliver_bunches_and_reply(
+            &mut lab,
+            &socket,
+            &mut client,
+            |index| !reuse_pawn_channel && ack_update && index < update_packets,
+            vec![close],
+        );
+        if !reuse_pawn_channel {
+            assert_eq!(health(&lab, &bunches, false), 55);
+        }
+        assert!(!lab.has_peer(address));
+
+        let mut world = bevy::prelude::World::new();
+        world.insert_resource(lab);
+        let before = crate::network::session_counts(&world).unwrap();
+        let after = crate::network::teardown(&mut world).unwrap();
+        assert_eq!(
+            before.last_client_control_close,
+            after.last_client_control_close
+        );
+        assert_eq!(after.closed_by_client, 1);
+        assert_eq!(
+            serde_json::to_value(after.last_client_control_close.unwrap()).unwrap(),
+            serde_json::json!({
+                "reason": 14,
+                "phase": "finalised",
+                "checkpoint_pawn_update_pending": !ack_update,
+            })
+        );
+    }
 }
 
 #[test]

@@ -196,6 +196,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt, io,
     net::{SocketAddr, SocketAddrV4, UdpSocket},
+    num::NonZeroU32,
     time::{Duration, Instant},
 };
 
@@ -2760,6 +2761,10 @@ struct PeerEntry {
     checkpoint_epoch: Option<u64>,
     checkpoint_projection: Option<PlayerProjection>,
     checkpoint_enqueued_revision: Option<u64>,
+    /// Last unwrapped reliable sequence of the latest admitted live checkpoint
+    /// pawn update. Admission starts with an empty reliable queue. Clear on
+    /// channel release, since a reused index starts a fresh sequence space.
+    checkpoint_pawn_update_through: Option<NonZeroU32>,
     checkpoint_active: bool,
     /// This session's own connected-player record.
     connected_player: Option<ConnectedPlayerRecord>,
@@ -6130,6 +6135,12 @@ impl PeerLab {
             })();
             match sent {
                 Ok(sent) => {
+                    if vital_due.is_some() || !bag_due.is_empty() {
+                        entry.checkpoint_pawn_update_through = entry
+                            .peer
+                            .actor_reliable_sequence(*channel)
+                            .and_then(NonZeroU32::new);
+                    }
                     if let Some(projection) = vital_due {
                         entry.checkpoint_enqueued_revision = Some(projection.revision);
                         if let Some(values) = &mut entry.pawn_character_state {
@@ -8691,6 +8702,7 @@ impl PeerLab {
                         checkpoint_epoch: None,
                         checkpoint_projection: None,
                         checkpoint_enqueued_revision: None,
+                        checkpoint_pawn_update_through: None,
                         checkpoint_active: false,
                         connected_player: None,
                         connected_players_sent: Vec::new(),
@@ -8816,6 +8828,7 @@ impl PeerLab {
         };
         let mut close = false;
         let mut close_reason = None;
+        let mut checkpoint_pawn_update_pending = false;
         let mut own_record_acked_now = false;
         let mut incarnation_released = false;
         let mut staged_calls = Vec::new();
@@ -9034,6 +9047,13 @@ impl PeerLab {
                         incarnation_released = entry.retiring_incarnations.len() != retiring;
                         for channel in &summary.released_actor_channels {
                             entry.closing_legacy_actors.remove(channel);
+                            if self
+                                .pawn_open
+                                .as_ref()
+                                .is_some_and(|(_, pawn, _)| pawn == channel)
+                            {
+                                entry.checkpoint_pawn_update_through = None;
+                            }
                         }
                         // A released actor channel (a replication close's
                         // ACK) may make room for channel-refused level opens:
@@ -9185,6 +9205,17 @@ impl PeerLab {
                             bump(&mut self.stats.control_close_seen);
                             close = true;
                             close_reason = received.control_close_reason();
+                            // Transport applied the close datagram's ACKs/NAKs.
+                            // Snapshot before dispatching its calls or replies.
+                            checkpoint_pawn_update_pending = self
+                                .pawn_open
+                                .as_ref()
+                                .zip(entry.checkpoint_pawn_update_through)
+                                .is_some_and(|((_, channel, _), through)| {
+                                    entry
+                                        .peer
+                                        .actor_reliable_pending_through(*channel, through.get())
+                                });
                         }
                         self.stats.count_delivered(&summary.delivered);
                         self.stats.actor_bunches_ignored = self
@@ -9445,6 +9476,7 @@ impl PeerLab {
             self.last_client_control_close = Some(ClientControlClose {
                 reason: close_reason,
                 phase: entry.entry_phase(),
+                checkpoint_pawn_update_pending,
                 own_record_ack: self
                     .connected_players
                     .as_ref()
@@ -15538,6 +15570,7 @@ mod tests {
                 Some(ClientControlClose {
                     reason: Some(14),
                     phase: PlayerEntryPhase::Finalised,
+                    checkpoint_pawn_update_pending: false,
                     own_record_ack: Some(record_ack),
                     frozen_movement_release: Some(FrozenReleaseAtClose {
                         state,

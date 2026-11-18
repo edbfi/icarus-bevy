@@ -1560,6 +1560,16 @@ impl LabPeer {
             .map(|channel| channel.out_reliable())
     }
 
+    /// Any reliable bunch through this unwrapped sequence is unacknowledged,
+    /// even on a closing channel. ACKs drain the acknowledged prefix, so the
+    /// oldest retained bunch is unacknowledged. The bound is incarnation-local.
+    pub(crate) fn actor_reliable_pending_through(&self, index: u32, through: u32) -> bool {
+        self.actors
+            .get(&index)
+            .and_then(|channel| channel.out_bunches().front())
+            .is_some_and(|bunch| bunch.reliable_sequence <= through)
+    }
+
     /// Positive ACKs covered every reliable bunch in this committed span.
     /// Later traffic is independent; an ACKed bunch retained behind an older
     /// gap is still acknowledged. Callers must abandon spans when channels release
@@ -2078,12 +2088,14 @@ impl LabPeer {
 mod actor_partial_budget_tests {
     use super::*;
 
+    const LIMITS: BunchLimits = BunchLimits {
+        max_channels: 32,
+        max_packet_bytes: 1024,
+        max_string_units: 64,
+    };
+
     fn fixture() -> (LabPeer, ReceiveSummary) {
-        let config = PacketLabConfig::new(BunchLimits {
-            max_channels: 32,
-            max_packet_bytes: 1024,
-            max_string_units: 64,
-        });
+        let config = PacketLabConfig::new(LIMITS);
         let mut peer = LabPeer::from_cookie(&[0; COOKIE_BYTES], config).unwrap();
         let client = PacketSequencer::new(0, 0, 16).unwrap();
         let bytes = write_packet(
@@ -2122,6 +2134,94 @@ mod actor_partial_budget_tests {
             },
             payload: Payload::from_writer(writer),
         }
+    }
+
+    #[test]
+    fn reliable_actor_pending_through_tracks_export_repair_across_wire_wrap() {
+        use super::super::packet::read_packet;
+
+        let config = PacketLabConfig {
+            max_bunches_per_packet: 1,
+            ..PacketLabConfig::new(LIMITS)
+        };
+        let mut cookie = [0; COOKIE_BYTES];
+        cookie[..2].copy_from_slice(&1021_u16.to_le_bytes());
+        let (incoming, outgoing) = client_cookie_seeds(&cookie);
+        let mut client = PacketSequencer::new(incoming, outgoing, 16).unwrap();
+        let mut peer = LabPeer::from_cookie(&cookie, config).unwrap();
+        let receive = |client: &mut PacketSequencer, datagram: &[u8], ack| {
+            let packet = read_packet(datagram, &config.outgoing()).unwrap();
+            let received = client.receive(&packet.header).unwrap().unwrap();
+            client.ack_seq(received.sequence, ack).unwrap();
+            packet.bunches
+        };
+        let reply = |client: &mut PacketSequencer, peer: &mut LabPeer| {
+            let datagram = write_packet(
+                &Packet {
+                    magic: 0,
+                    header: client.header().unwrap(),
+                    info: None,
+                    bunches: vec![],
+                },
+                &config.packet,
+            )
+            .unwrap();
+            client.commit().unwrap();
+            peer.receive(&datagram).unwrap()
+        };
+
+        let channel = 3;
+        let mut open = part(channel, false, false, 1);
+        open.header.control = true;
+        open.header.open = true;
+        open.header.partial = false;
+        open.header.channel_name = Some(Name::Hardcoded(ACTOR_CHANNEL_NAME_INDEX));
+        let datagram = peer.reliable_actor_open(&open, &[]).unwrap();
+        receive(&mut client, &datagram, true);
+        reply(&mut client, &mut peer);
+        assert!(peer.actor_channel_settled(channel));
+        let sent = peer
+            .reliable_actor_update_datagrams(channel, open.payload.clone(), &[open.payload])
+            .unwrap();
+        let [export, body] = sent.datagrams.as_slice() else {
+            panic!("one export and one body datagram");
+        };
+        let through = peer.actor_reliable_sequence(channel).unwrap();
+        assert_eq!(through, 1024);
+        let exported = receive(&mut client, export, false);
+        assert!(exported[0].header.has_package_map_exports);
+        assert_eq!(exported[0].header.reliable_sequence_raw, Some(1023));
+        assert_eq!(
+            receive(&mut client, body, true)[0]
+                .header
+                .reliable_sequence_raw,
+            Some(0)
+        );
+        let close = peer.reliable_actor_close(channel, 1).unwrap();
+        receive(&mut client, &close, false);
+        assert!(
+            reply(&mut client, &mut peer)
+                .summary()
+                .naked
+                .contains(&sent.packet_ids[0])
+        );
+        assert!(peer.actor_reliable_pending_through(channel, through));
+
+        let repair = peer.ack_packet().unwrap();
+        assert_eq!(receive(&mut client, &repair, true), exported);
+        assert!(peer.actor_reliable_pending_through(channel, through));
+        reply(&mut client, &mut peer);
+        assert!(peer.actor_channel_closing(channel));
+        assert!(!peer.actor_reliable_pending_through(channel, through));
+        let close_repair = peer.ack_packet().unwrap();
+        receive(&mut client, &close_repair, true);
+        assert_eq!(
+            reply(&mut client, &mut peer)
+                .summary()
+                .released_actor_channels,
+            [channel]
+        );
+        assert!(!peer.actor_reliable_pending_through(channel, through));
     }
 
     fn reason_total(reasons: &ActorBunchDropReasons) -> u64 {

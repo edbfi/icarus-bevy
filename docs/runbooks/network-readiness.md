@@ -10,12 +10,11 @@ N-021); the ACK history clamps at eight words (N-020).
 
 ## Probe output
 
-`native_join_probe`: progress every 5 s (`--progress-interval-seconds`, 1–60);
-stderr progress JSON; stdout final `*_before_shutdown` counts plus
-`sessions_after_shutdown` (shutdown failures/closes).
-
-[Controller receive diagnostics](controller-receive.md) explains production
-`controller_receive` snapshots, live probe rows, parser limits and domain counters.
+`native_join_probe` writes progress JSON to stderr every 5 s
+(`--progress-interval-seconds`, 1–60) and final `*_before_shutdown` and
+`sessions_after_shutdown` counts to stdout (including failures/closes).
+See [controller receive diagnostics](controller-receive.md) for production
+`controller_receive` snapshots, probe rows, parser limits and domain counters.
 
 ### Private selected RPC82 capture
 
@@ -110,11 +109,11 @@ decoded; 2: empty/rejected; 1: failure (including help requests).
 Completeness/provenance/compatibility remain unverified; bind sync/final summary/
 hashes in the case.
 
-`sessions.friends_list_queries_queued`: reliable field118 admissions, including
-requeries when another player begins. It is not client execution.
-`friends_lists_received` and `players_finalised` remain separate (F-1051).
-`friends_list_queries_acknowledged`: a positive packet ACK settled that query's
-own reliable bunch, once per query; delivery, not client execution.
+`sessions.friends_list_queries_queued` counts reliable field118 admissions,
+including requeries when another player begins (F-1051).
+`friends_list_queries_acknowledged` counts one positive packet ACK per query's
+reliable bunch. Both measure transport. `friends_lists_received` and
+`players_finalised` count separately.
 `friends_list_rejections.*`: refused field126 payloads by fixed reason
 (`truncated`, `array_count_over_limit`, `entry_limit_exceeded`,
 `string_length_over_limit`, `string_missing_terminator`,
@@ -167,15 +166,22 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 `release_failed`, `pawn_inbound`, `pawn_moves`, `last_move_ack_ms`,
 `spawn` ([spawn placement](#spawn-placement)).
 
-`sessions.last_client_control_close` survives removal until the next
-`closed_by_client` close. It records wire `reason`, entry `phase` and first
-own-record ACK timing (`in_close_packet` or `earlier`). ACKs apply before
-removal. Release `state`: `unscheduled`, `awaiting_delay`, `due`, `pending_send`,
-`awaiting_ack`, `acked`, `failed`. `pawn`: `unavailable`,
-`reliable_pending`, `settled`. Flags: `relocation_held`, `deferred`, `sent`
-(transport admission). `service_pass_reached` is absent until the first
-own-record ACK and false if the close shares its receive drain, even across
-datagrams. A pass during the delay counts. The snapshot cannot explain a client close.
+`sessions.last_client_control_close` survives peer removal in status and
+shutdown until the next `closed_by_client` close. It gives wire
+`reason` and entry `phase`. `own_record_ack` is omitted when player records
+are disabled, else `unacknowledged`, `in_close_packet` or `earlier`.
+`checkpoint_pawn_update_pending` is true
+if a reliable part of an admitted live checkpoint vitals or owner bag
+update awaits ACK after the close datagram's ACKs/NAKs, before replies or
+removal, regardless of movement release.
+
+Release `state` is `unscheduled`, `awaiting_delay`, `due`, `pending_send`,
+`awaiting_ack`, `acked` or `failed`. `pawn` is `unavailable`,
+`reliable_pending` or `settled`. Flags are `relocation_held`, `deferred`
+and `sent` (transport admission). `service_pass_reached` is absent until
+the first own-record ACK and false if the close shares that receive drain,
+even across datagrams. A pass during the delay counts. The snapshot cannot
+explain the close.
 
 `pawn_move_acks` (F-1127, F-1128): `sessions_moving`, `awaiting_ack`,
 `deferred`, `positions_held`. Counters `pawn_moves_{received,malformed}`,
@@ -183,15 +189,14 @@ datagrams. A pass during the delay counts. The snapshot cannot explain a client 
 `pawn_move_positions_{accepted,rejected,skipped}`. `unreliable_actor_bunches` (probe
 opt-in): client unreliable bunches since bind, all connections: per channel kind `bunches`,
 `last_payload_bits`; `controller_fields` (16 max) `index`/`count`; no payloads.
-`network.begin_timeout_seconds` (absent or 0: no limit; else 5 to 3600; F-1209)
-closes a joined session that has not sent Begin in that time, frees its slot
-and counts `closed_awaiting_begin`. It needs `release_profile`. No run has
-measured how long a stock client takes, or whether a spectator sends Begin at
-all, so choose generously. `--private-leave-proof` refuses it. F-1208 is the
-loopback rehearsal of entry, leave, restart and rejoin; it stubs Steam.
-`checkpoint_saved_locations` (F-1206): `saved`, `saved_at_leave`, and per save
-pass (periodic, leave cut-off or teardown, not per session) `refused` and
-`withheld`. `checkpoint_relocation` (F-1207): `started`,
+`network.begin_timeout_seconds` (F-1209) closes joined sessions awaiting
+Begin, frees slots and counts `closed_awaiting_begin`. Unset or 0 disables it.
+Use 5–3600 s with `release_profile`. Choose generously given unknown client
+timing and spectator behavior. `--private-leave-proof` refuses it.
+F-1208 rehearses entry/leave/restart/rejoin on loopback with stubbed Steam.
+`checkpoint_saved_locations` (F-1206) counts `saved`, `saved_at_leave`, and
+`refused`/`withheld` per save pass (periodic, leave cut-off or teardown).
+`checkpoint_relocation` (F-1207): `started`,
 `corrections_{sent,deferred}`, `correction_errors`, `applied`, `failed`,
 `moves_held`; gauges `pending`, `releases_held`. Neither shows that a client
 applied a correction.
@@ -209,20 +214,19 @@ cause. ACK is packet delivery, not client application.
 
 ## Spawn placement
 
-F-1139, F-1140. `[network.spawn] points = [{ x = 0.0, y = 0.0, z = 0.0, yaw =
-0.0 }]` (centimetres, Unreal axes, Z up; yaw in degrees, optional), or probe
-`--spawn-location x,y,z` with optional `--spawn-yaw` (one point: the probe
-admits one player). Joins take the points round-robin; without points the
-pawn and controller open at the origin, as before (on terrain in the two
-connected runs, F-1149). Needs a release profile;
-at most 64 points, each component within ±1,048,576 cm, yaw within ±360°,
-refused before the socket binds. The yaw is reported, not sent.
+F-1139, F-1140. Set `[network.spawn] points = [{ x = 0.0, y = 0.0, z = 0.0, yaw =
+0.0 }]` (cm, Unreal axes, Z up), or use probe `--spawn-location x,y,z` for one
+player. Optional yaw in degrees (`--spawn-yaw` in the probe) appears only in
+reports. Joins cycle through points. With none, pawn and controller open at the
+origin (on terrain in F-1149's two connected runs). Before bind, placement
+requires a release profile, up to 64 points, coordinates within ±1,048,576 cm
+and yaw within ±360°.
 
-Positions come only from the operator's own knowledge of the map or a
-player's own save: the server ships no map data and reads no packaged
-terrain, collision or tables (F-828). Nothing checks the ground: a point below
-the client's terrain falls forever (the client never resets its own pawn),
-and one outside every landscape tile may keep the loading screen (U-079).
+Use only positions known to the operator or from a player's save. The server
+ships no maps and reads no packaged terrain, collision or tables (F-828).
+With no ground check, a pawn below the client's terrain falls forever and one
+outside all landscape tiles may stay on the loading screen (U-079). The client
+never resets its own pawn.
 
 `network_listening.spawn_points`; counters `pawn_spawns_{saved,configured,default}`
 and `pawn_spawn_saved_refused`; probe ready and summary `spawn`
@@ -265,10 +269,10 @@ naming the table, quoting nothing of the file. Ready and summary
 
 ## Steam CM deadlines
 
-F-1180: completed frames get a separate 100 ms decode budget after socket polling.
-A poll may overrun its read window by one frame's decode allowance. FIFO is
-retained; malformed/over-budget frames and logoff stay fatal. F-1181 completed
-one retry without a CM fatal; universal race resolution is unproven.
+F-1180 gives completed frames 100 ms to decode after socket polling.
+One frame's decode can overrun the read window. FIFO holds. Malformed or
+over-budget frames and logoff stay fatal. F-1181 completed one retry without
+a CM fatal. Broader race handling remains unverified.
 
 ## Join password
 
