@@ -52,12 +52,16 @@ use crate::{
             encode_control_message, read_control_messages,
         },
         handshake::{decode, initial_request},
+        manager_open::PLAYER_HISTORY_HANDLE,
         packet::{
             BitWriter, Bunch, BunchHeader, Name, Packet, PacketConfig, Payload, Receiver,
             read_packet, write_packet,
         },
         packet_lab::client_cookie_seeds,
-        pawn_open::{InventorySlot, PAWN_CHANNEL_INDEX, SlotItem},
+        pawn_open::{
+            InventorySlot, PAWN_CHANNEL_INDEX, SlotItem, character_state_handle,
+            handle as pawn_handle,
+        },
         probe_initialise::{
             ActorBunch, ActorChannelTracker, authored_character_profile, authored_user_profile,
             begin_player_initialisation_field, bestiary_response_payload,
@@ -77,15 +81,19 @@ use crate::{
             encode_controller_leave_request, parse_rpc_payload, player_controller_rpc_parameters,
             read_field_header, write_field_header,
         },
-        sequencing::{PacketSequencer, ReliableChannel, ReliableReceive, wire_reliable_sequence},
+        sequencing::{
+            PacketSequencer, ReliableChannel, ReliableReceive, sequence_difference,
+            wire_reliable_sequence,
+        },
         session_open::{
-            ACTOR_CHANNEL_NAME_INDEX, PLAYER_CONTROLLER_CHANNEL_INDEX, actor_codec,
-            quantize_spawn_vector,
+            ACTOR_CHANNEL_NAME_INDEX, CONTROLLER_HANDLE_ICARUS_PLAYER_CHARACTER,
+            CONTROLLER_HANDLE_PAWN, PLAYER_CONTROLLER_CHANNEL_INDEX, PLAYER_STATE_CHANNEL_INDEX,
+            actor_codec, quantize_spawn_vector,
         },
         steam_auth::{SteamAuthMessage, decode_datagram},
     },
     native_player_runtime::{CheckpointWriter, PlayerRegistry},
-    native_players::{PlayerKey, PlayerProjection},
+    native_players::{PlayerCheckpoint, PlayerKey, PlayerProjection},
     network,
     persistence::{SaveWorkerDisconnected, SnapshotStore},
     simulation::{RunClock, SimulationClock, build_app},
@@ -95,6 +103,7 @@ use crate::{
 
 /// The operator's one spawn point (centimetres).
 const SPAWN: [f32; 3] = [1_000.0, -2_000.0, 300.0];
+const HOSTED_MAP_URL: &str = "/Authored/Maps/Workshop";
 /// Character slot every client begins with.
 const SLOT: i32 = 3;
 /// `network.session_timeout_seconds` of every scenario.
@@ -102,8 +111,8 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(3);
 /// `network.begin_timeout_seconds` where a scenario sets it: its smallest
 /// accepted value. An authored test value, not a measured client timing.
 const BEGIN_TIMEOUT: Duration = Duration::from_secs(5);
-/// `autosave_seconds` of every scenario: `run`'s periodic save runs beside
-/// the leave saves.
+/// `autosave_seconds` of the authored config. Durable scenarios run periodic
+/// saves beside the leave saves.
 const AUTOSAVE: Duration = Duration::from_secs(3);
 /// The saved-location clearance (F-1139) a relocation target adds to z.
 const CLEARANCE_CM: f32 = 50.0;
@@ -244,7 +253,7 @@ checkpoint_location_correction = true
 {inventory}
 [network.player_persistence]
 prospect_id = "rehearsal-workshop"
-map_url = "/Authored/Maps/Workshop"
+map_url = "{HOSTED_MAP_URL}"
 prospect_row = "AuthoredWorkshop"
 difficulty = 2
 
@@ -267,7 +276,7 @@ query_port = {query}
 private_ip = "127.0.0.1"
 seconds = 600
 name = "Rehearsal workshop"
-map_url = "/Authored/Maps/Workshop"
+map_url = "{HOSTED_MAP_URL}"
 prospect_id = "rehearsal-workshop"
 prospect_row = "AuthoredWorkshop"
 lobby_name = "Workshop"
@@ -306,6 +315,11 @@ struct Stopped {
     players: crate::native_players::PlayerSnapshot,
 }
 
+enum SnapshotMode {
+    Durable,
+    InMemory,
+}
+
 /// One server process, as `run` starts, steps and stops it, through the same
 /// library calls in the same order. Not covered here: CLI parsing, the
 /// private leave proof, official data discovery (the pak is configured),
@@ -313,16 +327,17 @@ struct Stopped {
 /// activation, membership publication and stop), the SIGINT/SIGTERM handler,
 /// run-record printing, clamped-frame and tick metrics, and the periodic
 /// status cadence (the record's network fields are composed on demand).
+/// The paired entry test uses an in-memory snapshot and skips the save loop.
 struct Server {
     app: App,
-    writer: CheckpointWriter,
+    writer: Option<CheckpointWriter>,
     config: ServerConfig,
     clock: RunClock,
     last_save_request: Duration,
     auth: AuthClient,
     address: SocketAddrV4,
     reopened: bool,
-    initial_vitals: crate::experimental::pawn_open::CharacterVitals,
+    initial_vitals: Option<crate::experimental::pawn_open::CharacterVitals>,
     save_submissions: u64,
     commits: u64,
     save_failures: u64,
@@ -334,12 +349,23 @@ struct Server {
 impl Server {
     /// `run`'s startup, from configuration to the listening app.
     fn start(config: &Path) -> Self {
-        let config = ConfigOptions {
+        Self::start_config(Self::resolve_config(config), None, SnapshotMode::Durable)
+    }
+
+    fn resolve_config(config: &Path) -> ServerConfig {
+        ConfigOptions {
             config: Some(config.to_path_buf()),
             ..ConfigOptions::default()
         }
         .resolve()
-        .unwrap();
+        .unwrap()
+    }
+
+    fn start_config(
+        config: ServerConfig,
+        checkpoint_health: Option<i32>,
+        snapshot_mode: SnapshotMode,
+    ) -> Self {
         assert!(config.network.enabled && config.network.data_pak.is_some());
         let (mut prepared, players) = network::prepare_run_with_tick_hz(
             &config.network,
@@ -352,29 +378,58 @@ impl Server {
             .unwrap()
             .prepare_runtime(config.autosave_seconds)
             .unwrap();
-        let initial_vitals = players.as_ref().unwrap().initial_vitals;
-        let existing_state = match std::fs::read_dir(&config.data_dir) {
-            Ok(entries) => entries.map(|entry| entry.unwrap().file_name()).any(|name| {
-                name == "manifest.json" || name.to_string_lossy().starts_with("snapshot-")
-            }),
-            Err(error) if error.kind() == ErrorKind::NotFound => false,
-            Err(error) => panic!("inspect native state directory: {error}"),
-        };
+        let initial_vitals = players.as_ref().map(|players| players.initial_vitals);
+        let existing_state = matches!(snapshot_mode, SnapshotMode::Durable)
+            && match std::fs::read_dir(&config.data_dir) {
+                Ok(entries) => entries.map(|entry| entry.unwrap().file_name()).any(|name| {
+                    name == "manifest.json" || name.to_string_lossy().starts_with("snapshot-")
+                }),
+                Err(error) if error.kind() == ErrorKind::NotFound => false,
+                Err(error) => panic!("inspect native state directory: {error}"),
+            };
+        let mut initial = network::fresh_player_snapshot(players.as_ref());
+        if let Some(health) = checkpoint_health {
+            assert!(!existing_state);
+            // Seed the authored fixture before building the live registry.
+            // The live checkpoint bridge reserves and activates it normally.
+            let mut vitals = initial_vitals.unwrap();
+            assert_ne!(health, vitals.health);
+            vitals.health = health;
+            let mut registry = PlayerRegistry::new(
+                initial.native_players.take().unwrap(),
+                &players.as_ref().unwrap().context,
+                config.network.max_players as usize,
+            )
+            .unwrap();
+            registry
+                .reserve(
+                    PlayerKey::new(ACCOUNT, SLOT).unwrap(),
+                    1,
+                    PlayerCheckpoint {
+                        location_cm: SPAWN.map(f64::from),
+                        vitals,
+                    },
+                )
+                .unwrap();
+            registry.activate(1).unwrap();
+            initial.native_players = Some(registry.snapshot());
+        }
         let mut fresh_app = (!existing_state).then(|| {
-            let initial = network::fresh_player_snapshot(players.as_ref());
             let mut app = build_app(&config, &initial).unwrap();
             network::install_player_registry(app.world_mut(), players.as_ref(), &config.network)
                 .unwrap();
             prepared.as_mut().unwrap().prepare_app(&mut app).unwrap();
             app
         });
-        let store = if config.data_dir.join("server.lock").exists() {
-            SnapshotStore::open_existing(&config.data_dir)
-        } else {
-            SnapshotStore::open(&config.data_dir)
-        }
-        .unwrap();
-        let loaded = store.load().unwrap();
+        let store = matches!(snapshot_mode, SnapshotMode::Durable).then(|| {
+            if config.data_dir.join("server.lock").exists() {
+                SnapshotStore::open_existing(&config.data_dir)
+            } else {
+                SnapshotStore::open(&config.data_dir)
+            }
+            .unwrap()
+        });
+        let loaded = store.as_ref().and_then(|store| store.load().unwrap());
         assert!(fresh_app.is_none() || loaded.is_none());
         assert!(
             !loaded
@@ -383,9 +438,7 @@ impl Server {
             "the current generation must load"
         );
         let reopened = loaded.is_some();
-        let mut snapshot = loaded
-            .map(|loaded| loaded.snapshot)
-            .unwrap_or_else(|| network::fresh_player_snapshot(players.as_ref()));
+        let mut snapshot = loaded.map_or(initial, |loaded| loaded.snapshot);
         network::open_player_snapshot(&mut snapshot, players.as_ref()).unwrap();
         // `run`'s hosting and projection guards refuse a preserved world.
         assert!(snapshot.preserved_prospect.is_none());
@@ -439,7 +492,7 @@ impl Server {
         let start_tick = snapshot.tick;
         drop(snapshot);
         drop(players);
-        let writer = CheckpointWriter::spawn(store).unwrap();
+        let writer = store.map(|store| CheckpointWriter::spawn(store).unwrap());
         let clock = RunClock {
             compressed: false,
             start: Instant::now(),
@@ -472,12 +525,14 @@ impl Server {
         network::authored_clock_runtime_health(self.app.world()).unwrap();
         let tick = self.app.world().resource::<SimulationClock>().tick;
         let now = self.clock.elapsed(tick);
-        match self.writer.poll(self.app.world_mut()) {
-            Ok(Some(_)) => self.commits += 1,
-            Ok(None) => {}
-            Err(error) => {
-                assert!(!error.is::<SaveWorkerDisconnected>(), "{error:#}");
-                self.save_failures += 1;
+        if let Some(writer) = &mut self.writer {
+            match writer.poll(self.app.world_mut()) {
+                Ok(Some(_)) => self.commits += 1,
+                Ok(None) => {}
+                Err(error) => {
+                    assert!(!error.is::<SaveWorkerDisconnected>(), "{error:#}");
+                    self.save_failures += 1;
+                }
             }
         }
         // `run` publishes this membership to the Steam service.
@@ -486,17 +541,19 @@ impl Server {
             .resource_mut::<PeerLab>()
             .authenticated_membership()
             .unwrap();
-        let leave_due = self
-            .app
-            .world_mut()
-            .get_resource_mut::<PlayerRegistry>()
-            .is_some_and(|mut registry| registry.checkpoint_save_needed(Instant::now()));
-        let periodic_due = now.saturating_sub(self.last_save_request)
-            >= Duration::from_secs(self.config.autosave_seconds);
-        if (leave_due || periodic_due) && !self.writer.is_busy() {
-            self.writer.submit(self.app.world_mut()).unwrap();
-            self.last_save_request = self.clock.elapsed(tick);
-            self.save_submissions += 1;
+        if let Some(writer) = &mut self.writer {
+            let leave_due = self
+                .app
+                .world_mut()
+                .get_resource_mut::<PlayerRegistry>()
+                .is_some_and(|mut registry| registry.checkpoint_save_needed(Instant::now()));
+            let periodic_due = now.saturating_sub(self.last_save_request)
+                >= Duration::from_secs(self.config.autosave_seconds);
+            if (leave_due || periodic_due) && !writer.is_busy() {
+                writer.submit(self.app.world_mut()).unwrap();
+                self.last_save_request = self.clock.elapsed(tick);
+                self.save_submissions += 1;
+            }
         }
         std::thread::sleep(self.config.tick_interval().saturating_sub(frame.elapsed()));
     }
@@ -556,6 +613,7 @@ impl Server {
     /// deadline. Then the process ends: the app is dropped and the writer's
     /// thread releases the store's lock.
     fn shutdown(mut self) -> Stopped {
+        let mut writer = self.writer.take().expect("durable rehearsal");
         let world = self.app.world_mut();
         // The loop's stop request, then the idempotent post-loop sequence.
         network::stop_admission(world);
@@ -566,14 +624,14 @@ impl Server {
             .map(|lab| lab.readiness_counts());
         let sessions = network::teardown(world);
         let deadline = Instant::now() + Duration::from_secs(self.config.shutdown_timeout_seconds);
-        match self.writer.settle_before(world, deadline).unwrap() {
+        match writer.settle_before(world, deadline).unwrap() {
             Some(Ok(_)) => self.commits += 1,
             Some(Err(_)) => self.save_failures += 1,
             None => {}
         }
         assert!(Instant::now() < deadline, "final capture deadline");
-        self.writer.submit_before(world, deadline).unwrap();
-        self.writer
+        writer.submit_before(world, deadline).unwrap();
+        writer
             .finish_before(world, deadline)
             .unwrap()
             .expect("the final save commits");
@@ -591,7 +649,6 @@ impl Server {
         let lock = self.config.data_dir.join("server.lock");
         let Self {
             app,
-            writer,
             commits,
             save_failures,
             backend,
@@ -649,22 +706,40 @@ enum Component {
     Bestiary,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Possession {
+    pawn: Option<u32>,
+    player_character: Option<u32>,
+}
+
 /// What the client decoded, in its own delivery order.
 #[derive(Default)]
 struct Observed {
     log: Vec<String>,
     /// When each logged event was decoded or sent.
     at: Vec<Instant>,
+    welcome_map_url: Option<String>,
     /// The controller actor's GUID from its open.
     controller: Option<u32>,
+    player_state: Option<u32>,
     pawn: Option<u32>,
     pawn_location: Option<SpawnVector>,
+    pawn_character_state: Option<u32>,
+    pawn_open_health: Option<i32>,
+    /// The first pawn's spawn level resolved from received exports at open.
+    pawn_level_path: Option<String>,
     /// The pawn a controller ClientRestart (field 40) named.
     restart: Option<u32>,
+    /// The two references decoded together in each possession block.
+    possessions: Vec<Possession>,
+    /// Decoded History values on the tracker channel.
+    histories: Vec<RepValue>,
     begin_sent: bool,
     released: bool,
     /// Reliable non-open pawn update bodies, in delivery order.
     pawn_updates: Vec<Payload>,
+    /// Wire packet sequence for each part of the decoded held pawn update.
+    pawn_update_packets: Vec<u16>,
     responses: Vec<MoveResponse>,
     completions: Vec<u32>,
     /// A control-channel close from the server.
@@ -674,6 +749,19 @@ struct Observed {
 }
 
 impl Observed {
+    fn assert_hosted_map(&self) {
+        assert_eq!(
+            self.welcome_map_url.as_deref(),
+            Some(HOSTED_MAP_URL),
+            "Welcome names the configured hosted map"
+        );
+        assert_eq!(
+            self.pawn_level_path.as_deref(),
+            Some("/Authored/Maps/Workshop.Workshop.PersistentLevel"),
+            "the first pawn's level GUID resolves to the hosted map's PersistentLevel"
+        );
+    }
+
     fn position(&self, event: &str) -> usize {
         self.log
             .iter()
@@ -716,6 +804,12 @@ struct StockClient {
     leave: ControllerLeavePlan,
     /// Whether this client sends Begin at all.
     begins: bool,
+    /// Report reliable pawn updates as missing while decoding them for the rehearsal.
+    hold_pawn_updates: bool,
+    /// Wire packet sequence for each update part awaiting reassembly.
+    held_pawn_parts: Vec<u16>,
+    /// Packet delivery decisions to include with the control close.
+    deferred_acks: Vec<(u16, bool)>,
     seen: Observed,
 }
 
@@ -788,6 +882,9 @@ impl StockClient {
             account,
             leave: inputs.leave.clone(),
             begins,
+            hold_pawn_updates: false,
+            held_pawn_parts: Vec::new(),
+            deferred_acks: Vec::new(),
             seen: Observed::default(),
         };
         client.queue_control(
@@ -854,6 +951,19 @@ impl StockClient {
         });
     }
 
+    fn queue_close(&mut self) {
+        for (sequence, delivered) in self.deferred_acks.drain(..) {
+            self.sequencer.ack_seq(sequence, delivered).unwrap();
+        }
+        let mut header = self.reliable_header(0, true, false);
+        header.close = true;
+        header.close_reason = Some(CLOSE_REASON_DESTROYED);
+        self.queue(Bunch {
+            header,
+            payload: Payload::from_writer(BitWriter::new()),
+        });
+    }
+
     /// One controller RPC block, reliable on the controller's channel.
     fn queue_rpc(&mut self, target: BlockTarget, field: &FieldHeader, bound: u32) {
         let mut fields = BitWriter::new();
@@ -894,7 +1004,7 @@ impl StockClient {
 
     /// One client packet: every reliable bunch owed (resends first), then
     /// `moves` as unreliable pawn bunches, and the ACK state.
-    fn send(&mut self, moves: &[Payload]) {
+    fn send(&mut self, moves: &[Payload]) -> Vec<u8> {
         let header = self.sequencer.header().unwrap();
         let mut bunches = Vec::new();
         let mut carried = Vec::new();
@@ -933,15 +1043,17 @@ impl StockClient {
             self.outgoing[position].resend = false;
         }
         self.socket.send(&bytes).unwrap();
+        bytes
     }
 
     /// Send, let the server run one loop step, then read what it sent.
-    fn exchange(&mut self, server: &mut Server, moves: &[Payload]) {
-        self.send(moves);
+    fn exchange(&mut self, server: &mut Server, moves: &[Payload]) -> Vec<u8> {
+        let sent = self.send(moves);
         server.step();
         for bytes in drain(&self.socket) {
             self.receive(Some(server.lab()), &bytes);
         }
+        sent
     }
 
     /// Keep exchanging (ACKs only) until `done`, within `limit` of real time.
@@ -975,7 +1087,26 @@ impl StockClient {
         let Some(received) = self.sequencer.receive(&packet.header).unwrap() else {
             return;
         };
-        self.sequencer.ack_seq(received.sequence, true).unwrap();
+        // The tracker still decodes these packets. Once the pawn open has been
+        // reassembled, report each reliable update part as missing.
+        let previous_parts = self.held_pawn_parts.len();
+        if self.hold_pawn_updates && self.seen.pawn.is_some() {
+            self.held_pawn_parts
+                .extend(packet.bunches.iter().filter_map(|bunch| {
+                    let header = &bunch.header;
+                    (header.channel_index == PAWN_CHANNEL_INDEX && header.reliable && !header.open)
+                        .then_some(received.sequence)
+                }));
+        }
+        let hold = self.held_pawn_parts.len() != previous_parts;
+        if hold || !self.deferred_acks.is_empty() {
+            // Advancing past a missing packet would immediately NAK it,
+            // even if we skipped the explicit decision for that sequence.
+            // Keep the preceding watermark while sending entry replies.
+            self.deferred_acks.push((received.sequence, !hold));
+        } else {
+            self.sequencer.ack_seq(received.sequence, true).unwrap();
+        }
         for notification in &received.notifications {
             for out in &mut self.outgoing {
                 if out.packet == Some(notification.packet_id) && !out.resend {
@@ -1048,7 +1179,8 @@ impl StockClient {
                 };
                 self.queue_control(login, false);
             }
-            ControlMessage::Welcome { .. } => {
+            ControlMessage::Welcome { map_url, .. } => {
+                self.seen.welcome_map_url = Some(String::from_utf16(map_url.units()).unwrap());
                 self.note("welcome");
                 self.queue_control(ControlMessage::Netspeed { rate: 100_000 }, false);
                 self.queue_control(ControlMessage::Join, false);
@@ -1077,6 +1209,11 @@ impl StockClient {
         match bunch.channel_index {
             PLAYER_CONTROLLER_CHANNEL_INDEX => self.on_controller(bunch),
             PAWN_CHANNEL_INDEX => self.on_pawn(lab, bunch),
+            PLAYER_STATE_CHANNEL_INDEX if bunch.open => {
+                let spawn = read_spawn(&mut bunch.payload.reader(), &self.codec.actor).unwrap();
+                self.seen.player_state = Some(spawn.actor.guid);
+                self.note("player state open");
+            }
             channel
                 if lab
                     .game_state_open
@@ -1086,7 +1223,38 @@ impl StockClient {
             {
                 self.note("record");
             }
-            _ => {}
+            channel => {
+                if let Some((_, plan, _)) = lab.manager_opens.iter().find(|(key, _, index)| {
+                    *key == ManagerSlot::PlayerHistory.key() && *index == channel
+                }) {
+                    self.on_history(bunch, plan);
+                }
+            }
+        }
+    }
+
+    fn on_history(&mut self, bunch: &ActorBunch, plan: &ManagerOpenPlan) {
+        if bunch.close {
+            return;
+        }
+        assert!(bunch.reliable);
+        if bunch.open {
+            self.note("history open");
+        }
+        let body =
+            read_actor_bunch_body(&mut bunch.payload.reader(), bunch.open, &self.codec.actor)
+                .unwrap();
+        for block in body.blocks {
+            if block.target != BlockTarget::Actor || !block.has_rep_layout {
+                continue;
+            }
+            let values = parse_rep_properties(&block.payload, &plan.layout, &self.codec).unwrap();
+            for entry in values.entries {
+                if entry.handle == PLAYER_HISTORY_HANDLE {
+                    self.seen.histories.push(entry.value);
+                    self.note("history");
+                }
+            }
         }
     }
 
@@ -1104,11 +1272,11 @@ impl StockClient {
         let body =
             read_actor_bunch_body(&mut bunch.payload.reader(), false, &self.codec.actor).unwrap();
         for block in &body.blocks {
-            self.on_controller_block(block);
+            self.on_controller_block(block, bunch.reliable);
         }
     }
 
-    fn on_controller_block(&mut self, block: &ContentBlock) {
+    fn on_controller_block(&mut self, block: &ContentBlock, reliable: bool) {
         if block.has_rep_layout {
             if block.target != BlockTarget::Actor {
                 return;
@@ -1126,15 +1294,26 @@ impl StockClient {
             ) else {
                 return;
             };
+            let mut possession = Possession::default();
             for entry in values.entries {
                 match (entry.handle, entry.value) {
                     (26, RepValue::Enum(value)) => {
                         self.seen.completions.push(value);
                         self.note("leave completion");
                     }
-                    (17, _) => self.note("possession"),
+                    (CONTROLLER_HANDLE_PAWN, RepValue::Object(pawn)) => {
+                        possession.pawn = Some(pawn.guid);
+                    }
+                    (CONTROLLER_HANDLE_ICARUS_PLAYER_CHARACTER, RepValue::Object(pawn)) => {
+                        possession.player_character = Some(pawn.guid);
+                    }
                     _ => {}
                 }
+            }
+            if possession.pawn.is_some() || possession.player_character.is_some() {
+                assert!(reliable);
+                self.seen.possessions.push(possession);
+                self.note("possession");
             }
             return;
         }
@@ -1239,13 +1418,73 @@ impl StockClient {
 
     fn on_pawn(&mut self, lab: &PeerLab, bunch: &ActorBunch) {
         if bunch.open {
-            let spawn = read_spawn(&mut bunch.payload.reader(), &self.codec.actor).unwrap();
+            let plan = &lab.pawn_open.as_ref().unwrap().0;
+            let body = read_actor_bunch_body(&mut bunch.payload.reader(), true, &self.codec.actor)
+                .unwrap();
+            let spawn = body.spawn.unwrap();
+            let actor = &body.blocks[0];
+            assert_eq!(actor.target, BlockTarget::Actor);
+            assert!(actor.has_rep_layout);
+            let state_handle = plan
+                .layout_version
+                .wire_handle(pawn_handle::ACTOR_STATE)
+                .unwrap();
+            let actor_properties =
+                parse_rep_properties(&actor.payload, &plan.layout, &self.codec).unwrap();
+            let state_guid = actor_properties
+                .entries
+                .iter()
+                .find_map(|entry| match &entry.value {
+                    RepValue::Object(state) if entry.handle == state_handle => Some(state.guid),
+                    _ => None,
+                })
+                .expect("the open pawn references its CharacterState");
+            let state = body
+                .blocks
+                .iter()
+                .find(|block| is_character_state(block, state_guid))
+                .expect("the open pawn carries its CharacterState block");
+            let properties = parse_rep_properties(
+                &state.payload,
+                &plan.content.character_state_layout,
+                &self.codec,
+            )
+            .unwrap();
+            let health = properties
+                .entries
+                .iter()
+                .find_map(|entry| match entry.value {
+                    RepValue::Int(health) if entry.handle == character_state_handle::HEALTH => {
+                        Some(health)
+                    }
+                    _ => None,
+                })
+                .expect("the open CharacterState carries health");
+            if self.seen.pawn.is_none() {
+                self.seen.pawn_level_path = spawn
+                    .dynamic
+                    .as_ref()
+                    .and_then(|dynamic| dynamic.level.as_ref())
+                    .and_then(|level| self.tracker.package_map().resolve_full_path(level.guid));
+            }
             self.seen.pawn = Some(spawn.actor.guid);
             self.seen.pawn_location = spawn.dynamic.and_then(|dynamic| dynamic.location);
+            self.seen.pawn_character_state = Some(state_guid);
+            self.seen.pawn_open_health = Some(health);
             self.note("pawn open");
             return;
         }
         if bunch.reliable {
+            if self.hold_pawn_updates {
+                assert_eq!(
+                    self.held_pawn_parts.len(),
+                    bunch.parts,
+                    "wire parts for this decoded pawn update",
+                );
+                self.seen
+                    .pawn_update_packets
+                    .append(&mut self.held_pawn_parts);
+            }
             self.seen.pawn_updates.push(bunch.payload.clone());
             self.note("pawn update");
             return;
@@ -1272,26 +1511,50 @@ impl StockClient {
             return false;
         }
         let codec = super::super::record_codec();
-        let Ok(body) = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor)
-        else {
-            return false;
-        };
+        let body = read_actor_bunch_body(&mut bunch.payload.reader(), false, &codec.actor)
+            .expect("decode the reliable GameState update");
+        let record_class = plan
+            .record_class
+            .iter()
+            .rev()
+            .map(|segment| segment.path.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
         body.blocks.iter().any(|block| {
-            matches!(
-                &block.target,
-                BlockTarget::SubObject {
-                    class: SubObjectClass::Class(_),
-                    ..
-                }
-            ) && parse_rep_properties(&block.payload, &plan.record_layout, &codec).is_ok_and(
-                |values| {
-                    values.entries.iter().any(|entry| {
-                        entry.handle == 3
-                            && matches!(&entry.value, RepValue::Object(reference)
-                                if reference.guid == controller)
-                    })
-                },
-            )
+            let BlockTarget::SubObject {
+                class: SubObjectClass::Class(class),
+                ..
+            } = &block.target
+            else {
+                return false;
+            };
+            if self
+                .tracker
+                .package_map()
+                .resolve_full_path(class.guid)
+                .as_deref()
+                != Some(record_class.as_str())
+            {
+                return false;
+            }
+            assert!(
+                block.has_rep_layout,
+                "connected-player record requires a property layout"
+            );
+            let values = parse_rep_properties(&block.payload, &plan.record_layout, &codec)
+                .expect("decode the connected-player record");
+            let guid = |handle| {
+                values.entries.iter().find_map(|entry| match &entry.value {
+                    RepValue::Object(reference) if entry.handle == handle => Some(reference.guid),
+                    _ => None,
+                })
+            };
+            if guid(3) != Some(controller) {
+                return false;
+            }
+            assert_eq!(guid(4), self.seen.pawn);
+            assert_eq!(guid(5), self.seen.player_state);
+            true
         })
     }
 }
@@ -1319,34 +1582,38 @@ fn move_response(engine: u32, payload: &Payload) -> Option<MoveResponse> {
         .then(|| read_move_response(&field.payload, &codec).unwrap())
 }
 
-/// The CharacterState values of a reliable pawn update, if it is one.
-fn vitals_update(lab: &PeerLab, payload: &Payload) -> Option<BTreeMap<u32, RepValue>> {
-    let plan = &lab.pawn_open.as_ref()?.0;
+fn is_character_state(block: &ContentBlock, guid: u32) -> bool {
+    block.has_rep_layout
+        && matches!(
+            &block.target,
+            BlockTarget::SubObject { object, class: SubObjectClass::StablyNamed }
+                if object.guid == guid
+        )
+}
+
+/// The values of an update to the CharacterState named by the receiver's pawn open.
+fn vitals_update(lab: &PeerLab, payload: &Payload, guid: u32) -> BTreeMap<u32, RepValue> {
+    let plan = &lab.pawn_open.as_ref().expect("configured pawn open").0;
     let codec = RepLayoutCodec {
         actor: actor_codec(plan.engine_net_version, ByteOrder::Little),
         checksums: false,
         limits: Default::default(),
     };
-    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec.actor).ok()?;
+    let body = read_actor_bunch_body(&mut payload.reader(), false, &codec.actor)
+        .expect("decode the reliable pawn update");
     let [block] = body.blocks.as_slice() else {
-        return None;
+        panic!("one CharacterState block expected");
     };
-    if !block.has_rep_layout {
-        return None;
-    }
-    let stream = read_rep_properties(
-        &mut block.payload.reader(),
-        &plan.content.character_state_layout,
-        &codec,
-    )
-    .ok()?;
-    Some(
-        stream
-            .entries
-            .into_iter()
-            .map(|entry| (entry.handle, entry.value))
-            .collect(),
-    )
+    assert!(
+        is_character_state(block, guid),
+        "update must target the pawn's CharacterState"
+    );
+    parse_rep_properties(&block.payload, &plan.content.character_state_layout, &codec)
+        .expect("decode the complete CharacterState property stream")
+        .entries
+        .into_iter()
+        .map(|entry| (entry.handle, entry.value))
+        .collect()
 }
 
 /// The client's projected slots and weight after the deltas among `payloads`:
@@ -1430,7 +1697,12 @@ fn starter_bag_literal() -> Vec<BTreeMap<u32, RepValue>> {
 fn enter(server: &mut Server, inputs: &Inputs, limit: Duration) -> StockClient {
     let mut client = StockClient::connect(server, inputs, ACCOUNT, true);
     client.until(server, limit, "the frozen release", |seen, _| seen.released);
-    let seen = &client.seen;
+    assert_entry_order(&client.seen);
+    assert!(client.seen.position("record") < client.seen.position("frozen release"));
+    client
+}
+
+fn assert_entry_order(seen: &Observed) {
     assert_eq!(
         seen.restart, seen.pawn,
         "ClientRestart names the opened pawn"
@@ -1450,7 +1722,6 @@ fn enter(server: &mut Server, inputs: &Inputs, limit: Duration) -> StockClient {
         ("loadout request", "record"),
         ("bestiary request", "record"),
         ("friends query", "record"),
-        ("record", "frozen release"),
     ] {
         assert!(
             seen.position(before) < seen.position(after),
@@ -1458,7 +1729,6 @@ fn enter(server: &mut Server, inputs: &Inputs, limit: Duration) -> StockClient {
             seen.log
         );
     }
-    client
 }
 
 /// A normal leave, its completion, and the server's removal of the session
@@ -1523,6 +1793,205 @@ fn wait_lab(server: &mut Server, limit: Duration, what: &str, done: impl Fn(&Pee
 
 // ------------------------------------------------------------------ scenarios
 
+/// Compare hosted entry up to the authored control close, which carries both
+/// the first own-record ACK and the first NAK of the decoded checkpoint update.
+#[test]
+fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
+    const STAGED_HEALTH: i32 = 37;
+    let inputs = Inputs::new(false);
+    let mut config = Server::resolve_config(&inputs.config);
+    config.network.authored_controller_leave = false;
+    config.network.player_consumption = None;
+    config.network.pawn_move_acks = false;
+    config.network.checkpoint_saved_locations = false;
+    config.network.checkpoint_location_correction = false;
+    config.network.server_frozen_movement_release_delay_ms = 0;
+
+    let fresh_health = crate::gameplay_profile::FreshPlayerValues::default().max_health;
+    let mut legacy_entry = None;
+    for checkpoints in [false, true] {
+        let mut config = config.clone();
+        if !checkpoints {
+            config.network.player_persistence = None;
+            config.network.checkpoint_pawn_before_identity = false;
+        }
+        let mut server = Server::start_config(
+            config,
+            checkpoints.then_some(STAGED_HEALTH),
+            SnapshotMode::InMemory,
+        );
+        assert!(server.lab().has_player_history_open());
+        let mut client = StockClient::connect(&mut server, &inputs, ACCOUNT, true);
+        client.hold_pawn_updates = true;
+        client.until(
+            &mut server,
+            Duration::from_secs(5),
+            "the own record",
+            |seen, _| seen.log.iter().any(|event| event == "record"),
+        );
+
+        let seen = &client.seen;
+        assert_entry_order(seen);
+        seen.assert_hosted_map();
+        assert_eq!(
+            seen.pawn_location,
+            Some(quantize_spawn_vector(SPAWN).unwrap())
+        );
+        assert!(seen.player_state.is_some());
+        assert_eq!(
+            seen.possessions,
+            [Possession {
+                pawn: seen.pawn,
+                player_character: seen.pawn,
+            }],
+            "one possession block names the opened pawn with both references",
+        );
+        assert_eq!(seen.pawn_open_health, Some(fresh_health));
+        assert!(seen.position("pawn open") < seen.position("possession"));
+        assert!(seen.position("possession") < seen.position("record"));
+        assert!(seen.position("history open") < seen.position("record"));
+        let common_entry: Vec<_> = seen.log[..=seen.position("record")]
+            .iter()
+            .filter(|event| !matches!(event.as_str(), "pawn update" | "history"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            common_entry
+                .iter()
+                .filter(|event| *event == "pawn open")
+                .count(),
+            1,
+            "the arm opens one initial pawn",
+        );
+        assert!(
+            client.held_pawn_parts.is_empty(),
+            "incomplete held pawn update"
+        );
+        let pawn = if checkpoints {
+            assert_eq!(
+                legacy_entry.as_ref(),
+                Some(&common_entry),
+                "the common decoded entry events arrive in the same order",
+            );
+            let [update] = seen.pawn_updates.as_slice() else {
+                panic!("expected one staged pawn update: {:?}", seen.log);
+            };
+            let vitals = vitals_update(server.lab(), update, seen.pawn_character_state.unwrap());
+            assert_eq!(
+                vitals[&character_state_handle::HEALTH],
+                RepValue::Int(STAGED_HEALTH)
+            );
+            assert!(!seen.pawn_update_packets.is_empty());
+            assert!(seen.position("begin") < seen.position("pawn update"));
+            assert!(seen.position("pawn update") < seen.position("record"));
+            // The checkpoint finalisation path leaves the fresh tracker empty.
+            assert!(seen.histories.is_empty());
+            ReleasePawnState::ReliablePending
+        } else {
+            legacy_entry = Some(common_entry);
+            assert!(seen.pawn_updates.is_empty());
+            assert!(seen.pawn_update_packets.is_empty());
+            let [RepValue::DynamicArray(history)] = seen.histories.as_slice() else {
+                panic!("expected one History append: {:?}", seen.log);
+            };
+            assert_eq!(history.count, 1);
+            let fields: Vec<_> = history
+                .stream
+                .entries
+                .iter()
+                .map(|entry| (entry.handle, entry.value.clone()))
+                .collect();
+            assert_eq!(
+                fields,
+                [
+                    (
+                        1,
+                        RepValue::Str(ArchiveText::text(&ACCOUNT.to_string()).unwrap())
+                    ),
+                    (2, RepValue::Int(SLOT)),
+                    (
+                        3,
+                        RepValue::Str(ArchiveText::text("authored-character").unwrap())
+                    ),
+                ],
+            );
+            assert!(seen.position("record") < seen.position("history"));
+            ReleasePawnState::Settled
+        };
+        assert!(!seen.released);
+        let before = server.sessions();
+        assert_eq!(before.players_finalised, 1);
+        assert_eq!(before.connected_player_record_creations_sent, 1);
+        assert_eq!(before.connected_player_record_creations_acked, 0);
+        assert_eq!(before.player_history_appends, u64::from(!checkpoints));
+        assert_eq!(before.frozen_movement_releases_scheduled, 0);
+        assert_eq!(before.frozen_movement_releases_sent, 0);
+        let peer = &server.lab().peers[&client.address].peer;
+        assert_eq!(peer.actor_channel_settled(PAWN_CHANNEL_INDEX), !checkpoints);
+
+        // Replay the exact close header from the receiver's prior watermark.
+        // PacketNotify emits a disposition only when that watermark first
+        // crosses a sequence. A NAK here may queue a repair before close
+        // removes the peer, so it witnesses a pending update at close only.
+        let mut notify = peer.sequencer().notify().clone();
+        let held_packets = seen.pawn_update_packets.clone();
+        let accepted = server.lab().stats().data_accepted;
+        client.queue_close();
+        let bytes = client.exchange(&mut server, &[]);
+        let close = read_packet(&bytes, &client.write).unwrap();
+        assert!(close.bunches.iter().any(|bunch| {
+            let header = &bunch.header;
+            header.channel_index == 0 && header.reliable && header.close
+        }));
+        let mut naks = Vec::new();
+        notify
+            .update(&close.header, |sequence, delivered| {
+                if !delivered {
+                    naks.push(sequence);
+                }
+                Ok(())
+            })
+            .unwrap();
+        for sequence in held_packets {
+            let bit = usize::from(sequence_difference(close.header.acked_sequence, sequence));
+            assert!(
+                bit < close.header.history.len() * u32::BITS as usize,
+                "pawn packet {sequence} must have a bit in the transmitted close history",
+            );
+            assert!(
+                naks.contains(&sequence),
+                "the close must first report pawn packet {sequence} as missing",
+            );
+        }
+        assert_eq!(client.seen.pawn_updates.len(), usize::from(checkpoints));
+
+        let after = server.sessions();
+        assert_eq!(server.lab().stats().data_accepted, accepted + 1);
+        assert_eq!(after.active_peers, 0);
+        assert_eq!(after.closed_by_client, 1);
+        assert_eq!(after.connected_player_record_creations_acked, 1);
+        assert_eq!(after.frozen_movement_releases_scheduled, 1);
+        assert_eq!(after.frozen_movement_releases_sent, 0);
+        assert!(!client.seen.released);
+        assert_eq!(
+            after.last_client_control_close,
+            Some(ClientControlClose {
+                reason: Some(CLOSE_REASON_DESTROYED),
+                phase: PlayerEntryPhase::Finalised,
+                own_record_ack: Some(OwnRecordAck::InClosePacket),
+                frozen_movement_release: Some(FrozenReleaseAtClose {
+                    state: FrozenReleaseState::Due,
+                    sent: false,
+                    pawn: Some(pawn),
+                    relocation_held: false,
+                    deferred: false,
+                    service_pass_reached: Some(false),
+                }),
+            }),
+        );
+    }
+}
+
 /// Scenario 1: entry in stock order, a walk with acknowledgements, a normal
 /// leave, `run`'s shutdown, a second start on the same store, and a rejoin
 /// whose first move is corrected to the saved location with the depleted
@@ -1535,8 +2004,9 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
     // ---- first process
     let mut server = Server::start(&inputs.config);
     assert!(!server.reopened);
-    let fresh = server.initial_vitals;
+    let fresh = server.initial_vitals.unwrap();
     let mut client = enter(&mut server, &inputs, Duration::from_secs(5));
+    client.seen.assert_hosted_map();
     assert_eq!(
         client.seen.pawn_location,
         Some(quantize_spawn_vector(SPAWN).unwrap()),
@@ -1636,6 +2106,7 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
     let stored = server.stored(key).unwrap();
     assert_eq!(stored.checkpoint, left);
     let mut client = enter(&mut server, &inputs, Duration::from_secs(10));
+    client.seen.assert_hosted_map();
     assert_eq!(
         client.seen.pawn_location,
         Some(quantize_spawn_vector(SPAWN).unwrap()),
@@ -1652,7 +2123,11 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
     // Stored vitals reach the pawn before its record: the first session's.
     let first_update = client.seen.position("pawn update");
     assert!(first_update < client.seen.position("record"));
-    let values = vitals_update(server.lab(), &client.seen.pawn_updates[0]).unwrap();
+    let values = vitals_update(
+        server.lab(),
+        &client.seen.pawn_updates[0],
+        client.seen.pawn_character_state.unwrap(),
+    );
     assert_eq!(values, with_alive(left.vitals));
     assert_ne!(left.vitals, fresh);
     assert!(client.seen.responses.is_empty(), "no move yet");
