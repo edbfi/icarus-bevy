@@ -90,7 +90,7 @@ Framing is in [actor channel bunches](actor-channel.md).
   InventoryContainerManager, PlayerHistoryTracker and FLOD (F-859, F-861,
   F-862, F-866, F-914, F-933, F-934). List gaps, unopenable/overflowing
   quests or unknown missions skip cleanly; 15-prospect counts: F-867, F-934.
-- Native `PeerLab` registration checks the GameState level, unique actor keys
+- Native `PeerLab` registration (F-1262) checks the GameState level, unique actor keys
   and free channels within range. In each byte order it encodes the candidate
   GameState with its manager references, then the configured and proposed
   managers and quests in channel order. One copy of the current GUID cache
