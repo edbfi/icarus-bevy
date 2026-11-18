@@ -93,6 +93,9 @@ persistence; F-1201): the pawn opens after the controller, before Begin, so
 locations stay unapplied (`checkpoint_locations_unapplied`).
 `--private-leave-proof` refuses it.
 
+Saved player locations and their restore (F-1206, F-1207):
+[authored survival](authored-survival.md#saved-locations).
+
 `network.controller_startup`: ordered `flush-level-streaming`/`restart-pawn`;
 CLI replaces TOML; `[]` disables. Needs release/controller plans and settled
 pawn/GUID for restart. Opens precede actions; `network_listening` lists them.

@@ -76,6 +76,22 @@ connected/frozen until disconnect/revocation/expiry, without automatic retry,
 failure-close or resume. ACKs can prolong freezing. Transport ACK/authored tests
 prove neither full player-save nor client menus.
 
+## Saved locations
+
+`network.checkpoint_saved_locations` (default false; needs player persistence
+and `pawn_move_acks`; F-1206) writes the last accepted move location into the
+checkpoint at the leave cut-off, every 10 s and at teardown. It saves only while
+the pawn's position descends from the stored one (new checkpoint, pawn opened
+there, or relocation applied); otherwise the save is withheld and the stored
+location kept. `network.checkpoint_location_correction` (default false; needs
+`checkpoint_pawn_before_identity` and `pawn_move_acks`; F-1207) moves a
+returning player's live pawn to the stored location plus 50 cm with a Falling
+movement correction answering a client move: at most one per second, five
+attempts or 30 s, applied when a move reports within 300 cm; the frozen release
+waits at most 5 s. Counters: `sessions.checkpoint_saved_locations`
+(`saved`, `saved_at_leave`, `refused`, `withheld`) and
+`sessions.checkpoint_relocation`. `--private-leave-proof` refuses both.
+
 ## Player inventory
 
 `network.player_inventory` selects fresh schema 15/section 1; omission: schema 14.
