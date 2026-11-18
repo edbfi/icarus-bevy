@@ -27,6 +27,7 @@ fn post_pawn_peer(config: PacketLabConfig) -> PeerEntry {
         connected_players_retry_ready: false,
         connected_player_receipts: Vec::new(),
         connected_player_creations_settled: 0,
+        own_record_acked: false,
         controller_open_guids: None,
         controller_possession_pending: false,
         controller_possession_retry_ready: false,
