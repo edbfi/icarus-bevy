@@ -267,7 +267,7 @@ All modes: nonblocking regular file (symlinks allowed; F-671), read-only unless 
   official server tables. After migration, resolve `ProspectDTKey` in
   `D_ProspectList` or authored `data_row` catalog; `FactionMissionDTKey`/custom-setting
   rows use `data_row`; format-1 `ProspectMapName` uses `unclassified`.
-  Empty optional refs permit planning (F-898).
+  C018/C019 use [ordered row tables](../specs/save-format/prospect-loading.md#candidate).
 
 Format 2 world scope (F-916):
 

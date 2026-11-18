@@ -25,8 +25,8 @@ F-738. Reference-load recorder changes: F-894; load timings: F-731; opaque
 math Structs: F-900, F-602; construction grids: F-643.
 
 All 15 prospects type recorder values losslessly within tree limits (F-766).
-Reference plans: F-897, F-898, F-916; candidate retention, not restoration:
-F-920.
+Reference plans cover row names (F-897, F-898), world context (F-916) and
+quest table membership (F-1263). F-920 covers candidate retention.
 
 Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
 append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;

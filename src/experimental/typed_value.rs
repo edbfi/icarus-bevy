@@ -21,7 +21,10 @@ use super::archive::{ByteOrder, encode_string, read_string_frame, read_text_fram
 use super::property_tree::{
     BaseComponentTree, ContainerItem, NodeValue, PropertyNode, PropertyTree, declared_size,
 };
-use super::tagged::{ParsedRecord, TagKind, TagProfile, container_kinds, is_name, read_record};
+use super::tagged::{
+    MAX_INPUT_BYTES, ParsedRecord, PropertyHeader, TagKind, TagProfile, container_kinds, is_name,
+    read_framed_header, read_record,
+};
 
 /// Fixed-width engine structs serialized natively (no tags) inside tagged
 /// streams. Width and part layout follow the engine serializers (`F-602`).
@@ -440,10 +443,8 @@ impl TypingAllowance {
             } => {
                 self.elements(elements.len())?;
                 self.slots::<TypedTree>(elements.len())?;
-                // The legacy shared-header decoder makes a zero-filled record
-                // using the header's declared size. Cover that scratch even
-                // for a caller-mutated tree whose size no longer matches its
-                // framed elements; it must not bypass preflight.
+                // Keep the preflight charge for the shared declaration,
+                // including caller-mutated trees whose elements differ in size.
                 if let Ok(size) = declared_size(shared_header) {
                     self.wire(size)?;
                 }
@@ -658,35 +659,6 @@ impl TypedSummary {
 
 const PROFILE: TagProfile = TagProfile::MemoryArchive522;
 
-/// Header fields the typed layer needs; the rest stays in the exact header.
-struct HeaderInfo {
-    name: Vec<u16>,
-    extra: Option<Vec<u16>>,
-    bool_value: Option<bool>,
-}
-
-fn header_info(header: &[u8], payload_len: usize) -> Result<HeaderInfo> {
-    // The header declares the payload size; a zero-filled payload of that
-    // length lets the strict reader parse the header alone.
-    let mut record = Vec::with_capacity(header.len() + payload_len);
-    record.extend_from_slice(header);
-    record.resize(header.len() + payload_len, 0);
-    match read_record(&record, PROFILE)? {
-        ParsedRecord::Property(property) => {
-            ensure!(
-                property.tag.header.len() == header.len(),
-                "typed header does not match its framed header"
-            );
-            Ok(HeaderInfo {
-                name: property.name,
-                extra: property.extra,
-                bool_value: property.bool_value,
-            })
-        }
-        ParsedRecord::Terminator(_) => anyhow::bail!("typed header is a terminator"),
-    }
-}
-
 fn string_exact(bytes: &[u8]) -> Option<Vec<u16>> {
     let frame = read_string_frame(bytes, ByteOrder::Little).ok()?;
     (frame.consumed() == bytes.len()).then(|| frame.units().collect())
@@ -807,7 +779,16 @@ impl Typer {
         // Restored if the value is demoted, so per-kind counts hold typed leaves only.
         let before = self.summary.clone();
         let payload = original_payload(&node.value)?;
-        let info = header_info(&node.header, payload.len())?;
+        let header_len = node.header.len();
+        ensure!(
+            header_len.saturating_add(payload.len()) <= MAX_INPUT_BYTES,
+            "tag input exceeds 32 MiB limit"
+        );
+        let info = read_framed_header(&node.header, PROFILE)?;
+        ensure!(
+            info.payload_len <= payload.len(),
+            "truncated tag data at offset {header_len}"
+        );
         let value = match &node.value {
             NodeValue::Opaque(bytes) => self.opaque(node.kind, &info, bytes),
             NodeValue::Struct(tree) => {
@@ -824,9 +805,7 @@ impl Typer {
             } => {
                 self.summary.struct_arrays += 1;
                 self.summary.array_elements += elements.len();
-                let shared = declared_size(shared_header)
-                    .and_then(|size| header_info(shared_header, size))
-                    .ok();
+                let shared = read_framed_header(shared_header, PROFILE).ok();
                 Value::StructArray {
                     shared_header: shared_header.clone(),
                     type_name: shared.and_then(|s| s.extra).unwrap_or_default(),
@@ -924,7 +903,7 @@ impl Typer {
         }
     }
 
-    fn opaque(&mut self, kind: TagKind, info: &HeaderInfo, bytes: &[u8]) -> Value {
+    fn opaque(&mut self, kind: TagKind, info: &PropertyHeader, bytes: &[u8]) -> Value {
         match kind {
             TagKind::Bool => match info.bool_value {
                 Some(value) if bytes.is_empty() => self.scalar(Scalar::Bool(value)),
