@@ -150,6 +150,10 @@ pub struct MultiHoldSummary {
     /// Sessions that ended with a [`SessionHold::setup_error`].
     pub failed: u64,
     pub wall_ms: u64,
+    /// Whole milliseconds common to all requested peers' admitted hold loops,
+    /// before final close. `None` on missing admission, refusal, cancellation,
+    /// a session or final-close error, or an observed server control-channel close.
+    pub shared_held_ms: Option<u64>,
     pub game_state_updates: u64,
     pub decode_errors: u64,
     /// Unreliable partial parts of GameState updates, over all sessions.
@@ -185,6 +189,14 @@ pub struct HoldProgress {
     pub regressions: u64,
     pub max_update_gap_ms: Option<u64>,
 }
+
+#[derive(Clone, Copy)]
+struct HoldInterval {
+    start: Instant,
+    end: Instant,
+}
+
+type WorkerResult = (SessionHold, Result<()>, Option<HoldInterval>);
 
 struct ProgressState {
     sessions: Mutex<Vec<SessionHold>>,
@@ -252,12 +264,12 @@ pub fn run_holds_with_progress(
                 let state = &state;
                 let done_tx = done_tx.clone();
                 scope.spawn(move || {
-                    let session =
+                    let result =
                         session_result(hold_session_observed(&config.hold, index, Some(state)));
                     state.sessions.lock().expect("hold progress lock poisoned")[index] =
-                        session.clone();
+                        result.0.clone();
                     let _ = done_tx.send(());
-                    session
+                    result
                 })
             })
             .collect();
@@ -328,22 +340,58 @@ pub fn run_holds_with_progress(
             return Err(error);
         }
         ensure!(!panicked, "hold session panicked");
-        Ok(aggregate(config.sessions, started.elapsed(), sessions))
+        Ok(aggregate_completed(
+            config.sessions,
+            started.elapsed(),
+            sessions,
+        ))
     })
 }
 
-fn session_result(result: Result<(SessionHold, Result<()>)>) -> SessionHold {
+fn session_result(result: Result<WorkerResult>) -> (SessionHold, Option<HoldInterval>) {
     match result {
-        Ok((session, Ok(()))) => session,
-        Ok((session, Err(error))) => SessionHold {
-            setup_error: Some(error_kind(&error)),
-            ..session
-        },
-        Err(error) => SessionHold {
-            setup_error: Some(error_kind(&error)),
-            ..SessionHold::default()
-        },
+        Ok((session, Ok(()), interval)) => (session, interval),
+        Ok((session, Err(error), _)) => (
+            SessionHold {
+                setup_error: Some(error_kind(&error)),
+                ..session
+            },
+            None,
+        ),
+        Err(error) => (
+            SessionHold {
+                setup_error: Some(error_kind(&error)),
+                ..SessionHold::default()
+            },
+            None,
+        ),
     }
+}
+
+fn aggregate_completed(
+    sessions_requested: usize,
+    elapsed: Duration,
+    results: Vec<(SessionHold, Option<HoldInterval>)>,
+) -> MultiHoldSummary {
+    let (sessions, intervals): (Vec<_>, Vec<_>) = results.into_iter().unzip();
+    let mut summary = aggregate(sessions_requested, elapsed, sessions);
+    summary.shared_held_ms = shared_held_ms(sessions_requested, &intervals);
+    summary
+}
+
+fn shared_held_ms(sessions_requested: usize, intervals: &[Option<HoldInterval>]) -> Option<u64> {
+    if intervals.len() != sessions_requested {
+        return None;
+    }
+    let mut intervals = intervals.iter().copied();
+    let mut shared = intervals.next()??;
+    for interval in intervals {
+        let interval = interval?;
+        shared.start = shared.start.max(interval.start);
+        shared.end = shared.end.min(interval.end);
+    }
+    let elapsed = shared.end.saturating_duration_since(shared.start);
+    Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn aggregate(
@@ -392,7 +440,7 @@ fn aggregate(
 /// server refuses ends the hold at once with [`HoldSummary::refused`].
 pub fn run_hold(config: &HoldConfig) -> Result<HoldSummary> {
     validate(config)?;
-    let (session, closed) = hold_session(config, 0)?;
+    let (session, closed, _) = hold_session(config, 0)?;
     closed?;
     Ok(session.hold)
 }
@@ -423,7 +471,11 @@ pub fn run_holds(config: &MultiHoldConfig) -> Result<MultiHoldSummary> {
                 .map_err(|_| anyhow::anyhow!("hold session panicked"))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(aggregate(config.sessions, started.elapsed(), sessions))
+    Ok(aggregate_completed(
+        config.sessions,
+        started.elapsed(),
+        sessions,
+    ))
 }
 
 /// Out-of-range parameters fail before any socket is opened.
@@ -459,7 +511,7 @@ fn identity(index: usize) -> (String, String) {
 
 /// Join session `index` and hold it for `config.duration`. The second value
 /// is the final close's outcome, apart so a failed close keeps the summary.
-fn hold_session(config: &HoldConfig, index: usize) -> Result<(SessionHold, Result<()>)> {
+fn hold_session(config: &HoldConfig, index: usize) -> Result<WorkerResult> {
     hold_session_observed(config, index, None)
 }
 
@@ -467,7 +519,7 @@ fn hold_session_observed(
     config: &HoldConfig,
     index: usize,
     progress: Option<&ProgressState>,
-) -> Result<(SessionHold, Result<()>)> {
+) -> Result<WorkerResult> {
     let cancelled = || progress.is_some_and(|state| state.cancelled.load(Ordering::Relaxed));
     ensure!(!cancelled(), "hold cancelled");
     let (name, net_id) = identity(index);
@@ -530,7 +582,7 @@ fn hold_session_observed(
             },
             ..SessionHold::default()
         };
-        return Ok((refused, Ok(())));
+        return Ok((refused, Ok(()), None));
     }
     ensure!(
         welcome
@@ -548,6 +600,8 @@ fn hold_session_observed(
     let mut summary = HoldSummary::default();
     let mut tracker = Tracker::new(config.engine_net_version);
     let mut partials = PartialBunchReassembler::new();
+    let mut admitted_at = None;
+    let mut server_closed_control = false;
     let mut last_packet: Option<(u16, i64)> = None;
     let started = Instant::now();
     // The first gap runs from the start, so a hold without updates reports
@@ -588,7 +642,11 @@ fn hold_session_observed(
             });
             last_packet = Some((sequence, packet_id));
             for bunch in packet.bunches {
-                if bunch.header.open && bunch.header.channel_index != 0 {
+                if bunch.header.channel_index == 0 && bunch.header.close {
+                    server_closed_control = true;
+                }
+                if !summary.joined && bunch.header.open && bunch.header.channel_index != 0 {
+                    admitted_at = Some(reply.received_at);
                     summary.joined = true;
                 }
                 if bunch.header.channel_index != GAME_STATE_CHANNEL_INDEX
@@ -635,6 +693,14 @@ fn hold_session_observed(
     let ended = Instant::now();
     tracker.gap_to(ended, &mut summary);
     summary.held_ms = u64::try_from(ended.duration_since(started).as_millis()).unwrap_or(u64::MAX);
+    let interval = admitted_at
+        .filter(|_| {
+            !server_closed_control
+                && !cancelled()
+                && !summary.refused
+                && summary.ended_by_error.is_none()
+        })
+        .map(|start| HoldInterval { start, end: ended });
     let closed = if summary.ended_by_error.is_none() && !summary.refused {
         client.close().map(drop)
     } else {
@@ -647,6 +713,7 @@ fn hold_session_observed(
             max_listed_players: tracker.max_listed_players,
         },
         closed,
+        interval,
     ))
 }
 
@@ -774,5 +841,71 @@ impl Tracker {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interval(origin: Instant, start_us: u64, end_us: u64) -> HoldInterval {
+        HoldInterval {
+            start: origin + Duration::from_micros(start_us),
+            end: origin + Duration::from_micros(end_us),
+        }
+    }
+
+    #[test]
+    fn shared_hold_intersects_staggered_intervals_before_rounding() {
+        let now = Instant::now();
+        let intervals = [
+            Some(interval(now, 100, 2_100)),
+            Some(interval(now, 900, 3_000)),
+        ];
+        assert_eq!(shared_held_ms(2, &intervals), Some(1));
+    }
+
+    #[test]
+    fn shared_hold_reports_zero_for_disjoint_intervals() {
+        let now = Instant::now();
+        let intervals = [
+            Some(interval(now, 0, 1_000)),
+            Some(interval(now, 2_000, 3_000)),
+        ];
+        assert_eq!(shared_held_ms(2, &intervals), Some(0));
+    }
+
+    #[test]
+    fn shared_hold_rounds_positive_submillisecond_overlap_down_to_zero() {
+        let now = Instant::now();
+        let intervals = [
+            Some(interval(now, 100, 1_500)),
+            Some(interval(now, 1_200, 3_100)),
+        ];
+        assert_eq!(shared_held_ms(2, &intervals), Some(0));
+    }
+
+    #[test]
+    fn shared_hold_requires_every_worker_to_complete_successfully() {
+        let completed = Some(interval(Instant::now(), 0, 2_000));
+        assert_eq!(shared_held_ms(2, &[completed]), None);
+        assert_eq!(shared_held_ms(2, &[completed, None]), None);
+
+        let failed_close = session_result(Ok((
+            SessionHold::default(),
+            Err(anyhow::anyhow!("close failed")),
+            completed,
+        )));
+        assert!(failed_close.0.setup_error.is_some());
+        assert_eq!(shared_held_ms(2, &[completed, failed_close.1]), None);
+    }
+
+    #[test]
+    fn shared_hold_reports_the_admitted_interval_for_one_peer() {
+        let now = Instant::now();
+        assert_eq!(
+            shared_held_ms(1, &[Some(interval(now, 800, 2_700))]),
+            Some(1)
+        );
     }
 }

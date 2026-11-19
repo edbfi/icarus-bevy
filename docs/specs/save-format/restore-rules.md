@@ -6,7 +6,7 @@ Experimental: pure rules in `experimental::restore_rules` and
 `experimental::modifier_lifecycle` (`tests/save_format/restore_rules.rs`,
 `tests/save_format/modifier_lifecycle.rs`, U-045; U-020..U-022, U-032, U-046,
 U-048, U-050 resolved).
-Last reconciled: 2026-11-18.
+Last reconciled: 2026-11-19.
 
 ## Scope
 
@@ -35,15 +35,16 @@ addresses retain helper names or stand alone.
 - Stitching matches GUID plus ASCII `Stricmp` (F-663) per F-1224 (`C009` F-646;
   `C018`/`C019` F-650; `C027` F-676); GUID-only matches, `C013` `FLODTiles`
   cleanup and the `C026` life restore F-1225 (F-648, F-657, F-716).
-- C016 records list length and zero-based occupied positions (F-651).
-  F-1266 corrects the stitching entry for historical server 25621760.
-  Its later loop passes a guarded field and zero-based index to a direct
-  call. The callee checks that the signed index is nonnegative and below
-  the caller's loop bound. An in-range index selects a 64-bit slot. The
-  modeled normal returns on that path carry a storage base. With a populated
-  slot, opaque calls precede the clearing of a slot at the same index, assuming
-  normal register preservation. The caller's use of the result, the receiver
-  type and the link to saved positions remain open.
+- C016 records list length and occupied positions (F-651). The server 25621760
+  stitching slot selects a 2,963-byte routine (F-1266). Its loop passes a
+  guarded field and a zero-based counter. Under normal Win64 register
+  preservation, the model permits a skipped iteration to advance the counter
+  before the first call, giving that call a nonzero index.
+  The callee checks the signed index against zero and the caller’s loop bound.
+  In range, it reads a 64-bit slot. For populated slots, opaque calls precede
+  clearing the indexed slot. Modeled in-range normal returns carry a storage
+  base. Loop-back overwrites the register with an independent load. Modeled
+  exits show no explicit caller use. Cleanup calls may preserve or clobber it.
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
@@ -88,12 +89,13 @@ addresses retain helper names or stand alone.
   F-1242; F-940's helper and entry sampling F-1243; selected call operands
   F-1244; population strides and getters F-1245; `STORE8`/`LOAD8` preservation
   F-1246. M-1508 binds static checks. M-1509/M-1510 record processes only.
-- The combined search reached its match cap (M-1540). The named server
-  dispatch wrapper passes a stack address to removal in RDX
-  (F-1260). Its helper copies three eight-byte values from another stack
-  location into that destination. Both modeled normal paths subsequently
-  pass the destination to an opaque call. Final argument contents, row and
-  actor identity, other callers, native storage and runtime effects stay open.
+- The combined search reached its match cap (M-1540). In the selected server
+  dispatch wrapper, a helper copies three eight-byte values to the stack
+  argument passed in RDX to modifier removal (F-1260). The post-copy callee
+  has no stores or calls. On its modeled normal return with `AL=1`, removal
+  receives all 24 copied bytes. With `AL=0`, two more opaque calls can change
+  them. Final bytes on that path, row and actor identity, other callers, native
+  storage and runtime effects remain open.
 
 ## Candidate
 
@@ -101,8 +103,9 @@ addresses retain helper names or stand alone.
 
 ## Open questions
 
-- F-1266 leaves the C016 component and saved-position selector unresolved.
-  Native owner binding and current-release restoration remain open.
+- The exact rebind-name lookup in the selected public-symbol profile found zero
+  matches (F-1266). Method, component, owner, memory aliases, outward return, saved-position
+  binding and current-release restoration remain open.
 - Data-table rows stay out of scope (F-660).
 
 ## Evidence

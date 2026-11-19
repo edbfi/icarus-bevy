@@ -21,7 +21,7 @@ loopback across a restart (F-1201, F-1202, F-1206 to F-1208). A stock client
 reached finalisation and disconnected before movement release (F-1199). On
 the next sitting the first own-record ACK arrived with the control close (F-1264).
 
-Standing research authorization F-1175, renewed 2026-11-18 for offline and
+Standing research authorization F-1175, renewed 2026-11-19 for offline and
 online work, still requires scoped cases.
 Input parity F-828 forbids client dependencies. The user reports the supplied
 client/save pair compatible (F-421).
@@ -48,5 +48,5 @@ Digests: [foundation](research/foundation/foundation.md) and
 3. Player state F-668/F-643; build ambiguity/time window F-635/F-896/F-685/F-878. Next: producing log U-040. Authored coverage: checkpoints F-1172, leave F-1188, survival F-1183, bags/Use recovery and transfers F-1200, owner bag projection F-1202, saved location and its restore F-1206/F-1207 ([operations](runbooks/authored-survival.md)); next: authoritative state coverage and separately scoped client qualification.
 4. Network bounds F-841/F-975/F-1015/F-1016; restore F-973/F-978 to F-993/F-1054 to F-1056/F-1063/F-1064/F-1066; ticks F-995 to F-1000. Entry F-1185; failed leave F-1186. F-1197 conditional leave codec retains inherited-layout/old-trace limits. F-1188 adds default-off private leave/restart checks; client proof remains open. F-1265 compares both entry paths through the first record ACK. Run a fresh consumption-off control for F-1270, then qualify food, leave and rejoin against F-1208; Begin limit F-1209; membership F-1171. F-1177 active; preserved-world hosting refuses; U-069/U-070/U-076 open.
 5. Replication replay/scheduling F-762/F-761, lifecycle/costs F-938/F-952. Authored speed stats accompany stock-client locomotion F-1185; authoritative motion/physics, collision, audio and stat UI remain unqualified (U-025/U-080). Corrections: layout F-1204, codec F-1205. `pawn_receive` F-1203 will show which pawn fields a client inventory action sends. After checkpoint entry succeeds, qualify candidate F-1198 and operator spawn points F-1139/F-1140 after the mountain spawn, then saved-location restore F-1207 (F-1134 to F-1138/M-1374). [Protocol](specs/network/actor-channel.md); [configuration](runbooks/native-server.md#network-sessions-experimental).
-6. Reliability F-1029/F-1030/F-872/F-873/F-875/F-833/F-932/M-1055/F-877. Next: wall-clock holds/controller receipts and physical power loss U-035; no ICARUS performance proof F-871.
+6. Reliability F-1029/F-1030/F-872/F-873/F-875/F-833/F-932/M-1055/F-877. Next: 72-hour holds and physical power loss U-035; no ICARUS performance proof F-871.
 7. Current pin/tags/profiles/rows F-1176 to F-1178; selected static semantics only. Entry blockers and pawn release F-1099 to F-1104/F-1110 to F-1148; U-079 resolved. Protected production now reaches entry with default record-ACK release and restart-pawn F-1185; no causal isolation. Next: normal leave/save completion F-1186, placement and properties/poses U-038/U-025. Visibility remains gated; the probe-switch run is not scheduled. [Gates](gates.md).
