@@ -56,6 +56,9 @@ unavailable.
   recorders, F-738).
 - No explicit outer build or save-version marker exists, and neither the
   payload nor the original server's re-save holds a version string (F-896).
+- On 26613688 the same input loaded empty, saved and returned to the lobby.
+  F-1271 compares complete recorder bytes across the write, ignoring order and
+  counting duplicates. The counts leave changed actor identities unresolved.
 - Provenance: the heavy-world archive is preserved privately with an inventory
   (M-166); the writes date from the 3.0.29 window, before the user-reported
   3.0.31 client (F-896, F-685, F-878). Possession completes no compatibility,
