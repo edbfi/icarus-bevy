@@ -55,16 +55,16 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   save pairs, C015 level rose 14 s, game time 14.0625/14.09375 and root
   elapsed 593 s. Whole-recorder matches leave object identity open.
 - Dedicated build 26613688 declares a direct C008 array with float32 time
-  and signed i32 state in each element. A search of the four direct
-  element fields found no explicit plot ID (M-1593). Native readback of the
-  F-1271 common input and both zero-player lobby outputs retained 109
+  and signed i32 state per element. Its four direct element fields lack an
+  explicit plot ID (M-1593). Native readback of the F-1271 common input
+  and both zero-player lobby outputs retained 109
   losslessly typed C008 records per save, each with one exact array element
   and one explicit finite float32/signed i32 pair. M-1595 hashes sorted pairs
-  with their multiplicities. All three digests differ (F-1274). The recorder passes
-  its saved array to an interface entry. Both paths call indirect targets
-  (M-1597). The writer and clock remain unbound.
-  The same 109 positive top-level saved actor keys occur once each within
-  C008 in all three snapshots. Integer states agree at every key. From input,
+  with multiplicity. All three digests differ (F-1274). A direct call passes the
+  saved array to an interface entry (M-1597). Each of its two paths has an indirect
+  call site. One skips the call on a null receiver. Writer, clock and units remain open.
+  All three snapshots share 109 positive top-level saved actor keys, each
+  unique within C008. Integer states agree at every key. From input,
   each output has 32 higher floats and 77 bit-identical floats. Comparing
   the 240 s output to the 120 s output gives 14 higher, 18 lower and 77
   bit-identical floats (M-1596).
