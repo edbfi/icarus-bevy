@@ -59,10 +59,10 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   element fields found no explicit plot ID (M-1593). Native readback of the
   F-1271 common input and both zero-player lobby outputs retained 109
   losslessly typed C008 records per save, each with one exact array element
-  and one explicit finite float32/signed i32 pair. The unordered, bit-exact
-  pair multisets differed in all three comparisons (F-1274, M-1595).
-  The same 109 positive saved actor keys occur once each within C008 in all
-  three snapshots. Integer states agree at every key. Relative to the input,
+  and one explicit finite float32/signed i32 pair. M-1595 hashes sorted pairs
+  with their multiplicities. All three digests differ (F-1274).
+  The same 109 positive top-level saved actor keys occur once each within
+  C008 in all three snapshots. Integer states agree at every key. From input,
   each output has 32 higher floats and 77 bit-identical floats. Comparing
   the 240 s output to the 120 s output gives 14 higher, 18 lower and 77
   bit-identical floats (M-1596).
@@ -85,7 +85,8 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   length; verifies the legacy hash without retaining the world; and reports
   `DataLength` without enforcing equality with `TotalLength` (F-737).
   Output labels: `experimental_envelope_only`, `experimental_root_tags_only`
-  (fixed research profile, F-882), and `experimental_stage_only`. Staging
+  (fixed research profile, F-882), and
+  `experimental_staged_prospect_save_state_only`. Staging
   checks the `FProspectSaveState` root schema, base recorder framing, tag
   order, `PostLoadSerialize` migration, 17 `FProspectInfo` tags and optional
   `ProspectID` matching. It overlays tags on 65-class defaults,
