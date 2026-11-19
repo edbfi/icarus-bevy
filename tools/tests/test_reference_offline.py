@@ -296,6 +296,11 @@ class IntakeFixture(Fixture):
         self.session.update(reference_input=self.binding, scope_sha256=digest(self.scope))
         self.write()
 
+    def enable_handshake(self) -> None:
+        self.args.handshake_probe = True
+        self.session.update(allowed_modes=["startup", "handshake"], probe=str(self.probe), probe_sha256=digest(self.probe))
+        self.write_binding()
+
     def get_intake(self) -> reference_intake.Intake:
         with patch.object(reference_intake, "MANIFEST_SHA256", self.binding["manifest_sha256"]):
             intake = self.approve().intake
@@ -439,6 +444,7 @@ class IntakeTests(unittest.TestCase):
     def test_actual_mount_guard_fails_before_launch_for_changed_bytes_or_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = IntakeFixture(directory)
+            fixture.enable_handshake()
             with patch.object(reference_intake, "MANIFEST_SHA256", fixture.binding["manifest_sha256"]):
                 approved = fixture.approve()
             run = fixture.case / "run"
@@ -455,26 +461,36 @@ class IntakeTests(unittest.TestCase):
             self.assertIn(f"type=bind,src={home},dst=/home/container,bind-recursive=disabled", argv)
             mountinfo = fixture.case / "mountinfo"
             # Exercise the real guard with authored mountinfo and a shell builtin in place of Proton.
-            guard = reference_intake.guard_launch(tree, home, None, TOKEN)
+            self.assertIn(f"type=bind,src={fixture.probe},dst=/probes/handshake_probe,readonly", argv)
+            guard = reference_intake.guard_launch(tree, home, fixture.probe, TOKEN)
             self.assertTrue(argv[-1].startswith(guard + "exec /bin/bash -lc "))
             script = (guard.replace("/proc/self/mountinfo", str(mountinfo))
                       .replace("/home/container", str(home)).replace("/reference", str(fixture.install))
-                      + "printf reached")
+                      .replace("/probes/handshake_probe", str(fixture.probe)) + "printf reached")
             mounts = f"1 0 0:0 / {fixture.install} ro - test test ro\n2 0 0:0 / {home} rw - test test rw\n"
+            probe_mount = f"3 0 0:0 / {fixture.probe} ro - test test ro\n"
+            mounts += probe_mount
             receipt = home / reference_intake.MOUNT_RECEIPT
             nested_mount = f"3 2 0:0 / {home}/unexpected rw - test test rw\n"
             for bad_mounts in (mounts.replace(" ro ", " rw "), mounts + mounts.splitlines()[0] + "\n",
-                               mounts + nested_mount):
+                               mounts + nested_mount, mounts.replace(probe_mount, probe_mount.replace(" ro ", " rw "))):
                 _ = mountinfo.write_text(bad_mounts)
                 result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10, check=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
+                self.assertRegex(result.stderr, r"reference guard failed at line [0-9]+")
                 self.assertFalse(receipt.exists())
             _ = mountinfo.write_text(mounts)
             result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10, check=True)
             self.assertEqual(result.stdout, "reached")
             self.assertTrue(reference_intake.mount_verified(receipt, TOKEN))
             receipt.unlink()
+            original = fixture.probe.rename(fixture.case / "original-probe")
+            _ = fixture.probe.write_bytes(original.read_bytes())
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(receipt.exists())
+            _ = original.replace(fixture.probe)
             previous = fixture.data.stat()
             _ = fixture.data.write_bytes(b"X" * previous.st_size)
             os.utime(fixture.data, ns=(previous.st_atime_ns, previous.st_mtime_ns))
@@ -539,6 +555,7 @@ class IntakeTests(unittest.TestCase):
     def test_bound_docker_commands_pin_the_socket_and_require_the_guard_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = IntakeFixture(directory)
+            fixture.enable_handshake()
             with patch.object(reference_intake, "MANIFEST_SHA256", fixture.binding["manifest_sha256"]):
                 approved = fixture.approve()
             for verified in (False, True):
@@ -547,7 +564,8 @@ class IntakeTests(unittest.TestCase):
                 home.mkdir(parents=True)
                 if verified:
                     _ = (home / reference_intake.MOUNT_RECEIPT).write_text(TOKEN + "\n")
-                docker = DockerFixture()
+                docker = DockerFixture(handshake=True)
+                clock = Clock()
 
                 def command_on_socket(args: Sequence[str], timeout: float = 30,
                                       check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -556,6 +574,8 @@ class IntakeTests(unittest.TestCase):
 
                 with (patch.object(reference_intake, "verify_local_dockerd"),
                       patch("tools.run_reference_offline.command", new=command_on_socket),
+                      patch("tools.run_reference_offline.time.monotonic", new=clock),
+                      patch("tools.run_reference_offline.time.sleep", new=clock.sleep),
                       patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3),
                       patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space)):
                     if verified:
@@ -563,6 +583,7 @@ class IntakeTests(unittest.TestCase):
                     else:
                         with self.assertRaisesRegex(RuntimeError, "did not verify"):
                             _ = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
+                self.assertIs(docker.probed, verified)
                 self.assertIn(["docker", "rm", "--force", CONTAINER], docker.calls)
 
 

@@ -47,9 +47,10 @@ The launcher holds the case quota lock through cleanup and records the
 invocation, hashes, inspections, logs, resource samples and `cleanup.json`.
 Session expiry caps the deadline, including 120 seconds reserved for cleanup.
 Cleanup verifies container ownership by token, name and ID before removal.
-Investigate failed cleanup before another run, including after daemon or host failures.
+Interruption still triggers removal. Investigate inspection or removal failures before another run.
 
-Networking is disabled and the pinned image is local-only. CPU, memory and PID
+The offline run disables networking, published ports, downloads, identity overrides
+and reference writes. The pinned image is local-only. CPU, memory and PID
 limits and the 3 GiB available-memory / 30 GiB disk floors apply. See the
 [connected launcher](connected-scenarios.md) for connected scenarios.
 

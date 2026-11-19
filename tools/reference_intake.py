@@ -223,7 +223,8 @@ def guard_launch(tree: TreeIdentity, home: Path, probe: Path | None, token: str)
         for target, mode in (check.split(":") for check in checks)
     ]
     return "\n".join([
-        "set -euo pipefail", *mount_checks, *identity_checks,
+        "set -euo pipefail", """trap 'echo "reference guard failed at line $LINENO" >&2' ERR""",
+        *mount_checks, *identity_checks,
         "awk 'index($5, \"/reference/\") == 1 || index($5, \"/home/container/\") == 1 { exit 1 }' /proc/self/mountinfo",
         f"actual=$(export LC_ALL=C; timeout 10s find -P /reference -xdev -printf {shlex.quote(FIND_FORMAT)} "
         + f"| head -c {tree.length + 1} | sort -z | sha256sum)",
