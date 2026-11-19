@@ -61,6 +61,11 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   losslessly typed C008 records per save, each with one exact array element
   and one explicit finite float32/signed i32 pair. The unordered, bit-exact
   pair multisets differed in all three comparisons (F-1274, M-1595).
+  The same 109 positive saved actor keys occur once each within C008 in all
+  three snapshots. Integer states agree at every key. Relative to the input,
+  each output has 32 higher floats and 77 bit-identical floats. Comparing
+  the 240 s output to the 120 s output gives 14 higher, 18 lower and 77
+  bit-identical floats (M-1596).
 - Provenance: the heavy-world archive is preserved privately with an inventory
   (M-166); the writes date from the 3.0.29 window, before the user-reported
   3.0.31 client (F-896, F-685, F-878). Possession completes no compatibility,
@@ -99,7 +104,7 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
 
 - Producing-build log confirmation for the supplied save (U-040); official
   restoration and newer-build compatibility (U-025).
-- C008 restoration needs stable plot identity, validated clock units and
+- C008 restoration needs plant continuity across saves, validated units and
   state semantics, and per-plot progression measured under matched official
   and native loads and restarts. Aggregate differences leave continuity,
   growth rate, cause and restoration open (F-1274).
