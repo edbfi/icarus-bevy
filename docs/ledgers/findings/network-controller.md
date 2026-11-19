@@ -4,7 +4,7 @@ Connected startup observations, controller receive boundaries and the
 conditional controller leave contract.
 [Interpretation](../../runbooks/controller-receive.md).
 
-Last reconciled: 2026-11-18
+Last reconciled: 2026-11-19
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -30,4 +30,6 @@ Last reconciled: 2026-11-18
 | F-1261 | Before fixed ticks, staged pawn vitals can carry a pending ACK in the last send slot. An inventory-only revision leaves the slot for the standalone ACK | measured | authored-test; M-1546; cd6ba48f | early pawn, consumption off or 0/1 fixed ticks; superseded and leaving epochs excluded; synthetic peers | U-038 | active |
 | F-1264 | First own-record ACK in control close (reason 0), pawn reliable pending, due release unsent before service; client 028. First finalised samples: History/release 1/1 in F-1185, 0/0 here | observed | live/user-report; M-1552, M-1553/ev_558e273bfc45, M-1554, M-1566; 4c738603 | 3.0.36, fresh store, food-only config, bag off, no leave/rejoin. Timing differs; cause open | U-038 | active |
 | F-1265 | Legacy entry sent History after the own record. With staged checkpoint health, the pawn update preceded the record. The close ACKed the record in both arms and first NAKed the held checkpoint update. Pawn reliability was settled and pending respectively | measured | authored-test; M-1555; 86e016db | two synthetic peers, six rehearsals, stock payload unknown | U-038 | active |
-| F-1268 | Fresh checkpoint arms ACKed the own record at close. Zero ticks left the pawn settled. One food debit followed the record, remained pending at close and survived detach. Bag-only close tracked ACK/NAK | measured | authored-test; M-1567; 31f2cdde | in-memory loopback, controlled ticks and ACKs. Earlier stock payload and disconnect cause open | U-038 | active |
+| F-1268 | Fresh checkpoint arms ACKed the own record at close. Zero ticks left the pawn settled. One food debit followed the record, remained pending at close and survived detach. Bag-only close tracked ACK/NAK | measured | authored-test; M-1567; 31f2cdde | in-memory loopback, controlled ticks and ACKs. Stock fragment and disconnect cause open | U-038 | active |
+| F-1269 | The retained checkpoint generation and tick agree with the native server’s final save at the F-1264 close | observed | native-store, live log; M-1552, M-1566, M-1572; 4c738603 | 3.0.36; file digest bound retrospectively. Pending packet, client display, close cause and restart open | U-038 | active |
+| F-1270 | At the F-1264 close the pending reliable pawn traffic traces to a checkpoint vitals publication. Finalisation required a settled open. The protected configuration and terminal counters exclude other producers | inferred | native source, live counters; M-1552, M-1566, M-1573; 4c738603 | one 3.0.36 peer; export or body, revision, socket delivery and 028 cause open | U-038 | active |
