@@ -126,6 +126,9 @@ const CLEARANCE_CM: f32 = 50.0;
 const WALK_MOVES: u16 = 60;
 const WALK_STEP_CM: f32 = 50.0;
 const MOVE_SECONDS: f32 = 0.1;
+const WATER_PER_USE: i32 = 25;
+const WATER_ITEM_WEIGHT: i32 = 5;
+const RATION_ITEM_WEIGHT: i32 = 7;
 
 // ------------------------------------------------------------------ inputs
 
@@ -190,7 +193,7 @@ impl Inputs {
                         {"inventory": "bag", "requested_slot": 0, "item": "water", "count": 3},
                         {"inventory": "bag", "requested_slot": 1, "item": "ration", "count": 1}
                     ],
-                    "consumables": [{"item": "water", "oxygen": 0, "water": 25, "food": 0}]
+                    "consumables": [{"item": "water", "oxygen": 0, "water": WATER_PER_USE, "food": 0}]
                 }))
                 .unwrap(),
             )
@@ -204,9 +207,9 @@ impl Inputs {
                                      "slot_queries": ["Any", "Any"]}],
                     "items": [
                         {"item": "water", "row": "AuthoredWater", "count_property": true,
-                         "dynamic": [], "unit_weight": 5},
+                         "dynamic": [], "unit_weight": WATER_ITEM_WEIGHT},
                         {"item": "ration", "row": "AuthoredRation", "count_property": false,
-                         "dynamic": [], "unit_weight": 7}
+                         "dynamic": [], "unit_weight": RATION_ITEM_WEIGHT}
                     ]
                 }))
                 .unwrap(),
@@ -2510,7 +2513,7 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
 fn rehearsal_bag_projection_survives_leave_and_restart() {
     let inputs = Inputs::new(true);
     let mut server = Server::start(&inputs.config);
-    let expected = (bag_literal(3), 3 * 5 + 7);
+    let expected = (bag_literal(3), 3 * WATER_ITEM_WEIGHT + RATION_ITEM_WEIGHT);
     for process in 0..2 {
         let mut client = enter(&mut server, &inputs, Duration::from_secs(5));
         let connection = server.lab().peers[&client.address].connection_id.unwrap();
@@ -2607,13 +2610,21 @@ fn rehearsal_existing_bag_and_location_commit_in_the_same_leave_generation() {
         "the move ACK before leave",
         |seen, _| seen.acks().last() == Some(&timestamp),
     );
-    // Food normally debits on the next tick (5 units/s at 30 Hz).
+    // Advance to the last tick before a scheduled food debit.
+    let tick_hz = u64::from(config.tick_hz);
+    let food_rate =
+        u64::try_from(config.network.player_consumption.as_ref().unwrap().food).unwrap();
+    assert!(
+        food_rate > 0 && tick_hz.is_multiple_of(food_rate),
+        "the rehearsal requires an integral number of ticks per food debit",
+    );
+    let ticks_per_debit = tick_hz / food_rate;
     let tick = |server: &Server| server.app.world().resource::<SimulationClock>().tick;
     client.until(
         &mut server,
         Duration::from_secs(3),
         "a food debit tick",
-        |_, server| tick(server) % 6 == 5,
+        |_, server| (tick(server) + 1).is_multiple_of(ticks_per_debit),
     );
     let before_tick = tick(&server);
     let before = server.stored(key).unwrap();
@@ -2654,7 +2665,7 @@ fn rehearsal_existing_bag_and_location_commit_in_the_same_leave_generation() {
     assert_eq!(cutoff.phase, LeavePhase::Pending);
     let mut expected = before;
     expected.revision += 2; // One for Use, one for the location.
-    expected.checkpoint.vitals.water += 25;
+    expected.checkpoint.vitals.water += WATER_PER_USE;
     expected.checkpoint.location_cm = location.map(f64::from);
     assert_eq!(cutoff.revision, expected.revision);
     assert_eq!(server.stored(key), Some(expected));
@@ -2734,7 +2745,7 @@ fn rehearsal_existing_bag_and_location_commit_in_the_same_leave_generation() {
             connection,
             client.seen.pawn_updates_before_record()
         ),
-        (bag_literal(2), 2 * 5 + 7)
+        (bag_literal(2), 2 * WATER_ITEM_WEIGHT + RATION_ITEM_WEIGHT)
     );
     assert_eq!(server.sessions().checkpoint_relocation.unwrap().pending, 1);
     server.shutdown();
