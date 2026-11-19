@@ -25,8 +25,9 @@ F-738. Reference-load recorder changes: F-894; load timings: F-731; opaque
 math Structs: F-900, F-602; construction grids: F-643.
 
 All 15 prospects type recorder values losslessly within tree limits (F-766).
-Reference plans cover row names (F-897, F-898), world context (F-916) and
-quest table membership (F-1263). F-920 covers candidate retention.
+Import planning: row names (F-897, F-898), world context (F-916),
+synthetic quest coverage (F-1263) and candidate retention (F-920).
+F-651 qualifies C016 list positions. F-1266 identifies the historical server stitching slot.
 
 Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
 append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;
@@ -41,6 +42,7 @@ Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Open
 
+- Open C016 bindings: [restore rules](../../specs/save-format/restore-rules.md#open-questions).
 - Packaged data-table row meanings remain out of scope by policy (F-660).
 - Further recorder adapters and qualified coordinates precede an all-or-nothing official-save writer; authored consumers and reference coverage do not qualify original behavior (U-025, U-038, U-045).
 - Reuse the heavy-world baseline (F-894, F-736) and connected S1 (F-701); producing-build pairing remains U-040.

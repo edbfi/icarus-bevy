@@ -3207,28 +3207,28 @@ pub fn evaluate_container_manager_record<C: Clone>(
     }
 }
 
-/// Actions evaluated by `UIcarusContainerManagerRecorderComponent::Stitching`
-/// (`C016`, `0x1416f8980` server / `0x1417099d0` client) (F-651).
+/// Experimental `C016` plan based on saved list topology (F-651) and
+/// historical client stitching (`0x1417099d0`, F-1225). The historical
+/// server slot attribution was corrected by F-1266.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContainerManagerStitchPlan<C, A> {
-    /// Saved `(index, container_save_data)` array (`recorder + 0x1c0`) passed
-    /// to `AContainerManager::RestoreContainers` (`0x141702be0` client).
+    /// Saved entries with their original list positions (F-651).
     pub restored_containers: Vec<(usize, C)>,
-    /// Saved `ContainerCount` (`recorder + 0x1d0`) passed to
-    /// `AContainerManager::RestoreContainers` (`0x141702be0` client).
+    /// Saved count including empty positions (F-651).
     pub container_count: usize,
-    /// Non-pending-kill actors in `SpawnedActors` that have a non-null
-    /// `UInventoryContainer` component (`0x141cf1390` client) and are passed in
-    /// order to `AContainerManager::RebindActorInventoryContainer`
-    /// (`0x141700fe0` client).
+    /// Present candidates in the order supplied by the caller.
     pub rebound_actor_containers: Vec<A>,
 }
 
-/// Evaluates `UIcarusContainerManagerRecorderComponent::Stitching` (`C016`,
-/// `0x1416f8980` server / `0x1417099d0` client) (F-651).
+/// Preserves the saved positions and count and collects supplied candidates
+/// when the caller reports a valid owner.
 ///
-/// Returns `None` when the owner is null, not an `AContainerManager`
-/// (`0x141b35320` client), or pending kill.
+/// The historical client path passes the saved list and count to
+/// `RestoreContainers`. It submits non-null inventory components from
+/// spawned actors that are not pending kill to
+/// `RebindActorInventoryContainer` in traversal order (F-1225).
+/// Native owner binding, component selection, and restore behavior remain
+/// open (F-1266).
 pub fn evaluate_container_manager_stitch<C: Clone, A: Clone>(
     owner_is_valid_container_manager: bool,
     saved_containers: &[(usize, C)],
