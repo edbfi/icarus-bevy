@@ -2,7 +2,7 @@
 """Bounded offline reference observation under an explicit current case/session.
 
 No downloads, external network, identity override, extraction or reference writes.
-The executable hash binds that file only, not the entire mounted installation.
+Legacy bindings identify the executable; the opt-in intake binds the full tree.
 Docker operations share an observation deadline and reserved cleanup lifetime;
 this cannot guarantee daemon termination when the daemon or host is unavailable.
 """
@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -30,7 +31,8 @@ import uuid
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.runtime_types import JsonObject, integer_field, json_object, parse_container_identity, parse_container_state, parse_json, string_field
+from tools import reference_intake
+from tools.runtime_types import JsonObject, JsonValue, integer_field, json_object, parse_container_identity, parse_container_state, parse_json, string_field
 
 IMAGE = "ghcr.io/pelican-eggs/steamcmd@sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237"
 REFERENCE_EXE = Path("Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe")
@@ -57,6 +59,7 @@ class Arguments(argparse.Namespace):
     hello_probe: bool = False
     join_probe: bool = False
     initialise_probe: bool = False
+    reference_input: str | None = None
 
 
 def command(args: Sequence[str], timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -95,24 +98,57 @@ def regular_path(path: Path) -> Path:
 
 
 def validate_offline_scope(scope: Path) -> None:
+    validate_scope_text(scope.read_text())
+
+
+def validate_scope_text(scope: str, intake: dict[str, str] | None = None) -> None:
     """Check the project runtime contract in the case's Markdown scope file."""
     required = {("auth", "status"): "granted",
                 ("network_profile", "mode"): "offline",
                 ("signoff", "ready_for_act"): "true"}
+    if intake is not None:
+        required.update({("reference_input", key): value for key, value in intake.items()})
     fields: dict[tuple[str, str], str] = {}
     section = ""
-    for line in scope.read_text().splitlines():
+    for line in scope.splitlines():
         if line.startswith("## "):
             section = line[3:].strip().lower()
-        elif match := re.fullmatch(r"\s*-\s+([a-z_]+):\s*(.*?)\s*", line):
+        elif match := re.fullmatch(r"\s*-\s+([a-z_][a-z0-9_]*):\s*(.*?)\s*", line):
             key = (section, match[1])
             if key in required:
                 if key in fields:
                     raise ValueError(f"duplicate scope field: {section}.{match[1]}")
-                fields[key] = match[2].lower()
+                fields[key] = match[2] if section == "reference_input" else match[2].lower()
     for key, expected in required.items():
         if fields.get(key) != expected:
             raise ValueError(f"scope {'.'.join(key)} must be {expected}")
+
+
+def approved_intake(root: Path, scope: str, session: JsonObject) -> reference_intake.Intake:
+    binding = json_object(session["reference_input"])
+    expected = {
+        "evidence": reference_intake.EVIDENCE, "release": reference_intake.RELEASE,
+        "manifest": str(root / reference_intake.MANIFEST), "manifest_sha256": reference_intake.MANIFEST_SHA256,
+    }
+    if (any(binding.get(key) != value for key, value in expected.items())
+            or integer_field(binding, "build_id") != reference_intake.BUILD_ID):
+        raise ValueError("session does not bind the pinned reference intake")
+    source = binding.get("authorization_source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("reference intake authorization_source must identify the current authorization")
+    reference = {key: string_field(session, key)
+                 for key in ("reference_root", "reference_executable", "reference_sha256")}
+    validate_scope_text(scope, {**expected, **reference, "status": "granted", "authorization_source": source,
+                                "build_id": str(reference_intake.BUILD_ID)})
+    intake = reference_intake.read_intake(root, REFERENCE_EXE)
+    if (reference["reference_root"] != str(intake.root)
+            or reference["reference_executable"] != str(intake.root / REFERENCE_EXE)
+            or reference["reference_sha256"] != intake.files[REFERENCE_EXE]):
+        raise ValueError("session reference executable/root does not match the intake manifest")
+    if unredirected(intake.root) != intake.root or not intake.root.is_dir():
+        raise ValueError("intake reference root must be a canonical directory")
+    _ = regular_path(intake.root / REFERENCE_EXE)
+    return intake
 
 
 def selected_modes(args: Arguments) -> frozenset[str]:
@@ -162,12 +198,17 @@ class ApprovedRun:
     observation_seconds: int
     lifetime_seconds: int
     max_runs: int
+    intake: reference_intake.Intake | None = None
 
 
 def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> ApprovedRun:
     case = unredirected(Path(args.case_root))
     if not case.is_dir() or not case.is_relative_to(root / "work") or case == root / "work":
         raise ValueError("case must be an existing directory below work")
+    if args.reference_input is not None:
+        intake_dir = root / reference_intake.INTAKE_CASE
+        if case.is_relative_to(intake_dir) or intake_dir.is_relative_to(case):
+            raise ValueError("runtime case must be separate from the preserved intake")
     session_path = regular_path(Path(args.session))
     scope = regular_path(case / "scope.md")
     if not session_path.is_relative_to(case):
@@ -176,21 +217,27 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         raw_session = stream.read(65537)
     if len(raw_session) > 65536:
         raise ValueError("session exceeds 64 KiB")
-    session = json_object(parse_json(raw_session))
+    session = json_object(parse_json(raw_session, unique_keys=args.reference_input is not None))
     if string_field(session, "scope") != "reference-offline":
         raise ValueError("session does not authorize reference-offline")
     if not string_field(session, "authorization_source").strip():
         raise ValueError("authorization_source must identify the current instruction")
     if string_field(session, "case_root") != str(case) or string_field(session, "image") != IMAGE:
         raise ValueError("session case/image binding mismatch")
-    # The preserved install or a fetched icarus-server-<buildid> sibling.
-    reference = unredirected(Path(string_field(session, "reference_root")))
-    if reference.parent != root or re.fullmatch(r"icarus-orig|icarus-server-[0-9]+", reference.name) is None:
-        raise ValueError("session reference binding mismatch")
-    executable = regular_path(reference / REFERENCE_EXE)
-    if string_field(session, "reference_executable") != str(executable):
-        raise ValueError("session reference binding mismatch")
-    checks = [("scope_sha256", scope), ("reference_sha256", executable)]
+    checks: list[tuple[str, Path]] = []
+    reference = Path(string_field(session, "reference_root"))
+    if args.reference_input is None:
+        if "reference_input" in session:
+            raise ValueError("reference intake binding requires explicit --reference-input")
+        reference = unredirected(reference)
+        if reference.parent != root or re.fullmatch(r"icarus-orig|icarus-server-[0-9]+", reference.name) is None:
+            raise ValueError("session reference binding mismatch")
+        executable = regular_path(reference / REFERENCE_EXE)
+        if string_field(session, "reference_executable") != str(executable):
+            raise ValueError("session reference binding mismatch")
+        checks.extend((("scope_sha256", scope), ("reference_sha256", executable)))
+    elif args.reference_input != reference_intake.EVIDENCE or "reference_input" not in session:
+        raise ValueError("session does not approve the selected reference input")
     requested_modes = selected_modes(args)
     allowed = session.get("allowed_modes")
     if (not isinstance(allowed, list) or not allowed
@@ -261,7 +308,8 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         expected = string_field(session, field)
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None or expected != digest(path):
             raise ValueError(f"{field} mismatch")
-    validate_offline_scope(scope)
+    if args.reference_input is None:
+        validate_offline_scope(scope)
     start = datetime.datetime.fromisoformat(string_field(session, "start_utc"))
     end = datetime.datetime.fromisoformat(string_field(session, "end_utc"))
     if start.utcoffset() is None or end.utcoffset() is None:
@@ -281,10 +329,18 @@ def validate_session(root: Path, args: Arguments, now: datetime.datetime) -> App
         raise ValueError("max_runs must be 1..12")
     if not start <= now < end or now + datetime.timedelta(seconds=lifetime) >= end:
         raise ValueError("session is future, expired or has insufficient approved time")
+    intake = None
+    if args.reference_input is not None:
+        with scope.open("rb") as stream:
+            raw_scope = stream.read(65537)
+        if len(raw_scope) > 65536 or hashlib.sha256(raw_scope).hexdigest() != string_field(session, "scope_sha256"):
+            raise ValueError("scope_sha256 mismatch or scope exceeds intake byte limit")
+        intake = approved_intake(root, raw_scope.decode("utf-8"), session)
+        reference = intake.root
     return ApprovedRun(case, session_path, session, hashlib.sha256(raw_session).hexdigest(),
                        reference, probe, save_input, shutdown, hello_version, join_seconds, initialise,
                        probe_delay,
-                       observation, lifetime, max_runs)
+                       observation, lifetime, max_runs, intake)
 
 
 def revalidate(root: Path, args: Arguments, approved: ApprovedRun) -> None:
@@ -316,12 +372,14 @@ def reserve_run(approved: ApprovedRun, run_name: str) -> Generator[Path]:
 @dataclass(frozen=True)
 class Budget:
     deadline: float
+    local_docker: bool = False
 
     def run(self, argv: Sequence[str], *, check: bool = True, cap: float = 10) -> subprocess.CompletedProcess[str]:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0 or cap <= 0:
             raise TimeoutError("reference run deadline exhausted")
-        return command(argv, timeout=min(cap, remaining), check=check)
+        actual = reference_intake.local_docker_argv(argv) if self.local_docker else argv
+        return command(actual, timeout=min(cap, remaining), check=check)
 
 
 def owned_container(text: str, name: str, token: str, expected_id: str | None) -> str:
@@ -382,9 +440,12 @@ def cleanup_container(run: Path, name: str, token: str, expected_id: str | None,
 
 
 def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
-                   run: Path, name: str, token: str) -> list[str]:
+                   run: Path, name: str, token: str,
+                   tree: reference_intake.TreeIdentity | None = None) -> list[str]:
+    if (tree is None) != (approved.intake is None):
+        raise ValueError("intake launch requires a verified install identity")
     home = run / "home"
-    home.mkdir()
+    home.mkdir(mode=0o700 if tree is not None else 0o777)
     fixture: JsonObject | None = None
     if args.load_fixture != "none":
         relative = Path("Icarus/Saved/PlayerData/DedicatedServer/Prospects/overnight-authored.json")
@@ -425,6 +486,11 @@ def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
         launch += ' -LoadProspect=overnight-authored'
     if args.save_load and approved.save_input is not None:
         launch += ' -LoadProspect=' + approved.save_input.stem
+    reference_mount = f"type=bind,src={approved.reference},dst=/reference,readonly"
+    home_mount = f"type=bind,src={home},dst=/home/container"
+    if tree is not None:
+        reference_mount += ",bind-recursive=disabled"
+        home_mount += ",bind-recursive=disabled"
     argv = ["docker", "run", "--detach", "--pull", "never", "--name", name,
             "--label", "icarus.research.run=" + name,
             "--label", "icarus.research.owner=" + token, "--cidfile", str(run / "container.cid"),
@@ -432,8 +498,8 @@ def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
             "--security-opt", "no-new-privileges", "--memory", "6g", "--cpus", "2",
             "--pids-limit", "512", "--shm-size", "256m",
             "--tmpfs", "/tmp:rw,exec,nosuid,size=1g", "--tmpfs", "/run:rw,nosuid,size=16m",
-            "--mount", f"type=bind,src={approved.reference},dst=/reference,readonly",
-            "--mount", f"type=bind,src={home},dst=/home/container", "--workdir", "/reference",
+            "--mount", reference_mount,
+            "--mount", home_mount, "--workdir", "/reference",
             "--env", "SteamAppId=1149460", "--env", "SteamGameId=1149460",
             "--env", "STEAM_COMPAT_DATA_PATH=/home/container/proton-prefix",
             "--env", "STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/container"]
@@ -441,13 +507,23 @@ def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
         if approved.probe is None:
             raise ValueError("missing authorized probe")
         argv += ["--mount", f"type=bind,src={approved.probe},dst=/probes/handshake_probe,readonly"]
-    argv += [IMAGE, "/bin/bash", "-lc", launch]
     helpers = [Path(__file__), root / "tools/run_reference_offline.sh", root / "tools/runtime_types.py"]
+    binding = "executable_only_not_full_tree"
+    if tree is None:
+        argv += [IMAGE, "/bin/bash", "-lc", launch]
+    else:
+        guard = reference_intake.guard_launch(tree, home, approved.probe if args.handshake_probe else None, token)
+        argv += ["--no-healthcheck", "--env", "BASH_ENV=", IMAGE, "/bin/bash", "-c",
+                 guard + "exec /bin/bash -lc " + shlex.quote(launch)]
+        helpers += [root / "tools/reference_intake.py", root / "tools/sha256_manifest.py"]
+        binding = "M-1404_full_tree"
+    record_argv: list[JsonValue] = list(reference_intake.local_docker_argv(argv) if tree is not None else argv)
     record: JsonObject = {
-        "time": datetime.datetime.now(datetime.UTC).isoformat(), "argv": list(argv),
+        "time": datetime.datetime.now(datetime.UTC).isoformat(),
+        "argv": record_argv,
         "timeout_seconds": approved.lifetime_seconds, "observation_seconds": approved.observation_seconds,
         "approval": approved.session, "session_sha256": approved.session_sha256,
-        "reference_binding": "executable_only_not_full_tree", "fixture": fixture,
+        "reference_binding": binding, "fixture": fixture,
         "helpers": {str(path.relative_to(root)): digest(path) for path in helpers},
     }
     with (approved.case / "commands.jsonl").open("a") as stream:
@@ -458,6 +534,11 @@ def prepare_launch(root: Path, args: Arguments, approved: ApprovedRun,
 
 def observe(args: Arguments, approved: ApprovedRun, run: Path,
             name: str, token: str, argv: list[str]) -> JsonObject:
+    bound = approved.intake is not None
+    if bound:
+        reference_intake.verify_local_dockerd()
+        if available_memory() < 3 * 1024**3 or shutil.disk_usage(approved.case).free < 30 * 1024**3:
+            raise RuntimeError("resource floor reached before container launch")
     # Hashing and preparation can consume the slack checked by revalidate().
     # Sample monotonic first so the conversion cannot extend the UTC expiry.
     start = time.monotonic()
@@ -467,8 +548,8 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
     remaining = (session_end - now).total_seconds()
     if now < session_start or remaining <= approved.observation_seconds + 120:
         raise ValueError("session has insufficient approved time at launch")
-    budget = Budget(start + min(approved.lifetime_seconds, remaining))
-    observation = Budget(start + approved.observation_seconds)
+    budget = Budget(start + min(approved.lifetime_seconds, remaining), local_docker=bound)
+    observation = Budget(start + approved.observation_seconds, local_docker=bound)
 
     def interrupted(_signum: int, _frame: FrameType | None) -> None:
         raise KeyboardInterrupt("reference observation interrupted")
@@ -482,6 +563,8 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
         if re.fullmatch(r"[0-9a-f]{64}", candidate) is None:
             raise RuntimeError("unexpected container ID")
         container = candidate
+        verified = not bound
+        receipt = run / "home" / reference_intake.MOUNT_RECEIPT
         with (run / "resource-samples.jsonl").open("x") as samples:
             probed = False
             while time.monotonic() < observation.deadline:
@@ -489,9 +572,11 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
                     raise RuntimeError("resource floor reached during observation")
                 inspected = observation.run(["docker", "inspect", container])
                 _ = owned_container(inspected.stdout, name, token, container)
+                if not verified:
+                    verified = reference_intake.mount_verified(receipt, token)
                 if not parse_container_state(inspected.stdout).running:
                     break
-                if args.handshake_probe and not probed and time.monotonic() - start >= approved.probe_delay_seconds:
+                if verified and args.handshake_probe and not probed and time.monotonic() - start >= approved.probe_delay_seconds:
                     probe_argv = ["docker", "exec", "--env", "ICARUS_OFFLINE_PROBE=1",
                                   container, "/probes/handshake_probe"]
                     if args.complete_stateless:
@@ -523,6 +608,8 @@ def observe(args: Arguments, approved: ApprovedRun, run: Path,
                                                    "{{json .}}", container]).stdout)
                 samples.flush()
                 time.sleep(min(5, max(0, observation.deadline - time.monotonic())))
+            if not verified and not reference_intake.mount_verified(receipt, token):
+                raise RuntimeError("container did not verify its reference mount before execution")
             if args.handshake_probe and not probed:
                 raise RuntimeError("requested handshake probe did not run")
         _ = (run / "observed-seconds.txt").write_text(str(time.monotonic() - start) + "\n")
@@ -585,6 +672,7 @@ def main() -> None:
     _ = parser.add_argument("--hello-probe", action="store_true")
     _ = parser.add_argument("--join-probe", action="store_true")
     _ = parser.add_argument("--initialise-probe", action="store_true")
+    _ = parser.add_argument("--reference-input", choices=[reference_intake.EVIDENCE])
     args = parser.parse_args(namespace=Arguments())
     root = Path(__file__).resolve().parents[1]
     approved = validate_session(root, args, datetime.datetime.now(datetime.UTC))
@@ -593,7 +681,13 @@ def main() -> None:
     with reserve_run(approved, args.run_name) as run:
         token = uuid.uuid4().hex
         name = "icarus-offline-" + token
-        argv = prepare_launch(root, args, approved, run, name, token)
+        tree = None
+        if approved.intake is not None:
+            start = time.monotonic()
+            end = datetime.datetime.fromisoformat(string_field(approved.session, "end_utc"))
+            slack = (end - datetime.datetime.now(datetime.UTC)).total_seconds() - approved.lifetime_seconds
+            tree = reference_intake.verify_install(approved.intake, start + min(reference_intake.MAX_VERIFY_SECONDS, slack))
+        argv = prepare_launch(root, args, approved, run, name, token, tree)
         revalidate(root, args, approved)
         cleanup = observe_and_record(args, approved, run, name, token, argv)
         print(json.dumps({"run": str(run), **cleanup}))

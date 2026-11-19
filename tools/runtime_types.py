@@ -31,9 +31,18 @@ def _json_value(value: object) -> JsonValue:
     raise ValueError("unsupported JSON value")
 
 
-def parse_json(text: str | bytes) -> JsonValue:
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def parse_json(text: str | bytes, *, unique_keys: bool = False) -> JsonValue:
     # json.loads is untyped; every Python value is an object before validation.
-    return _json_value(cast(object, json.loads(text)))
+    return _json_value(cast(object, json.loads(text, object_pairs_hook=_unique_keys if unique_keys else None)))
 
 
 def json_object(value: JsonValue) -> JsonObject:

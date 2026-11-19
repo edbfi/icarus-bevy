@@ -1,23 +1,13 @@
 # Original-server offline launcher
 
-Copied from the "Current launcher" section of the retained
-[offline runtime record](../history/offline-runtime-authorization.md).
-
 ## Current launcher
 
-`tools/run_reference_offline.py` and its shell wrapper require an explicit
-case-local session. The user's standing instruction permits bounded offline
-research; each experiment needs its own concrete current scope, and historical
-session files do not renew themselves. No original server was executed while
-testing this launcher revision.
-
-Use an existing case below the repository's ignored `work/` directory, with a
-`scope.md` that the launcher checks itself. Its Markdown sections must contain
-`## auth` with `- status: granted`, `## network_profile` with
-`- mode: offline`, and `## signoff` with `- ready_for_act: true`; duplicate
-contract fields are rejected. These checks rerun before launch alongside the
-session and hash checks; no external skill package is required. The session
-JSON must contain:
+Use a current case and session under `work/` for `tools/run_reference_offline.py`
+or its shell wrapper. See the [runtime gates](../gates.md#before-any-original-server-or-client-run).
+In `scope.md`, set `status: granted` under `## auth`, `mode: offline` under
+`## network_profile`, and `ready_for_act: true` under `## signoff` as Markdown
+list fields. The launcher rejects duplicate fields and rechecks the scope,
+session and input hashes before launch. The session JSON requires these fields.
 
 | Field | Required value |
 | --- | --- |
@@ -27,7 +17,7 @@ JSON must contain:
 | `scope_sha256` | Lowercase SHA-256 of that case's scope file |
 | `start_utc`, `end_utc` | Timezone-aware timestamps covering the entire attempt |
 | `image` | Exact pinned image string shown below |
-| `reference_root` | Absolute repository `icarus-orig` directory |
+| `reference_root` | Absolute repo-root `icarus-orig` or `icarus-server-<digits>` directory, or the approved intake below |
 | `reference_executable` | Absolute `Icarus/Binaries/Win64/IcarusServer-Win64-Shipping.exe` below that root |
 | `reference_sha256` | Lowercase SHA-256 of that executable |
 | `observation_seconds` | 15–780, matching `--seconds` |
@@ -35,20 +25,16 @@ JSON must contain:
 | `max_runs` | 1–12 attempts; failed attempts also consume quota |
 | `allowed_modes` | Selected base mode: `startup`, `resume`, `missing`, `truncated-json` or `save-load`; add `handshake` / `complete-stateless` if needed |
 
-When `handshake` is allowed, also provide `probe` (an absolute executable file
-inside the case) and its `probe_sha256`. A handshake invocation needs at least
-60 observation seconds. `--complete-stateless` requires `--handshake-probe` and
-both mode permissions. No probe directory is mounted.
+For `handshake`, bind a case-local executable `probe` and `probe_sha256`, and
+allow at least 60 observation seconds. `--complete-stateless` requires
+`--handshake-probe` and both mode permissions. Mounts include only the probe file.
 
 The pinned image is
 `ghcr.io/pelican-eggs/steamcmd@sha256:967e40780cb46a5343bd7a5fd372612d1a1b90fbc95fdd803d74ec5b3bede237`.
-Paths must not contain redirects, commas or newlines. Before launch the
-launcher verifies the scope, executable and optional probe hashes again and
-rejects any session-byte change made during preparation. Executable hashing
-does **not** verify the entire mounted installation; retain the reference
-inventory separately.
+Use canonical paths without commas or newlines. Legacy bindings hash only the
+executable. Retain the inventory separately.
 
-After preparing the case and session, a startup invocation is:
+For a startup observation, run the launcher with the case-local session.
 
 ```bash
 bash tools/run_reference_offline.sh \
@@ -57,23 +43,15 @@ bash tools/run_reference_offline.sh \
   --run-name startup-01 --seconds 120
 ```
 
-The launcher locks the case quota through cleanup and never overwrites a run.
-It records invocation, session and helper hashes, container inspection, logs,
-resource samples and `cleanup.json`. The recorded timeout is a maximum: a fresh
-pre-launch time check caps the monotonic deadline at session expiry and rejects
-attempts without time for observation plus 120 seconds of cleanup. Container
-ownership requires a random token, the exact name and, once known, the exact
-ID; removal targets that verified ID. Inspection errors or unverified removal
-are errors, not successful cleanup, and repeated interruption during cleanup
-does not skip removal. Local subprocess deadlines cannot guarantee daemon
-cessation after a host or daemon failure; an unsuccessful cleanup receipt
-requires investigation before another run.
+The launcher holds the case quota lock through cleanup and records the
+invocation, hashes, inspections, logs, resource samples and `cleanup.json`.
+Session expiry caps the deadline, including 120 seconds reserved for cleanup.
+Cleanup verifies container ownership by token, name and ID before removal.
+Investigate failed cleanup before another run, including after daemon or host failures.
 
-Networking stays disabled: no published ports, downloads, identity overrides
-or reference writes. The pinned image is local-only; CPU, memory and PID limits
-and the 3 GiB available-memory / 30 GiB disk floors remain enforced. Connected
-runs use `tools/run_reference_connected.py`
-([connected scenarios](connected-scenarios.md)).
+Networking is disabled and the pinned image is local-only. CPU, memory and PID
+limits and the 3 GiB available-memory / 30 GiB disk floors apply. See the
+[connected launcher](connected-scenarios.md) for connected scenarios.
 
 `--hello-probe` (with `--handshake-probe`, without `--complete-stateless`)
 runs the probe with `--hello <hello_version>`; the session allows `hello`
@@ -88,6 +66,22 @@ session allows `initialise` beside `join` and binds `initialise_player_id`
 (1 to 64 letters, digits, `_` or `-`, starting with a letter or digit) and
 `initialise_chr_slot` (0 to 99). A saved character's id is private and stays
 in the case.
+
+## M-1404 intake
+
+For a new offline case under F-1175, use `--reference-input M-1404`.
+Set the session’s `reference_input` fields:
+
+- `evidence` = `M-1404`, `build_id` = `26613688`, `release` = `3.0.36.159996-rel-DangerousHorizons`
+- `manifest` (absolute path) and `manifest_sha256` from M-1404
+- `authorization_source` for the current run
+
+Repeat these fields, `status: granted`, `reference_root`, `reference_executable`
+and `reference_sha256` as list entries under `## reference_input` in `scope.md`.
+Use the fixed sibling `official/` install. Keep it quiescent during verification
+and execution. Allow five minutes for hashing. Unset Docker host/context overrides
+and use the local root daemon at `/run/docker.sock`. The mapped image user
+needs read access to the install and write access to the private 0700 run home.
 
 ## Save-load mode
 
