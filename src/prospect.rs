@@ -23,8 +23,9 @@ use crate::experimental::prospect_info::{
     SavedQuestManager, saved_container_manager, saved_flod_tile_count, saved_player_history,
 };
 use crate::experimental::recorders::{
-    RecorderArray, RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
-    stage_prospect_save_state, stage_prospect_save_state_with_root_values,
+    RecorderArray, RecorderSummary, SavedPlayers, StagedProspectSaveState, read_recorders,
+    recorder_class_label, saved_players, stage_prospect_save_state,
+    stage_prospect_save_state_with_root_values,
 };
 use crate::experimental::restore_rules::normalize_prospect_name;
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
@@ -425,6 +426,15 @@ pub fn saved_player_controllers_from_payload(
         profile,
         MAX_BOUNDED_COMPONENT_BYTES,
     )
+}
+
+/// Read both saved player lists with one root parse and strict staging pass.
+/// Root or staging errors reject both lists. After staging succeeds, each
+/// class has its own readback result.
+pub fn saved_players_from_payload(payload: &[u8]) -> Result<SavedPlayers> {
+    let profile = TagProfile::MemoryArchive522;
+    let roots = read_root(payload, profile)?;
+    saved_players(&roots.tags, profile, MAX_BOUNDED_COMPONENT_BYTES)
 }
 
 /// [`read_saved_prospect`] on an inner payload, such as a preserved

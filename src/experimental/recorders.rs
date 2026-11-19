@@ -1793,6 +1793,25 @@ impl std::fmt::Debug for SavedPlayerController {
     }
 }
 
+/// Player data read after shared strict staging. Each class yields a complete
+/// list in saved order or its own readback error.
+pub struct SavedPlayers {
+    pub characters: Result<Vec<SavedPlayerCharacter>>,
+    pub controllers: Result<Vec<SavedPlayerController>>,
+}
+
+pub(crate) fn saved_players(
+    roots: &[RootTag<'_>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<SavedPlayers> {
+    let staged = StagedPlayerRecorders::stage(roots, profile, component_byte_limit)?;
+    Ok(SavedPlayers {
+        characters: staged.characters(),
+        controllers: staged.controllers(),
+    })
+}
+
 /// Every C025 controller retained by strict staging and Validate, in saved
 /// order. Refused saves return no partial identities.
 pub fn saved_player_controllers(
@@ -1800,44 +1819,30 @@ pub fn saved_player_controllers(
     profile: TagProfile,
     component_byte_limit: usize,
 ) -> Result<Vec<SavedPlayerController>> {
-    let (staged, decisions) =
-        stage_prospect_save_state_with_decisions(roots, profile, component_byte_limit, None)?;
-    if staged.parsed_recorder_count == 0 {
-        return Ok(Vec::new());
-    }
-    let recorders = read_recorders(roots, profile)?;
-    ensure!(
-        recorders.records().len() == decisions.len(),
-        "staged decisions do not cover every recorder"
-    );
-    let mut controllers = Vec::new();
-    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
-        if !decision.retained {
-            continue;
-        }
-        let class =
-            decode_exact_string_units(recorder.class_value, "invalid saved recorder class string")?;
-        if !units_eq_ascii(&class, "/Script/Icarus.PlayerRecorderComponent") {
-            continue;
-        }
-        let component =
-            read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)?;
-        let mut identity = SavedPlayerController {
-            player_id: Vec::new(),
-            chr_slot: -1,
+    StagedPlayerRecorders::stage(roots, profile, component_byte_limit)?.controllers()
+}
+
+fn read_saved_player_controller(
+    recorder: &Recorder<'_>,
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<SavedPlayerController> {
+    let component =
+        read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)?;
+    let mut identity = SavedPlayerController {
+        player_id: Vec::new(),
+        chr_slot: -1,
+    };
+    for field in component.fields() {
+        let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
+            bail!("unexpected saved controller terminator");
         };
-        for field in component.fields() {
-            let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
-                bail!("unexpected saved controller terminator");
-            };
-            if is_name(&prop.name, "PlayerCharacterID") {
-                (identity.player_id, identity.chr_slot) =
-                    parse_player_character_id_struct(prop.tag.payload, profile)?;
-            }
+        if is_name(&prop.name, "PlayerCharacterID") {
+            (identity.player_id, identity.chr_slot) =
+                parse_player_character_id_struct(prop.tag.payload, profile)?;
         }
-        controllers.push(identity);
     }
-    Ok(controllers)
+    Ok(identity)
 }
 
 /// Every retained `C026` player character, in recorder-array order, after the
@@ -1850,75 +1855,60 @@ pub fn saved_player_characters(
     profile: TagProfile,
     component_byte_limit: usize,
 ) -> Result<Vec<SavedPlayerCharacter>> {
-    let (staged, decisions) =
-        stage_prospect_save_state_with_decisions(roots, profile, component_byte_limit, None)?;
-    if staged.parsed_recorder_count == 0 {
-        return Ok(Vec::new());
-    }
-    let recorders = read_recorders(roots, profile)?;
-    ensure!(
-        recorders.records().len() == decisions.len(),
-        "staged decisions do not cover every recorder"
-    );
-    let mut characters = Vec::new();
-    for (recorder, decision) in recorders.records().iter().zip(&decisions) {
-        if !decision.retained {
+    StagedPlayerRecorders::stage(roots, profile, component_byte_limit)?.characters()
+}
+
+fn read_saved_player_character(
+    recorder: &Recorder<'_>,
+    profile: TagProfile,
+    component_byte_limit: usize,
+) -> Result<SavedPlayerCharacter> {
+    let component =
+        read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)
+            .context("invalid saved player character component")?;
+    let mut player_id = Vec::new();
+    let mut chr_slot = -1_i32;
+    let mut icarus_uid = -1_i32;
+    let mut state = SavedPlayerState::default();
+    for field in component.fields() {
+        let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
+            bail!("unexpected saved player character terminator");
+        };
+        if read_saved_player_state_field(&mut state, &prop, profile, component_byte_limit)? {
             continue;
         }
-        let class_units =
-            decode_exact_string_units(recorder.class_value, "invalid saved recorder class string")?;
-        if !units_eq_ascii(&class_units, "/Script/Icarus.PlayerStateRecorderComponent") {
-            continue;
+        if is_name(&prop.name, "PlayerCharacterID") {
+            (player_id, chr_slot) = parse_player_character_id_struct(prop.tag.payload, profile)?;
+        } else if is_name(&prop.name, "IcarusActorGUID") {
+            ensure!(
+                prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
+                "IcarusActorGUID must be 4-byte IntProperty"
+            );
+            icarus_uid = i32::from_le_bytes(prop.tag.payload.try_into()?);
         }
-        let component =
-            read_base_component_with_limit(recorder.binary_data, profile, component_byte_limit)
-                .context("invalid saved player character component")?;
-        let mut player_id = Vec::new();
-        let mut chr_slot = -1_i32;
-        let mut icarus_uid = -1_i32;
-        let mut state = SavedPlayerState::default();
-        for field in component.fields() {
-            let ParsedRecord::Property(prop) = read_record(field.record, profile)? else {
-                bail!("unexpected saved player character terminator");
-            };
-            if read_saved_player_state_field(&mut state, &prop, profile, component_byte_limit)? {
-                continue;
-            }
-            if is_name(&prop.name, "PlayerCharacterID") {
-                (player_id, chr_slot) =
-                    parse_player_character_id_struct(prop.tag.payload, profile)?;
-            } else if is_name(&prop.name, "IcarusActorGUID") {
-                ensure!(
-                    prop.tag.kind == TagKind::Int && prop.index == 0 && prop.tag.payload.len() == 4,
-                    "IcarusActorGUID must be 4-byte IntProperty"
-                );
-                icarus_uid = i32::from_le_bytes(prop.tag.payload.try_into()?);
-            }
-        }
-        let tree = BaseComponentTree::parse(
-            recorder.binary_data,
-            profile,
-            component_byte_limit,
-            TreeLimits {
-                max_depth: MAX_TREE_DEPTH,
-                max_nodes: MAX_TREE_NODES,
-                struct_array_bytes: MAX_BOUNDED_STRUCT_ARRAY_BYTES,
-                container_struct_bytes: None,
-            },
-        )
-        .context("invalid saved player character tree")?;
-        let (typed, _) = TypedComponent::from_component(&tree)?;
-        let (inventories, modifiers) = saved_actor_state(&typed.tree)?;
-        characters.push(SavedPlayerCharacter {
-            player_id,
-            chr_slot,
-            icarus_uid,
-            state,
-            inventories,
-            modifiers,
-        });
     }
-    Ok(characters)
+    let tree = BaseComponentTree::parse(
+        recorder.binary_data,
+        profile,
+        component_byte_limit,
+        TreeLimits {
+            max_depth: MAX_TREE_DEPTH,
+            max_nodes: MAX_TREE_NODES,
+            struct_array_bytes: MAX_BOUNDED_STRUCT_ARRAY_BYTES,
+            container_struct_bytes: None,
+        },
+    )
+    .context("invalid saved player character tree")?;
+    let (typed, _) = TypedComponent::from_component(&tree)?;
+    let (inventories, modifiers) = saved_actor_state(&typed.tree)?;
+    Ok(SavedPlayerCharacter {
+        player_id,
+        chr_slot,
+        icarus_uid,
+        state,
+        inventories,
+        modifiers,
+    })
 }
 
 /// The first saved character whose `PlayerCharacterID` matches, as the
@@ -1949,6 +1939,72 @@ pub struct StagedRecorderDecision {
     /// A `C033` `bIsPhysicsDynamic` tree the original drops on its next save.
     pub physics_dynamic_tree: bool,
     pub reset_rocket_spawn: bool,
+}
+
+struct StagedPlayerRecorders<'a> {
+    recorders: Option<RecorderArray<'a>>,
+    decisions: Vec<StagedRecorderDecision>,
+    profile: TagProfile,
+    component_byte_limit: usize,
+}
+
+impl<'a> StagedPlayerRecorders<'a> {
+    fn stage(
+        roots: &[RootTag<'a>],
+        profile: TagProfile,
+        component_byte_limit: usize,
+    ) -> Result<Self> {
+        let (staged, recorders) =
+            stage_prospect_save_state_with_recorders(roots, profile, component_byte_limit, None)?;
+        ensure!(
+            recorders.as_ref().map_or(0, |array| array.records().len()) == staged.decisions.len(),
+            "staged decisions do not cover every recorder"
+        );
+        Ok(Self {
+            recorders,
+            decisions: staged.decisions,
+            profile,
+            component_byte_limit,
+        })
+    }
+
+    fn characters(&self) -> Result<Vec<SavedPlayerCharacter>> {
+        self.read_class(
+            "/Script/Icarus.PlayerStateRecorderComponent",
+            read_saved_player_character,
+        )
+    }
+
+    fn controllers(&self) -> Result<Vec<SavedPlayerController>> {
+        self.read_class(
+            "/Script/Icarus.PlayerRecorderComponent",
+            read_saved_player_controller,
+        )
+    }
+
+    fn read_class<T>(
+        &self,
+        class_name: &str,
+        read: impl Fn(&Recorder<'_>, TagProfile, usize) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        let Some(recorders) = &self.recorders else {
+            return Ok(Vec::new());
+        };
+        let mut values = Vec::new();
+        for (recorder, decision) in recorders.records().iter().zip(&self.decisions) {
+            if !decision.retained {
+                continue;
+            }
+            let class = decode_exact_string_units(
+                recorder.class_value,
+                "invalid saved recorder class string",
+            )?;
+            if units_eq_ascii(&class, class_name) {
+                values.push(read(recorder, self.profile, self.component_byte_limit)?);
+            }
+        }
+        Ok(values)
+    }
 }
 
 /// [`stage_prospect_save_state`], also returning every recorder's decision.
@@ -2007,6 +2063,21 @@ pub(crate) fn stage_prospect_save_state_for_import(
     component_byte_limit: usize,
     expected_prospect_id: Option<&[u16]>,
 ) -> Result<StagedImportState> {
+    stage_prospect_save_state_with_recorders(
+        roots,
+        profile,
+        component_byte_limit,
+        expected_prospect_id,
+    )
+    .map(|(staged, _)| staged)
+}
+
+fn stage_prospect_save_state_with_recorders<'a>(
+    roots: &[RootTag<'a>],
+    profile: TagProfile,
+    component_byte_limit: usize,
+    expected_prospect_id: Option<&[u16]>,
+) -> Result<(StagedImportState, Option<RecorderArray<'a>>)> {
     ensure!(
         (1..=MAX_BOUNDED_COMPONENT_BYTES).contains(&component_byte_limit),
         "component byte limit must be between 1 byte and 1 MiB"
@@ -2169,8 +2240,10 @@ pub(crate) fn stage_prospect_save_state_for_import(
     let mut requires_stitching_count = 0usize;
     let mut total_component_field_tags = 0usize;
     let mut decisions = Vec::new();
-    if has_recorders_root {
-        let recorders = read_recorders(roots, profile)?;
+    let recorders = has_recorders_root
+        .then(|| read_recorders(roots, profile))
+        .transpose()?;
+    if let Some(recorders) = &recorders {
         parsed_recorder_count = recorders.records().len();
         decisions.reserve_exact(parsed_recorder_count);
         for recorder in recorders.records() {
@@ -2324,7 +2397,7 @@ pub(crate) fn stage_prospect_save_state_for_import(
         ),
         source_enum_values: info.source_enum_values,
     };
-    Ok(StagedImportState {
+    let staged = StagedImportState {
         summary: staged,
         decisions,
         prospect_dt_key: root_values.prospect_info.prospect_dt_key.clone(),
@@ -2332,7 +2405,8 @@ pub(crate) fn stage_prospect_save_state_for_import(
         faction_mission_dt_key: root_values.prospect_info.faction_mission_dt_key.clone(),
         setting_row_names: info.setting_row_names,
         root_values,
-    })
+    };
+    Ok((staged, recorders))
 }
 
 #[cfg(test)]
