@@ -331,10 +331,13 @@ fn recoverable_periodic_failure_keeps_same_account_slot_leaves_isolated() {
     let slot_b = PlayerKey::new(1, 4).unwrap();
     let mut players = registry();
     attach(&mut players, 1, 1);
-    let mut initial_b = players.projection(1).unwrap().checkpoint;
-    initial_b.location_cm = [-100., 200., 300.];
-    players.reserve(slot_b, 2, initial_b).unwrap();
-    players.activate(2).unwrap();
+    let seed_checkpoint = players.projection(1).unwrap().checkpoint;
+    players.reserve(slot_b, 2, seed_checkpoint).unwrap();
+    let activated_b = players.activate(2).unwrap();
+    let mut moved_b = activated_b.checkpoint;
+    moved_b.location_cm = [-100., 200., 300.];
+    let initial_b = players.edit(slot_b, activated_b.revision, moved_b).unwrap();
+    assert_eq!(initial_b.revision, 2);
     let initial = WorldSnapshot {
         schema_version: SNAPSHOT_SCHEMA_PLAYERS,
         native_players: Some(players.snapshot()),
@@ -349,7 +352,7 @@ fn recoverable_periodic_failure_keeps_same_account_slot_leaves_isolated() {
         let mut checkpoint = before.checkpoint;
         checkpoint.vitals.health = health;
         let edited = registry.edit(key, before.revision, checkpoint).unwrap();
-        assert_eq!((edited.revision, edited.checkpoint), (2, checkpoint));
+        assert_eq!(edited.checkpoint, checkpoint);
         let cutoff = registry
             .request_leave(key, epoch, edited.revision, Instant::now(), MAX_ATTEMPT)
             .unwrap();
@@ -376,6 +379,7 @@ fn recoverable_periodic_failure_keeps_same_account_slot_leaves_isolated() {
 
     writer.submit(app.world_mut()).unwrap();
     let (pending_a, edited_a) = edit_and_leave(&mut app, slot_a, 1, 37);
+    assert_eq!((pending_a.revision, edited_a.revision), (2, 2));
     let error = writer
         .settle_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
         .unwrap()
@@ -388,9 +392,13 @@ fn recoverable_periodic_failure_keeps_same_account_slot_leaves_isolated() {
     std::fs::remove_dir(&generation_a_path).unwrap();
     writer.submit(app.world_mut()).unwrap();
     let (pending_b, edited_b) = edit_and_leave(&mut app, slot_b, 2, 61);
+    assert_eq!((pending_b.revision, edited_b.revision), (3, 3));
     let receipt_a = finish(&mut writer, &mut app);
     assert_eq!(receipt_a.generation, seed.generation + 1);
     assert_eq!(receipt_a.tick, seed.tick);
+    let published: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    assert_eq!(published["current"]["number"], receipt_a.generation);
     let durable_a = LeaveStatus {
         phase: LeavePhase::Durable {
             generation: receipt_a.generation,
@@ -407,8 +415,7 @@ fn recoverable_periodic_failure_keeps_same_account_slot_leaves_isolated() {
     assert_eq!(saved_a.tick, receipt_a.tick);
     let players = saved_a.native_players.unwrap();
     assert_eq!(players.projection(slot_a).unwrap(), edited_a);
-    let prior_b = players.projection(slot_b).unwrap();
-    assert_eq!((prior_b.revision, prior_b.checkpoint), (1, initial_b));
+    assert_eq!(players.projection(slot_b).unwrap(), initial_b);
 
     writer.submit(app.world_mut()).unwrap();
     let receipt_b = finish(&mut writer, &mut app);
