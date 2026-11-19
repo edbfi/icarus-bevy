@@ -23,13 +23,13 @@ use crate::experimental::prospect_info::{
     SavedQuestManager, saved_container_manager, saved_flod_tile_count, saved_player_history,
 };
 use crate::experimental::recorders::{
-    RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
+    RecorderArray, RecorderSummary, StagedProspectSaveState, read_recorders, recorder_class_label,
     stage_prospect_save_state, stage_prospect_save_state_with_root_values,
 };
 use crate::experimental::restore_rules::normalize_prospect_name;
 use crate::experimental::struct_array::MAX_BOUNDED_STRUCT_ARRAY_BYTES;
 use crate::experimental::tagged::{
-    ParsedRecord, RootTagSummary, TagProfile, is_name, read_record, read_root,
+    ParsedRecord, RootTagSummary, RootTags, TagProfile, is_name, read_record, read_root,
 };
 use crate::experimental::typed_value::{Gap, TypedComponent, TypedSummary};
 use crate::json::JsonObject;
@@ -93,6 +93,16 @@ pub struct RecorderInspection {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RecorderComparison {
+    pub source_total: usize,
+    pub comparison_total: usize,
+    pub byte_identical: usize,
+    pub source_only: usize,
+    pub comparison_only: usize,
+    pub world_imported: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct StagedProspectInspection {
     pub validation: &'static str,
     pub envelope: EnvelopeInspection,
@@ -130,10 +140,7 @@ pub fn inspect_with_inner_tags(reader: impl Read) -> Result<InnerTagInspection> 
 /// Reports aggregates only after all framing and envelope checks succeed.
 pub fn inspect_with_recorders(reader: impl Read) -> Result<RecorderInspection> {
     let validated = decode_envelope(reader)?;
-    let profile = TagProfile::MemoryArchive522;
-    let tags = read_root(&validated.payload, profile).context("invalid experimental root tags")?;
-    let recorders =
-        read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
+    let (tags, recorders) = frame_recorders(&validated.payload)?;
     Ok(RecorderInspection {
         validation: "experimental_recorder_framing_only",
         envelope: validated.inspection,
@@ -141,6 +148,39 @@ pub fn inspect_with_recorders(reader: impl Read) -> Result<RecorderInspection> {
         recorders: recorders.summary(),
         world_imported: false,
     })
+}
+
+/// Compare complete encoded elements under the same limits as [`inspect_with_recorders`].
+/// Counts ignore array order and match each byte sequence up to its smaller
+/// multiplicity. They measure representation and assign no identity to changed entries.
+pub fn compare_recorders(source: impl Read, comparison: impl Read) -> Result<RecorderComparison> {
+    // The nested codec errors may quote input bytes. Report the envelope diagnostic only.
+    let source_envelope =
+        decode_envelope(source).map_err(|error| anyhow::anyhow!("source input: {error}"))?;
+    let (_, source) = frame_recorders(&source_envelope.payload).context("source input")?;
+    let comparison_envelope = decode_envelope(comparison)
+        .map_err(|error| anyhow::anyhow!("comparison input: {error}"))?;
+    let (_, comparison) =
+        frame_recorders(&comparison_envelope.payload).context("comparison input")?;
+    let source_total = source.records().len();
+    let comparison_total = comparison.records().len();
+    let byte_identical = source.count_byte_identical(&comparison);
+    Ok(RecorderComparison {
+        source_total,
+        comparison_total,
+        byte_identical,
+        source_only: source_total - byte_identical,
+        comparison_only: comparison_total - byte_identical,
+        world_imported: false,
+    })
+}
+
+fn frame_recorders(payload: &[u8]) -> Result<(RootTags<'_>, RecorderArray<'_>)> {
+    let profile = TagProfile::MemoryArchive522;
+    let tags = read_root(payload, profile).context("invalid experimental root tags")?;
+    let recorders =
+        read_recorders(&tags.tags, profile).context("invalid experimental recorder framing")?;
+    Ok((tags, recorders))
 }
 
 /// Stages and validates the full `FProspectSaveState` root schema, version

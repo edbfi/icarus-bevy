@@ -247,11 +247,11 @@ not network filesystems/physical power loss (U-035).
 
 ## Supplied saves
 
-All modes: nonblocking regular file (symlinks allowed; F-671), read-only unless stated:
+Read-only unless stated. Nonblocking regular files (symlinks allowed, F-671).
 
-- `inspect-save --source PATH`: [envelope checks](../specs/save-format/prospect-envelope.md);
-  `--inner-tags` adds [root framing](../specs/save-format/tagged-properties.md),
-  `--recorders` recorder framing (counts only).
+- `inspect-save --source PATH` [checks envelope](../specs/save-format/prospect-envelope.md).
+  `--inner-tags` [frames roots](../specs/save-format/tagged-properties.md).
+  `--recorders` counts entries. `--compare-recorders PATH` matches bytes.
 - `--stage-check [--expect-prospect-name NAME]`: stage/migrate full
   `FProspectSaveState`, `ProspectInfo`, base recorder fields (F-738).
 - `--typed-check`: stage, losslessly type/re-encode recorder values;

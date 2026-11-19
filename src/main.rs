@@ -226,6 +226,18 @@ enum Command {
         /// Also frame recorder fields, leaving component bytes opaque; implies root framing.
         #[arg(long)]
         recorders: bool,
+        /// Compare complete encoded recorder elements with another prospect envelope.
+        ///
+        /// Counts include duplicates up to the smaller multiplicity and ignore array order.
+        /// They measure representation and assign no identity to changed entries.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "inner_tags", "recorders", "stage_check", "expect_prospect_name",
+                "preserve_check", "typed_check", "candidate_check"
+            ]
+        )]
+        compare_recorders: Option<PathBuf>,
         /// Stage and validate the `FProspectSaveState` root schema, version
         /// migration (`F-715`), `ProspectInfo` inner tags (`F-726`), and bounded
         /// base-component framing of every `StateRecorderBlob` (`F-403`, `F-733`)
@@ -902,6 +914,7 @@ fn execute(cli: Cli) -> Result<()> {
             source,
             inner_tags,
             recorders,
+            compare_recorders,
             stage_check,
             expect_prospect_name,
             preserve_check,
@@ -911,7 +924,10 @@ fn execute(cli: Cli) -> Result<()> {
             // Check the opened handle: a path can change to a FIFO after a
             // regular-file precheck. Normal regular-file symlinks still work.
             let file = open_regular_source(&source)?;
-            let output = if candidate_check {
+            let output = if let Some(path) = compare_recorders {
+                let comparison = open_regular_source(&path).context("comparison input")?;
+                serde_json::to_string(&icarus_bevy::prospect::compare_recorders(file, comparison)?)?
+            } else if candidate_check {
                 let candidate =
                     icarus_bevy::import_candidate::DecodedImportCandidate::decode(file)?;
                 serde_json::to_string(&candidate.inspection())?
