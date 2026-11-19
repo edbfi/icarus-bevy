@@ -151,7 +151,7 @@ pub struct MultiHoldSummary {
     pub failed: u64,
     pub wall_ms: u64,
     /// Whole milliseconds common to all requested peers' admitted hold loops,
-    /// before final close. None if any peer did not complete successfully.
+    /// before final close. None if a peer fails or receives a control-channel close.
     pub shared_held_ms: Option<u64>,
     pub game_state_updates: u64,
     pub decode_errors: u64,
@@ -600,6 +600,7 @@ fn hold_session_observed(
     let mut tracker = Tracker::new(config.engine_net_version);
     let mut partials = PartialBunchReassembler::new();
     let mut admitted_at = None;
+    let mut server_closed_control = false;
     let mut last_packet: Option<(u16, i64)> = None;
     let started = Instant::now();
     // The first gap runs from the start, so a hold without updates reports
@@ -640,6 +641,9 @@ fn hold_session_observed(
             });
             last_packet = Some((sequence, packet_id));
             for bunch in packet.bunches {
+                if bunch.header.channel_index == 0 && bunch.header.close {
+                    server_closed_control = true;
+                }
                 if !summary.joined && bunch.header.open && bunch.header.channel_index != 0 {
                     admitted_at = Some(reply.received_at);
                     summary.joined = true;
@@ -689,7 +693,12 @@ fn hold_session_observed(
     tracker.gap_to(ended, &mut summary);
     summary.held_ms = u64::try_from(ended.duration_since(started).as_millis()).unwrap_or(u64::MAX);
     let interval = admitted_at
-        .filter(|_| !cancelled() && !summary.refused && summary.ended_by_error.is_none())
+        .filter(|_| {
+            !server_closed_control
+                && !cancelled()
+                && !summary.refused
+                && summary.ended_by_error.is_none()
+        })
         .map(|start| HoldInterval { start, end: ended });
     let closed = if summary.ended_by_error.is_none() && !summary.refused {
         client.close().map(drop)

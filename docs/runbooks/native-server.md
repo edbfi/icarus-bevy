@@ -207,9 +207,9 @@ cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 
 
 Timing starts at Join send. The 259,320 s cap includes 120 s for admission.
 `--progress-interval-seconds 60` emits JSON progress on stderr. Multi-peer stdout
-reports `shared_held_ms` from last admission to first hold end in whole ms
-(rounded down), or null on missing admission or failure. Gaps leave continuity
-unproven. Write errors stop probes. Setup/close errors give kinds only.
+reports `shared_held_ms` (last admission to first end, rounded down), null on
+missing admission, failure or control close. Gaps leave continuity unproven.
+Write errors stop probes. Setup/close errors report kinds.
 
 Freeze inputs and scope. Use a bounded, terminal-independent owned unit.
 Verify namespaces, affinity and cgroups (M-1042/M-1043). Retain child and

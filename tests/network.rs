@@ -2863,6 +2863,39 @@ fn concurrent_held_sessions_each_receive_updates_and_see_every_player() {
     assert!(!printed.contains("HoldProbe"), "{printed}");
 }
 
+#[test]
+fn server_closed_control_channel_invalidates_the_shared_hold() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, MultiHoldConfig, run_holds};
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut settings = fs::read_to_string(&config).unwrap();
+    settings.push_str("begin_timeout_seconds = 5\n");
+    fs::write(&config, settings).unwrap();
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    // The hold probe sends Join and receives updates but never sends Begin.
+    let summary = run_holds(&MultiHoldConfig {
+        sessions: 1,
+        hold: HoldConfig {
+            server: address,
+            network_version: profile.pin.network_checksum,
+            engine_net_version: profile.engine_network_version,
+            duration: Duration::from_secs(7),
+            step_timeout: Duration::from_secs(3),
+        },
+    })
+    .unwrap();
+    server.wait_for("server closed the joined peer awaiting Begin", |record| {
+        record["event"] == "status" && record["sessions"]["closed_awaiting_begin"] == 1
+    });
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert_eq!(summary.joined, 1, "{summary:?}");
+    assert!(summary.game_state_updates > 0, "{summary:?}");
+    assert_eq!(summary.shared_held_ms, None, "{summary:?}");
+}
+
 /// Sessions beyond `max_players` are refused at Login and reported as
 /// refused; the admitted ones hold and see only themselves listed.
 #[test]
