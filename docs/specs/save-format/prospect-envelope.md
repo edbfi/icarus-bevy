@@ -4,17 +4,16 @@
 
 Experimental: envelope schema observed statically in build 25621760 (M-168) and
 confirmed against all twelve supplied prospect documents; the inner world is
-not interpreted. Last reconciled: 2026-11-18.
+not interpreted. Last reconciled: 2026-11-19.
 Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
 
-The outer JSON envelope of a prospect save, its integrity chain, and the
-native `icarus-server inspect-save` policy. Not covered: the inner serialized
-world ([tagged-properties](tagged-properties.md),
-[prospect-loading](prospect-loading.md)), content references, version
-migration, world import and stock-client round trips. `import-save` remains
-unavailable.
+The prospect JSON envelope, integrity chain and native inspection policy.
+The [save runbook](../../runbooks/native-server.md#supplied-saves) covers
+recorder comparison and read-only `import-save --dry-run` (F-898).
+Import publication remains closed. See [tagged properties](tagged-properties.md)
+and [prospect loading](prospect-loading.md) for inner-world framing and planning.
 
 ## Confirmed
 
@@ -33,18 +32,13 @@ unavailable.
   | `UncompressedLength` | `0x28` | Output size passed to `FCompression::UncompressMemory` |
   | `BinaryBlob` | `0x30` | Base64 input string |
 
-- `WriteToProspectBlob` stores `CompressedSize` to both `TotalLength` and
-  `DataLength` (F-1256); `ReadFromProspectBlob` decodes Base64 (F-1257),
-  decompresses `TotalLength` bytes with zlib (F-1258), checks SHA-1 and enters
-  archive deserialization (F-1259; F-283, F-737; `evaluate_prospect_blob_decode`
-  in `experimental::restore_rules`).
-- Supplied saves (M-118; intake, integrity and decoded sizes F-881): twelve
-  BOM-marked UTF-16LE JSON prospect documents (one current, eleven backups;
-  one backup equals current), raw 2,154,484 to 2,239,534 bytes, Base64-decoded
-  805,856 to 837,751 bytes, decompressed 17,671,728 to 19,131,027 bytes. All
-  have one complete zlib stream, canonical Base64 and `DataLength ==
-  TotalLength`; each prospect lists seven distinct account/character-slot
-  tuples, the claimed owner among them. Twelve identical 97-byte UTF-8
+- Original decode order: Base64, zlib over `TotalLength` bytes, SHA-1, then
+  archive deserialization (F-283, F-737, F-1256 to F-1259).
+  Native model: `experimental::restore_rules::evaluate_prospect_blob_decode`.
+- All twelve supplied BOM UTF-16LE prospects (eleven distinct) have one
+  complete zlib stream, canonical Base64 and `DataLength == TotalLength`.
+  Intake and sizes: M-118, F-881. Each lists seven distinct account/character-slot
+  tuples including the claimed owner (F-262). Twelve identical 97-byte UTF-8
   documents (`Accolades.json` and 11 backups) match `FAccoladeSaveData`
   (`0x145dc1790` / `0x1419edb20`, size `0xB0`, align `0x08`: empty
   `CompletedAccolades: TArray<FAccoladeCompletedState>` `+0x00`,
@@ -60,6 +54,20 @@ unavailable.
   120/240 s. F-1272 measures native startup to SIGTERM. Across the official
   save pairs, C015 level rose 14 s, game time 14.0625/14.09375 and root
   elapsed 593 s. Whole-recorder matches leave object identity open.
+- Dedicated build 26613688 declares a direct C008 array with float32 time
+  and signed i32 state per element. Its four direct element fields lack an
+  explicit plot ID (M-1593). Native readback of the F-1271 common input
+  and both zero-player lobby outputs retained 109
+  losslessly typed C008 records per save, each with one exact array element
+  and one explicit finite float32/signed i32 pair. M-1595 hashes sorted pairs
+  with multiplicity. All three digests differ (F-1274). A direct call passes the
+  saved array to an interface entry (M-1597). Each of its two paths has an indirect
+  call site. One skips the call on a null receiver. Writer, clock and units remain open.
+  All three snapshots share 109 positive top-level saved actor keys, each
+  unique within C008. Integer states agree at every key. From input,
+  each output has 32 higher floats and 77 bit-identical floats. Comparing
+  the 240 s output to the 120 s output gives 14 higher, 18 lower and 77
+  bit-identical floats (M-1596).
 - Provenance: the heavy-world archive is preserved privately with an inventory
   (M-166); the writes date from the 3.0.29 window, before the user-reported
   3.0.31 client (F-896, F-685, F-878). Possession completes no compatibility,
@@ -77,19 +85,16 @@ unavailable.
   SHA-1 or Base64; requires canonical padded Base64, the exact compressed
   count, one complete zlib stream, no trailing bytes and the exact output
   length; verifies the legacy hash without retaining the world; and reports
-  `DataLength` without enforcing
-  `DataLength == TotalLength` (F-737). Success is labeled
-  `experimental_envelope_only`; `--inner-tags` adds
-  `experimental_root_tags_only` aggregate counts under the fixed research
-  profile (F-882), and `--stage-check` adds `experimental_stage_only` staging
-  (`experimental::recorders::stage_prospect_save_state`,
-  `prospect::stage_prospect`): the `FProspectSaveState` root schema, tag order,
-  `PostLoadSerialize` migration, the 17 `FProspectInfo` tags, optional
-  `ProspectID` matching, recorder base framing, 65-class constructor defaults
-  with tag overlays and per-recorder `Validate`
-  ([restore rules](restore-rules.md)), counting `C033` `bIsPhysicsDynamic`
-  across all 15 saves (F-680, F-736, F-738, F-746, F-747;
-  `world_imported: false`).
+  `DataLength` without enforcing equality with `TotalLength` (F-737).
+  Output labels: `experimental_envelope_only`, `experimental_root_tags_only`
+  (fixed research profile, F-882), and
+  `experimental_staged_prospect_save_state_only`. Staging
+  checks the `FProspectSaveState` root schema, base recorder framing, tag
+  order, `PostLoadSerialize` migration, 17 `FProspectInfo` tags and optional
+  `ProspectID` matching. It overlays tags on 65-class defaults,
+  applies per-recorder `Validate` ([restore rules](restore-rules.md)), and
+  counts `C033` `bIsPhysicsDynamic` across all 15 saves (F-680, F-736, F-738,
+  F-746, F-747).
 - The original reader checks overrun only and normalizes narrow/wide strings
   lossily (`F-893`; U-026 resolved), whereas the strict inspector fails closed;
   the entry-path failure matrix (`LoadProspectByName` vs `SetupLoadedProspect`)
@@ -102,6 +107,10 @@ unavailable.
 
 - Producing-build log confirmation for the supplied save (U-040); official
   restoration and newer-build compatibility (U-025).
+- C008 restoration needs plant continuity across saves, validated units and
+  state semantics, and per-plot progression measured under matched official
+  and native loads and restarts. Aggregate differences leave continuity,
+  growth rate, cause and restoration open (F-1274).
 
 ## Evidence
 
@@ -109,21 +118,8 @@ unavailable.
   `M-169/E-025`, `M-169/E-028` to `M-169/E-030`), M-757, M-758, M-772, M-773,
   M-776, M-777. Supplied-save triage with hashes, CRCs and bounded member
   checks: M-118.
-- Dependencies in `Cargo.lock`: `base64` 0.23.1, `flate2` 1.1.10 (Rust backend,
-  `miniz_oxide` 0.9.1, `crc32fast` 1.5.2, `adler2` 2.0.1, `simd-adler32`
-  0.3.10), `sha1` 0.11.0; permissive licenses; no proprietary SDK.
-- Native admission and diagnostic regressions (M-182): UTF-8/BOM UTF-16LE,
-  all inspection modes, exact failure boundary and source preservation.
-- Fixture: Python `zlib.compress`, `base64.b64encode` and `hashlib.sha1` over
-  the 42 bytes `Authored envelope fixture: no game state.\n`. Tests cover
-  malformed and truncated input, duplicates, invalid lengths, trailing bytes,
-  hash mismatches, bounded reads, UTF-16LE with BOM, non-BMP and malformed
-  code units, rejected guessed encodings, exact bounds in both encodings,
-  outputs above the former 16 MiB cap, over-expanding streams, invalid, overlong
-  and surrogate UTF-8 in ignored fields, and a CLI check that preserves the
-  source and creates no state directory.
-
-```bash
-python3 tools/cargo_guard.py test --locked --test prospect --test cli
-target/release/icarus-server inspect-save --source PATH [--inner-tags | --recorders | --stage-check [--expect-prospect-name NAME] | --preserve-check]
-```
+- M-1598/ev_79a8dbcd137a records the provider limitation for M-1597.
+- Permissively licensed dependencies and a Rust zlib backend.
+- Native admission, diagnostics and source preservation: M-182 and the
+  [envelope fixture](../../../tests/fixtures/prospect-envelope.json),
+  [parser tests](../../../tests/prospect.rs) and [CLI tests](../../../tests/cli.rs).
