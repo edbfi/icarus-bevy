@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-18
+Last reconciled: 2026-11-19
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -103,5 +103,5 @@ Last reconciled: 2026-11-18
 | F-1259 | ReadFromProspectBlob hashes the decompressed output through 0x140accda0 (SHA-1 state initialized by 0x141f2cf00), compares it with Hash and enters archive deserialization at 0x1418ee4a0 | observed | static-decompile; M-169, M-776/ev_2e9c09126f64, M-777 | high; both builds; model evaluate_prospect_blob_decode; F-283, F-737 | U-040 | active |
 | F-1260 | Server dispatch wrapper passes a stack address in RDX to modifier removal. Its helper copies 24 bytes there in three 8-byte stores. Both modeled return paths then pass that address to an opaque call | observed | static-disassembly; M-1541, M-1542/ev_0d9b9090ff3c, M-1543, M-1544/ev_d8555d37280a | 25621760; final bytes, row identity, ABI and import open | U-025, U-045 | active |
 | F-1263 | Native import planning checks retained C019 QuestName in D_Quests and C018 FactionMissionName in D_FactionMissions at representable indices. Wrong field types and conflicting ordered tables block affected plans | measured | authored-test; M-1551; d373f53f | synthetic catalogs, saves and CLI; quest restoration open | U-045 | active |
-| F-1266 | Historical C016 server slot selects a 2,963-byte procedure. A later loop calls with a guarded field and zero-based index. Exact rebind public-name lookup returned no match | observed | static-bytes, symbol lookup, M-1557..M-1563/unk_b474f6ebae0f | build 25621760, receiver type, callee identity and saved-position mapping open | U-020, U-045 | active |
+| F-1266 | C016 server slot selects a 2,963-byte routine. A later loop passes a guarded field and index. The callee checks signed bounds and reads a 64-bit slot. Exact rebind name lookup found no match | observed | static-bytes, symbol lookup, M-1557..M-1563, M-1568..M-1571/unk_d6c8f1f0e378 | build 25621760; method, native owner and saved-position selector open | U-020, U-045 | active |
 | F-1267 | In one supplied prospect, three nested item headers matched authored declarations. The read-only planner counted 47 character item links to occupied saved positions and zero in its other six categories | measured | structural-comparison, authored-test; M-1564, M-1565 | nine header fixtures, 71 planner tests. Source preserved. Native owner and component open | U-045, U-069 | active |

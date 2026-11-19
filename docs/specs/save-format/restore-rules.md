@@ -38,7 +38,12 @@ addresses retain helper names or stand alone.
 - C016 records list length and zero-based occupied positions (F-651).
   F-1266 corrects the stitching entry for historical server 25621760.
   Its later loop passes a guarded field and zero-based index to a direct
-  call. The callee and saved-position selector remain unidentified.
+  call. The callee checks that the signed index is nonnegative and below
+  the caller's loop bound. An in-range index selects a 64-bit slot. The
+  modeled normal returns on that path carry a storage base. With a populated
+  slot, opaque calls precede the clearing of a slot at the same index, assuming
+  normal register preservation. The caller's use of the result, the receiver
+  type and the link to saved positions remain open.
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
