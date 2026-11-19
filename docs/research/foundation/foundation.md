@@ -84,7 +84,7 @@ Authored bridge debug/release idle/joined-peer costs/overlaps/limits: F-952
 (debug medians/frame-exceeding p95: M-1060). Frozen-frame replay M-1088.
 Binary layout, fixed mode order and host activity limit attribution.
 
-Authored last-key validation costs: F-1053.
+Last-key validation costs F-1053. Paired saved-player read costs F-1276.
 
 ## Open
 
