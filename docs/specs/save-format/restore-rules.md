@@ -6,7 +6,7 @@ Experimental: pure rules in `experimental::restore_rules` and
 `experimental::modifier_lifecycle` (`tests/save_format/restore_rules.rs`,
 `tests/save_format/modifier_lifecycle.rs`, U-045; U-020..U-022, U-032, U-046,
 U-048, U-050 resolved).
-Last reconciled: 2026-11-18.
+Last reconciled: 2026-11-19.
 
 ## Scope
 
@@ -35,15 +35,14 @@ addresses retain helper names or stand alone.
 - Stitching matches GUID plus ASCII `Stricmp` (F-663) per F-1224 (`C009` F-646;
   `C018`/`C019` F-650; `C027` F-676); GUID-only matches, `C013` `FLODTiles`
   cleanup and the `C026` life restore F-1225 (F-648, F-657, F-716).
-- C016 records list length and zero-based occupied positions (F-651).
-  F-1266 corrects the stitching entry for historical server 25621760.
-  Its later loop passes a guarded field and zero-based index to a direct
-  call. The callee checks that the signed index is nonnegative and below
-  the caller's loop bound. An in-range index selects a 64-bit slot. The
-  modeled normal returns on that path carry a storage base. With a populated
-  slot, opaque calls precede the clearing of a slot at the same index, assuming
-  normal register preservation. The caller's use of the result, the receiver
-  type and the link to saved positions remain open.
+- C016 records list length and occupied zero-based positions (F-651).
+  The 2,963-byte stitching routine in server 25621760 passes a guarded field
+  and a zero-based counter. Skipped calls advance it, so the first call can
+  receive a nonzero index.
+  The callee checks signed bounds and reads a 64-bit slot. For a populated slot, opaque calls precede
+  clearing that index, assuming normal register preservation. On modeled normal returns the callee carries a storage base.
+  Loop-back overwrites it with an independent load. Exits reach opaque cleanup
+  before explicit use. Cleanup effects and the outward return remain open (F-1266).
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
