@@ -1044,6 +1044,7 @@ fn pinned_run_upgrades_a_mismatched_hello_and_admits_the_pinned_version() {
     let close = &status["sessions"]["last_client_control_close"];
     assert_eq!(close["reason"], 0);
     assert_eq!(close["phase"], "awaiting_begin");
+    assert_eq!(close["checkpoint_pawn_update_pending"], false);
     assert_eq!(close["own_record_ack"], "unacknowledged");
     let release = &close["frozen_movement_release"];
     assert_eq!(release["state"], "unscheduled");

@@ -22,14 +22,14 @@
 //! order F-1201 infers), moves only after the frozen-movement release,
 //! nothing after a completed leave. No game-client behaviour is claimed.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::ErrorKind,
     net::{SocketAddr, SocketAddrV4, UdpSocket},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use bevy::prelude::App;
+use bevy::{prelude::App, time::TimeUpdateStrategy};
 
 use super::super::lossy_join::frozen_release;
 use super::super::move_acks::{authored_move, move_bunch_payload, unreliable_bunch};
@@ -82,7 +82,7 @@ use crate::{
             read_field_header, write_field_header,
         },
         sequencing::{
-            PacketSequencer, ReliableChannel, ReliableReceive, sequence_difference,
+            PacketSequencer, ReliableChannel, ReliableReceive, is_newer, sequence_difference,
             wire_reliable_sequence,
         },
         session_open::{
@@ -92,7 +92,7 @@ use crate::{
         },
         steam_auth::{SteamAuthMessage, decode_datagram},
     },
-    native_player_runtime::{CheckpointWriter, PlayerRegistry},
+    native_player_runtime::{CheckpointWriter, ConsumptionConfig, PlayerRegistry},
     native_players::{PlayerCheckpoint, PlayerKey, PlayerProjection},
     network,
     persistence::{SaveWorkerDisconnected, SnapshotStore},
@@ -304,6 +304,17 @@ difficulty = 2
     }
 }
 
+fn entry_close_config(inputs: &Inputs) -> ServerConfig {
+    let mut config = Server::resolve_config(&inputs.config);
+    config.network.authored_controller_leave = false;
+    config.network.player_consumption = None;
+    config.network.pawn_move_acks = false;
+    config.network.checkpoint_saved_locations = false;
+    config.network.checkpoint_location_correction = false;
+    config.network.server_frozen_movement_release_delay_ms = 0;
+    config
+}
+
 // ------------------------------------------------------------------ server
 
 /// What `run`'s shutdown left: the `stopped` record's network part and the
@@ -327,7 +338,7 @@ enum SnapshotMode {
 /// activation, membership publication and stop), the SIGINT/SIGTERM handler,
 /// run-record printing, clamped-frame and tick metrics, and the periodic
 /// status cadence (the record's network fields are composed on demand).
-/// The paired entry test uses an in-memory snapshot and skips the save loop.
+/// The entry-close tests use in-memory snapshots and skip the save loop.
 struct Server {
     app: App,
     writer: Option<CheckpointWriter>,
@@ -349,7 +360,13 @@ struct Server {
 impl Server {
     /// `run`'s startup, from configuration to the listening app.
     fn start(config: &Path) -> Self {
-        Self::start_config(Self::resolve_config(config), None, SnapshotMode::Durable)
+        Self::try_start_config(
+            &Self::resolve_config(config),
+            None,
+            SnapshotMode::Durable,
+            None,
+        )
+        .unwrap()
     }
 
     fn resolve_config(config: &Path) -> ServerConfig {
@@ -361,11 +378,52 @@ impl Server {
         .unwrap()
     }
 
-    fn start_config(
-        config: ServerConfig,
+    fn start_entry_close(mut config: ServerConfig, checkpoint_health: Option<i32>) -> Self {
+        let mut bind_retries = 2;
+        let mut reserved_port = None;
+        loop {
+            match Self::try_start_config(
+                &config,
+                checkpoint_health,
+                SnapshotMode::InMemory,
+                reserved_port.take(),
+            ) {
+                Ok(server) => return server,
+                Err(error) => {
+                    let address_in_use = error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|cause| cause.kind() == ErrorKind::AddrInUse)
+                    });
+                    assert!(
+                        bind_retries > 0 && address_in_use,
+                        "bind rehearsal game listener: {error:#}"
+                    );
+                    bind_retries -= 1;
+                    // Hosting preflight needs an explicit port. Keep the replacement
+                    // reserved through preflight, then release it for the real bind.
+                    let socket =
+                        UdpSocket::bind(SocketAddrV4::new(config.network.bind, 0)).unwrap();
+                    let port = socket.local_addr().unwrap().port();
+                    config.network.port = port;
+                    let hosting = config.network.hosting.as_mut().unwrap();
+                    if hosting.query_port == port {
+                        hosting.query_port = if port == 27_015 { 27_016 } else { 27_015 };
+                    }
+                    reserved_port = Some(socket);
+                }
+            }
+        }
+    }
+
+    /// Propagate only the authenticated bind error so entry-close startup can
+    /// retry a port collision after the failed setup has been dropped.
+    fn try_start_config(
+        config: &ServerConfig,
         checkpoint_health: Option<i32>,
         snapshot_mode: SnapshotMode,
-    ) -> Self {
+        reserved_port: Option<UdpSocket>,
+    ) -> anyhow::Result<Self> {
         assert!(config.network.enabled && config.network.data_pak.is_some());
         let (mut prepared, players) = network::prepare_run_with_tick_hz(
             &config.network,
@@ -415,7 +473,7 @@ impl Server {
             initial.native_players = Some(registry.snapshot());
         }
         let mut fresh_app = (!existing_state).then(|| {
-            let mut app = build_app(&config, &initial).unwrap();
+            let mut app = build_app(config, &initial).unwrap();
             network::install_player_registry(app.world_mut(), players.as_ref(), &config.network)
                 .unwrap();
             prepared.as_mut().unwrap().prepare_app(&mut app).unwrap();
@@ -451,7 +509,7 @@ impl Server {
             .unwrap();
         let mut app = match fresh_app.take() {
             Some(app) => app,
-            None => build_app(&config, &snapshot).unwrap(),
+            None => build_app(config, &snapshot).unwrap(),
         };
         network::install_player_registry(app.world_mut(), players.as_ref(), &config.network)
             .unwrap();
@@ -475,13 +533,11 @@ impl Server {
         prepared.as_mut().unwrap().prepare_app(&mut app).unwrap();
         // The Steam boundary: the hosting service's client is replaced.
         let (auth, backend) = AuthClient::test_bridge(64);
-        let bound = prepared
-            .unwrap()
-            .bind_authenticated(
-                SocketAddrV4::new(config.network.bind, config.network.port),
-                auth.clone(),
-            )
-            .unwrap();
+        drop(reserved_port);
+        let bound = prepared.unwrap().bind_authenticated(
+            SocketAddrV4::new(config.network.bind, config.network.port),
+            auth.clone(),
+        )?;
         let SocketAddr::V4(address) =
             network::install_configured(&mut app, bound, &config.network).unwrap()
         else {
@@ -499,10 +555,10 @@ impl Server {
             start_tick,
             tick_hz: config.tick_hz,
         };
-        Self {
+        Ok(Self {
             app,
             writer,
-            config,
+            config: config.clone(),
             clock,
             last_save_request: Duration::ZERO,
             auth,
@@ -513,7 +569,7 @@ impl Server {
             commits: 0,
             save_failures: 0,
             backend,
-        }
+        })
     }
 
     /// One iteration of `run`'s real-time loop body.
@@ -725,7 +781,7 @@ struct Observed {
     pawn: Option<u32>,
     pawn_location: Option<SpawnVector>,
     pawn_character_state: Option<u32>,
-    pawn_open_health: Option<i32>,
+    pawn_open_vitals: BTreeMap<u32, RepValue>,
     /// The first pawn's spawn level resolved from received exports at open.
     pawn_level_path: Option<String>,
     /// The pawn a controller ClientRestart (field 40) named.
@@ -736,6 +792,8 @@ struct Observed {
     histories: Vec<RepValue>,
     begin_sent: bool,
     released: bool,
+    /// Wire packet completing the decoded own-record bunch.
+    own_record_packet: Option<u16>,
     /// Reliable non-open pawn update bodies, in delivery order.
     pawn_updates: Vec<Payload>,
     /// Wire packet sequence for each part of the decoded held pawn update.
@@ -1156,7 +1214,7 @@ impl StockClient {
         };
         let mut notes = Vec::new();
         for bunch in self.tracker.feed_packet(packet, &mut notes) {
-            self.on_actor(lab, &bunch);
+            self.on_actor(lab, &bunch, received.sequence);
         }
         assert!(notes.is_empty(), "client tracker: {notes:?}");
     }
@@ -1205,7 +1263,7 @@ impl StockClient {
         .map(|(_, component)| component)
     }
 
-    fn on_actor(&mut self, lab: &PeerLab, bunch: &ActorBunch) {
+    fn on_actor(&mut self, lab: &PeerLab, bunch: &ActorBunch, packet: u16) {
         match bunch.channel_index {
             PLAYER_CONTROLLER_CHANNEL_INDEX => self.on_controller(bunch),
             PAWN_CHANNEL_INDEX => self.on_pawn(lab, bunch),
@@ -1221,6 +1279,7 @@ impl StockClient {
                     .is_some_and(|session| session.channel_index == channel)
                     && self.is_own_record(lab, bunch) =>
             {
+                self.seen.own_record_packet = Some(packet);
                 self.note("record");
             }
             channel => {
@@ -1444,22 +1503,25 @@ impl StockClient {
                 .iter()
                 .find(|block| is_character_state(block, state_guid))
                 .expect("the open pawn carries its CharacterState block");
-            let properties = parse_rep_properties(
+            self.seen.pawn_open_vitals = parse_rep_properties(
                 &state.payload,
                 &plan.content.character_state_layout,
                 &self.codec,
             )
-            .unwrap();
-            let health = properties
-                .entries
-                .iter()
-                .find_map(|entry| match entry.value {
-                    RepValue::Int(health) if entry.handle == character_state_handle::HEALTH => {
-                        Some(health)
-                    }
-                    _ => None,
-                })
-                .expect("the open CharacterState carries health");
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.handle, entry.value))
+            .collect();
+            assert!(
+                matches!(
+                    self.seen
+                        .pawn_open_vitals
+                        .get(&character_state_handle::HEALTH),
+                    Some(RepValue::Int(_))
+                ),
+                "the open CharacterState carries health"
+            );
             if self.seen.pawn.is_none() {
                 self.seen.pawn_level_path = spawn
                     .dynamic
@@ -1470,7 +1532,6 @@ impl StockClient {
             self.seen.pawn = Some(spawn.actor.guid);
             self.seen.pawn_location = spawn.dynamic.and_then(|dynamic| dynamic.location);
             self.seen.pawn_character_state = Some(state_guid);
-            self.seen.pawn_open_health = Some(health);
             self.note("pawn open");
             return;
         }
@@ -1731,6 +1792,113 @@ fn assert_entry_order(seen: &Observed) {
     }
 }
 
+fn assert_entry_close(
+    client: &mut StockClient,
+    server: &mut Server,
+    pawn: ReleasePawnState,
+    checkpoint_pawn_update_pending: bool,
+) {
+    let seen = &client.seen;
+    assert!(!seen.released);
+    assert!(
+        client.held_pawn_parts.is_empty(),
+        "incomplete held pawn update"
+    );
+    let before = server.sessions();
+    assert_eq!(before.players_finalised, 1);
+    assert_eq!(before.connected_player_record_creations_sent, 1);
+    assert_eq!(before.connected_player_record_creations_acked, 0);
+    assert_eq!(before.frozen_movement_releases_scheduled, 0);
+    assert_eq!(before.frozen_movement_releases_sent, 0);
+    let peer = &server.lab().peers[&client.address].peer;
+    assert_eq!(
+        peer.actor_channel_settled(PAWN_CHANNEL_INDEX),
+        pawn == ReleasePawnState::Settled
+    );
+
+    // Replay the close header from the receiver's prior watermark. PacketNotify
+    // emits a disposition the first time the watermark crosses a sequence.
+    // The NAK can queue repair; this checks the pawn lane at close.
+    let mut notify = peer.sequencer().notify().clone();
+    let record_packet = seen.own_record_packet.unwrap();
+    let held_packets: BTreeSet<_> = seen.pawn_update_packets.iter().copied().collect();
+    let pawn_updates = seen.pawn_updates.len();
+    let accepted = server.lab().stats().data_accepted;
+    client.queue_close();
+    let bytes = client.exchange(server, &[]);
+    let close = read_packet(&bytes, &client.write).unwrap();
+    assert!(close.bunches.iter().any(|bunch| {
+        let header = &bunch.header;
+        header.channel_index == 0 && header.reliable && header.close
+    }));
+    let mut notifications = BTreeMap::new();
+    notify
+        .update(&close.header, |sequence, delivered| {
+            notifications.insert(sequence, delivered);
+            Ok(())
+        })
+        .unwrap();
+    let expected = std::iter::once((record_packet, true))
+        .chain(held_packets.iter().map(|&sequence| (sequence, false)));
+    for (sequence, delivered) in expected {
+        let bit = usize::from(sequence_difference(close.header.acked_sequence, sequence));
+        assert!(
+            bit < close.header.history.len() * u32::BITS as usize,
+            "packet {sequence} must have a bit in the transmitted close history",
+        );
+        assert_eq!(
+            notifications.get(&sequence),
+            Some(&delivered),
+            "the close must first report delivery={delivered} for packet {sequence}",
+        );
+    }
+    let missing_packets: BTreeSet<_> = notifications
+        .into_iter()
+        .filter_map(|(sequence, delivered)| (!delivered).then_some(sequence))
+        .collect();
+    assert_eq!(
+        missing_packets, held_packets,
+        "the close reports only deliberately held packets as missing"
+    );
+    assert_eq!(client.seen.pawn_updates.len(), pawn_updates);
+    assert!(client.held_pawn_parts.is_empty());
+    assert_eq!(
+        client
+            .seen
+            .log
+            .iter()
+            .filter(|event| *event == "record")
+            .count(),
+        1
+    );
+
+    let after = server.sessions();
+    assert_eq!(server.lab().stats().data_accepted, accepted + 1);
+    assert_eq!(after.active_peers, 0);
+    assert_eq!(after.closed_by_client, 1);
+    assert_eq!(after.connected_player_record_creations_acked, 1);
+    assert_eq!(after.frozen_movement_releases_scheduled, 1);
+    assert_eq!(after.frozen_movement_releases_sent, 0);
+    assert!(!client.seen.released);
+    assert_eq!(
+        after.last_client_control_close,
+        Some(ClientControlClose {
+            reason: Some(CLOSE_REASON_DESTROYED),
+            phase: PlayerEntryPhase::Finalised,
+            checkpoint_pawn_update_pending,
+            own_record_ack: Some(OwnRecordAck::InClosePacket),
+            frozen_movement_release: Some(FrozenReleaseAtClose {
+                state: FrozenReleaseState::Due,
+                sent: false,
+                pawn: Some(pawn),
+                relocation_held: false,
+                deferred: false,
+                service_pass_reached: Some(false),
+            }),
+        }),
+    );
+}
+
 /// A normal leave, its completion, and the server's removal of the session
 /// once the completion's prefix is acknowledged.
 fn leave(client: &mut StockClient, server: &mut Server) {
@@ -1799,13 +1967,7 @@ fn wait_lab(server: &mut Server, limit: Duration, what: &str, done: impl Fn(&Pee
 fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
     const STAGED_HEALTH: i32 = 37;
     let inputs = Inputs::new(false);
-    let mut config = Server::resolve_config(&inputs.config);
-    config.network.authored_controller_leave = false;
-    config.network.player_consumption = None;
-    config.network.pawn_move_acks = false;
-    config.network.checkpoint_saved_locations = false;
-    config.network.checkpoint_location_correction = false;
-    config.network.server_frozen_movement_release_delay_ms = 0;
+    let config = entry_close_config(&inputs);
 
     let fresh_health = crate::gameplay_profile::FreshPlayerValues::default().max_health;
     let mut legacy_entry = None;
@@ -1815,11 +1977,7 @@ fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
             config.network.player_persistence = None;
             config.network.checkpoint_pawn_before_identity = false;
         }
-        let mut server = Server::start_config(
-            config,
-            checkpoints.then_some(STAGED_HEALTH),
-            SnapshotMode::InMemory,
-        );
+        let mut server = Server::start_entry_close(config, checkpoints.then_some(STAGED_HEALTH));
         assert!(server.lab().has_player_history_open());
         let mut client = StockClient::connect(&mut server, &inputs, ACCOUNT, true);
         client.hold_pawn_updates = true;
@@ -1846,7 +2004,10 @@ fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
             }],
             "one possession block names the opened pawn with both references",
         );
-        assert_eq!(seen.pawn_open_health, Some(fresh_health));
+        assert_eq!(
+            seen.pawn_open_vitals.get(&character_state_handle::HEALTH),
+            Some(&RepValue::Int(fresh_health))
+        );
         assert!(seen.position("pawn open") < seen.position("possession"));
         assert!(seen.position("possession") < seen.position("record"));
         assert!(seen.position("history open") < seen.position("record"));
@@ -1862,10 +2023,6 @@ fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
                 .count(),
             1,
             "the arm opens one initial pawn",
-        );
-        assert!(
-            client.held_pawn_parts.is_empty(),
-            "incomplete held pawn update"
         );
         let pawn = if checkpoints {
             assert_eq!(
@@ -1918,77 +2075,126 @@ fn rehearsal_legacy_and_early_checkpoint_entry_through_own_record_ack() {
             assert!(seen.position("record") < seen.position("history"));
             ReleasePawnState::Settled
         };
-        assert!(!seen.released);
-        let before = server.sessions();
-        assert_eq!(before.players_finalised, 1);
-        assert_eq!(before.connected_player_record_creations_sent, 1);
-        assert_eq!(before.connected_player_record_creations_acked, 0);
-        assert_eq!(before.player_history_appends, u64::from(!checkpoints));
-        assert_eq!(before.frozen_movement_releases_scheduled, 0);
-        assert_eq!(before.frozen_movement_releases_sent, 0);
-        let peer = &server.lab().peers[&client.address].peer;
-        assert_eq!(peer.actor_channel_settled(PAWN_CHANNEL_INDEX), !checkpoints);
-
-        // Replay the exact close header from the receiver's prior watermark.
-        // PacketNotify emits a disposition only when that watermark first
-        // crosses a sequence. A NAK here may queue a repair before close
-        // removes the peer, so it witnesses a pending update at close only.
-        let mut notify = peer.sequencer().notify().clone();
-        let held_packets = seen.pawn_update_packets.clone();
-        let accepted = server.lab().stats().data_accepted;
-        client.queue_close();
-        let bytes = client.exchange(&mut server, &[]);
-        let close = read_packet(&bytes, &client.write).unwrap();
-        assert!(close.bunches.iter().any(|bunch| {
-            let header = &bunch.header;
-            header.channel_index == 0 && header.reliable && header.close
-        }));
-        let mut naks = Vec::new();
-        notify
-            .update(&close.header, |sequence, delivered| {
-                if !delivered {
-                    naks.push(sequence);
-                }
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(naks.len(), held_packets.len());
-        for sequence in held_packets {
-            let bit = usize::from(sequence_difference(close.header.acked_sequence, sequence));
-            assert!(
-                bit < close.header.history.len() * u32::BITS as usize,
-                "pawn packet {sequence} must have a bit in the transmitted close history",
-            );
-            assert!(
-                naks.contains(&sequence),
-                "the close must first report pawn packet {sequence} as missing",
-            );
-        }
-        assert_eq!(client.seen.pawn_updates.len(), usize::from(checkpoints));
-
-        let after = server.sessions();
-        assert_eq!(server.lab().stats().data_accepted, accepted + 1);
-        assert_eq!(after.active_peers, 0);
-        assert_eq!(after.closed_by_client, 1);
-        assert_eq!(after.connected_player_record_creations_acked, 1);
-        assert_eq!(after.frozen_movement_releases_scheduled, 1);
-        assert_eq!(after.frozen_movement_releases_sent, 0);
-        assert!(!client.seen.released);
         assert_eq!(
-            after.last_client_control_close,
-            Some(ClientControlClose {
-                reason: Some(CLOSE_REASON_DESTROYED),
-                phase: PlayerEntryPhase::Finalised,
-                own_record_ack: Some(OwnRecordAck::InClosePacket),
-                frozen_movement_release: Some(FrozenReleaseAtClose {
-                    state: FrozenReleaseState::Due,
-                    sent: false,
-                    pawn: Some(pawn),
-                    relocation_held: false,
-                    deferred: false,
-                    service_pass_reached: Some(false),
-                }),
-            }),
+            server.sessions().player_history_appends,
+            u64::from(!checkpoints)
+        );
+        assert_entry_close(&mut client, &mut server, pawn, checkpoints);
+    }
+}
+
+/// At these authored entry gates, the fresh checkpoint already matches the
+/// early pawn open. A later fixed tick can publish a food debit while the
+/// own record is still unacknowledged.
+#[test]
+fn rehearsal_fresh_checkpoint_consumption_through_own_record_ack() {
+    let inputs = Inputs::new(false);
+    let mut config = entry_close_config(&inputs);
+    config.network.player_consumption = Some(ConsumptionConfig {
+        oxygen: 0,
+        water: 0,
+        food: i32::try_from(config.tick_hz).unwrap(), // one food unit per tick
+    });
+
+    let key = PlayerKey::new(ACCOUNT, SLOT).unwrap();
+    for debit in [false, true] {
+        let mut server = Server::start_entry_close(config.clone(), None);
+        assert!(server.registry().snapshot().is_empty());
+        let fresh = server.initial_vitals.unwrap();
+        server
+            .app
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        let mut client = StockClient::connect(&mut server, &inputs, ACCOUNT, true);
+        client.hold_pawn_updates = true;
+        let address = client.address;
+        let limit = Duration::from_secs(5);
+        client.until(&mut server, limit, "the early pawn open", |seen, _| {
+            seen.pawn.is_some()
+        });
+        assert!(server.lab().peers[&address].checkpoint_epoch.is_none());
+        assert_eq!(client.seen.pawn_open_vitals, fresh.values());
+
+        client.until(&mut server, limit, "checkpoint activation", |_, server| {
+            server.lab().peers[&address].checkpoint_active
+        });
+        let activation_tick = server.app.world().resource::<SimulationClock>().tick;
+        let epoch = server.lab().peers[&address].checkpoint_epoch.unwrap();
+        assert!(server.registry().is_activated(epoch));
+        let activation_vitals = server.stored(key).unwrap().checkpoint.vitals;
+        assert_eq!(activation_vitals, fresh);
+        // Activation runs in the bridge after consumption for that tick.
+        // Network polling can finish entry with the simulation held here.
+        server
+            .app
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(0));
+        client.until(&mut server, limit, "the own record", |seen, _| {
+            seen.own_record_packet.is_some()
+        });
+        assert_eq!(
+            server.app.world().resource::<SimulationClock>().tick,
+            activation_tick,
+            "entry reaches the own record without another fixed tick"
+        );
+        assert_eq!(
+            server.stored(key).unwrap().checkpoint.vitals,
+            activation_vitals
+        );
+        assert_entry_order(&client.seen);
+        client.seen.assert_hosted_map();
+        assert!(client.seen.histories.is_empty());
+        assert!(client.seen.pawn_updates.is_empty());
+
+        // Run the chosen boundary without sending the pending record ACK.
+        // The no-debit arm gets the same network poll with zero fixed ticks.
+        server
+            .app
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(u32::from(debit)));
+        server.step();
+        server
+            .app
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(0));
+        let expected_tick = activation_tick + u64::from(debit);
+        assert_eq!(
+            server.app.world().resource::<SimulationClock>().tick,
+            expected_tick
+        );
+        for bytes in drain(&client.socket) {
+            client.receive(Some(server.lab()), &bytes);
+        }
+
+        let mut expected_vitals = activation_vitals;
+        expected_vitals.food -= i32::from(debit);
+        let seen = &client.seen;
+        let pawn = if debit {
+            let [update] = seen.pawn_updates.as_slice() else {
+                panic!("expected one consumption update: {:?}", seen.log);
+            };
+            let [packet] = seen.pawn_update_packets.as_slice() else {
+                panic!("expected one packet for the consumption update");
+            };
+            let values = vitals_update(server.lab(), update, seen.pawn_character_state.unwrap());
+            assert_eq!(values, with_alive(expected_vitals));
+            assert!(seen.position("record") < seen.position("pawn update"));
+            assert!(is_newer(*packet, seen.own_record_packet.unwrap()));
+            ReleasePawnState::ReliablePending
+        } else {
+            assert!(seen.pawn_updates.is_empty());
+            assert!(seen.pawn_update_packets.is_empty());
+            ReleasePawnState::Settled
+        };
+        assert_entry_close(&mut client, &mut server, pawn, debit);
+        assert_eq!(
+            server.app.world().resource::<SimulationClock>().tick,
+            expected_tick,
+            "the close adds no fixed ticks"
+        );
+        // With fixed time held, run the production eligibility cut to detach
+        // the closed peer without another consumption interval.
+        network::reconcile_player_authority(server.app.world_mut()).unwrap();
+        assert!(server.registry().active_epochs().is_empty());
+        assert_eq!(
+            server.stored(key).unwrap().checkpoint.vitals,
+            expected_vitals
         );
     }
 }

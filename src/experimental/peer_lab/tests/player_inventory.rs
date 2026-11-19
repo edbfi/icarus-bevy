@@ -20,6 +20,7 @@ fn post_pawn_peer(config: PacketLabConfig) -> PeerEntry {
         checkpoint_epoch: None,
         checkpoint_projection: None,
         checkpoint_enqueued_revision: None,
+        checkpoint_pawn_update_through: None,
         checkpoint_active: false,
         connected_player: None,
         connected_players_sent: Vec::new(),
