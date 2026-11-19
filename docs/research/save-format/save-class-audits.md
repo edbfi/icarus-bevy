@@ -1,21 +1,18 @@
 # Supplied-save class audits
 
-Structural qualification of selected supplied-save classes (C009 with nested
-D01, C013, C028, C034) against both copies, and the enabling reader changes;
-values stay opaque. Preconditions: [gates](../../gates.md#before-new-save-class-work).
+Header, width and string-frame coverage for C009 (nested D01), C013, C028
+and C034 in both supplied copies. [Gates](../../gates.md#before-new-save-class-work).
 
 Before restructure: 96ddb0b:docs/research/save-format/2026-10-13-save-class-audits.md
 
 ## Question cluster
 
-- Which selected classes have exact, individually qualified header, width and string-frame structure in both supplied copies?
-- Which descriptor families lack populated coverage?
-- What lies outside the selection, and what remains unknown about meanings, restoration and original behavior?
+Which selected structures match both copies? Which descriptor families lack
+populated examples? What remains unknown about restoration and behavior?
 
 ## Current answer
 
-Every body of the save's 38 classes round-trips byte-identically through a
-lossless value-opaque tree in both copies (F-556, F-559, F-900). Census: F-496,
+All 38 classes round-trip byte-identically through a value-opaque tree in both copies (F-556, F-559, F-900). Census: F-496,
 F-901, F-722 (U-023 resolved), F-668.
 Server 25621760 matches client 25793767 on audited serializers and load paths
 (gates); recorder registrations, defaults, dispatch and overrides:
@@ -42,9 +39,9 @@ Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Open
 
-- Open C016 bindings: [restore rules](../../specs/save-format/restore-rules.md#open-questions).
+- [C016 binding questions](../../specs/save-format/restore-rules.md#open-questions).
 - Packaged data-table row meanings remain out of scope by policy (F-660).
-- Further recorder adapters and qualified coordinates precede an all-or-nothing official-save writer; authored consumers and reference coverage do not qualify original behavior (U-025, U-038, U-045).
+- An all-or-nothing official-save writer needs recorder adapters, coordinate binding and original behavior evidence (U-025, U-038, U-045).
 - Reuse the heavy-world baseline (F-894, F-736) and connected S1 (F-701); producing-build pairing remains U-040.
 
 ## Artifacts

@@ -35,14 +35,16 @@ addresses retain helper names or stand alone.
 - Stitching matches GUID plus ASCII `Stricmp` (F-663) per F-1224 (`C009` F-646;
   `C018`/`C019` F-650; `C027` F-676); GUID-only matches, `C013` `FLODTiles`
   cleanup and the `C026` life restore F-1225 (F-648, F-657, F-716).
-- C016 records list length and occupied zero-based positions (F-651).
-  The 2,963-byte stitching routine in server 25621760 passes a guarded field
-  and a zero-based counter. Skipped calls advance it, so the first call can
-  receive a nonzero index.
-  The callee checks signed bounds and reads a 64-bit slot. For a populated slot, opaque calls precede
-  clearing that index, assuming normal register preservation. On modeled normal returns the callee carries a storage base.
-  Loop-back overwrites it with an independent load. Exits reach opaque cleanup
-  before explicit use. Cleanup effects and the outward return remain open (F-1266).
+- C016 records list length and occupied positions (F-651). The server 25621760
+  stitching slot selects a 2,963-byte routine (F-1266). Its loop passes a
+  guarded field and a zero-based counter. Under normal Win64 register
+  preservation, the model permits a skipped iteration to advance the counter
+  before the first call, giving that call a nonzero index.
+  The callee checks the signed index against zero and the caller’s loop bound.
+  In range, it reads a 64-bit slot. For populated slots, opaque calls precede
+  clearing the indexed slot. Modeled in-range normal returns carry a storage
+  base. Loop-back overwrites the register with an independent load. Modeled
+  exits show no explicit caller use. Cleanup calls may preserve or clobber it.
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
@@ -100,8 +102,9 @@ addresses retain helper names or stand alone.
 
 ## Open questions
 
-- F-1266 leaves the C016 component and saved-position selector unresolved.
-  Native owner binding and current-release restoration remain open.
+- The exact rebind-name lookup in the selected public-symbol profile found zero
+  matches (F-1266). Method, component, owner, memory aliases, outward return, saved-position
+  binding and current-release restoration remain open.
 - Data-table rows stay out of scope (F-660).
 
 ## Evidence
