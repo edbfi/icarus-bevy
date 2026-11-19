@@ -28,12 +28,11 @@ synthetic quest coverage (F-1263) and candidate retention (F-920).
 C016 records saved positions (F-651). With normal Win64 register preservation,
 a modeled skipped iteration may advance the stitching counter (F-1266).
 
-Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
-append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;
-M-1517 qualifies the repeated reader.
-The 24-byte argument reaches modifier removal on one modeled branch (F-1260).
-Two opaque calls leave the other branch open. Owner, storage, ABI, row and
-runtime/import bindings remain unresolved ([restore rules](../../specs/save-format/restore-rules.md#confirmed)).
+Authored adapters F-927 leave import closed. Lifecycle F-930; operands and
+append F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join; M-1517
+qualifies the repeated reader. Removal declaration F-1237/F-1238. With modeled
+`AL=1`, all 24 bytes reach removal. Final `AL=0` bytes, actual ABI and receiver,
+owner, row and native import remain open (F-1260).
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
 Row references: F-660; reader allocation/comparator limits: F-142, F-198.
@@ -47,4 +46,4 @@ Row references: F-660; reader allocation/comparator limits: F-142, F-198.
 
 ## Artifacts
 
-Cited findings; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-1508, M-1517.
+Cited findings; M-1425 to M-1428, M-1431 to M-1458, M-1471 to M-1476; M-1508, M-1517, M-1601, M-1602.
