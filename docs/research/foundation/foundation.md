@@ -46,7 +46,7 @@ median of the run p95s fell in nine workloads and rose in three. Within that
 session, it rose from 18.146 to 18.850 ms for 1,024 armed owners.
 No full-frame, throughput, uniform or RSS proof.
 
-Faults/redaction: F-239/F-671/F-870/F-880/F-423. Load/restarts F-871,
+Faults/redaction: F-239/F-671/F-870/F-880/F-423. Empty clock F-1272, load/restarts F-871,
 interrupted soaks/compressed 72-hour schedules F-872/F-873 and POSIX recovery
 F-511 do not qualify ICARUS performance/physical power loss; earlier soaks
 do not qualify later persistence (U-035).
