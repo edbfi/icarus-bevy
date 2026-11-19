@@ -18,7 +18,7 @@ Server 25621760 matches client 25793767 on audited serializers and load paths
 (gates); recorder registrations, defaults, dispatch and overrides:
 [restore rules](../../specs/save-format/restore-rules.md) (F-645..F-680,
 F-741, F-746, F-747, F-750, F-902..F-904). Selected coverage: F-728, F-737,
-F-738. Reference-load recorder changes: F-894, F-1271; load timings: F-731; opaque
+F-738. Recorder and clock changes: F-894/F-895/F-1271; load timings: F-731; opaque
 math Structs: F-900, F-602; construction grids: F-643.
 
 All 15 prospects type recorder values losslessly within tree limits (F-766).
