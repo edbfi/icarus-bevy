@@ -558,18 +558,23 @@ class IntakeTests(unittest.TestCase):
             fixture.enable_handshake()
             with patch.object(reference_intake, "MANIFEST_SHA256", fixture.binding["manifest_sha256"]):
                 approved = fixture.approve()
-            for verified in (False, True):
-                run = fixture.case / f"run-{verified}"
+            for receipt_at in (None, 0, approved.probe_delay_seconds + 5):
+                run = fixture.case / f"run-{receipt_at}"
                 home = run / "home"
                 home.mkdir(parents=True)
-                if verified:
-                    _ = (home / reference_intake.MOUNT_RECEIPT).write_text(TOKEN + "\n")
+                receipt = home / reference_intake.MOUNT_RECEIPT
+                if receipt_at == 0:
+                    _ = receipt.write_text(TOKEN + "\n")
                 docker = DockerFixture(handshake=True)
                 clock = Clock()
 
                 def command_on_socket(args: Sequence[str], timeout: float = 30,
                                       check: bool = True) -> subprocess.CompletedProcess[str]:
                     self.assertEqual(list(args[:3]), ["docker", "--host", f"unix://{reference_intake.DOCKER_SOCKET}"])
+                    if args[3] == "inspect" and receipt_at is not None and clock.now >= receipt_at and not receipt.exists():
+                        _ = receipt.write_text(TOKEN + "\n")
+                    if args[3] == "exec":
+                        self.assertTrue(receipt.exists(), "probe must wait for the mount receipt")
                     return docker([args[0], *args[3:]], timeout, check)
 
                 with (patch.object(reference_intake, "verify_local_dockerd"),
@@ -578,12 +583,13 @@ class IntakeTests(unittest.TestCase):
                       patch("tools.run_reference_offline.time.sleep", new=clock.sleep),
                       patch("tools.run_reference_offline.available_memory", return_value=4 * 1024**3),
                       patch("tools.run_reference_offline.shutil.disk_usage", new=disk_space)):
-                    if verified:
+                    if receipt_at is not None:
                         self.assertIs(observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])["removed"], True)
                     else:
                         with self.assertRaisesRegex(RuntimeError, "did not verify"):
                             _ = observe(fixture.args, approved, run, NAME, TOKEN, ["docker", "run"])
-                self.assertIs(docker.probed, verified)
+                probe_calls = [call for call in docker.calls if call[1] == "exec"]
+                self.assertEqual(len(probe_calls), 0 if receipt_at is None else 1)
                 self.assertIn(["docker", "rm", "--force", CONTAINER], docker.calls)
 
 
