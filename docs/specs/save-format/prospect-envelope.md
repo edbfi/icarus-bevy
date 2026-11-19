@@ -60,7 +60,9 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   F-1271 common input and both zero-player lobby outputs retained 109
   losslessly typed C008 records per save, each with one exact array element
   and one explicit finite float32/signed i32 pair. M-1595 hashes sorted pairs
-  with their multiplicities. All three digests differ (F-1274).
+  with their multiplicities. All three digests differ (F-1274). The recorder passes
+  its saved array to an interface entry. Both paths call indirect targets
+  (M-1597). The writer and clock remain unbound.
   The same 109 positive top-level saved actor keys occur once each within
   C008 in all three snapshots. Integer states agree at every key. From input,
   each output has 32 higher floats and 77 bit-identical floats. Comparing
@@ -116,6 +118,7 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   `M-169/E-025`, `M-169/E-028` to `M-169/E-030`), M-757, M-758, M-772, M-773,
   M-776, M-777. Supplied-save triage with hashes, CRCs and bounded member
   checks: M-118.
+- M-1598/ev_79a8dbcd137a records the provider limitation for M-1597.
 - Permissively licensed dependencies and a Rust zlib backend.
 - Native admission, diagnostics and source preservation: M-182 and the
   [envelope fixture](../../../tests/fixtures/prospect-envelope.json),
