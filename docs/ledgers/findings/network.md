@@ -7,7 +7,7 @@ full text under `retired/`. Admission and columns follow `.agents/rules/docs.md`
 
 Before restructure: 96ddb0b:docs/ledgers/findings.md
 
-Last reconciled: 2026-11-15
+Last reconciled: 2026-11-19
 
 | ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -131,3 +131,7 @@ Last reconciled: 2026-11-15
 | F-1193 | Build 26613688: 39 exact locations, 19 aligned RW/NX 68-B descriptor spans; 19 complete 47-B factories bind direct operands; complete 72-B FFunctionParams has 12 members/14 opaque refs | observed | static; M-1459/ev_423d954d3a24, M-1459/ev_3ceb9b9b7732, M-1459/ev_3bf00dd12847 | earlier scope; no values, init, widths, entry binding, counts/cache or wire proof | U-038 | active |
 | F-1197 | 26613688 conditional leave: 148/149/150/169, bound 183; RPC presence + 3 bits; handle 26 completion 20/30 bits property/actor | derived | static; M-1460..M-1462, M-1477..M-1485, M-1488..M-1494, M-1498..M-1501; spec | 122-B/908-B scopes distinct; inherited struct rules; archive/cache/CDO unobserved; no whole-flow/general ABI, durability/client proof; F-1177 active | U-038 | active |
 | F-1262 | Manager/quest registration precomposes GameState and channel-ordered world opens per byte order with one disposable GUID cache. Invalid content or a pending initial Join sequence prevents nonempty publication | measured | authored-test; M-1549; f3041b15 | high; current shared plans and cache. Send checks cover later player allocations, values and queues | U-038 | active |
+| F-1277 | Build 26635895 pins 3.0.37.160033-rel-DangerousHorizons, checksum 1753516313. 130 data and 1931 INI tags expand to 2345 nodes, hash 0x02f5e3c9 | derived | public-server metadata; M-1606, M-1607/ev_8c6dfec5f593, M-1608, M-1609, M-1610/ev_5cad0c43fa40 | widths 12/0/6; one unresolved source; no stock-client proof | U-038 | active |
+| F-1278 | 3.0.37 retains 5881 ordered CRC inputs across 42 core native classes, 24 cache layers and 48 expanded native classes. All 52 selected cooked class members match 3.0.36 | derived | static metadata; M-1607/ev_d3028274afb2, M-1608, M-1611, M-1612/ev_4fad36bee038 | selected classes only; no level-instance, live cache or leave binding | U-038 | active |
+| F-1279 | 3.0.37 adds one empty table at index 165. All 296 shared names retain order and widths; 131 indices shift. New widths: 4 zero-byte, 265 one-byte, 28 two-byte | derived | static registry; M-1613, M-1614/ev_ceb86b5701a2 | 297 contiguous slots and 2376-byte publication; 8 shared counts changed; no save-index portability or runtime proof | U-038 | active |
+| F-1280 | 3.0.37: 18 leave symbols and 4 slots bind; 3/14 procedure ranges match bytes. Enum initializer returns immediately. Selected RPC receive preserves presence and nonshared leaf operands | derived | static; M-1615, M-1616/ev_f5727304be62, M-1616/ev_fae94f29bfbb, M-1617, M-1618/ev_38f79a6d7fb9 | caller consumption, selection and live state open; leave off | U-038 | active |

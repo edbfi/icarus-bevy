@@ -5,10 +5,7 @@ use crate::{
     experimental::{
         actor_channel::{ActorBunchBody, BlockTarget, ContentBlock, encode_actor_bunch_body},
         packet::{BunchHeader, Name, Packet, write_packet},
-        release::{
-            ControllerLeavePlan, ControllerLeaveQualification, ControllerLeaveRevision,
-            ReleaseProfile, ReleaseQualifications,
-        },
+        release::{ControllerLeavePlan, ReleaseProfile},
         rep_rpc::{
             ControllerLeaveRequest as Request, LeaveProspectSessionType as Kind,
             encode_controller_leave_request, write_field_header,
@@ -25,21 +22,10 @@ use bevy::{prelude::App, time::TimeUpdateStrategy};
 mod private_proof_tests;
 
 fn plan() -> ControllerLeavePlan {
-    let mut release = ReleaseProfile::fixture("3.0.36");
-    release.qualifications = Some(ReleaseQualifications {
-        pin: release.pin.clone(),
-        engine_network_version: release.engine_network_version,
-        game_network_version: release.game_network_version,
-        class_net_cache: release.class_net_cache,
-        quest_catalog: None,
-        visibility_decode: None,
-        inbound_controller: None,
-        controller_leave: Some(ControllerLeaveQualification {
-            revision: ControllerLeaveRevision::SelectedControllerV1,
-            player_controller: release.player_controller.clone().unwrap(),
-        }),
-    });
-    release.controller_leave_plan().unwrap().unwrap()
+    ReleaseProfile::fixture("3.0.36")
+        .controller_leave_plan()
+        .unwrap()
+        .unwrap()
 }
 
 /// The location options of a [`Fixture`]: saved locations always, with
@@ -601,13 +587,6 @@ fn normal_leave_freezes_without_ticks_and_waits_for_exact_receipt_then_reliable_
 
 #[test]
 fn unsupported_requests_and_disabled_dispatch_do_not_cut_off_or_complete() {
-    assert!(
-        ReleaseProfile::load(std::path::Path::new("config/release.toml"))
-            .unwrap()
-            .controller_leave_plan()
-            .unwrap()
-            .is_some()
-    );
     for enabled in [false, true] {
         let mut f = Fixture::new(enabled);
         let before = f.registry().snapshot();

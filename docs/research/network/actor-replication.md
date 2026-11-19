@@ -36,8 +36,8 @@ F-1186 covers the failed leave. F-1199 and F-1264 cover the two checkpoint sitti
 F-1172 reorders independent opens in authored tests; F-1188 proves no client
 persistence. Production leave remains default-off.
 
-Pin/tags/classes/row widths F-1176 to F-1178 remain static only.
-Sources F-828/F-832; replay F-762.
+3.0.37 changes tags and registry indices, retaining selected classes
+(F-1277 to F-1279). Leave remains unqualified (F-1280 to F-1282). Sources F-828/F-832.
 
 [World managers](../../specs/network/world-managers.md): managers, quests,
 profiles/restore, modifier/temperature; automatic climate/scheduling unqualified.

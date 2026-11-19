@@ -587,6 +587,7 @@ mod tests {
             authored_world_bootstrap::AuthoredWorldBootstrap,
             config::{NetworkConfig, PlayerPersistenceConfig, ServerConfig},
             data_pak::DataPak,
+            experimental::release::ReleaseProfile,
             gameplay_profile::{FreshPlayerValues, fresh_player_profile},
             native_hosting::HostingConfig,
             native_player_runtime::ConsumptionConfig,
@@ -633,9 +634,7 @@ mod tests {
                 prospect_row: "AuthoredWorkshop".into(),
                 difficulty: 2,
             }),
-            release_profile: Some(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"),
-            ),
+            release_profile: Some(ReleaseProfile::fixture_path("3.0.36")),
             data_pak: Some(catalog),
             authored_gameplay: Some(recipe),
             authored_world: Some(AuthoredWorldBootstrap {

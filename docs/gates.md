@@ -59,9 +59,8 @@ Last reconciled: 2026-11-19
   are bound in `experimental` (F-688, F-710 to F-714, F-729, F-757; U-014, U-037,
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
-  addresses and assumptions do not transfer automatically. The 3.0.36 pin's
-  tags, selected class profiles and row registry are statically qualified
-  (F-1176 to F-1178); connected behavior and visibility bindings still need qualification.
+  addresses and assumptions do not transfer automatically. For 3.0.37, F-1277 to F-1279 qualify tags, selected classes and the row registry.
+  Connected behavior and visibility still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
   F-1080 are qualified and gate reads F-1086/F-1087 and entry reads
@@ -113,7 +112,7 @@ Last reconciled: 2026-11-19
 ## Before any original-server or client run
 
 - The standing instruction (given 2026-10-28, renewed through
-  2026-11-19; F-1175, M-1575) authorizes offline and online research,
+  2026-11-19; F-1175, M-1605) authorizes offline and online research,
   Steam/network access, matched official-server runs and connected
   stock-client scenarios against either server without per-scenario approval,
   replacing the connected-test deferral (F-421; U-038, U-047, U-052). Prefer

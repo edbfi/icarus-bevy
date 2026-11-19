@@ -51,8 +51,7 @@ fn controller_leave_opt_in_defaults_off_and_requires_player_preparation() {
     let parsed: ServerConfig = toml::from_str("").unwrap();
     assert!(!parsed.network.authored_controller_leave);
     assert!(
-        ReleaseProfile::load(&release_toml())
-            .unwrap()
+        ReleaseProfile::fixture("3.0.36")
             .controller_leave_plan()
             .unwrap()
             .is_some()
@@ -75,6 +74,7 @@ fn controller_leave_opt_in_defaults_off_and_requires_player_preparation() {
 #[test]
 fn controller_leave_offline_reopen_validates_binding_without_installing_a_session() {
     let (_directory, mut config) = inputs();
+    config.release_profile = Some(ReleaseProfile::fixture_path("3.0.36"));
     let (_, mut snapshot) = stored_players(&config, &[(3, "Player")]);
     config.authored_controller_leave = true;
     let (session, players) =
@@ -90,8 +90,8 @@ fn controller_leave_offline_reopen_validates_binding_without_installing_a_sessio
 fn controller_leave_bad_qualification_refuses_before_network_or_state_side_effects() {
     let (directory, mut config) = inputs();
     config.authored_controller_leave = true;
-    let original: toml::Value =
-        toml::from_str(&fs::read_to_string(release_toml()).unwrap()).unwrap();
+    let qualified = ReleaseProfile::fixture_path("3.0.36");
+    let original: toml::Value = toml::from_str(&fs::read_to_string(qualified).unwrap()).unwrap();
     for variant in ["absent", "controller", "checksum", "controller_checksum"] {
         let mut profile = original.clone();
         match variant {
@@ -182,6 +182,7 @@ fn controller_leave_installs_only_for_explicit_prepared_authenticated_player_ses
     });
     for enabled in [false, true] {
         config.authored_controller_leave = enabled;
+        config.release_profile = Some(ReleaseProfile::fixture_path("3.0.36"));
         let (session, players) =
             network::prepare_run(&config, network::peer_lab_config(&config)).unwrap();
         let mut session = session.unwrap();

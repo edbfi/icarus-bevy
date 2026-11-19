@@ -63,9 +63,9 @@ A complete profile carries protocol values; its build id selects none.
   production refusal and the [visibility gate](gates.md#before-enabling-visibility-dispatch-or-effects).
   Inbound `fixed_component_bounds_v1` on 3.0.32/3.0.34 keeps complete identity/
   framing checks and bounds 149/27/8 (F-1015, F-1016, M-1197); output is metadata
-  only, unknown components opaque. Active 3.0.36 retains none of these.
+  only, unknown components opaque. The 3.0.37 profile omits these capabilities.
 - Controller `selected_controller_v1` binds identity/pin/versions/bounds.
-  F-1197's conditional codec (M-1498 to M-1501) grants no dispatch; the
+  F-1197 qualifies the 3.0.36 codec only. The
   [default-off leave experiment](runbooks/authored-survival.md#checkpoint-leave)
   follows F-1188. Live archive/cache/OnRep/menu behavior, coverage and original
   durability remain unproved.

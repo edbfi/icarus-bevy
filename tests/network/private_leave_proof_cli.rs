@@ -53,7 +53,7 @@ fn config(root: &Path) -> std::path::PathBuf {
                 food: 1,
             }),
             player_persistence: Some(players.clone()),
-            release_profile: Some(release_toml()),
+            release_profile: Some(ReleaseProfile::fixture_path("3.0.36")),
             data_pak: Some(catalog),
             authored_gameplay: Some(recipe),
             authored_world: Some(AuthoredWorldBootstrap {

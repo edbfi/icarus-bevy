@@ -4,7 +4,7 @@
 
 Experimental: older server 25621760/client 25793767 and 3.0.31 capture
 (F-704 to F-711, F-761, F-845); visibility: server 26313077 (F-1020).
-Last reconciled: 2026-11-18.
+Last reconciled: 2026-11-19.
 
 ## Scope
 
@@ -19,9 +19,10 @@ Before restructure: c2e76dc:docs/specs/network/actor-channel.md
   F-1051; fields66/86 F-1052 (no visibility ACK). Framing/partial bounds
   F-1043/F-1046/F-1047; observation limits F-1042/F-1045.
 
-- 3.0.36 pin/tags F-1176, selected class semantics F-1177 and row widths
-  F-1178 remain static only. Connected behavior, level-actor identities and
-  legacy row-index transfer remain unqualified.
+- For 3.0.37, F-1277 binds tags, F-1278 selected classes and F-1279 row widths.
+  An empty table shifts 131 indices. Client entry and level instances remain open.
+  F-1280 to F-1282 bind selected 3.0.37 receive/send operands and the conditional
+  enum width. Handle selection, caller consumption and live state remain open.
 - F-1197 public-server 26613688 retains F-1193's spans/declaration. Ordered
   `UFunction*&`, `FFunctionParams const&` types: M-1477 to M-1485,
   M-1488/ev_8018de4b3bea. Construction consumes descriptors; cached construction

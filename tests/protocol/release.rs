@@ -433,27 +433,16 @@ fn controller_leave_capability_requires_an_explicit_complete_binding() {
             "{name} must not be qualified by its build id"
         );
     }
-    let text =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml"))
-            .unwrap();
+    let text = std::fs::read_to_string(ReleaseProfile::fixture_path("3.0.36")).unwrap();
     let table = release_table(&text);
-    // The reviewed current profile declares codecs only. Dispatch still needs
-    // an explicit native policy opt-in, independently tested by preflight.
-    assert!(
-        ReleaseProfile::fixture("3.0.36")
-            .controller_leave_plan()
-            .unwrap()
-            .is_some()
-    );
-    let qualifications = ReleaseProfile::parse(&text)
-        .unwrap()
-        .qualifications
-        .unwrap();
+    let parse = |table: &toml::Table| ReleaseProfile::parse(&toml::to_string(table).unwrap());
+    let qualified = parse(&table).unwrap();
+    // The 3.0.36 declaration qualifies the codecs. Dispatch requires an
+    // explicit native policy opt-in, independently tested by preflight.
+    let qualifications = qualified.qualifications.as_ref().unwrap();
     assert!(qualifications.quest_catalog.is_none());
     assert!(qualifications.visibility_decode.is_none());
     assert!(qualifications.inbound_controller.is_none());
-    let parse = |table: &toml::Table| ReleaseProfile::parse(&toml::to_string(table).unwrap());
-    let qualified = parse(&table).unwrap();
     let plan = qualified.controller_leave_plan().unwrap().unwrap();
     assert_eq!(plan.engine_net_version(), 17);
     assert_eq!(plan.actor_layout().len(), 30);
@@ -637,7 +626,7 @@ fn release_3_0_35_selects_new_tags_and_retained_class_profiles() {
 }
 
 #[test]
-fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
+fn release_3_0_36_pin_selects_its_tags_and_profile_defaults() {
     let profile = ReleaseProfile::fixture("3.0.36");
     profile.validate().unwrap();
     assert_eq!(profile.pin.build_id, 26_613_688);
@@ -671,7 +660,7 @@ fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
     assert_eq!(profile.managers, previous.managers);
     assert!(profile.level_actors.is_none());
     assert_eq!(profile.class_net_cache, previous.class_net_cache);
-    // Current-build ordered registry and widths match 3.0.35 (F-1178).
+    // The 3.0.36 ordered registry and widths match 3.0.35 (F-1178).
     assert_eq!(profile.row_handles, previous.row_handles);
     // A build id selects no other values. Its complete codec qualification
     // must still be rebound explicitly; changing the release alone refuses.
@@ -704,7 +693,7 @@ fn release_3_0_36_pin_selects_current_tags_and_profile_defaults() {
 }
 
 #[test]
-fn release_3_0_36_rejects_previous_hello_and_accepts_current_hello() {
+fn release_3_0_36_rejects_previous_hello_and_accepts_its_own() {
     use icarus_bevy::experimental::{
         control_messages::{ControlCodec, ControlMessage},
         packet::{PacketConfig, Receiver},
