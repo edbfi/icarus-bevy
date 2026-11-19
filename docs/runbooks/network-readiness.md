@@ -170,10 +170,9 @@ NAKed; waits for unACKed reliable pawn bunches or pressure), `awaiting_ack`,
 shutdown until the next `closed_by_client` close. It gives wire
 `reason` and entry `phase`. `own_record_ack` is omitted when player records
 are disabled, else `unacknowledged`, `in_close_packet` or `earlier`.
-`checkpoint_pawn_update_pending` is true
-if a reliable part of an admitted live checkpoint vitals or owner bag
-update awaits ACK after the close datagram's ACKs/NAKs, before replies or
-removal, regardless of movement release.
+`checkpoint_pawn_update_pending` is true if a reliable part of an admitted
+live checkpoint vitals or owner bag update awaits ACK after the close
+datagram's ACKs/NAKs, before replies or removal, regardless of movement release.
 
 Release `state` is `unscheduled`, `awaiting_delay`, `due`, `pending_send`,
 `awaiting_ack`, `acked` or `failed`. `pawn` is `unavailable`,

@@ -40,7 +40,10 @@ Bool/I32 limits/exclusions: F-929, runbook. Schema-7/8/9 preflight/schema-11
 modifier costs: F-926; owned advance avoids restaging, full preflight remains.
 Armed 1,024-owner median-of-run p95: 32.558 to 23.136 ms; three paired
 ratios 0.678–0.876 (M-1259). Other cells mixed.
-Removing the second staged validation retained full generation preflight. Across three pairs, median-of-run p95 fell in nine cells and rose in three. At 1,024 armed owners it rose from 18.146 to 18.850 ms (M-1556).
+A separate benchmark session measured the removal of duplicate validation
+with full generation preflight retained (M-1556). Across three pairs, the
+median of the run p95s fell in nine workloads and rose in three. Within that
+session, it rose from 18.146 to 18.850 ms for 1,024 armed owners.
 No full-frame, throughput, uniform or RSS proof.
 
 Faults/redaction: F-239/F-671/F-870/F-880/F-423. Load/restarts F-871,
