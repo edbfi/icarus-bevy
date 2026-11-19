@@ -56,10 +56,10 @@ unavailable.
   recorders, F-738).
 - No explicit outer build or save-version marker exists, and neither the
   payload nor the original server's re-save holds a version string (F-896).
-- F-1271: build 26613688 saved 119.923/239.950 s after reporting empty with
-  both timers set to 120/240 s. From one input, C015 level rose 14 s in each,
-  game time 14.0625/14.09375 and root elapsed 593 s in each. Whole recorder
-  bytes matched by multiplicity; changed object identities remain open.
+- F-1271 measures official empty report to save start with both timers at
+  120/240 s. F-1272 measures native startup to SIGTERM. Across the official
+  save pairs, C015 level rose 14 s, game time 14.0625/14.09375 and root
+  elapsed 593 s. Whole-recorder matches leave object identity open.
 - Provenance: the heavy-world archive is preserved privately with an inventory
   (M-166); the writes date from the 3.0.29 window, before the user-reported
   3.0.31 client (F-896, F-685, F-878). Possession completes no compatibility,
