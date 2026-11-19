@@ -3008,3 +3008,118 @@ fn saved_player_characters_reject_malformed_restored_fields() {
         assert!(!error.contains("private"), "{error}");
     }
 }
+
+#[test]
+fn saved_players_share_staging_and_keep_independent_readback() {
+    use icarus_bevy::prospect::{
+        saved_player_characters_from_payload, saved_player_controllers_from_payload,
+        saved_players_from_payload,
+    };
+
+    let controller = |user, slot, version| {
+        recorder_element(
+            "/Script/Icarus.PlayerRecorderComponent",
+            &[
+                player_char_id_struct("PlayerCharacterID", user, slot),
+                version,
+            ]
+            .concat(),
+        )
+    };
+    let records = [
+        player_state_record(Some(1), "user-alpha", 1, Some(70_002)),
+        controller("user-beta", 0, int_tag("PlayerRecorderVersion", 1)),
+        player_state_record(None, "user-beta", 0, Some(70_003)),
+        controller("user-missing", 0, int_tag("PlayerRecorderVersion", 1)),
+        restored_player_state_record(&[int_tag("Health", 480)]),
+        controller("user-alpha", 1, int_tag("PlayerRecorderVersion", 2)),
+    ];
+    let payload = player_character_save(&records);
+    let saved = saved_players_from_payload(&payload).unwrap();
+    let characters = saved.characters.unwrap();
+    let controllers = saved.controllers.unwrap();
+    assert_eq!(
+        characters.iter().map(|c| c.icarus_uid).collect::<Vec<_>>(),
+        [70_002, 70_001]
+    );
+    assert_eq!(characters[1].state.health, Some(480));
+    assert_eq!(
+        controllers.iter().map(|c| c.chr_slot).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(
+        characters,
+        saved_player_characters_from_payload(&payload).unwrap()
+    );
+    assert_eq!(
+        controllers,
+        saved_player_controllers_from_payload(&payload).unwrap()
+    );
+
+    // Health is decoded after Validate. An earlier character must not escape
+    // as a partial list, and a later controller still reads back.
+    let mut malformed = records.to_vec();
+    malformed[4] =
+        restored_player_state_record(&[tag("Health", "StrProperty", 0, &[0], &string("480"))]);
+    let bad_character = player_character_save(&malformed);
+    let saved = saved_players_from_payload(&bad_character).unwrap();
+    let error = saved.characters.unwrap_err().to_string();
+    assert_eq!(error, "Health must be 4-byte IntProperty");
+    assert_eq!(
+        error,
+        saved_player_characters_from_payload(&bad_character)
+            .unwrap_err()
+            .to_string()
+    );
+    assert_eq!(saved.controllers.unwrap(), controllers);
+    assert_eq!(
+        saved_player_controllers_from_payload(&bad_character).unwrap(),
+        controllers
+    );
+
+    // The controller version is checked by strict Validate, before either
+    // class can yield a list.
+    let mut malformed = records.to_vec();
+    malformed.push(controller(
+        "user-beta",
+        0,
+        tag(
+            "PlayerRecorderVersion",
+            "StrProperty",
+            0,
+            &[0],
+            &string("1"),
+        ),
+    ));
+    let bad_stage = player_character_save(&malformed);
+    let Err(error) = saved_players_from_payload(&bad_stage) else {
+        panic!("malformed controller version must fail shared staging");
+    };
+    let error = error.to_string();
+    assert_eq!(error, "PlayerRecorderVersion must be 4-byte IntProperty");
+    assert_eq!(
+        error,
+        saved_player_characters_from_payload(&bad_stage)
+            .unwrap_err()
+            .to_string()
+    );
+    assert_eq!(
+        error,
+        saved_player_controllers_from_payload(&bad_stage)
+            .unwrap_err()
+            .to_string()
+    );
+
+    let version_zero = [
+        int_tag("Version", 0).as_slice(),
+        payload
+            .strip_prefix(int_tag("Version", 2).as_slice())
+            .unwrap(),
+    ]
+    .concat();
+    for empty in [END.to_vec(), player_character_save(&[]), version_zero] {
+        let saved = saved_players_from_payload(&empty).unwrap();
+        assert!(saved.characters.unwrap().is_empty());
+        assert!(saved.controllers.unwrap().is_empty());
+    }
+}

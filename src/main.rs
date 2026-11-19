@@ -1519,10 +1519,13 @@ fn run(
             .lab
             .seed_actor_uids(uids)
             .context("seed the loaded world's actor UID namespace")?;
-        // Returning pawns are an addition to a world that already loads, so a
-        // save the strict staging refuses only disables them (F-950).
-        match icarus_bevy::prospect::saved_player_characters_from_payload(&payload) {
-            Ok(characters) => {
+        // A loaded world can proceed when strict staging refuses its saved
+        // player lists (F-950).
+        let (characters, controllers) = icarus_bevy::prospect::saved_players_from_payload(&payload)
+            .map(|players| (players.characters.ok(), players.controllers.ok()))
+            .unwrap_or_default();
+        match characters {
+            Some(characters) => {
                 let count = characters.len();
                 bound.lab.enable_returning_characters(characters)?;
                 eprintln!(
@@ -1530,13 +1533,13 @@ fn run(
                     json!({"event": "returning_characters_loaded", "characters": count})
                 );
             }
-            Err(_) => eprintln!(
+            None => eprintln!(
                 "{}",
                 json!({"event": "returning_characters_unavailable", "reason": "save did not stage"})
             ),
         }
-        match icarus_bevy::prospect::saved_player_controllers_from_payload(&payload) {
-            Ok(controllers) => {
+        match controllers {
+            Some(controllers) => {
                 let count = controllers.len();
                 bound.lab.enable_saved_player_controllers(controllers)?;
                 eprintln!(
@@ -1544,7 +1547,7 @@ fn run(
                     json!({"event": "saved_player_controllers_loaded", "controllers": count})
                 );
             }
-            Err(_) => eprintln!(
+            None => eprintln!(
                 "{}",
                 json!({"event": "saved_player_controllers_unavailable", "reason": "save did not stage"})
             ),
