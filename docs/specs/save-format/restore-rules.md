@@ -34,12 +34,12 @@ Rule docs give most addresses. Unmatched addresses stand alone or name a helper.
 - Stitching matches GUID plus ASCII `Stricmp` (F-663) per F-1224 (`C009` F-646;
   `C018`/`C019` F-650; `C027` F-676); GUID-only matches, `C013` `FLODTiles`
   cleanup and the `C026` life restore F-1225 (F-648, F-657, F-716).
-- C016 records length and occupied positions (F-651). Its 25621760 stitching
+- C016 saves length and occupied positions (F-651). Its 25621760 stitching
   slot selects a 2,963-byte routine (F-1266). Loop entry needs signed
   `saved_array_length - used_set_count > 0`. The receiver sets the loop bound.
-  A used-index hit skips the call. A miss reaches it only if other gates pass
-  (F-1273). F-1267 counts only some references.
-  It passes a guarded field and zero-based counter. Under normal Win64
+  Used-index hits skip the call. Misses reach it only if other gates pass
+  (F-1273). F-1267's dry run counts character links.
+  The call takes a guarded field and zero-based counter. Assuming Win64
   register preservation a modeled skip permits a nonzero first index. The
   callee checks signed bounds (zero and the loop bound), reads an in-range
   64-bit slot and clears populated slots after opaque calls. Modeled normal
