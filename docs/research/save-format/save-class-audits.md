@@ -12,8 +12,8 @@ populated examples? What remains unknown about restoration and behavior?
 
 ## Current answer
 
-All 38 classes round-trip byte-identically through a value-opaque tree in both copies (F-556, F-559, F-900). Census: F-496,
-F-901, F-722 (U-023 resolved), F-668.
+All 38 classes round-trip byte-identically through a value-opaque tree in both
+copies (F-556, F-559, F-900). Census: F-496, F-901, F-722 (U-023 resolved), F-668.
 Server 25621760 matches client 25793767 on audited serializers and load paths
 (gates); recorder registrations, defaults, dispatch and overrides:
 [restore rules](../../specs/save-format/restore-rules.md) (F-645..F-680,
@@ -24,7 +24,8 @@ math Structs: F-900, F-602; construction grids: F-643.
 All 15 prospects type recorder values losslessly within tree limits (F-766).
 Import planning: row names (F-897, F-898), world context (F-916),
 synthetic quest coverage (F-1263) and candidate retention (F-920).
-C016 records saved positions (F-651). Its historical stitching counter advances even on skipped calls (F-1266).
+C016 records saved positions (F-651). With normal Win64 register preservation,
+a modeled skipped iteration may advance the stitching counter (F-1266).
 
 Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
 append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;
