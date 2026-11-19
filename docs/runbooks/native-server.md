@@ -200,19 +200,20 @@ python3 tools/cargo_guard.py test --locked --test network
 target/release/icarus-server run --config server.toml --data-dir work/net-smoke --max-ticks 600
 cargo run --locked --example session_churn -- --server 127.0.0.1:17777 \
   --cycles 200 --concurrency 1 --release-profile config/release.toml
-# GameState hold (F-833); --sessions N (default 1): concurrent, aggregate summary.
+# F-833. Default: one session.
 cargo run --locked --release --example session_hold -- --server 127.0.0.1:17777 \
   --release-profile config/release.toml --seconds 3600 --sessions 8
 ```
 
-`--seconds` ≤259,320: per-Join clocks, ≤72 h after admission.
-`--progress-interval-seconds 60`: aggregate stderr JSON (`incomplete: true`),
-stdout final summary. Receive gaps certify no interrupted duration.
-Write failure stops probes; setup/close errors: kinds only.
+Timing starts at Join send. The 259,320 s cap includes 120 s for admission.
+`--progress-interval-seconds 60` emits JSON progress on stderr. Multi-peer stdout
+reports `shared_held_ms` from last admission to first hold end in whole ms
+(rounded down), or null on missing admission or failure. Gaps leave continuity
+unproven. Write errors stop probes. Setup/close errors give kinds only.
 
-Use a terminal-independent supervisor; retain child/service-manager exits.
-Verify namespaces/affinity/cgroups (failures M-1042; qualified M-1043).
-Fresh scope/frozen inputs/bounded owned unit required; ongoing runs prove no duration.
+Freeze inputs and scope. Use a bounded, terminal-independent owned unit.
+Verify namespaces, affinity and cgroups (M-1042/M-1043). Retain child and
+service exits for duration claims.
 
 ## Replication scheduling (experimental)
 

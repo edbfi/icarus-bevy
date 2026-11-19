@@ -2838,6 +2838,20 @@ fn concurrent_held_sessions_each_receive_updates_and_see_every_player() {
         assert!(session.hold.world_time_updates >= 10, "{session:?}");
         assert_eq!(session.max_listed_players, Some(4), "{session:?}");
     }
+    let shared_ms = summary.shared_held_ms.unwrap();
+    assert_eq!(
+        serde_json::to_value(&summary).unwrap()["shared_held_ms"],
+        shared_ms
+    );
+    assert!(shared_ms > 0, "{summary:?}");
+    assert!(shared_ms <= summary.wall_ms, "{summary:?}");
+    assert!(
+        summary
+            .sessions
+            .iter()
+            .all(|session| shared_ms <= session.hold.held_ms),
+        "{summary:?}"
+    );
     let total: u64 = summary
         .sessions
         .iter()
@@ -2882,6 +2896,13 @@ fn concurrent_held_sessions_beyond_the_player_limit_are_refused() {
     .unwrap();
     sigterm(&server);
     assert!(server.wait_exit().success());
+    assert_eq!(summary.shared_held_ms, None);
+    assert_eq!(
+        serde_json::to_value(&summary)
+            .unwrap()
+            .get("shared_held_ms"),
+        Some(&Value::Null)
+    );
     assert_eq!(
         (summary.joined, summary.refused, summary.failed),
         (2, 2, 0),
@@ -2970,7 +2991,13 @@ fn concurrent_hold_progress_arrives_before_completion_and_preserves_counts() {
             assert!(receipt.completed < receipt.sessions_requested);
             assert_eq!(receipt.event, "session_hold_progress");
             let printed = serde_json::to_string(receipt).unwrap();
-            for private in ["HoldProbe", "127.0.0.1", "sessions\":", "STEAM"] {
+            for private in [
+                "HoldProbe",
+                "127.0.0.1",
+                "sessions\":",
+                "STEAM",
+                "shared_held_ms",
+            ] {
                 assert!(!printed.contains(private), "{printed}");
             }
             receipts.push(receipt.clone());
@@ -2997,6 +3024,7 @@ fn concurrent_hold_progress_arrives_before_completion_and_preserves_counts() {
     assert!(summary.game_state_updates >= last.game_state_updates);
     assert!(summary.decode_errors >= last.decode_errors);
     assert!(summary.regressions >= last.regressions);
+    assert!(summary.shared_held_ms.unwrap() > 0, "{summary:?}");
     assert_eq!(summary.joined, 4);
 }
 
