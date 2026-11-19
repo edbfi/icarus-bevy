@@ -32,7 +32,7 @@ F-1152. Authored speed stats accompany
 reported walk/look/sprint/jump after leaving a mountain spawn (F-1185);
 authoritative physics, collision and audio remain unqualified. Earlier
 zero-speed/provenance: F-1143/F-1147/F-1150 to F-1157/F-1164 to F-1166.
-F-1186 covers the failed leave. F-1199 and F-1264 cover the two checkpoint sittings. F-1265 compares entry ordering on loopback. F-1268 qualifies checkpoint update attribution at close on loopback. The stock pending payload and disconnect cause remain open (U-038).
+F-1186 covers the failed leave. F-1199 and F-1264 cover the two checkpoint sittings. F-1265 compares entry ordering on loopback. F-1268 tests update attribution on loopback. The retained checkpoint matches the final save generation and tick (F-1269). The stock counters and sender guards point to a vitals publication (F-1270). Its outstanding fragment and the disconnect cause remain open (U-038).
 F-1172 reorders independent opens in authored tests; F-1188 proves no client
 persistence. Production leave remains default-off.
 
