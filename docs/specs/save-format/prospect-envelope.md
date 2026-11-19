@@ -9,11 +9,10 @@ Full text: d5b0ae6:docs/specs/save-format/prospect-envelope.md.
 
 ## Scope
 
-The prospect JSON envelope, integrity chain and native inspection policy.
-The [save runbook](../../runbooks/native-server.md#supplied-saves) covers
-recorder comparison and read-only `import-save --dry-run` (F-898).
-Import publication remains closed. See [tagged properties](tagged-properties.md)
-and [prospect loading](prospect-loading.md) for inner-world framing and planning.
+The [save runbook](../../runbooks/native-server.md#supplied-saves)
+covers recorder comparison and `import-save --dry-run` (F-898). Publication
+remains closed. For inner framing and planning see [tagged properties](tagged-properties.md)
+and [prospect loading](prospect-loading.md).
 
 ## Confirmed
 
@@ -50,10 +49,10 @@ and [prospect loading](prospect-loading.md) for inner-world framing and planning
   recorders, F-738).
 - No explicit outer build or save-version marker exists, and neither the
   payload nor the original server's re-save holds a version string (F-896).
-- F-1271 measures official empty report to save start with both timers at
-  120/240 s. F-1272 measures native startup to SIGTERM. Across the official
-  save pairs, C015 level rose 14 s, game time 14.0625/14.09375 and root
-  elapsed 593 s. Whole-recorder matches leave object identity open.
+- F-1271 measures empty report to save start (120/240 s timers) and C015/root
+  clock deltas. F-1272 times native startup to SIGTERM. Whole-recorder matches
+  leave identity open. F-1275 compares member, controller and character slot
+  keys within categories and retained character UIDs across the saves.
 - Dedicated build 26613688 declares a direct C008 array with float32 time
   and signed i32 state per element. Its four direct element fields lack an
   explicit plot ID (M-1593). Native readback of the F-1271 common input

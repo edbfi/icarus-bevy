@@ -5,11 +5,11 @@ use icarus_bevy::{
         pawn_open::CharacterVitals,
         release::{ReleasePin, network_checksum},
     },
-    native_player_runtime::{PlayerRegistry, install},
+    native_player_runtime::{CheckpointWriter, LeavePhase, LeaveStatus, PlayerRegistry, install},
     native_players::{
         InstalledRowsRefusal, MAX_PLAYERS_PER_ACCOUNT, PlayerCheckpoint, PlayerContext,
-        PlayerError, PlayerInputs, PlayerKey, PlayerSnapshot, RowsDefect, StoreRefusal,
-        check_installed_growth_rows,
+        PlayerError, PlayerInputs, PlayerKey, PlayerProjection, PlayerSnapshot, RowsDefect,
+        StoreRefusal, check_installed_growth_rows,
     },
     persistence::{SaveWorker, SnapshotStore},
     simulation::{
@@ -111,6 +111,139 @@ fn checkpoint_survives_capture_teardown_independence_and_same_generation_reload(
     assert_eq!(restored.revision, 2);
     assert_eq!(restored.checkpoint.vitals.health, 37);
     assert_eq!(restored.checkpoint.location_cm, [400., 500., 600.]);
+}
+
+#[test]
+fn same_account_slots_keep_distinct_checkpoints_after_leave_and_reverse_reselect() {
+    let account = 123456789;
+    let first_key = PlayerKey::new(account, 0).unwrap();
+    let second_key = PlayerKey::new(account, 3).unwrap();
+    let mut first_saved = checkpoint();
+    first_saved.location_cm = [400., 500., 600.];
+    first_saved.vitals.health = 37;
+    first_saved.vitals.water = 46;
+    let mut second_saved = checkpoint();
+    second_saved.location_cm = [-700., 800., 900.];
+    second_saved.vitals.health = 73;
+    second_saved.vitals.water = 64;
+
+    let mut app = build_app(&ServerConfig::default(), &snapshot()).unwrap();
+    install(app.world_mut(), &context(), 2).unwrap();
+    let (first_id, second_id) = {
+        let mut players = app.world_mut().resource_mut::<PlayerRegistry>();
+        let first = players.reserve(first_key, 1, checkpoint()).unwrap();
+        let second = players.reserve(second_key, 2, second_saved).unwrap();
+        players.activate(1).unwrap();
+        players.activate(2).unwrap();
+        assert_ne!(first.player_id, second.player_id);
+        (first.player_id, second.player_id)
+    };
+    let first_expected = PlayerProjection {
+        player_id: first_id,
+        revision: 2,
+        checkpoint: first_saved,
+        is_new: false,
+    };
+    let second_expected = PlayerProjection {
+        player_id: second_id,
+        revision: 1,
+        checkpoint: second_saved,
+        is_new: false,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut writer =
+        CheckpointWriter::spawn(SnapshotStore::open(directory.path()).unwrap()).unwrap();
+    writer.submit(app.world_mut()).unwrap();
+    let before_leave = writer
+        .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+
+    let pending = {
+        let mut players = app.world_mut().resource_mut::<PlayerRegistry>();
+        assert_eq!(
+            players.edit(first_key, 1, first_saved).unwrap(),
+            first_expected
+        );
+        let pending = players
+            .request_leave(
+                first_key,
+                1,
+                first_expected.revision,
+                Instant::now(),
+                Duration::from_secs(30),
+            )
+            .unwrap();
+        assert_eq!(pending.phase, LeavePhase::Pending);
+        assert_eq!(pending.revision, first_expected.revision);
+        assert!(!players.is_activated(1));
+        assert!(players.is_activated(2));
+        pending
+    };
+    let expected = capture(app.world_mut()).unwrap();
+    writer.submit(app.world_mut()).unwrap();
+    let receipt = writer
+        .finish_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(receipt.generation > before_leave.generation);
+    assert_eq!(receipt.tick, expected.tick);
+    {
+        let mut players = app.world_mut().resource_mut::<PlayerRegistry>();
+        assert_eq!(
+            players.leave_status(first_key, 1),
+            Some(LeaveStatus {
+                phase: LeavePhase::Durable {
+                    generation: receipt.generation,
+                    tick: receipt.tick,
+                },
+                ..pending
+            })
+        );
+        assert!(players.leave_status(second_key, 2).is_none());
+        assert!(players.detach(1));
+        players.settle_leave(first_key, 1).unwrap();
+    }
+    drop(writer);
+    drop(app);
+
+    // The worker releases the store lock asynchronously after its sender drops.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let store = loop {
+        match SnapshotStore::open_existing(directory.path()) {
+            Ok(store) => break store,
+            Err(error) => {
+                let contention = error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock);
+                assert!(
+                    contention && Instant::now() < deadline,
+                    "reopen failed: {error:#}"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    };
+    let loaded = store.load().unwrap().unwrap();
+    assert_eq!(loaded.selected_generation, receipt.generation);
+    assert!(!loaded.recovered_previous);
+    let saved = loaded.snapshot.native_players.as_ref().unwrap();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved.projection(first_key), Some(first_expected));
+    assert_eq!(saved.projection(second_key), Some(second_expected));
+    assert_eq!(loaded.snapshot, expected);
+
+    let mut reopened = build_app(&ServerConfig::default(), &loaded.snapshot).unwrap();
+    let mut players = reopened.world_mut().resource_mut::<PlayerRegistry>();
+    // Use the other slot's checkpoint as the seed to detect fallback to it.
+    for (key, epoch, initial, expected) in [
+        (second_key, 1, first_saved, second_expected),
+        (first_key, 2, second_saved, first_expected),
+    ] {
+        assert_eq!(players.reserve(key, epoch, initial).unwrap(), expected);
+        assert_eq!(players.activate(epoch).unwrap(), expected);
+    }
 }
 
 #[test]

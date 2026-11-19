@@ -48,6 +48,18 @@ fn finish(writer: &mut CheckpointWriter, app: &mut App) -> SaveReceipt {
         .unwrap()
 }
 
+fn reopen_after_writer(writer: CheckpointWriter, directory: &tempfile::TempDir) -> SnapshotStore {
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match SnapshotStore::open_existing(directory.path()) {
+            Ok(store) => break store,
+            Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+            Err(error) => panic!("writer did not exit: {error:#}"),
+        }
+    }
+}
+
 #[test]
 fn older_inflight_equal_tick_and_duplicate_cutoff_do_not_ack_later_leave() {
     let mut app = app();
@@ -169,15 +181,7 @@ fn concurrent_leaves_batch_and_restart_exact_acknowledged_authored_state() {
             .unwrap();
     assert_eq!(manifest["current"]["number"], receipt.generation);
     // Drop the sender and wait boundedly for the worker to release its lock.
-    drop(writer);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let store = loop {
-        match SnapshotStore::open_existing(directory.path()) {
-            Ok(store) => break store,
-            Err(_) if Instant::now() < deadline => std::thread::yield_now(),
-            Err(error) => panic!("writer did not exit: {error:#}"),
-        }
-    };
+    let store = reopen_after_writer(writer, &directory);
     let loaded = store.load().unwrap().unwrap().snapshot;
     assert_eq!(loaded, expected);
     assert_eq!(
@@ -319,6 +323,124 @@ fn real_manifest_storage_failure_keeps_dirty_barrier_and_never_claims_success() 
             .is_err()
     );
     assert_eq!(registry.snapshot(), before);
+}
+
+#[test]
+fn recoverable_periodic_failure_keeps_same_account_slot_leaves_isolated() {
+    let slot_a = key(1);
+    let slot_b = PlayerKey::new(1, 4).unwrap();
+    let mut players = registry();
+    attach(&mut players, 1, 1);
+    let seed_checkpoint = players.projection(1).unwrap().checkpoint;
+    players.reserve(slot_b, 2, seed_checkpoint).unwrap();
+    let activated_b = players.activate(2).unwrap();
+    let mut moved_b = activated_b.checkpoint;
+    moved_b.location_cm = [-100., 200., 300.];
+    let initial_b = players.edit(slot_b, activated_b.revision, moved_b).unwrap();
+    assert_eq!(initial_b.revision, 2);
+    let initial = WorldSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_PLAYERS,
+        native_players: Some(players.snapshot()),
+        ..Default::default()
+    };
+    let mut app = build_app(&ServerConfig::default(), &initial).unwrap();
+    app.insert_resource(players);
+
+    let edit_and_leave = |app: &mut App, key, epoch, health| {
+        let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
+        let before = registry.projection(epoch).unwrap();
+        let mut checkpoint = before.checkpoint;
+        checkpoint.vitals.health = health;
+        let edited = registry.edit(key, before.revision, checkpoint).unwrap();
+        assert_eq!(edited.checkpoint, checkpoint);
+        let cutoff = registry
+            .request_leave(key, epoch, edited.revision, Instant::now(), MAX_ATTEMPT)
+            .unwrap();
+        assert_eq!(cutoff.phase, LeavePhase::Pending);
+        (cutoff, edited)
+    };
+    let status = |app: &App, key, epoch| {
+        app.world()
+            .resource::<PlayerRegistry>()
+            .leave_status(key, epoch)
+            .unwrap()
+    };
+
+    let (directory, mut writer) = writer();
+    writer.submit(app.world_mut()).unwrap();
+    let seed = finish(&mut writer, &mut app);
+    let manifest = directory.path().join("manifest.json");
+    let committed = std::fs::read(&manifest).unwrap();
+    // Block the next generation's rename while leaving the committed manifest readable.
+    let generation_a_path = directory
+        .path()
+        .join(format!("snapshot-{}.json", seed.generation + 1));
+    std::fs::create_dir(&generation_a_path).unwrap();
+
+    writer.submit(app.world_mut()).unwrap();
+    let (pending_a, edited_a) = edit_and_leave(&mut app, slot_a, 1, 37);
+    assert_eq!((pending_a.revision, edited_a.revision), (2, 2));
+    let error = writer
+        .settle_before(app.world_mut(), Instant::now() + Duration::from_secs(5))
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.to_string(), "publish snapshot file");
+    assert_eq!(std::fs::read(&manifest).unwrap(), committed);
+    assert_eq!(status(&app, slot_a, 1), pending_a);
+
+    std::fs::remove_dir(&generation_a_path).unwrap();
+    writer.submit(app.world_mut()).unwrap();
+    let (pending_b, edited_b) = edit_and_leave(&mut app, slot_b, 2, 61);
+    assert_eq!((pending_b.revision, edited_b.revision), (3, 3));
+    let receipt_a = finish(&mut writer, &mut app);
+    assert_eq!(receipt_a.generation, seed.generation + 1);
+    assert_eq!(receipt_a.tick, seed.tick);
+    let published: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    assert_eq!(published["current"]["number"], receipt_a.generation);
+    let durable_a = LeaveStatus {
+        phase: LeavePhase::Durable {
+            generation: receipt_a.generation,
+            tick: receipt_a.tick,
+        },
+        ..pending_a
+    };
+    assert_eq!(status(&app, slot_a, 1), durable_a);
+    assert_eq!(status(&app, slot_b, 2), pending_b);
+
+    // The worker still owns the lock, but this completed generation can be read.
+    let saved_a: WorldSnapshot =
+        serde_json::from_slice(&std::fs::read(&generation_a_path).unwrap()).unwrap();
+    assert_eq!(saved_a.tick, receipt_a.tick);
+    let players = saved_a.native_players.unwrap();
+    assert_eq!(players.projection(slot_a).unwrap(), edited_a);
+    assert_eq!(players.projection(slot_b).unwrap(), initial_b);
+
+    writer.submit(app.world_mut()).unwrap();
+    let receipt_b = finish(&mut writer, &mut app);
+    assert_eq!(receipt_b.generation, receipt_a.generation + 1);
+    assert_eq!(receipt_b.tick, receipt_a.tick);
+    assert_eq!(status(&app, slot_a, 1), durable_a);
+    assert_eq!(
+        status(&app, slot_b, 2),
+        LeaveStatus {
+            phase: LeavePhase::Durable {
+                generation: receipt_b.generation,
+                tick: receipt_b.tick,
+            },
+            ..pending_b
+        }
+    );
+
+    let store = reopen_after_writer(writer, &directory);
+    let loaded = store.load().unwrap().unwrap();
+    assert_eq!(loaded.selected_generation, receipt_b.generation);
+    assert!(!loaded.recovered_previous);
+    assert_eq!(loaded.snapshot.tick, receipt_b.tick);
+    let players = loaded.snapshot.native_players.unwrap();
+    assert_eq!(players.projection(slot_a).unwrap(), edited_a);
+    assert_eq!(players.projection(slot_b).unwrap(), edited_b);
 }
 
 #[test]

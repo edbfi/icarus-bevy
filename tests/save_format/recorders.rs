@@ -2304,28 +2304,21 @@ fn owned_enum_staging_preserves_field_specific_static_diagnostics() {
 }
 
 fn player_character_save(records: &[Vec<u8>]) -> Vec<u8> {
-    let member = |user: &str, slot: i32| {
-        [
-            tag("UserID", "StrProperty", 0, &[0], &string(user)),
-            tag("ChrSlot", "IntProperty", 0, &[0], &slot.to_le_bytes()),
-            END.to_vec(),
-        ]
-        .concat()
-    };
-    let members_shared = tag(
-        "AssociatedMembers",
-        "StructProperty",
-        0,
-        &[string("AssociatedMemberInfo"), vec![0; 17]].concat(),
-        &[member("user-alpha", 1), member("user-beta", 0)].concat(),
-    );
-    let members_array = tag(
-        "AssociatedMembers",
-        "ArrayProperty",
-        0,
-        &[string("StructProperty"), vec![0]].concat(),
-        &[&2_i32.to_le_bytes(), members_shared.as_slice()].concat(),
-    );
+    player_character_save_with_members(records, &[("user-alpha", 1), ("user-beta", 0)])
+}
+
+fn player_character_save_with_members(records: &[Vec<u8>], members: &[(&str, i32)]) -> Vec<u8> {
+    let member_fields: Vec<_> = members
+        .iter()
+        .map(|&(user, slot)| {
+            vec![
+                tag("UserID", "StrProperty", 0, &[0], &string(user)),
+                int_tag("ChrSlot", slot),
+            ]
+        })
+        .collect();
+    let members_array =
+        root_value_struct_array("AssociatedMembers", "AssociatedMemberInfo", &member_fields);
     let info = tag(
         "ProspectInfo",
         "StructProperty",
@@ -2356,6 +2349,17 @@ fn player_character_save(records: &[Vec<u8>]) -> Vec<u8> {
         END.to_vec(),
     ]
     .concat()
+}
+
+fn player_controller_record(version: i32, user: &str, slot: i32) -> Vec<u8> {
+    recorder_element(
+        "/Script/Icarus.PlayerRecorderComponent",
+        &[
+            int_tag("PlayerRecorderVersion", version),
+            player_char_id_struct("PlayerCharacterID", user, slot),
+        ]
+        .concat(),
+    )
 }
 
 fn player_state_record(version: Option<i32>, user: &str, slot: i32, uid: Option<i32>) -> Vec<u8> {
@@ -2466,29 +2470,65 @@ fn saved_player_characters_keep_only_validated_c026_records_in_order() {
 }
 
 #[test]
+fn saved_player_recorders_distinguish_slots_on_the_same_account() {
+    use icarus_bevy::experimental::recorders::saved_player_controllers;
+    let member_account = "user-alpha";
+    let members = [(member_account, 1), (member_account, 4)];
+    let recorder_account = "USER-ALPHA";
+    let saved_id = units(recorder_account);
+    let lookup_id = units(member_account);
+    let missing_slot = 2;
+    let slots = [(1, 70_001), (4, 70_004)];
+
+    for order in [slots, [slots[1], slots[0]]] {
+        let mut records: Vec<_> = order
+            .into_iter()
+            .flat_map(|(slot, uid)| {
+                [
+                    player_controller_record(1, recorder_account, slot),
+                    player_state_record(Some(1), recorder_account, slot, Some(uid)),
+                ]
+            })
+            .collect();
+        records.extend([
+            player_controller_record(1, recorder_account, missing_slot),
+            player_state_record(Some(1), recorder_account, missing_slot, Some(70_002)),
+        ]);
+        let stream = player_character_save_with_members(&records, &members);
+        let parsed = read_root(&stream, PROFILE).unwrap();
+        let controllers =
+            saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+        let characters =
+            saved_player_characters(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).unwrap();
+
+        assert_eq!(controllers.len(), order.len());
+        assert_eq!(characters.len(), order.len());
+        for (index, (slot, uid)) in order.into_iter().enumerate() {
+            let controller = &controllers[index];
+            assert_eq!(
+                (&controller.player_id, controller.chr_slot),
+                (&saved_id, slot)
+            );
+
+            let found = find_saved_player_character(&characters, &lookup_id, slot, &[]);
+            assert_eq!(
+                found.map(|(index, c)| (index, &c.player_id, c.chr_slot, c.icarus_uid)),
+                Some((index, &saved_id, slot, uid)),
+                "slot {slot} with recorder order {order:?}"
+            );
+        }
+        assert!(find_saved_player_character(&characters, &lookup_id, missing_slot, &[]).is_none());
+    }
+}
+
+#[test]
 fn saved_player_controllers_use_strict_staging_and_retention() {
     use icarus_bevy::experimental::recorders::saved_player_controllers;
-    let controller = |version, user, slot| {
-        recorder_element(
-            "/Script/Icarus.PlayerRecorderComponent",
-            &[
-                tag(
-                    "PlayerRecorderVersion",
-                    "IntProperty",
-                    0,
-                    &[0],
-                    &i32::to_le_bytes(version),
-                ),
-                player_char_id_struct("PlayerCharacterID", user, slot),
-            ]
-            .concat(),
-        )
-    };
     let stream = player_character_save(&[
-        controller(1, "user-beta", 0),
-        controller(0, "user-beta", 0),
-        controller(1, "not-a-member", 0),
-        controller(2, "USER-ALPHA", 1),
+        player_controller_record(1, "user-beta", 0),
+        player_controller_record(0, "user-beta", 0),
+        player_controller_record(1, "not-a-member", 0),
+        player_controller_record(2, "USER-ALPHA", 1),
         player_state_record(Some(1), "user-alpha", 1, Some(70_001)),
     ]);
     let parsed = read_root(&stream, PROFILE).unwrap();
@@ -2517,7 +2557,7 @@ fn saved_player_controllers_use_strict_staging_and_retention() {
         ]
         .concat(),
     );
-    let stream = player_character_save(&[controller(1, "user-beta", 0), malformed]);
+    let stream = player_character_save(&[player_controller_record(1, "user-beta", 0), malformed]);
     let parsed = read_root(&stream, PROFILE).unwrap();
     assert!(saved_player_controllers(&parsed.tags, PROFILE, MAX_COMPONENT_BYTES).is_err());
     let stream = player_character_save(&[]);
