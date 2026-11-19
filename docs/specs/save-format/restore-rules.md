@@ -10,11 +10,10 @@ Last reconciled: 2026-11-19.
 
 ## Scope
 
-Recorder validate, stitch and restore rules across all 65 `/Script/Icarus.*RecorderComponent`
-classes (`C001..C038`, `N001..N027`); save decoding, class lookup, object
-construction, script owners and data-table rows are out of scope (F-660).
-`experimental::restore_rules` doc comments carry most addresses; unmatched
-addresses retain helper names or stand alone.
+Validation, stitching and restoration for 65 `/Script/Icarus.*RecorderComponent`
+classes (`C001..C038`, `N001..N027`). F-660 excludes save decoding, class
+lookup, object construction, script owners and data-table rows.
+Rule docs give most addresses. Unmatched addresses stand alone or name a helper.
 
 ## Confirmed
 
@@ -35,22 +34,23 @@ addresses retain helper names or stand alone.
 - Stitching matches GUID plus ASCII `Stricmp` (F-663) per F-1224 (`C009` F-646;
   `C018`/`C019` F-650; `C027` F-676); GUID-only matches, `C013` `FLODTiles`
   cleanup and the `C026` life restore F-1225 (F-648, F-657, F-716).
-- C016 records list length and occupied positions (F-651). The server 25621760
-  stitching slot selects a 2,963-byte routine (F-1266). Its loop passes a
-  guarded field and a zero-based counter. Under normal Win64 register
-  preservation, the model permits a skipped iteration to advance the counter
-  before the first call, giving that call a nonzero index.
-  The callee checks the signed index against zero and the caller’s loop bound.
-  In range, it reads a 64-bit slot. For populated slots, opaque calls precede
-  clearing the indexed slot. Modeled in-range normal returns carry a storage
-  base. Loop-back overwrites the register with an independent load. Modeled
-  exits show no explicit caller use. Cleanup calls may preserve or clobber it.
+- C016 saves length and occupied positions (F-651). Its 25621760 stitching
+  slot selects a 2,963-byte routine (F-1266). Loop entry needs signed
+  `saved_array_length - used_set_count > 0`. The receiver sets the loop bound.
+  Used-index hits skip the call. Misses reach it only if other gates pass
+  (F-1273). F-1267's dry run counts character links.
+  The call takes a guarded field and zero-based counter. Assuming Win64
+  register preservation a modeled skip permits a nonzero first index. The
+  callee checks signed bounds (zero and the loop bound), reads an in-range
+  64-bit slot and clears populated slots after opaque calls. Modeled normal
+  in-range returns carry a storage base. Loop-back reloads its register
+  independently. Modeled exits show no explicit caller use. Cleanup may
+  preserve or clobber it.
 - `DoesRecorderMatchActor` (`+0x478`, F-904) per class: F-1226.
 - Per-class record, restore and transfer rules for `C002`..`C006`, `C008`..`C010`,
   `C012`, `C014`, `C020`..`C024`, `C030`, `C032`, `C033`, `C035`, `C036` and `C038`
   (F-657, F-744, F-677, F-646, F-661, F-658, F-648, F-656, F-894, F-736, F-734,
-  F-903, F-676) live in `experimental::restore_rules`; each function's doc
-  comment carries its server / client addresses.
+  F-903, F-676) live in `experimental::restore_rules`; function docs give both builds' addresses.
 - C001 restoration follows F-735; C015 clocks/currencies/missions F-653;
   C037 world-boss rows F-903. Recorded level `-1` is unrecorded (F-648).
 - `UIcarusGameStateRecorder` pipeline (F-750, F-902): `BeginRecording` F-1227
@@ -89,7 +89,7 @@ addresses retain helper names or stand alone.
   F-1242; F-940's helper and entry sampling F-1243; selected call operands
   F-1244; population strides and getters F-1245; `STORE8`/`LOAD8` preservation
   F-1246. M-1508 binds static checks. M-1509/M-1510 record processes only.
-- The combined search reached its match cap (M-1540). In the selected server
+- The combined search hit its match cap (M-1540). In the selected server
   dispatch wrapper, a helper copies three eight-byte values to the stack
   argument passed in RDX to modifier removal (F-1260). The post-copy callee
   has no stores or calls. On its modeled normal return with `AL=1`, removal
@@ -103,9 +103,10 @@ addresses retain helper names or stand alone.
 
 ## Open questions
 
-- The exact rebind-name lookup in the selected public-symbol profile found zero
-  matches (F-1266). Method, component, owner, memory aliases, outward return, saved-position
-  binding and current-release restoration remain open.
+- Exact rebind-name lookup found no matches in the selected public-symbol
+  profile (F-1266). Method, component, owner, aliases, outward return,
+  candidate-to-saved-slot binding, call effect, historical/current restore and
+  native import consequences remain open (F-1273).
 - Data-table rows stay out of scope (F-660).
 
 ## Evidence
