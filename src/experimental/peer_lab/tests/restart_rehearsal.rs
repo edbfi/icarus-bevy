@@ -33,7 +33,7 @@ use bevy::{prelude::App, time::TimeUpdateStrategy};
 
 use super::super::lossy_join::frozen_release;
 use super::super::move_acks::{authored_move, move_bunch_payload, unreliable_bunch};
-use super::bag_projection_tests::{BagDelta, bag_deltas_in, slot_properties};
+use super::bag_projection_tests::{BagDelta, bag_deltas_in, endpoint, slot_properties};
 use super::*;
 use crate::{
     config::{ConfigOptions, ServerConfig},
@@ -92,11 +92,16 @@ use crate::{
         },
         steam_auth::{SteamAuthMessage, decode_datagram},
     },
-    native_player_runtime::{CheckpointWriter, ConsumptionConfig, PlayerRegistry},
+    native_inventory::InventoryActionOutcomeV1,
+    native_player_inventory::{PlayerInventoryActionV1, PlayerInventoryRequestV1},
+    native_player_runtime::{
+        CheckpointWriter, ConsumptionConfig, LeavePhase, PlayerRegistry, activate_player,
+        apply_player_inventory_action,
+    },
     native_players::{PlayerCheckpoint, PlayerKey, PlayerProjection},
     network,
     persistence::{SaveWorkerDisconnected, SnapshotStore},
-    simulation::{RunClock, SimulationClock, build_app},
+    simulation::{RunClock, SimulationClock, build_app, capture},
     steam_auth::{AuthEvent, AuthOutcome},
     steam_service::{AuthClient, TestBackend},
 };
@@ -702,7 +707,7 @@ impl Server {
         });
         with_player_leave(&mut record, world);
         let players = world.resource::<PlayerRegistry>().snapshot();
-        let lock = self.config.data_dir.join("server.lock");
+        let data_dir = self.config.data_dir.clone();
         let Self {
             app,
             commits,
@@ -713,26 +718,26 @@ impl Server {
         drop(writer);
         drop(app);
         drop(backend);
-        // Process exit releases the store's lock; here the writer's thread
-        // does, once it sees its queue closed.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let file = std::fs::File::open(&lock).unwrap();
-            if file.try_lock().is_ok() {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the store lock was never released"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_for_store_unlock(&data_dir);
         Stopped {
             record,
             commits,
             save_failures,
             players,
         }
+    }
+}
+
+fn wait_for_store_unlock(data_dir: &Path) {
+    // The worker releases the lock once it sees its queue closed.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let file = std::fs::File::open(data_dir.join("server.lock")).unwrap();
+    while file.try_lock().is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the store lock was never released"
+        );
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -825,6 +830,14 @@ impl Observed {
             .iter()
             .position(|logged| logged == event)
             .unwrap_or_else(|| panic!("no {event} in {:?}", self.log))
+    }
+
+    fn pawn_updates_before_record(&self) -> &[Payload] {
+        let count = self.log[..self.position("record")]
+            .iter()
+            .filter(|event| *event == "pawn update")
+            .count();
+        &self.pawn_updates[..count]
     }
 
     /// The time from the first `from` to the first `to`.
@@ -1733,10 +1746,10 @@ fn projected_bag(
     (slots, current_weight)
 }
 
-/// The authored starter bag by literal identities: `AuthoredWater` is
-/// D_ItemsStatic row 1 with its count 3 as dynamic property 7,
+/// The authored bag by literal identities: `AuthoredWater` is
+/// D_ItemsStatic row 1 with its count as dynamic property 7,
 /// `AuthoredRation` row 2 without a count; both slots query row 1 (`Any`).
-fn starter_bag_literal() -> Vec<BTreeMap<u32, RepValue>> {
+fn bag_literal(water_count: i32) -> Vec<BTreeMap<u32, RepValue>> {
     let slot = |index: i32, row: u16, dynamic: Vec<(u32, i32)>| {
         slot_properties(&InventorySlot {
             query_row: 1,
@@ -1747,7 +1760,7 @@ fn starter_bag_literal() -> Vec<BTreeMap<u32, RepValue>> {
             }),
         })
     };
-    vec![slot(0, 1, vec![(7, 3)]), slot(1, 2, Vec::new())]
+    vec![slot(0, 1, vec![(7, water_count)]), slot(1, 2, Vec::new())]
 }
 
 // ------------------------------------------------------------------ steps
@@ -1903,6 +1916,10 @@ fn assert_entry_close(
 /// once the completion's prefix is acknowledged.
 fn leave(client: &mut StockClient, server: &mut Server) {
     client.queue_leave(LeaveProspectSessionType::ReturnToTitlescreen);
+    finish_leave(client, server);
+}
+
+fn finish_leave(client: &mut StockClient, server: &mut Server) {
     client.until(
         server,
         Duration::from_secs(5),
@@ -2493,22 +2510,13 @@ fn rehearsal_entry_leave_restart_and_rejoin_at_the_saved_location() {
 fn rehearsal_bag_projection_survives_leave_and_restart() {
     let inputs = Inputs::new(true);
     let mut server = Server::start(&inputs.config);
-    let expected = (starter_bag_literal(), 3 * 5 + 7);
+    let expected = (bag_literal(3), 3 * 5 + 7);
     for process in 0..2 {
         let mut client = enter(&mut server, &inputs, Duration::from_secs(5));
         let connection = server.lab().peers[&client.address].connection_id.unwrap();
         let seen = &client.seen;
-        let record = seen.position("record");
-        let before: Vec<Payload> = seen
-            .log
-            .iter()
-            .take(record)
-            .filter(|event| *event == "pawn update")
-            .zip(&seen.pawn_updates)
-            .map(|(_, payload)| payload.clone())
-            .collect();
         assert_eq!(
-            projected_bag(server.lab(), connection, &before),
+            projected_bag(server.lab(), connection, seen.pawn_updates_before_record()),
             expected,
             "process {process}: the bag precedes the record"
         );
@@ -2527,6 +2535,208 @@ fn rehearsal_bag_projection_survives_leave_and_restart() {
         server = Server::start(&inputs.config);
         assert!(server.reopened);
     }
+    server.shutdown();
+}
+
+#[test]
+fn rehearsal_existing_bag_and_location_commit_in_the_same_leave_generation() {
+    let inputs = Inputs::new(true);
+    let mut config = Server::resolve_config(&inputs.config);
+    // Keep this rehearsal's leave save independent of the periodic writer.
+    config.autosave_seconds = 60;
+    let start = || Server::try_start_config(&config, None, SnapshotMode::Durable, None).unwrap();
+    let key = PlayerKey::new(ACCOUNT, SLOT).unwrap();
+
+    // Seed a preexisting schema-15 store through native issuance and save.
+    let (_, players) = network::prepare_run_with_tick_hz(
+        &config.network,
+        network::peer_lab_config(&config.network),
+        config.tick_hz,
+    )
+    .unwrap();
+    let players = players.unwrap();
+    let mut vitals = players.initial_vitals;
+    vitals.water -= 50;
+    let seed = network::fresh_player_snapshot(Some(&players));
+    let mut app = build_app(&config, &seed).unwrap();
+    app.world_mut()
+        .resource_mut::<PlayerRegistry>()
+        .reserve(
+            key,
+            1,
+            PlayerCheckpoint {
+                vitals,
+                location_cm: SPAWN.map(f64::from),
+            },
+        )
+        .unwrap();
+    let player_id = activate_player(app.world_mut(), 1).unwrap().player_id;
+    let seed = capture(app.world_mut()).unwrap();
+    let initial_write = SnapshotStore::open(&config.data_dir)
+        .unwrap()
+        .save_new(&seed)
+        .unwrap();
+    drop(app);
+
+    let mut server = start();
+    assert!(server.reopened);
+    assert_eq!(
+        server.registry().inventory_snapshot(),
+        seed.player_inventory
+    );
+    server
+        .app
+        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    let mut client = enter(&mut server, &inputs, Duration::from_secs(5));
+    let epoch = server.lab().peers[&client.address]
+        .checkpoint_epoch
+        .unwrap();
+    let location = [SPAWN[0] + WALK_STEP_CM, SPAWN[1], SPAWN[2]];
+    let timestamp = 10.0;
+    client.exchange(
+        &mut server,
+        &[authored_move(
+            timestamp,
+            location,
+            Some(MOVEMENT_MODE_WALKING),
+        )],
+    );
+    client.until(
+        &mut server,
+        Duration::from_secs(3),
+        "the move ACK before leave",
+        |seen, _| seen.acks().last() == Some(&timestamp),
+    );
+    // Food normally debits on the next tick (5 units/s at 30 Hz).
+    let tick = |server: &Server| server.app.world().resource::<SimulationClock>().tick;
+    client.until(
+        &mut server,
+        Duration::from_secs(3),
+        "a food debit tick",
+        |_, server| tick(server) % 6 == 5,
+    );
+    let before_tick = tick(&server);
+    let before = server.stored(key).unwrap();
+    assert_eq!(before.player_id, player_id);
+    assert_eq!(before.checkpoint.location_cm, SPAWN.map(f64::from));
+    assert!(before.checkpoint.vitals.food > 0);
+    let mut request = PlayerInventoryRequestV1 {
+        player_id,
+        expected_player_revision: before.revision,
+        expected_bag_revision: server.registry().inventory_bag(player_id).unwrap().revision,
+        action: PlayerInventoryActionV1::Use {
+            source: endpoint(&server.app, player_id, "bag", 0),
+        },
+    };
+    assert_eq!(
+        apply_player_inventory_action(server.app.world_mut(), key, epoch, &request).unwrap(),
+        InventoryActionOutcomeV1::Applied
+    );
+    let edited_inventory = server.registry().inventory_snapshot().unwrap();
+    let bag = edited_inventory.bag(player_id).unwrap();
+    assert_eq!(bag.revision, request.expected_bag_revision + 1);
+    assert_eq!(bag.inventories[0].slots[0].as_ref().unwrap().count, 2);
+    assert_eq!(
+        bag.consumed
+            .iter()
+            .find(|row| row.item == "water")
+            .unwrap()
+            .count,
+        1
+    );
+
+    // No projection or fixed tick between the live Use and the leave poll.
+    client.queue_leave(LeaveProspectSessionType::ReturnToTitlescreen);
+    client.exchange(&mut server, &[]);
+    assert_eq!(tick(&server), before_tick + 1);
+    assert!(client.seen.completions.is_empty());
+    let cutoff = server.registry().leave_status(key, epoch).unwrap();
+    assert_eq!(cutoff.phase, LeavePhase::Pending);
+    let mut expected = before;
+    expected.revision += 2; // One for Use, one for the location.
+    expected.checkpoint.vitals.water += 25;
+    expected.checkpoint.location_cm = location.map(f64::from);
+    assert_eq!(cutoff.revision, expected.revision);
+    assert_eq!(server.stored(key), Some(expected));
+    assert_eq!(
+        server
+            .sessions()
+            .checkpoint_saved_locations
+            .unwrap()
+            .saved_at_leave,
+        1
+    );
+    request.expected_player_revision = expected.revision;
+    request.expected_bag_revision = bag.revision;
+    let refused =
+        apply_player_inventory_action(server.app.world_mut(), key, epoch, &request).unwrap_err();
+    assert_eq!(refused.to_string(), "player inventory authority refused");
+
+    let later = [location[0] + WALK_STEP_CM, location[1], location[2]];
+    client.exchange(
+        &mut server,
+        &[authored_move(
+            timestamp + MOVE_SECONDS,
+            later,
+            Some(MOVEMENT_MODE_WALKING),
+        )],
+    );
+    finish_leave(&mut client, &mut server);
+    let counts = server.registry().leave_counts();
+    assert_eq!(
+        (
+            counts.cutoffs_accepted,
+            counts.durable,
+            counts.detached_settled
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(server.stored(key), Some(expected));
+    assert_eq!(server.save_failures, 0);
+    assert_eq!(server.save_submissions, 1);
+    let receipt = counts.last_durable.unwrap();
+    assert_eq!(receipt.generation, initial_write.generation + 1);
+    assert_eq!(receipt.tick, before_tick + 1);
+
+    // Reopen the leave writer's generation without a final shutdown save.
+    drop(client);
+    drop(server);
+    wait_for_store_unlock(&config.data_dir);
+    let mut loaded = SnapshotStore::open_existing(&config.data_dir)
+        .unwrap()
+        .load()
+        .unwrap()
+        .unwrap();
+    assert!(!loaded.recovered_previous);
+    assert_eq!(loaded.selected_generation, receipt.generation);
+    assert_eq!(loaded.snapshot.tick, receipt.tick);
+    network::open_player_snapshot(&mut loaded.snapshot, Some(&players)).unwrap();
+    assert_eq!(
+        loaded.snapshot.native_players.unwrap().projection(key),
+        Some(expected)
+    );
+    assert_eq!(loaded.snapshot.player_inventory, Some(edited_inventory));
+
+    let mut server = start();
+    assert!(server.reopened);
+    assert_eq!(server.stored(key), Some(expected));
+    let mut client = StockClient::connect(&mut server, &inputs, ACCOUNT, true);
+    client.until(
+        &mut server,
+        Duration::from_secs(5),
+        "the returning own record",
+        |seen, _| seen.own_record_packet.is_some(),
+    );
+    let connection = server.lab().peers[&client.address].connection_id.unwrap();
+    assert_eq!(
+        projected_bag(
+            server.lab(),
+            connection,
+            client.seen.pawn_updates_before_record()
+        ),
+        (bag_literal(2), 2 * 5 + 7)
+    );
+    assert_eq!(server.sessions().checkpoint_relocation.unwrap().pending, 1);
     server.shutdown();
 }
 
