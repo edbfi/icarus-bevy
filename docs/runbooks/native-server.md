@@ -64,7 +64,8 @@ ACK transport-only; no terrain/OnRep/full-save/client proof.
 [passwords](network-readiness.md#join-password); observed entry F-1148.
 Visibility actors remain [gated](../gates.md): `run` refuses the switch.
 The probe's `--level-visibility-actors true` needs a 3.0.34/3.0.35
-`--release-profile` from `tests/fixtures/releases/`. The 3.0.37 profile lacks level-actor identities.
+`--release-profile` from `tests/fixtures/releases/`. The 3.0.37 profile lacks
+level-actor identities.
 Possession (`controller_possession_properties`, F-1088), connected records
 (`connected_player_records`, F-1077) and the player's record-ACK-gated pawn
 unfreeze (`server_frozen_movement_release`, F-1099/F-1100) default on.
