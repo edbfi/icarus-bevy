@@ -2838,6 +2838,20 @@ fn concurrent_held_sessions_each_receive_updates_and_see_every_player() {
         assert!(session.hold.world_time_updates >= 10, "{session:?}");
         assert_eq!(session.max_listed_players, Some(4), "{session:?}");
     }
+    let shared_ms = summary.shared_held_ms.unwrap();
+    assert_eq!(
+        serde_json::to_value(&summary).unwrap()["shared_held_ms"],
+        shared_ms
+    );
+    assert!(shared_ms > 0, "{summary:?}");
+    assert!(shared_ms <= summary.wall_ms, "{summary:?}");
+    assert!(
+        summary
+            .sessions
+            .iter()
+            .all(|session| shared_ms <= session.hold.held_ms),
+        "{summary:?}"
+    );
     let total: u64 = summary
         .sessions
         .iter()
@@ -2847,6 +2861,39 @@ fn concurrent_held_sessions_each_receive_updates_and_see_every_player() {
     // Counts only: no synthetic name reaches the summary.
     let printed = serde_json::to_string(&summary).unwrap();
     assert!(!printed.contains("HoldProbe"), "{printed}");
+}
+
+#[test]
+fn server_closed_control_channel_invalidates_the_shared_hold() {
+    use icarus_bevy::experimental::session_hold::{HoldConfig, MultiHoldConfig, run_holds};
+    let directory = tempfile::tempdir().unwrap();
+    let config = pinned_server_config(directory.path(), &release_toml());
+    let mut settings = fs::read_to_string(&config).unwrap();
+    settings.push_str("begin_timeout_seconds = 5\n");
+    fs::write(&config, settings).unwrap();
+    let mut server = spawn_run(&config, &directory.path().join("state"));
+    let (address, _) = listening_address(&mut server);
+    let profile = ReleaseProfile::load(&release_toml()).unwrap();
+    // The hold probe sends Join and receives updates but never sends Begin.
+    let summary = run_holds(&MultiHoldConfig {
+        sessions: 1,
+        hold: HoldConfig {
+            server: address,
+            network_version: profile.pin.network_checksum,
+            engine_net_version: profile.engine_network_version,
+            duration: Duration::from_secs(7),
+            step_timeout: Duration::from_secs(3),
+        },
+    })
+    .unwrap();
+    server.wait_for("server closed the joined peer awaiting Begin", |record| {
+        record["event"] == "status" && record["sessions"]["closed_awaiting_begin"] == 1
+    });
+    sigterm(&server);
+    assert!(server.wait_exit().success());
+    assert_eq!(summary.joined, 1, "{summary:?}");
+    assert!(summary.game_state_updates > 0, "{summary:?}");
+    assert_eq!(summary.shared_held_ms, None, "{summary:?}");
 }
 
 /// Sessions beyond `max_players` are refused at Login and reported as
@@ -2882,6 +2929,13 @@ fn concurrent_held_sessions_beyond_the_player_limit_are_refused() {
     .unwrap();
     sigterm(&server);
     assert!(server.wait_exit().success());
+    assert_eq!(summary.shared_held_ms, None);
+    assert_eq!(
+        serde_json::to_value(&summary)
+            .unwrap()
+            .get("shared_held_ms"),
+        Some(&Value::Null)
+    );
     assert_eq!(
         (summary.joined, summary.refused, summary.failed),
         (2, 2, 0),
@@ -2970,7 +3024,13 @@ fn concurrent_hold_progress_arrives_before_completion_and_preserves_counts() {
             assert!(receipt.completed < receipt.sessions_requested);
             assert_eq!(receipt.event, "session_hold_progress");
             let printed = serde_json::to_string(receipt).unwrap();
-            for private in ["HoldProbe", "127.0.0.1", "sessions\":", "STEAM"] {
+            for private in [
+                "HoldProbe",
+                "127.0.0.1",
+                "sessions\":",
+                "STEAM",
+                "shared_held_ms",
+            ] {
                 assert!(!printed.contains(private), "{printed}");
             }
             receipts.push(receipt.clone());
@@ -2997,6 +3057,7 @@ fn concurrent_hold_progress_arrives_before_completion_and_preserves_counts() {
     assert!(summary.game_state_updates >= last.game_state_updates);
     assert!(summary.decode_errors >= last.decode_errors);
     assert!(summary.regressions >= last.regressions);
+    assert!(summary.shared_held_ms.unwrap() > 0, "{summary:?}");
     assert_eq!(summary.joined, 4);
 }
 
