@@ -10,7 +10,7 @@ use super::super::super::{
     probe_initialise::{authored_character_profile, authored_user_profile},
     rep_layout::{RepLayoutCodec, append_bits, read_rep_properties},
     rep_rpc::{RpcArgument, RpcItem, backend_profile_response_parameters, encode_rpc_payload},
-    sequencing::PacketSequencer,
+    sequencing::{PacketSequencer, RELIABLE_MASK, wire_reliable_sequence},
 };
 use super::*;
 use crate::{
@@ -1825,6 +1825,8 @@ fn early_fresh_pawn_open_is_the_legacy_open_and_needs_no_vitals_update() {
             .cloned()
             .collect()
     };
+    let sequence_offset = |raw: u32, first: u32| wire_reliable_sequence(raw.wrapping_sub(first));
+    assert_eq!(sequence_offset(0, RELIABLE_MASK), 1);
     let relative = |bunches: &[Bunch]| -> Vec<Bunch> {
         let first = bunches[0].header.reliable_sequence_raw.unwrap();
         bunches
@@ -1834,7 +1836,7 @@ fn early_fresh_pawn_open_is_the_legacy_open_and_needs_no_vitals_update() {
                 bunch.header.reliable_sequence_raw = bunch
                     .header
                     .reliable_sequence_raw
-                    .map(|raw| raw.wrapping_sub(first));
+                    .map(|raw| sequence_offset(raw, first));
                 bunch
             })
             .collect()
