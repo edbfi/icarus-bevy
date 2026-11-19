@@ -151,7 +151,8 @@ pub struct MultiHoldSummary {
     pub failed: u64,
     pub wall_ms: u64,
     /// Whole milliseconds common to all requested peers' admitted hold loops,
-    /// before final close. None if a peer fails or receives a control-channel close.
+    /// before final close. `None` on missing admission, refusal, cancellation,
+    /// a session or final-close error, or an observed server control-channel close.
     pub shared_held_ms: Option<u64>,
     pub game_state_updates: u64,
     pub decode_errors: u64,
