@@ -4,6 +4,8 @@
 //! This accepts one shared StateRecorderBlob struct tag and exact tagged element
 //! boundaries. Class strings and recorder bodies remain borrowed opaque bytes;
 //! no class lookup, gameplay interpretation, object construction or import occurs.
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 
@@ -339,6 +341,23 @@ impl<'a> Recorder<'a> {
 impl<'a> RecorderArray<'a> {
     pub fn records(&self) -> &[Recorder<'a>] {
         &self.records
+    }
+
+    pub(crate) fn count_byte_identical(&self, comparison: &RecorderArray<'_>) -> usize {
+        let mut remaining = HashMap::<&[u8], usize>::with_capacity(self.records.len());
+        for recorder in &self.records {
+            *remaining.entry(recorder.record).or_default() += 1;
+        }
+        let mut matched = 0;
+        for recorder in &comparison.records {
+            if let Some(count) = remaining.get_mut(recorder.record)
+                && *count > 0
+            {
+                *count -= 1;
+                matched += 1;
+            }
+        }
+        matched
     }
 
     pub fn summary(&self) -> RecorderSummary {

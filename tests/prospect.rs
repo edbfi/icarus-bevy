@@ -81,62 +81,68 @@ fn opt_in_tag_scan_requires_full_envelope_integrity_first() {
     );
 }
 
-fn recorder_fixture(byte_count: i32) -> Vec<u8> {
-    // Authored framing, independent of the reader and archive codec encoder.
-    fn string(value: &str) -> Vec<u8> {
-        [
-            i32::try_from(value.len() + 1)
-                .unwrap()
-                .to_le_bytes()
-                .as_slice(),
-            value.as_bytes(),
-            &[0],
-        ]
-        .concat()
-    }
-    fn tag(name: &str, kind: &str, extra: &[u8], value: &[u8]) -> Vec<u8> {
-        [
-            string(name).as_slice(),
-            &string(kind),
-            &i32::try_from(value.len()).unwrap().to_le_bytes(),
-            &[0; 4],
-            extra,
-            &[0],
-            value,
-        ]
-        .concat()
-    }
-    let fields = [
-        tag(
+// Authored framing, independent of the reader and archive codec encoder.
+fn recorder_string(value: &str) -> Vec<u8> {
+    [
+        i32::try_from(value.len() + 1)
+            .unwrap()
+            .to_le_bytes()
+            .as_slice(),
+        value.as_bytes(),
+        &[0],
+    ]
+    .concat()
+}
+
+fn recorder_tag(name: &str, kind: &str, extra: &[u8], value: &[u8]) -> Vec<u8> {
+    [
+        recorder_string(name).as_slice(),
+        &recorder_string(kind),
+        &i32::try_from(value.len()).unwrap().to_le_bytes(),
+        &[0; 4],
+        extra,
+        &[0],
+        value,
+    ]
+    .concat()
+}
+
+fn recorder_element(byte_count: i32, unknown: &[u8]) -> Vec<u8> {
+    [
+        recorder_tag(
             "ComponentClassName",
             "StrProperty",
             &[],
-            &string("secret-class"),
+            &recorder_string("secret-class"),
         ),
-        tag(
+        recorder_tag(
             "BinaryData",
             "ArrayProperty",
-            &string("ByteProperty"),
+            &recorder_string("ByteProperty"),
             &[byte_count.to_le_bytes().as_slice(), b"secret-bytes"].concat(),
         ),
-        tag("secret-unknown-field", "IntProperty", &[], b"opaque"),
-        string("None"),
+        recorder_tag("secret-unknown-field", "IntProperty", &[], unknown),
+        recorder_string("None"),
     ]
-    .concat();
-    let shared = tag(
+    .concat()
+}
+
+fn recorder_payload(elements: &[&[u8]]) -> Vec<u8> {
+    let count = i32::try_from(elements.len()).unwrap().to_le_bytes();
+    let shared = recorder_tag(
         "StateRecorderBlobs",
         "StructProperty",
-        &[string("StateRecorderBlob"), vec![0; 16]].concat(),
-        &fields,
+        &[recorder_string("StateRecorderBlob"), vec![0; 16]].concat(),
+        &elements.concat(),
     );
     [
-        tag(
+        recorder_tag(
             "StateRecorderBlobs",
             "ArrayProperty",
-            &string("StructProperty"),
-            &[1_i32.to_le_bytes().as_slice(), &shared].concat(),
+            &recorder_string("StructProperty"),
+            &[count.as_slice(), &shared].concat(),
         ),
-        string("None"),
+        recorder_string("None"),
     ]
     .concat()
 }
@@ -146,7 +152,7 @@ fn recorder_cli_keeps_values_private_and_rejects_inner_failure_without_writes() 
     let root = TempDir::new().unwrap();
     let source = root.path().join("authored.json");
     for (byte_count, valid) in [(12, true), (11, false)] {
-        let payload = recorder_fixture(byte_count);
+        let payload = recorder_payload(&[&recorder_element(byte_count, b"opaque")]);
         let envelope = serde_json::to_vec(&authored_envelope(&payload)).unwrap();
         // Both cases have intact envelopes and root tags. Only nested byte-array
         // framing distinguishes the malformed case.
@@ -178,6 +184,160 @@ fn recorder_cli_keeps_values_private_and_rejects_inner_failure_without_writes() 
         }
         assert_eq!(fs::read(&source).unwrap(), envelope);
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn compare_recorders_cli_counts_complete_elements_by_multiplicity() {
+    let a = recorder_element(12, b"one!");
+    let b = recorder_element(12, b"two!");
+    let (a, b) = (a.as_slice(), b.as_slice());
+    let check = |left: &[&[u8]],
+                 right: Option<&[&[u8]]>,
+                 [identical, left_only, right_only]: [usize; 3]| {
+        let root = TempDir::new().unwrap();
+        let source = root.path().join("secret-source.json");
+        let comparison = root.path().join("secret-comparison.json");
+        let encode = |elements: &[&[u8]]| {
+            serde_json::to_vec(&authored_envelope(&recorder_payload(elements))).unwrap()
+        };
+        let left_bytes = encode(left);
+        fs::write(&source, &left_bytes).unwrap();
+        let right_bytes = right.map(encode);
+        let comparison_path = if let Some(bytes) = &right_bytes {
+            fs::write(&comparison, bytes).unwrap();
+            &comparison
+        } else {
+            &source
+        };
+        let result = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root.path())
+            .args(["inspect-save", "--source"])
+            .arg(&source)
+            .arg("--compare-recorders")
+            .arg(comparison_path)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{:?}", result.stderr);
+        assert!(result.stderr.is_empty());
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(
+            report,
+            json!({
+                "source_total": left.len(),
+                "comparison_total": right.unwrap_or(left).len(),
+                "byte_identical": identical,
+                "source_only": left_only,
+                "comparison_only": right_only,
+                "world_imported": false
+            })
+        );
+        assert_eq!(fs::read(&source).unwrap(), left_bytes);
+        if let Some(bytes) = right_bytes {
+            assert_eq!(fs::read(&comparison).unwrap(), bytes);
+        }
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            1 + usize::from(right.is_some())
+        );
+    };
+    check(&[a, a, b], Some(&[a, b, b, b]), [2, 1, 2]);
+    check(&[a, a, b], Some(&[b, a, a]), [3, 0, 0]);
+    // Only the opaque field differs between these equal-length elements.
+    check(&[a], Some(&[b]), [0, 1, 1]);
+    check(&[a, a, b], None, [3, 0, 0]);
+    check(&[], Some(&[a]), [0, 0, 1]);
+}
+
+#[test]
+fn compare_recorders_cli_rejects_invalid_inputs_on_either_side() {
+    let encode = |payload: &[u8]| serde_json::to_vec(&authored_envelope(payload)).unwrap();
+    let valid_payload = recorder_payload(&[&recorder_element(12, b"opaque")]);
+    let valid = encode(&valid_payload);
+    let with_declared_length = |length| {
+        let mut envelope = authored_envelope(&valid_payload);
+        envelope["ProspectBlob"]["UncompressedLength"] = json!(length);
+        serde_json::to_vec(&envelope).unwrap()
+    };
+    let mut bad_base64: Value = serde_json::from_slice(&valid).unwrap();
+    let field = &mut bad_base64["ProspectBlob"]["BinaryBlob"];
+    let mut text = field.as_str().unwrap().to_owned();
+    text.replace_range(..1, "!");
+    *field = json!(text);
+    let malformed = [
+        serde_json::to_vec(&bad_base64).unwrap(),
+        vec![b' '; MAX_ENVELOPE_BYTES + 1],
+        with_declared_length(MAX_PAYLOAD_BYTES + 1),
+        with_declared_length(1),
+        encode(b"bad root"),
+        encode(&recorder_payload(&[&recorder_element(11, b"opaque")])),
+    ];
+    let root = TempDir::new().unwrap();
+    let valid_path = root.path().join("secret-valid.json");
+    let invalid_path = root.path().join("secret-invalid.json");
+    fs::write(&valid_path, &valid).unwrap();
+    for bytes in malformed {
+        let expected = inspect_with_recorders(bytes.as_slice()).unwrap_err();
+        fs::write(&invalid_path, bytes).unwrap();
+        for (source, comparison, side) in [
+            (&invalid_path, &valid_path, "source input"),
+            (&valid_path, &invalid_path, "comparison input"),
+        ] {
+            let result = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+                .current_dir(root.path())
+                .args(["inspect-save", "--source"])
+                .arg(source)
+                .arg("--compare-recorders")
+                .arg(comparison)
+                .output()
+                .unwrap();
+            assert!(!result.status.success());
+            assert!(result.stdout.is_empty());
+            let report: Value = serde_json::from_slice(&result.stderr).unwrap();
+            let error = report["error"].as_str().unwrap();
+            if expected.to_string() == "invalid canonical Base64" {
+                assert_eq!(error, format!("{side}: invalid canonical Base64"));
+            } else {
+                assert!(error.starts_with(&format!("{side}: {expected}")));
+            }
+            assert!(!error.contains("secret"));
+        }
+    }
+}
+
+#[test]
+fn compare_recorders_cli_requires_source_and_conflicts_with_other_modes() {
+    let root = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .current_dir(root.path())
+        .args(["inspect-save", "--compare-recorders", "comparison.json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--source <SOURCE>"));
+
+    for flag in [
+        "--inner-tags",
+        "--recorders",
+        "--stage-check",
+        "--preserve-check",
+        "--typed-check",
+        "--candidate-check",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+            .current_dir(root.path())
+            .args([
+                "inspect-save",
+                "--source",
+                "source.json",
+                "--compare-recorders",
+                "comparison.json",
+                flag,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{flag}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
     }
 }
 
