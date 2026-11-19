@@ -29,10 +29,9 @@ C016 records saved positions (F-651). Its historical stitching counter advances 
 Authored adapters F-927 leave import closed. Lifecycle F-930; server operand/
 append chains F-937/F-940. Reuse F-1195/M-1426's row-handle list/base join;
 M-1517 qualifies the repeated reader.
-F-1260 binds a 24-byte copy into one removal caller’s stack argument.
-A later opaque call may alter the destination. Its final contents, owner/receiver, element storage,
-getter/class identity, ABI, aliases, lifetimes and client/runtime/import
-remain open ([boundary](../../specs/save-format/restore-rules.md#confirmed)).
+The 24-byte argument reaches modifier removal on one modeled branch (F-1260).
+Two opaque calls leave the other branch open. Owner, storage, ABI, row and
+runtime/import bindings remain unresolved ([restore rules](../../specs/save-format/restore-rules.md#confirmed)).
 
 Saved identifiers do not discriminate the producing build (F-635, F-896).
 Row references: F-660; reader allocation/comparator limits: F-142, F-198.

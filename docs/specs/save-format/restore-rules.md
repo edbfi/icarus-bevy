@@ -89,12 +89,13 @@ addresses retain helper names or stand alone.
   F-1242; F-940's helper and entry sampling F-1243; selected call operands
   F-1244; population strides and getters F-1245; `STORE8`/`LOAD8` preservation
   F-1246. M-1508 binds static checks. M-1509/M-1510 record processes only.
-- The combined search reached its match cap (M-1540). The named server
-  dispatch wrapper passes a stack address to removal in RDX
-  (F-1260). Its helper copies three eight-byte values from another stack
-  location into that destination. Both modeled normal paths subsequently
-  pass the destination to an opaque call. Final argument contents, row and
-  actor identity, other callers, native storage and runtime effects stay open.
+- The combined search reached its match cap (M-1540). In the selected server
+  dispatch wrapper, a helper copies three eight-byte values to the stack
+  argument passed in RDX to modifier removal (F-1260). The post-copy callee
+  has no stores or calls. On its modeled normal return with `AL=1`, removal
+  receives all 24 copied bytes. With `AL=0`, two more opaque calls can change
+  them. Final bytes on that path, row and actor identity, other callers, native
+  storage and runtime effects remain open.
 
 ## Candidate
 
