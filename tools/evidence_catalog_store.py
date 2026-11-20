@@ -55,6 +55,30 @@ def tree_files(root: Path, rev: str, paths: Iterable[str]) -> dict[str, str]:
     return files
 
 
+@dataclass(frozen=True)
+class IndexBlob:
+    mode: str
+    oid: str
+
+
+def index_files(root: Path, *prefixes: str) -> dict[str, IndexBlob]:
+    files: dict[str, IndexBlob] = {}
+    for item in git(root, "ls-files", "--stage", "-z", "--", *prefixes).decode().split("\0"):
+        if item:
+            metadata, path = item.split("\t", 1)
+            mode, oid, stage = metadata.split()
+            if stage != "0":
+                raise CatalogError(f"{path}: unmerged index entry")
+            files[path] = IndexBlob(mode, oid)
+    return files
+
+
+def read_index_blob(root: Path, path: str, blob: IndexBlob) -> bytes:
+    if blob.mode != "100644":
+        raise CatalogError(f"{path}: expected a regular, non-executable staged blob")
+    return git(root, "cat-file", "blob", blob.oid)
+
+
 def read_blobs(root: Path, rev: str, paths: Mapping[str, str]) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     for path, mode in sorted(paths.items()):

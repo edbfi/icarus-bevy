@@ -166,7 +166,7 @@ repos:
         files: (\.md$|^evidence/|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
       - id: evidence-catalog
         name: Check evidence catalog authority and generated views
-        entry: python3 -m tools.evidence_catalog check
+        entry: python3 -m tools.evidence_catalog check --staged
         language: system
         pass_filenames: false
         always_run: true

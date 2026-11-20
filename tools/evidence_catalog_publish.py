@@ -54,10 +54,13 @@ from tools.evidence_catalog_store import (
     LEGACY_ROOTS,
     SHA256,
     Catalog,
+    IndexBlob,
     checkout_paths,
     commit_id,
     git,
+    index_files,
     read_blobs,
+    read_index_blob,
     read_regular,
     tree_files,
 )
@@ -409,21 +412,36 @@ def require_clean_sources(root: Path, base: str) -> None:
         raise CatalogError("stale publication base or modified catalog/legacy sources")
 
 
-def check_checkout(root: Path) -> None:
+def candidate_files(
+    root: Path, *prefixes: str, staged: Mapping[str, IndexBlob] | None,
+    legacy: bool = False, topics: frozenset[str] | None = None,
+) -> dict[str, bytes]:
+    def included(path: str) -> bool:
+        name = topic(path)
+        return not legacy or (name is not None and (topics is None or name in topics))
+
+    if staged is not None:
+        return {
+            path: read_index_blob(root, path, blob) for path, blob in staged.items()
+            if any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes) and included(path)
+        }
+    return {path: read_regular(root, path) for path in checkout_paths(root, *prefixes) if included(path)}
+
+
+def check_checkout(root: Path, *, staged: bool = False) -> None:
     base = commit_id(root, "HEAD")
     committed = tree_files(root, base, (AUTHORITY,))
-    paths = checkout_paths(root, AUTHORITY)
-    if not paths and not committed:
+    staged_files = index_files(root, AUTHORITY, *LEGACY_ROOTS) if staged else None
+    current = candidate_files(root, AUTHORITY, staged=staged_files)
+    if not current and not committed:
         return
-    current = {path: read_regular(root, path) for path in paths}
     catalog = Catalog.from_files({path.removeprefix(f"{AUTHORITY}/"): data for path, data in current.items()})
     topics = authority_topics(catalog)
     before = read_blobs(root, base, committed)
     transitioning = current != before
-    views = {
-        path: read_regular(root, path) for path in checkout_paths(root, *LEGACY_ROOTS)
-        if topic(path) is not None and (transitioning or topic(path) in topics)
-    }
+    views = candidate_files(
+        root, *LEGACY_ROOTS, staged=staged_files, legacy=True, topics=None if transitioning else topics,
+    )
     check_owned(catalog, views)
     if transitioning:
         authority = catalog.authority

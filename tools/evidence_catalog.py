@@ -33,6 +33,7 @@ class Options(argparse.Namespace):
     identifier: str = ""
     request: Path = Path()
     approved_sha256: str = ""
+    staged: bool = False
 
 
 def options(argv: Sequence[str] | None) -> Options:
@@ -59,7 +60,8 @@ def options(argv: Sequence[str] | None) -> Options:
     _ = publish.add_argument("request", type=Path)
     _ = publish.add_argument("--approved-sha256", required=True)
     _ = publish.add_argument("--out", type=Path, required=True)
-    _ = commands.add_parser("check", help="enforce generated views for opted-in checkout topics")
+    check = commands.add_parser("check", help="enforce generated views for opted-in checkout topics")
+    _ = check.add_argument("--staged", action="store_true", help="read candidate files from the Git index")
     return parser.parse_args(argv, namespace=Options())
 
 
@@ -84,7 +86,7 @@ def require_directory(path: Path | None) -> Catalog:
 def run(args: Options) -> None:
     root = args.repo.resolve()
     if args.command == "check":
-        check_checkout(root)
+        check_checkout(root, staged=args.staged)
     elif args.command == "migrate":
         revision = commit_id(root, args.rev or "")
         catalog = resolved_catalog(root, revision)

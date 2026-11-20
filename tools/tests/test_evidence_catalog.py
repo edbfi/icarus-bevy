@@ -151,6 +151,7 @@ class PublicationTests(unittest.TestCase):
         legacy = (self.root / FINDING).read_bytes()
         self.apply(self.request(activate=["foundation"]))
         check_checkout(self.root)
+        check_checkout(self.root, staged=True)
         self.assertEqual(legacy, (self.root / FINDING).read_bytes())
         self.commit("activate")
 
@@ -244,9 +245,22 @@ class PublicationTests(unittest.TestCase):
     def test_deleting_authority_cannot_replace_a_reviewed_release(self) -> None:
         self.apply(self.request(activate=["foundation"]))
         self.commit("activate")
-        _ = git(self.root, "rm", "-r", "--", "evidence-catalog")
+        _ = git(self.root, "rm", "-r", "--cached", "--", "evidence-catalog")
+        check_checkout(self.root)
         with self.assertRaisesRegex(CatalogError, "missing catalog manifest"):
-            check_checkout(self.root)
+            check_checkout(self.root, staged=True)
+
+    def test_staged_legacy_drift_cannot_be_hidden_by_working_copy(self) -> None:
+        self.apply(self.request(activate=["foundation"]))
+        self.commit("activate")
+        path = self.root / FINDING
+        expected = path.read_bytes()
+        _ = path.write_bytes(expected + b"\n")
+        _ = git(self.root, "add", "--", FINDING)
+        _ = path.write_bytes(expected)
+        check_checkout(self.root)
+        with self.assertRaisesRegex(CatalogError, "generated source drift"):
+            check_checkout(self.root, staged=True)
 
 
 if __name__ == "__main__":
