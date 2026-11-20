@@ -22,7 +22,7 @@ from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
 from tools.memory.journal import Revision, read_tree, write_change_set
-from tools.memory.model import JSON, Record, load_json, sha256_hex
+from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
 from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
@@ -566,7 +566,7 @@ class EvidenceTests(Online):
         self.assertEqual("verified", online.verify_record(self.root, record).outcome)
 
     def test_add_bundle_and_verify_outcomes(self) -> None:
-        bundle = {"records": [{"evidence_id": MEMBER}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
+        bundle = {"records": [{"evidence_id": MEMBER, "score": 4.0947}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
         self.put("work/case/rea-bundle.json", json.dumps(bundle))
         self.put("work/case/receipt.txt", "invented receipt")
         self.put("work/case/dir/x.txt", "x")
@@ -597,6 +597,17 @@ class EvidenceTests(Online):
         linked = self.top / "linked"
         _ = run_git(self.root, "worktree", "add", "-q", "--detach", str(linked))
         self.assertIn("M-001: verified", online.verify(linked, ["M-001"]).lines[0])
+
+    def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        _ = online.revise(self.bank, self.root, "M-001", Changes({"status": "retired"}, note="Invented: superseded"), now=self.tick())
+        self.put("work/case/receipt.txt", "changed after retirement")
+        result = online.verify(self.root, ["M-001"])
+        self.assertEqual((0, "M-001: mismatched (sha256 differs: work/case/receipt.txt)"), (result.status, result.lines[0]))
+        self.assertTrue(result.lines[-1].endswith("; 0 failing"))
+        with self.assertRaisesRegex(RecordError, "duplicate key"):
+            _ = online.bundle_members(b'{"records": [], "records": [], "unknowns": []}')
 
 
 class ReadingTests(Online):

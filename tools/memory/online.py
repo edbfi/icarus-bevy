@@ -32,7 +32,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
 from tools.memory.bank import (
@@ -411,10 +411,27 @@ def resolve(bank: Bank, root: Path, target: str, finding: str, *, now: datetime 
     return _link(bank, root, finding, "resolves", target, now)
 
 
+def bundle_json(data: bytes) -> object:
+    """``json.loads`` with duplicate keys refused and floats allowed (``load_json`` refuses floats, which records never hold)."""
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        found = dict(pairs)
+        if len(found) != len(pairs):
+            raise RecordError("invalid JSON: duplicate key")
+        return found
+
+    try:
+        # json.loads is untyped; the result is an object until narrowed.
+        return cast(object, json.loads(data, object_pairs_hook=unique))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RecordError(f"invalid JSON: {error}") from error
+
+
 def bundle_members(data: bytes) -> tuple[int, list[str]]:
     """``records`` (distinct ``records[].evidence_id``) and ``members`` (those, then ``unknowns[].unknown_id``,
-    in bundle order) of an REA bundle, read as ``tools/docs_lint.py`` reads bundle membership."""
-    raw = load_json(data)
+    in bundle order) of an REA bundle, read as ``tools/docs_lint.py`` reads bundle membership: a bundle is REA's
+    output, so its numbers may be floats (scores); duplicate keys are still refused."""
+    raw = bundle_json(data)
     if not is_object(raw):
         raise Refused("REA bundle is not a JSON object")
     found: list[list[str]] = []
@@ -507,7 +524,9 @@ def verify_record(primary: Path, record: Record) -> Verdict:
     active_private = record.status == "active" and record.text("class") == "local-private"
 
     def verdict(outcome: str, detail: str) -> Verdict:
-        failing = outcome == "mismatched" or (outcome == "unavailable" and active_private)
+        # As ``unavailable``, ``mismatched`` fails only while the record is active: a retired or missing record's
+        # artifact may have been changed or removed after retirement (the legacy ``--local`` lint checked active rows only).
+        failing = (outcome == "mismatched" and record.status == "active") or (outcome == "unavailable" and active_private)
         return Verdict(record.id, outcome, detail, failing)
 
     if path is None or digest is None:
@@ -568,7 +587,8 @@ def verify(root: Path, identifiers: Sequence[str], *, every: bool = False) -> Ou
         verdicts.append(verify_record(primary, record))
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
-    lines.append("verify: " + ", ".join(f"{count} {outcome}" for outcome, count in counts.items()))
+    failing = sum(1 for item in verdicts if item.failing)
+    lines.append("verify: " + ", ".join(f"{count} {outcome}" for outcome, count in counts.items()) + f"; {failing} failing")
     data: dict[str, JSON] = {"records": [{"id": item.id, "outcome": item.outcome, "detail": item.detail, "failing": item.failing} for item in verdicts],
                              "counts": dict[str, JSON](counts)}
     return Output(data, lines, 1 if any(item.failing for item in verdicts) else 0)
