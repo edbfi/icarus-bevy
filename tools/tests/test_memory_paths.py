@@ -4,14 +4,18 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from typing import override
+from unittest.mock import patch
 
-from tools.memory.journal import Revision, write_change_set
+from tools.memory import paths
+from tools.memory.journal import Revision, parse_segment, write_change_set
+from tools.memory.state import replay
 from tools.memory.model import JSON, Record
-from tools.memory.paths import LEGACY_SHARD_LIMIT, ProtectedPathsError, legacy_rows, protected_paths, sources
+from tools.memory.paths import LEGACY_SHARD_LIMIT, ProtectedPathsError, Reader, checkout_of, legacy_rows, protected_paths, sources
 from tools.tests.memory_fixtures import CREATED, DIGEST, clean_git_environment, commit_all, evidence, new_repository, run_git
 
 
@@ -119,6 +123,49 @@ class SourcesTests(unittest.TestCase):
         self.assertEqual(("absent.bin", "gone.bin", "kept.bin", "work/case/absent.bin", "work/case/gone.bin", "work/case/kept.bin"),
                          result.listed)
         self.assertEqual(("M-001: manifest entry missing: absent.bin",), result.notices)
+
+    def test_reader_parses_each_distinct_segment_once_and_refuses_a_changed_one(self) -> None:
+        records = [Record.from_json(evidence(f"M-{number}", f"work/case/{number}.txt")) for number in range(101, 104)]
+        segments = write_change_set(self.root, CREATED, [Revision.of(record) for record in records])
+        (self.root / "evidence").mkdir()
+        _ = (self.root / "evidence/001.jsonl").write_text(json.dumps(legacy("M-001", "work/legacy/")) + "\n")
+        copies = [self.top / f"copy{number}" for number in range(3)]
+        for copy in copies:
+            _ = shutil.copytree(self.root / "memory", copy / "memory")
+            _ = shutil.copytree(self.root / "evidence", copy / "evidence")
+        reader = Reader()
+        with patch("tools.memory.paths.parse_segment", wraps=parse_segment) as parse, \
+                patch.object(paths, "legacy_rows", wraps=legacy_rows) as shard, patch("tools.memory.paths.replay", wraps=replay) as replayed:
+            results = [reader.evidence_rows(checkout) for checkout in (self.root, *copies)]
+        self.assertEqual((len(segments), 1, 1), (parse.call_count, shard.call_count, replayed.call_count))
+        self.assertEqual(1, len({frozenset(result) for result in results}))
+        self.assertIn(("M-102", "work/case/102.txt"), results[0])
+        changed = copies[0] / segments[0].relative_to(self.root)
+        _ = changed.write_bytes(changed.read_bytes().replace(b"work/case/102.txt", b"work/case/999.txt"))
+        with self.assertRaisesRegex(ProtectedPathsError, "differs from the segment of the same name in another worktree"):
+            _ = reader.evidence_rows(copies[0])
+        # On its own the edited segment no longer matches its name either.
+        with self.assertRaisesRegex(ProtectedPathsError, "does not match its name"):
+            _ = Reader().evidence_rows(copies[0])
+
+    def test_reader_ticks_inside_the_journal_read(self) -> None:
+        _ = write_change_set(self.root, CREATED, [Revision.of(Record.from_json(evidence("M-101", "work/case/a.txt")))])
+
+        class Expired(Exception):
+            pass
+
+        def expire() -> None:
+            raise Expired
+
+        with patch("tools.memory.paths.parse_segment") as parse, self.assertRaises(Expired):
+            _ = Reader(expire).evidence_rows(self.root)
+        parse.assert_not_called()
+
+    def test_only_a_checkout_git_directory_has_a_primary_checkout(self) -> None:
+        self.assertEqual(self.top / "x", checkout_of(self.top / "x/.git"))
+        for common in (self.top / "x.git", self.top / "x/.git/worktrees/y"):
+            with self.subTest(common=common), self.assertRaisesRegex(ProtectedPathsError, "does not belong to a checkout"):
+                _ = checkout_of(common)
 
     def test_symlinked_or_oversized_legacy_shards_fail_closed(self) -> None:
         (self.root / "evidence").mkdir()

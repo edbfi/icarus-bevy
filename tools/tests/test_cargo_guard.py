@@ -4,6 +4,7 @@ Evidence fixtures are invented legacy shards and journal segments read through `
 """
 from __future__ import annotations
 
+import ast
 from collections.abc import Sequence
 import fcntl
 import json
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from typing import IO, NamedTuple, TextIO, override
 import unittest
 from unittest.mock import patch
@@ -631,9 +633,39 @@ with g.build_lock(i) as b:
                 guard.execute(self.info, (), self.env, build_fd=fd, retire=True, policy=guard.CI)
         self.assertIsNone(self.state()["generation"])
 
-    def test_guard_does_not_depend_on_the_docs_lint(self) -> None:
-        source = Path(guard.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("docs_lint", source.replace("without tools/docs_lint.py", ""))
+    def test_guards_import_neither_the_docs_lint_nor_the_evidence_catalog(self) -> None:
+        repository = Path(__file__).resolve().parents[2]
+        for relative in ("tools/cargo_guard.py", "tools/work_gc.py", "tools/memory/paths.py"):
+            imported: list[str] = []
+            for node in ast.walk(ast.parse((repository / relative).read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    imported.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    imported.extend(f"{node.module or ''}.{alias.name}" for alias in node.names)
+            self.assertTrue(imported, relative)
+            for name in imported:
+                parts = name.split(".")
+                with self.subTest(module=relative, imported=name):
+                    self.assertFalse(any(part == "docs_lint" or part.startswith("evidence_catalog") for part in parts))
+
+    def test_deadline_is_enforced_inside_the_journal_read(self) -> None:
+        self.journal(self.root, "work/case/receipt.txt")
+        # Deadline set at 0; the root loop's tick passes; the first tick inside the journal read is past it.
+        clock = iter([0.0, 0.0, 31.0])
+        frames: list[str] = []
+        with patch.object(time, "monotonic", side_effect=lambda: next(clock, 31.0)):
+            try:
+                guard.evidence_veto(self.info)
+            except guard.GuardError as error:
+                self.assertIn("exceeded 30 seconds", str(error))
+                frames = [frame.name for frame in traceback.extract_tb(error.__traceback__)]
+        self.assertIn("read_tree", frames)
+
+    def test_common_directory_must_be_a_checkout_git_directory_under_every_policy(self) -> None:
+        separate = guard.Identity(self.root, self.root.parent / "separate.git")
+        for policy in (guard.LOCAL, guard.CI):
+            with self.subTest(policy=policy), self.assertRaisesRegex(guard.GuardError, "does not belong to a checkout"):
+                guard.evidence_veto(separate, policy)
 
     def test_process_readable_matches_veto_despite_unreadable_neighbors(self) -> None:
         proc = self.root / "proc"

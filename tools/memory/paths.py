@@ -2,7 +2,7 @@
 """``memory protected-paths``: what scratch cleanup must never delete. It fails closed.
 
 ``protected_paths(start)`` is the interface for ``tools/work_gc.py``; ``tools/cargo_guard.py``, which
-reads manifests under its own byte budget, takes ``evidence_rows`` and ``sources`` per checkout. It reads
+reads manifests under its own byte budget, takes rows per checkout from a ``Reader`` and ``sources``. It reads
 every linked worktree of the repository containing ``start`` (``git worktree list``) and takes the union
 of:
 
@@ -25,6 +25,12 @@ and including removal receipts' entries. A file restored from a backup is protec
 reappears, and a directory that should hold a listed file is never pruned. Guards protect
 ``paths`` and ``listed`` together.
 
+One ``Reader`` serves a whole run over many worktrees, which after cut-over carry the same journal:
+it parses and fully validates each distinct segment once (segments are named by their content and
+immutable, so the same name with other bytes in another worktree is an error), replays each distinct set
+of segments once and parses each distinct shard text once. Its ``tick`` runs before every segment, shard
+and replay, so a caller with a time budget can stop inside the read.
+
 ``ProtectedPathsError`` (unreadable or malformed journal, shard or manifest; Git failure; no worktree
 with a journal or a legacy index at all) means the list cannot be known: callers must treat every path
 as protected. A listed file that does not exist is only a notice, since nothing absent can be deleted.
@@ -33,13 +39,13 @@ as protected. A listed file that does not exist is only a notice, since nothing 
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools import sha256_manifest
 from tools.memory.gitio import GitError, git
-from tools.memory.journal import JOURNAL, JournalError, read_tree
+from tools.memory.journal import JOURNAL, JournalError, Segment, parse_segment, read_tree
 from tools.memory.model import RecordError, as_mapping, load_json
 from tools.memory.state import replay
 
@@ -68,15 +74,22 @@ class Protected:
     listed: tuple[str, ...] = ()
 
 
+def checkout_of(common: Path) -> Path:
+    """The primary checkout owning the Git common directory ``common``: its parent, when ``common`` is that
+    checkout's ``.git``. Anything else (a bare repository, ``--separate-git-dir``) has no checkout to resolve
+    evidence paths against and raises ``ProtectedPathsError``."""
+    if common.name != ".git":
+        raise ProtectedPathsError(f"Git common directory {common} does not belong to a checkout")
+    return common.parent
+
+
 def primary_checkout(start: Path) -> Path:
-    """The primary checkout: the parent of the Git common directory."""
+    """The primary checkout of the repository containing ``start`` (``checkout_of`` its Git common directory)."""
     try:
         common = Path(git(start, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     except GitError as error:
         raise ProtectedPathsError(str(error)) from error
-    if common.name != ".git":
-        raise ProtectedPathsError(f"Git common directory {common} does not belong to a checkout")
-    return common.parent
+    return checkout_of(common)
 
 
 def worktrees(start: Path) -> tuple[tuple[Path, ...], tuple[str, ...]]:
@@ -174,28 +187,64 @@ def _raise(error: OSError) -> None:
     raise error
 
 
-def evidence_rows(checkout: Path) -> set[tuple[str, str]]:
-    """``(ID, path)`` of every active local-private evidence record in one checkout's journal and legacy shards."""
-    rows: set[tuple[str, str]] = set()
-    try:
-        state = replay(read_tree(checkout))
-    except JournalError as error:
-        raise ProtectedPathsError(f"{checkout}: {error}") from error
-    for entry in state.entries.values():
-        for sha in entry.heads:
-            record = entry.revisions[sha].revision.record
-            path = record.text("path")
-            if record.type == "evidence" and record.status == "active" and record.text("class") == "local-private" and path:
-                rows.add((record.id, path))
-    for shard in legacy_shards(checkout):
+def _no_deadline() -> None:
+    pass
+
+
+@dataclass
+class Reader:
+    """Evidence rows of many checkouts in one run, each distinct segment, journal and shard read once."""
+
+    tick: Callable[[], None] = _no_deadline
+    segments: dict[str, tuple[bytes, Segment]] = field(default_factory=dict)
+    journals: dict[tuple[str, ...], frozenset[tuple[str, str]]] = field(default_factory=dict)
+    shards: dict[bytes, frozenset[tuple[str, str]]] = field(default_factory=dict)
+
+    def _segment(self, relative: str, data: bytes) -> Segment:
+        self.tick()
+        known = self.segments.get(relative)
+        if known is None:
+            segment = parse_segment(relative, data)
+            self.segments[relative] = (data, segment)
+            return segment
+        if known[0] != data:
+            raise JournalError(f"{relative}: differs from the segment of the same name in another worktree; segments are immutable")
+        return known[1]
+
+    def evidence_rows(self, checkout: Path) -> set[tuple[str, str]]:
+        """``(ID, path)`` of every active local-private evidence record in one checkout's journal and legacy shards."""
         try:
-            text = shard.read_bytes().decode("utf-8")
-        except (OSError, UnicodeDecodeError) as error:
-            raise ProtectedPathsError(f"{shard}: unreadable: {error}") from error
-        for identifier, klass, status, path in legacy_rows(str(shard), text):
-            if status == "active" and klass == "local-private":
-                rows.add((identifier, path))
-    return rows
+            segments = read_tree(checkout, self._segment)
+        except JournalError as error:
+            raise ProtectedPathsError(f"{checkout}: {error}") from error
+        key = tuple(segment.path for segment in segments)
+        if key not in self.journals:
+            self.tick()
+            found: set[tuple[str, str]] = set()
+            for entry in replay(segments).entries.values():
+                for sha in entry.heads:
+                    record = entry.revisions[sha].revision.record
+                    path = record.text("path")
+                    if record.type == "evidence" and record.status == "active" and record.text("class") == "local-private" and path:
+                        found.add((record.id, path))
+            self.journals[key] = frozenset(found)
+        rows = set(self.journals[key])
+        for shard in legacy_shards(checkout):
+            self.tick()
+            try:
+                data = shard.read_bytes()
+                if data not in self.shards:
+                    self.shards[data] = frozenset((identifier, path) for identifier, klass, status, path in legacy_rows(str(shard), data.decode("utf-8"))
+                                                  if status == "active" and klass == "local-private")
+            except (OSError, UnicodeDecodeError) as error:
+                raise ProtectedPathsError(f"{shard}: unreadable: {error}") from error
+            rows |= self.shards[data]
+        return rows
+
+
+def evidence_rows(checkout: Path) -> set[tuple[str, str]]:
+    """``Reader().evidence_rows(checkout)``: one checkout read on its own."""
+    return Reader().evidence_rows(checkout)
 
 
 def protected_paths_for(primary: Path, checkouts: Sequence[Path]) -> Protected:
@@ -203,8 +252,9 @@ def protected_paths_for(primary: Path, checkouts: Sequence[Path]) -> Protected:
     if not any(sources(checkout) for checkout in checkouts):
         raise ProtectedPathsError(f"no worktree has a journal ({JOURNAL}/) or a legacy index ({LEGACY_INDEX}/)")
     rows: set[tuple[str, str]] = set()
+    reader = Reader()
     for checkout in checkouts:
-        rows |= evidence_rows(checkout)
+        rows |= reader.evidence_rows(checkout)
     root = sha256_manifest.normal(primary)
     paths: set[str] = set()
     listed: set[str] = set()

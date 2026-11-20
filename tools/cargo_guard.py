@@ -37,11 +37,14 @@ Contracts and limitations:
 * Protected evidence is what `memory protected-paths` reads (tools/memory/paths.py):
   active local-private records of every worktree's journal and, while a worktree
   has one, its legacy evidence/ shards, read without tools/docs_lint.py. Every
-  path is checked against the primary checkout (the parent of the Git common
-  directory), and each worktree's own paths against that worktree as well. An unreadable or
-  malformed journal, shard or manifest refuses cleanup under every policy. No
-  journal and no legacy index in any worktree refuses under the local policy;
-  the CI policy accepts it as an empty set (a fresh clone may have neither).
+  path is checked against the primary checkout, and each worktree's own paths
+  against that worktree as well. Refusals: under every policy, an unreadable or
+  malformed journal, shard or manifest, a reading past the 30-second budget
+  (checked inside the journal read; each distinct segment is parsed once per
+  run), and a Git common directory not named .git (paths.checkout_of: no primary
+  checkout to resolve against; CI's actions/checkout clone has one); under the
+  local policy only, no journal and no legacy index in any worktree, which the CI
+  policy accepts as an empty set (a fresh clone may have neither).
 * PREPARED identifies reusable partial artifacts before invoking Cargo; validation
   is a separate success flag. Failed commands/timeouts retain this identity.
   Persist needs_clean before CLEAN; retry retires it. Recover stale owned regular
@@ -499,26 +502,31 @@ class Resolver:
         return known
 
 
-def evidence_rows(info: Identity, roots: Sequence[Path], deadline: float, policy: Policy) -> list[tuple[Path, list[tuple[str, str]]]]:
+def evidence_rows(info: Identity, primary: Path, roots: Sequence[Path], deadline: float, policy: Policy) -> list[tuple[Path, list[tuple[str, str]]]]:
     """Where to resolve which ``(ID, path)`` rows of active local-private evidence (``tools.memory.paths``):
     the union of every checkout's rows against the primary checkout, and each checkout's own rows against
     itself, as the legacy index resolved them."""
     union: set[tuple[str, str]] = set()
     own: list[tuple[Path, list[tuple[str, str]]]] = []
     found = False
+
+    def tick() -> None:
+        if time.monotonic() > deadline:
+            raise GuardError("evidence metadata inventory exceeded 30 seconds")
+
+    reader = paths.Reader(tick)
     try:
         for root in roots:
-            if time.monotonic() > deadline:
-                raise GuardError("evidence metadata inventory exceeded 30 seconds")
+            tick()
             found = found or bool(paths.sources(root))
-            rows = paths.evidence_rows(root)
+            rows = reader.evidence_rows(root)
             union |= rows
             own.append((root, sorted(rows)))
     except paths.ProtectedPathsError as error:
         raise GuardError(f"protected evidence unknown: {error}") from error
     if not found and policy.requires_evidence_source:
         raise GuardError(f"protected evidence unknown: no journal or legacy evidence index in any worktree of {info.root}")
-    return [(info.common.parent, sorted(union)), *own]
+    return [(primary, sorted(union)), *own]
 
 
 def evidence_veto(info: Identity, policy: Policy = LOCAL) -> None:
@@ -530,10 +538,12 @@ def evidence_veto(info: Identity, policy: Policy = LOCAL) -> None:
     checked_paths: set[Path] = set()
     resolver = Resolver()
     target = str(info.target)
-    roots = checkout_roots(info)
-    if info.common.name != ".git":
-        raise GuardError(f"protected evidence unknown: Git common directory {info.common} does not belong to a checkout")
-    for root, rows in evidence_rows(info, list(dict.fromkeys([info.common.parent, *roots])), deadline, policy):
+    try:
+        primary = paths.checkout_of(info.common)
+    except paths.ProtectedPathsError as error:
+        raise GuardError(f"protected evidence unknown: {error}") from error
+    roots = list(dict.fromkeys([primary, *checkout_roots(info)]))
+    for root, rows in evidence_rows(info, primary, roots, deadline, policy):
         for identifier, row_path in rows:
             if time.monotonic() > deadline:
                 raise GuardError("evidence metadata inventory exceeded 30 seconds")
