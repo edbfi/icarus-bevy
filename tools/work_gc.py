@@ -11,11 +11,19 @@ recreate:
 * caches: a directory tagged with a valid ``CACHEDIR.TAG`` or named ``.cache``;
 * byte-identical copies (at least 1 MiB) of files under the original input roots.
 
-A candidate is never removed when it equals, contains or lies inside the path
-of an active ``local-private`` evidence row or of a file such a row's sha256
-manifest lists, when its case is declared open in
+``work/`` is the primary checkout's (found from the Git common directory), whichever
+worktree runs the tool. A candidate is never removed when it equals, contains or
+lies inside a path ``memory protected-paths`` lists (``tools/memory/paths.py``:
+every active ``local-private`` evidence record in any worktree's journal or, while
+that worktree has one, its legacy ``evidence/`` shards, and every existing file
+such a record's sha256 manifest lists), when its case is declared open in
 ``case.json``, when a running process uses the case, or when the case changed
 within the settle window. Age is only a guard, never a reason to delete.
+
+When the protected paths cannot be known (a missing, unreadable or malformed
+journal, shard or pinned manifest, no journal or legacy index in any worktree, a
+Git failure), every case and loose file is deferred with the reason, ``--prune``
+and ``--retire`` delete nothing and every mode except ``--fixity`` exits 1.
 
 The default run reports and deletes nothing. ``--prune`` removes eligible
 candidates and appends one line per removal to ``work/.gc/log.jsonl``.
@@ -27,14 +35,12 @@ and liveness is unknown, for the milestone checklist.
 can be superseded by a row naming that one digested file. Files any pinned
 sha256 manifest lists are protected like the manifest itself, whatever the
 manifest's name and whether its entries are relative to its directory or to the
-repository root. A pinned manifest that is missing, unreadable or malformed
-defers every case and loose file, since its entries may name any of them, and
-is reported.
+repository root.
 
 ``--retire NAME...`` deletes whole cases or loose top-level files that no
-active evidence row covers and no tracked or untracked, non-ignored file
-mentions (``git grep --untracked``), under the same open, live and settling
-guards; every name is checked before any is removed.
+protected path covers or lies inside and no tracked or untracked, non-ignored
+file of the primary checkout mentions (``git grep --untracked``), under the same
+open, live and settling guards; every name is checked before any is removed.
 
 Usage::
 
@@ -66,6 +72,7 @@ from typing import TypeIs, cast
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools import sha256_manifest  # noqa: E402
+from tools.memory import paths  # noqa: E402
 
 MIB = 1024 * 1024
 
@@ -163,47 +170,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-@dataclass
-class Pins:
-    """What active ``local-private`` evidence rows pin, and the pin manifests that could not be read."""
-
-    paths: set[Path] = field(default_factory=set)
-    # Manifest path -> why its entries are unknown; nothing it might pin can be released.
-    problems: dict[Path, str] = field(default_factory=dict)
-
-
-def evidence_pins(root: Path) -> Pins:
-    """Every active ``local-private`` row's path, plus every file a sha256 manifest row lists.
-
-    ``tools/sha256_manifest.py`` decides which rows are manifests and where their entries
-    live. A removal receipt's entries are pinned too: pinning an absent path costs nothing.
-    """
-    pins = Pins()
-    for shard in sorted((root / "evidence").rglob("*.jsonl")):
-        for line in shard.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            record = load_object(line)
-            if record is None:
-                raise SystemExit(f"work_gc: {shard}: evidence line is not an object")
-            path = record.get("path")
-            if record.get("status") != "active" or record.get("class") != "local-private" or not isinstance(path, str):
-                continue
-            target = sha256_manifest.normal(root / path)
-            pins.paths.add(target)
-            try:
-                entries = sha256_manifest.read_manifest(root, target) or []
-            except sha256_manifest.ManifestError as error:
-                pins.problems[target] = f"{record.get('id', path)}: {error}"
-                continue
-            for entry in entries:
-                pins.paths.update(entry.candidates)
-    return pins
-
-
 def protected_paths(root: Path) -> set[Path]:
-    """Absolute paths that active ``local-private`` evidence rows pin."""
-    return evidence_pins(root).paths
+    """Absolute, lexically normal paths ``memory protected-paths`` lists for the primary checkout ``root``.
+
+    Raises ``paths.ProtectedPathsError`` when they cannot be known, including when ``root`` is not the
+    primary checkout (the listed paths are relative to it).
+    """
+    if paths.primary_checkout(root).resolve() != root.resolve():
+        raise paths.ProtectedPathsError(f"{root} is not the primary checkout")
+    return {sha256_manifest.normal(root / path) for path in paths.protected_paths(root).paths}
 
 
 def tracked_references(root: Path, name: str) -> list[str]:
@@ -412,8 +387,8 @@ class Report:
     cases: list[Case]
     loose: list[Loose]
     live_known: bool
-    # Pinned manifests whose entries are unknown, relative to the root, with the reason.
-    pin_problems: dict[str, str] = field(default_factory=dict)
+    # Why the protected paths are unknown; every case and loose file is then deferred.
+    pin_problem: str | None = None
 
     @property
     def total(self) -> int:
@@ -446,11 +421,13 @@ def scan(
     references: Callable[[Path, str], list[str]] = tracked_references,
 ) -> Report:
     work = root / WORK
-    pins = evidence_pins(root)
-    protected = PathIndex(pins.paths)
-    problems = {display(root, manifest): reason for manifest, reason in sorted(pins.problems.items())}
-    # A manifest's entries may name files in any case, so one whose entries are unknown holds everything.
-    everywhere = [f"unusable pin manifest {manifest}: {reason}" for manifest, reason in problems.items()]
+    try:
+        protected = PathIndex(protected_paths(root))
+        problem = None
+    except paths.ProtectedPathsError as error:
+        # Unknown protected paths may name anything, so they hold everything.
+        protected, problem = PathIndex(()), f"protected paths unknown: {error}"
+    everywhere = [] if problem is None else [problem]
     running = live()
     originals = OriginalIndex([root / name for name in ORIGINAL_ROOTS])
     cases: list[Case] = []
@@ -459,7 +436,7 @@ def scan(
         if entry.name == LOG_DIR:
             continue
         if not entry.is_dir() or entry.is_symlink():
-            covered = protected.covers(entry)
+            covered = protected.overlaps(entry)
             size, newest = tree_size(entry)
             in_use = running is None or any(is_within(path, entry) for path in running)
             hold = "live" if in_use else "settling" if now - newest < settle_hours * 3600 else None
@@ -470,7 +447,7 @@ def scan(
         case = Case(entry.name, entry)
         case.size, case.newest = tree_size(entry)
         case.state, case.state_error = read_state(entry)
-        case.indexed = protected.inside(entry)
+        case.indexed = protected.overlaps(entry)
         case.live = running is None or any(is_within(path, entry) for path in running)
         case.guard = guard(case, now, settle_hours)
         if everywhere:
@@ -482,11 +459,7 @@ def scan(
         if case.guard is not None:
             case.deferred, case.candidates = case.candidates, []
         cases.append(case)
-    return Report(root, cases, loose, running is not None, problems)
-
-
-def display(root: Path, path: Path) -> str:
-    return path.relative_to(root).as_posix() if is_within(path, root) else str(path)
+    return Report(root, cases, loose, running is not None, problem)
 
 
 def remove(path: Path, work: Path) -> None:
@@ -522,6 +495,8 @@ def remove_logged(report: Report, removals: Sequence[tuple[str, Candidate]], now
 
 
 def prune(report: Report, now: float) -> list[Candidate]:
+    if report.pin_problem is not None:
+        raise SystemExit(f"work_gc: nothing pruned: {report.pin_problem}")
     removals = [(case.name, candidate) for case in report.cases for candidate in case.candidates]
     remove_logged(report, removals, now)
     for case in report.cases:
@@ -531,6 +506,8 @@ def prune(report: Report, now: float) -> list[Candidate]:
 
 def retire(report: Report, names: Sequence[str], now: float) -> list[Candidate]:
     """Delete whole cases or loose files; refuse all of them if any one fails a guard."""
+    if report.pin_problem is not None:
+        raise SystemExit(f"work_gc: nothing retired: {report.pin_problem}")
     cases = {case.name: case for case in report.cases}
     loose = {item.path.name: item for item in report.loose}
     removals: list[tuple[str, Candidate]] = []
@@ -539,7 +516,7 @@ def retire(report: Report, names: Sequence[str], now: float) -> list[Candidate]:
         if name in cases:
             case = cases[name]
             if case.indexed:
-                refusals.append(f"{name}: an active evidence row covers it; retire the row first")
+                refusals.append(f"{name}: an active evidence record pins a path in it; retire the record first")
             elif case.references:
                 refusals.append(f"{name}: mentioned by {', '.join(case.references[:3])}")
             elif case.guard is not None:
@@ -549,7 +526,7 @@ def retire(report: Report, names: Sequence[str], now: float) -> list[Candidate]:
         elif name in loose:
             item = loose[name]
             if item.indexed:
-                refusals.append(f"{name}: an active evidence row covers it; retire the row first")
+                refusals.append(f"{name}: an active evidence record pins a path in it; retire the record first")
             elif item.references:
                 refusals.append(f"{name}: mentioned by {', '.join(item.references[:3])}")
             elif item.guard is not None:
@@ -644,8 +621,8 @@ def render(report: Report) -> list[str]:
             lines.append(f"  {case.name}: {case.state_error}")
     if not report.live_known:
         lines.append("  /proc is unavailable: every case is treated as live")
-    for manifest, reason in sorted(report.pin_problems.items()):
-        lines.append(f"  unusable pin manifest {manifest}: {reason}; every case is deferred")
+    if report.pin_problem is not None:
+        lines.append(f"  {report.pin_problem}; every case is deferred and nothing can be pruned or retired")
     lines.append(
         f"work_gc: {len(report.cases)} case(s), {mib(report.total)}; reproducible scratch eligible {mib(eligible)}, "
         + f"held by evidence {mib(sum(case.held_bytes for case in held))}, deferred {mib(deferred)}"
@@ -660,7 +637,7 @@ def as_json(report: Report) -> dict[str, object]:
     return {
         "total_bytes": report.total,
         "live_known": report.live_known,
-        "pin_problems": report.pin_problems,
+        "pin_problem": report.pin_problem,
         "loose": [
             {"path": item.path.relative_to(report.root).as_posix(), "bytes": item.size, "references": item.references}
             for item in report.loose
@@ -685,10 +662,11 @@ def as_json(report: Report) -> dict[str, object]:
 
 
 def find_root(start: Path) -> Path:
-    for candidate in (start, *start.parents):
-        if (candidate / ".git").exists() and (candidate / "evidence").is_dir():
-            return candidate
-    raise SystemExit("work_gc: repository root with evidence/ not found")
+    """The primary checkout of the repository containing ``start``."""
+    try:
+        return paths.primary_checkout(start).resolve()
+    except paths.ProtectedPathsError as error:
+        raise SystemExit(f"work_gc: primary checkout not found from {start}: {error}") from error
 
 
 class Options(argparse.Namespace):
@@ -703,7 +681,7 @@ class Options(argparse.Namespace):
 
 def parse_options(argv: Sequence[str] | None) -> Options:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    _ = parser.add_argument("--root", type=Path, default=None)
+    _ = parser.add_argument("--root", type=Path, default=None, help="a path in the repository (default: cwd); its primary checkout is used")
     mode = parser.add_mutually_exclusive_group()
     _ = mode.add_argument("--prune", action="store_true", help="remove eligible reproducible scratch")
     _ = mode.add_argument("--check", action="store_true", help="exit 1 while eligible scratch remains")
@@ -718,7 +696,7 @@ def parse_options(argv: Sequence[str] | None) -> Options:
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
-    root = options.root.resolve() if options.root else find_root(Path.cwd().resolve())
+    root = find_root((options.root or Path.cwd()).resolve())
     now = time.time()
     if options.fixity:
         for directory in options.fixity:
@@ -741,6 +719,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(as_json(report), indent=1, sort_keys=True))
     else:
         print("\n".join(render(report)))
+    if report.pin_problem is not None:
+        print(f"work_gc: {report.pin_problem}", file=sys.stderr)
+        return 1
     if options.check and not report.live_known:
         print("work_gc: --check needs /proc to tell live cases apart", file=sys.stderr)
         return 1
