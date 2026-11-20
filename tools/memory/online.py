@@ -736,11 +736,13 @@ def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = F
     return groups
 
 
-def visible(labels: Sequence[str], mine: frozenset[str], *, include_evidence: bool) -> bool:
+def visible(labels: Sequence[str], mine: frozenset[str], *, include_evidence: bool, others: bool = False) -> bool:
     """``visibility`` evaluated on one document's tags (for substring hits, which the API cannot filter by group)."""
     found = set(labels)
     if "type:evidence" in found and not include_evidence:
         return False
+    if others:
+        return "state:proposed" in found and not any(f"seg:{stem}" in found for stem in mine)
     return bool(found & {"state:accepted", "state:conflict"}) or ("state:proposed" in found and any(f"seg:{stem}" in found for stem in mine))
 
 
@@ -779,18 +781,19 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             exact.append(data)
             lines.append(f"named: {line}")
 
-        def ranked(groups: list[Group]) -> list[str]:
+        def ranked(others: bool) -> list[str]:
+            groups = visibility(mine, include_evidence=include_evidence, others=others)
             order: list[str] = []
             for hit in bank.recall(query, groups, query_timestamp=stamp):
                 if hit.document_id is not None and hit.document_id not in order and (text is None or text.casefold() in hit.text.casefold()):
                     order.append(hit.document_id)
             if text is not None:
                 extra = {unit.document_id for unit in bank.units(text=text)
-                         if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence)}
+                         if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others)}
                 order.extend(sorted(extra - set(order), key=id_key))
             return order
 
-        documents = ranked(visibility(mine, include_evidence=include_evidence))[:limit]
+        documents = ranked(False)[:limit]
         shown: dict[str, Shown] = {}
         for rank, document_id in enumerate(documents):
             identifier = document_id.split("@", 1)[0]
@@ -842,7 +845,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact,
                                  "partitions": {name: items for name, items in sections.items() if items}}
         if all_proposals:
-            others = ranked(visibility(mine, include_evidence=include_evidence, others=True))[:limit]
+            others = ranked(True)[:limit]
             listing = [summary(bank, wanted, document_id.split("@", 1)[0]) for document_id in others]
             data["other_proposals"] = [item for item, _ in listing]
             if listing:

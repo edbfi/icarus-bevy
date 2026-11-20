@@ -578,6 +578,10 @@ class ReadingTests(Online):
         self.assertIn("M-102 [accepted, active", evidence_hits)
         texts = "\n".join(online.recall(self.bank, self.root, "nothing ranks this", text="handler table").lines)
         self.assertIn(f"{mine} [proposed", texts)
+        others = online.recall(self.bank, self.root, "nothing ranks this", text="listing lock", all_proposals=True)
+        listed = others.data["other_proposals"]
+        assert isinstance(listed, list)
+        self.assertEqual(["F-150"], [item["id"] for item in listed if isinstance(item, dict)], "a substring search lists only other worktrees' proposals there")
 
     def test_area_and_status_views(self) -> None:
         self.accepted_chain()
