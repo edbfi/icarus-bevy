@@ -13,10 +13,11 @@ recreate:
 
 ``work/`` is the primary checkout's (found from the Git common directory), whichever
 worktree runs the tool. A candidate is never removed when it equals, contains or
-lies inside a path ``memory protected-paths`` lists (``tools/memory/paths.py``:
+lies inside a path ``memory protected-paths`` protects (``tools/memory/paths.py``:
 every active ``local-private`` evidence record in any worktree's journal or, while
-that worktree has one, its legacy ``evidence/`` shards, and every existing file
-such a record's sha256 manifest lists), when its case is declared open in
+that worktree has one, its legacy ``evidence/`` shards, and every path such a
+record's sha256 manifest lists, present or absent, removal receipts included),
+when its case is declared open in
 ``case.json``, when a running process uses the case, or when the case changed
 within the settle window. Age is only a guard, never a reason to delete.
 
@@ -171,14 +172,16 @@ def sha256_file(path: Path) -> str:
 
 
 def protected_paths(root: Path) -> set[Path]:
-    """Absolute, lexically normal paths ``memory protected-paths`` lists for the primary checkout ``root``.
+    """Absolute, lexically normal paths ``memory protected-paths`` protects for the primary checkout ``root``:
+    its existing paths and every location a pinned manifest lists, present or absent (``Protected.listed``).
 
     Raises ``paths.ProtectedPathsError`` when they cannot be known, including when ``root`` is not the
     primary checkout (the listed paths are relative to it).
     """
     if paths.primary_checkout(root).resolve() != root.resolve():
         raise paths.ProtectedPathsError(f"{root} is not the primary checkout")
-    return {sha256_manifest.normal(root / path) for path in paths.protected_paths(root).paths}
+    result = paths.protected_paths(root)
+    return {sha256_manifest.normal(root / path) for path in (*result.paths, *result.listed)}
 
 
 def tracked_references(root: Path, name: str) -> list[str]:

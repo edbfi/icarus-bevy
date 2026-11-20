@@ -104,6 +104,22 @@ class SourcesTests(unittest.TestCase):
         self.assertEqual(("memory/journal",), sources(self.root))
         self.assertEqual(("work/branch-only/", "work/journal-case/receipt.txt"), protected_paths(old).paths)
 
+    def test_absent_and_removal_receipt_entries_are_listed_but_not_printed(self) -> None:
+        (self.root / "evidence").mkdir()
+        rows = [legacy("M-001", "work/case/fixity.sha256"), legacy("M-1079", "work/case/removed.sha256")]
+        _ = (self.root / "evidence/001.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        (self.root / "work/case").mkdir(parents=True)
+        _ = (self.root / "work/case/fixity.sha256").write_text(f"{DIGEST}  kept.bin\n{DIGEST}  absent.bin\n")
+        _ = (self.root / "work/case/removed.sha256").write_text(f"{DIGEST}  gone.bin\n")
+        _ = (self.root / "work/case/kept.bin").write_text("kept")
+        _ = (self.root / "work/case/gone.bin").write_text("back again")
+        result = protected_paths(self.root)
+        self.assertEqual(("work/case/fixity.sha256", "work/case/kept.bin", "work/case/removed.sha256"), result.paths)
+        # Both places an entry may live: beside the manifest and at the repository root.
+        self.assertEqual(("absent.bin", "gone.bin", "kept.bin", "work/case/absent.bin", "work/case/gone.bin", "work/case/kept.bin"),
+                         result.listed)
+        self.assertEqual(("M-001: manifest entry missing: absent.bin",), result.notices)
+
     def test_symlinked_or_oversized_legacy_shards_fail_closed(self) -> None:
         (self.root / "evidence").mkdir()
         shard = self.root / "evidence/001.jsonl"

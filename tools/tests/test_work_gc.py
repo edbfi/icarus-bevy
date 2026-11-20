@@ -248,9 +248,6 @@ class WorkGcTest(unittest.TestCase):
             _ = work_gc.write_fixity(self.root, self.root / "work/b")
         self.assertFalse((self.root / "work/b/fixity.sha256").exists())
         _ = (self.root / "work/a/fixity.sha256").write_text("0" * 64 + "  ../escape\n")
-        # Only listed files that exist are protected: nothing absent can be deleted.
-        self.assertNotIn(self.root / "work/escape", work_gc.protected_paths(self.root))
-        _ = self.write("work/escape")
         self.assertIn(self.root / "work/escape", work_gc.protected_paths(self.root))
 
     def official_copy(self, case: str = "c") -> Path:
@@ -401,6 +398,41 @@ class WorkGcTest(unittest.TestCase):
         self.evidence("work/loose-fixity.sha256")
         self.age()
         self.assert_held(copy)
+
+    def prefix(self, case: str = "c") -> Path:
+        """A Wine prefix, reproducible scratch, in a closed case."""
+        _ = self.write(f"work/{case}/case.json", b'{"state": "closed"}')
+        _ = self.write(f"work/{case}/prefix/version")
+        _ = self.write(f"work/{case}/prefix/pfx/system.reg")
+        return self.root / f"work/{case}/prefix"
+
+    def test_absent_listed_files_are_pinned_lexically(self) -> None:
+        prefix = self.prefix()
+        _ = self.manifest("work/c/fixity.sha256", "prefix/drive_c/saved/restore-me.sav")
+        self.evidence("work/c/fixity.sha256")
+        self.age()
+        # The listed file is absent, yet the directory that should hold it is never pruned.
+        self.assertIn(prefix / "drive_c/saved/restore-me.sav", work_gc.protected_paths(self.root))
+        self.assert_held(prefix)
+        # Restored from a backup, it is protected the moment it reappears.
+        restored = self.write("work/c/prefix/drive_c/saved/restore-me.sav", b"restored")
+        os.utime(restored, (OLD, OLD))
+        self.assert_held(prefix)
+        self.assertTrue(restored.exists())
+
+    def test_removal_receipt_entries_are_pinned(self) -> None:
+        prefix = self.prefix()
+        (receipt,) = sha256_manifest.REMOVAL_RECEIPTS
+        _ = self.write("work/c/removed.sha256", f"{'0' * 64}  prefix/drive_c/removed.bin\n{len(COPY)} prefix/drive_c/removed.bin\n".encode())
+        row = {"id": receipt, "path": "work/c/removed.sha256", "class": "local-private", "status": "active"}
+        _ = (self.root / "evidence/area/001.jsonl").write_text(json.dumps(row) + "\n")
+        self.age()
+        self.assertIn(prefix / "drive_c/removed.bin", work_gc.protected_paths(self.root))
+        self.assert_held(prefix)
+        other = self.root / "work/c/removed.sha256"
+        _ = other.write_text(f"{'0' * 64}  elsewhere.bin\n")
+        os.utime(other, (OLD, OLD))
+        self.assertEqual(self.kinds(self.case(self.scan(), "c").candidates), {("work/c/prefix", "wine-prefix")})
 
     def test_manifest_detected_by_content_whatever_its_name(self) -> None:
         copy = self.official_copy()

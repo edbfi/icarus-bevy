@@ -12,11 +12,18 @@ of:
   ``legacy_rows``, this module's own strict reader of the four keys protection needs (it does not depend
   on ``tools/docs_lint.py``, so old worktrees keep their branch-only rows protected after the lint is gone).
 
-For each such record it protects the path exactly as recorded (directories keep their trailing
+For each such record ``paths`` holds the path exactly as recorded (directories keep their trailing
 ``/``) and every existing file the record's sha256 manifest lists (``tools/sha256_manifest.py``
 decides what is a manifest and where entries live; removal receipts list nothing to keep). Paths are
 relative to the primary checkout, found from the Git common directory, never a linked worktree. This
-reproduces ``tools/docs_lint.py --list-local`` for the legacy rows.
+reproduces ``tools/docs_lint.py --list-local`` for the legacy rows, and is what ``memory
+protected-paths`` prints: what exists to keep and back up.
+
+``listed`` adds the lexical pins the scratch guards also honour, as ``tools/work_gc.py`` did before it
+read this module: every place an entry of such a manifest may live, whether or not a file is there now
+and including removal receipts' entries. A file restored from a backup is protected the moment it
+reappears, and a directory that should hold a listed file is never pruned. Guards protect
+``paths`` and ``listed`` together.
 
 ``ProtectedPathsError`` (unreadable or malformed journal, shard or manifest; Git failure; no worktree
 with a journal or a legacy index at all) means the list cannot be known: callers must treat every path
@@ -50,10 +57,15 @@ class ProtectedPathsError(RuntimeError):
 
 @dataclass(frozen=True)
 class Protected:
-    """Sorted paths relative to the primary checkout, and notices about listed files that are absent."""
+    """Sorted paths relative to the primary checkout, and notices about listed files that are absent.
+
+    ``listed``: every candidate location of every manifest entry, present or absent, removal receipts
+    included (lexical pins for the guards; not printed by ``memory protected-paths``).
+    """
 
     paths: tuple[str, ...]
     notices: tuple[str, ...]
+    listed: tuple[str, ...] = ()
 
 
 def primary_checkout(start: Path) -> Path:
@@ -195,6 +207,7 @@ def protected_paths_for(primary: Path, checkouts: Sequence[Path]) -> Protected:
         rows |= evidence_rows(checkout)
     root = sha256_manifest.normal(primary)
     paths: set[str] = set()
+    listed: set[str] = set()
     notices: list[str] = []
     manifests: dict[str, list[sha256_manifest.Entry] | None] = {}
     for identifier, path in sorted(rows):
@@ -205,14 +218,17 @@ def protected_paths_for(primary: Path, checkouts: Sequence[Path]) -> Protected:
             except sha256_manifest.ManifestError as error:
                 raise ProtectedPathsError(f"{identifier}: unreadable sha256 manifest {path}: {error}") from error
         entries = manifests[path]
-        if entries is None or identifier in sha256_manifest.REMOVAL_RECEIPTS:
+        if entries is None:
+            continue
+        listed.update(candidate.relative_to(root).as_posix() for entry in entries for candidate in entry.candidates)
+        if identifier in sha256_manifest.REMOVAL_RECEIPTS:
             continue
         for entry in entries:
             present = [candidate for candidate in entry.candidates if candidate.exists()]
             if not present:
                 notices.append(f"{identifier}: manifest entry missing: {entry.path}")
             paths.update(candidate.relative_to(root).as_posix() for candidate in present)
-    return Protected(tuple(sorted(paths)), tuple(dict.fromkeys(notices)))
+    return Protected(tuple(sorted(paths)), tuple(dict.fromkeys(notices)), tuple(sorted(listed)))
 
 
 def protected_paths(start: Path) -> Protected:
@@ -220,4 +236,4 @@ def protected_paths(start: Path) -> Protected:
     primary = primary_checkout(start)
     checkouts, notices = worktrees(start)
     result = protected_paths_for(primary, checkouts)
-    return Protected(result.paths, notices + result.notices)
+    return Protected(result.paths, notices + result.notices, result.listed)
