@@ -2,7 +2,8 @@
 """The always-on memory service: one loopback Hindsight 1.2.3 instance with bank ``icarus``, run by a
 systemd user unit (``.agents/rules/memory.md``, "Instance" and "Agents and service").
 
-Other slices find the service with ``connection()``; nothing else reads the key.
+Every other module finds the service with ``connection()`` and its directories with ``home()``; nothing
+else reads the key or knows where state lives.
 
 State lives outside every checkout. ``home()`` gives three directories, each owner-only (0700):
 
@@ -12,7 +13,8 @@ State lives outside every checkout. ``home()`` gives three directories, each own
   permission makes it unreadable to the tool.
 - ``data``: ``$XDG_DATA_HOME/icarus-memory`` with ``pg0/`` (``PG0_HOME``) and the service's private
   ``home/`` and ``tmp/``.
-- ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/``.
+- ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/`` and ``memory.lock``, the host lock every
+  bank write, ID allocation and sync holds (``host_lock``).
 
 ``ICARUS_MEMORY_HOME`` replaces all three with ``<root>/config``, ``<root>/data`` and
 ``<root>/state``, for tests and scratch instances; such a home is never managed by systemd.
@@ -35,6 +37,7 @@ with ``memory backup`` and ``memory restore`` by ``tools.memory.durability.regis
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import http.client
 import json
@@ -46,7 +49,8 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
@@ -62,6 +66,8 @@ BACKUP_TIMER = "icarus-memory-backup.timer"
 CONNECTION_FILE = "connection.env"
 HOME_VARIABLE = "ICARUS_MEMORY_HOME"
 READY_SECONDS = 300.0
+LOCK_FILE = "memory.lock"
+LOCK_SECONDS = 300.0
 MAX_RESPONSE = 256 * 1024 * 1024
 
 EMBEDDING = "models--intfloat--multilingual-e5-small/snapshots/614241f622f53c4eeff9890bdc4f31cfecc418b3"
@@ -160,6 +166,28 @@ def home(environ: Mapping[str, str] | None = None) -> Home:
         return (Path(value) if value.startswith("/") else user / default) / "icarus-memory"
 
     return Home(xdg("XDG_CONFIG_HOME", ".config"), xdg("XDG_DATA_HOME", ".local/share"), xdg("XDG_STATE_HOME", ".local/state"))
+
+
+@contextmanager
+def host_lock(timeout: float = LOCK_SECONDS) -> Generator[None]:
+    """The host-wide lock every bank write, ID allocation, sync and ``check --bank`` holds: ``<state>/memory.lock``."""
+    directory = home().state
+    make_directory(directory)
+    path = directory / LOCK_FILE
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        stop = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > stop:
+                    raise ServiceError(f"the memory host lock {path} was held for over {timeout:.0f} s") from None
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True)

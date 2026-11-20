@@ -32,12 +32,8 @@ the replay of a half-applied change set, ``rebuild`` and the repair path.
 
 from __future__ import annotations
 
-import fcntl
-import os
 import re
-import time
-from collections.abc import Generator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -51,8 +47,6 @@ from tools.memory.paths import ProtectedPathsError, worktrees
 from tools.memory.state import Entry, State, replay
 
 ACCEPTANCE_REF = "origin/main"
-LOCK_FILE = "memory.lock"
-LOCK_TIMEOUT = 300.0
 REF_NAMESPACES = ("refs/heads", "refs/remotes")
 LEGACY_TREES = ("docs/ledgers", "evidence")
 LEGACY_ID = re.compile(r"(?<![\w-])(F|U|N|SL|RP|CP|REF|M)-([0-9]+)(?![\w-])")
@@ -81,35 +75,6 @@ class Bank(Protocol):
     def config(self) -> tuple[dict[str, object], dict[str, object]]: ...
     def banks(self) -> tuple[str, ...]: ...
     def count(self, kind: str) -> int: ...
-
-
-def state_directory() -> Path:
-    """The service's state directory: ``$ICARUS_MEMORY_HOME`` or ``$XDG_STATE_HOME/icarus-memory``."""
-    override = os.environ.get("ICARUS_MEMORY_HOME")
-    if override:
-        return Path(override)
-    return Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")) / "icarus-memory"
-
-
-@contextmanager
-def host_lock(timeout: float = LOCK_TIMEOUT) -> Generator[None]:
-    """The host-wide lock every bank write, ID allocation and sync holds."""
-    directory = state_directory()
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor = os.open(directory / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        stop = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() > stop:
-                    raise TimeoutError(f"memory host lock {directory / LOCK_FILE} held for over {timeout:.0f} s") from None
-                time.sleep(0.1)
-        yield
-    finally:
-        os.close(descriptor)
 
 
 @dataclass(frozen=True)

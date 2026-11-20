@@ -15,14 +15,15 @@ from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
-from tools.memory import online
+from tools.memory import online, service
 from tools.memory.bank import Applied, Bank, BankError, Desired, Universe, desired, gather
 from tools.memory.hindsight import (
-    AllOf, AnyOf, Client, ConfigError, Connection, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, connection, group_json,
+    AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
 from tools.memory.journal import Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, load_json, sha256_hex
 from tools.memory.online import Changes, Refused
+from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
     CREATED, MEMBER, NEW_CLIENT, NEW_SERVER, OTHER_MEMBER, chain, clean_git_environment, commit_all, evidence, finding, new_repository,
     run_git, unknown, write,
@@ -478,7 +479,7 @@ class SyncAndRebuildTests(Online):
         self.accepted_chain()
         for number in range(60):
             _ = write(self.root, [finding(f"F-{200 + number}", f"Invented bulk finding {number}")], second=number)
-        _ = self.enterContext(patch.object(online, "DISK_FLOOR", 0))
+        _ = self.enterContext(patch.object(service, "FLOOR", 0))
         result = online.rebuild(self.bank, self.root)
         self.assertEqual((0, 70), (result.status, result.data["retained"]))
         self.assertEqual(2, self.bank.async_calls)
@@ -520,18 +521,21 @@ class ClientTests(unittest.TestCase):
             _ = client.documents()
         self.assertNotIn(key, str(caught.exception))
 
-    def test_connection_file_rules(self) -> None:
+    def test_the_client_reads_the_service_connection_file(self) -> None:
+        """One connection file (the service's, 0600 enforced), found through ``ICARUS_MEMORY_HOME``."""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": directory}):
-            path = Path(directory) / "connection.json"
-            with self.assertRaisesRegex(ConfigError, "unreadable"):
+            path = Path(directory) / "config" / "connection.env"
+            with self.assertRaisesRegex(ServiceError, "install"):
                 _ = connection()
-            _ = path.write_text(json.dumps({"url": "http://127.0.0.1:1", "key": "secret-value", "bank": "icarus"}))
+            settings = service.ensure_settings(service.home())
             path.chmod(0o644)
-            with self.assertRaisesRegex(ConfigError, "0600"):
+            with self.assertRaisesRegex(ServiceError, "0600"):
                 _ = connection()
             path.chmod(0o600)
-            self.assertEqual("icarus", connection().bank)
-            _ = path.write_text(json.dumps({"url": "http://example.invalid:1", "key": "secret-value", "bank": "icarus"}))
-            with self.assertRaisesRegex(ConfigError, "loopback") as caught:
+            found = connection()
+            self.assertEqual(("icarus", f"http://127.0.0.1:{service.API_PORT}"), (found.bank, found.url))
+            self.assertNotIn(settings.key, repr(Client(found)) + repr(found))
+            _ = path.write_text(path.read_text().replace("HINDSIGHT_API_HOST=127.0.0.1", "HINDSIGHT_API_HOST=0.0.0.0"))
+            with self.assertRaisesRegex(ServiceError, "loopback") as caught:
                 _ = connection()
-            self.assertNotIn("secret-value", str(caught.exception))
+            self.assertNotIn(settings.key, str(caught.exception))

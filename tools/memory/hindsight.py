@@ -8,19 +8,13 @@
   timeout) or ``Rejected`` (any other non-2xx answer, or an answer of the wrong shape). Messages name
   the method, the path and the status, never the key.
 - The key travels only as the ``Authorization`` header of loopback requests; environment proxies are
-  ignored. ``Connection`` never shows it in ``repr``.
-
-``connection()`` loads ``url``, ``key`` and ``bank`` from ``connection.json`` (mode 0600) in
-``$ICARUS_MEMORY_HOME`` or else ``$XDG_CONFIG_HOME/icarus-memory/``. It mirrors the service module's
-interface until that lands.
+  ignored. The ``Connection`` comes from ``service.connection()`` and never shows the key in ``repr``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import socket
-import stat
 import time
 import urllib.error
 import urllib.parse
@@ -28,15 +22,13 @@ import urllib.request
 from http.client import HTTPResponse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Final, cast, override
+from typing import cast, override
 
 from tools.memory.model import JSON, is_array, is_object
+from tools.memory.service import Connection
 
 API = "/v1/default/banks"
 TIMEOUT = 120.0
-CONNECTION_FILE = "connection.json"
-LOOPBACK: Final = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class HindsightError(RuntimeError):
@@ -53,49 +45,6 @@ class Unavailable(HindsightError):
 
 class Rejected(HindsightError):
     pass
-
-
-class ConfigError(HindsightError):
-    """The connection file is missing, readable by others, or malformed."""
-
-
-@dataclass(frozen=True)
-class Connection:
-    url: str
-    key: str = field(repr=False)
-    bank: str
-
-
-def config_directory() -> Path:
-    override_home = os.environ.get("ICARUS_MEMORY_HOME")
-    if override_home:
-        return Path(override_home)
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "icarus-memory"
-
-
-def connection() -> Connection:
-    """The service connection; ``ConfigError`` unless the file is private, well formed and loopback."""
-    path = config_directory() / CONNECTION_FILE
-    try:
-        info = path.stat()
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
-            raise ConfigError(f"{path}: must be a regular file of mode 0600")
-        raw = cast(object, json.loads(path.read_bytes()))
-    except OSError as error:
-        raise ConfigError(f"{path}: unreadable ({error.strerror})") from None
-    except json.JSONDecodeError:
-        raise ConfigError(f"{path}: not JSON") from None
-    if not is_object(raw):
-        raise ConfigError(f"{path}: must hold an object")
-    values = {key: raw.get(key) for key in ("url", "key", "bank")}
-    url, key, bank = values["url"], values["key"], values["bank"]
-    if not isinstance(url, str) or not isinstance(key, str) or not isinstance(bank, str) or not key or not bank:
-        raise ConfigError(f"{path}: needs string url, key and bank")
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "http" or parsed.hostname not in LOOPBACK:
-        raise ConfigError(f"{path}: url must be http on a loopback address")
-    return Connection(url.rstrip("/"), key, bank)
 
 
 @dataclass(frozen=True)

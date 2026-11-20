@@ -21,35 +21,34 @@ import argparse
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    Applied, Bank, BankError, Desired, Universe, allocate, desired, diff, gather, host_lock, read_back, reconcile, state_directory,
+    Applied, Bank, BankError, Desired, Universe, allocate, desired, diff, gather, read_back, reconcile,
 )
 from tools.memory.canonical import render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
 from tools.memory.gitio import GitError, descends, git, listed_files
-from tools.memory.hindsight import AllOf, AnyOf, Client, Group, HindsightError, Not, Tags, connection
+from tools.memory.hindsight import AllOf, AnyOf, Client, Group, HindsightError, Not, Tags
 from tools.memory.journal import JournalError, Revision, Segment, write_change_set
 from tools.memory.model import (
     ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, sha256_hex,
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
+from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor
 from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, partition, pinned_build, replay
 
 FETCH_TIMEOUT = 120
-DISK_FLOOR = 30 * 1024**3
 BUNDLE_PARSE_CAP = 64 * 1024 * 1024
 LOCAL_PREFIXES = ("work/", "reference-data/", "icarus-client-orig/", "icarus-orig/")
 OPEN_UNKNOWN = ("open", "investigating", "blocked", "contradicted")
@@ -839,9 +838,7 @@ def sync(bank: Bank, root: Path) -> Output:
 
 def rebuild(bank: Bank, root: Path) -> Output:
     """Bring the bank to the journal with bulk async retains (an empty bank is rebuilt from scratch), then ``check --bank``."""
-    free = shutil.disk_usage(state_directory() if state_directory().exists() else root).free
-    if free < DISK_FLOOR:
-        raise Refused(f"free disk {free / 1024**3:.1f} GiB is below the {DISK_FLOOR / 1024**3:.0f} GiB floor")
+    require_floor(home().state)
     start = time.monotonic()
     with host_lock():
         universe = gather(root)
@@ -919,14 +916,6 @@ def check_pin(root: Path) -> Output:
 # Command line.
 
 
-class Subparsers(Protocol):
-    """The part of ``argparse``'s subparser action ``register`` uses."""
-
-    choices: dict[str, argparse.ArgumentParser]
-
-    def add_parser(self, name: str, *, help: str | None = ...) -> argparse.ArgumentParser: ...  # noqa: A002 - argparse's name
-
-
 def _field_flags(parser: argparse.ArgumentParser) -> None:
     _ = parser.add_argument("--set", action="append", default=[], metavar="NAME=TEXT", help="set a field to a string")
     _ = parser.add_argument("--set-json", action="append", default=[], metavar="NAME=JSON", help="set a field to a JSON value")
@@ -936,8 +925,8 @@ def _field_flags(parser: argparse.ArgumentParser) -> None:
     _ = parser.add_argument("--body", help="file holding a reference's Markdown body")
 
 
-def register(subparsers: Subparsers) -> None:
-    """Add the online commands, and ``--bank``/``--pin`` to ``check``; the CLI routes them to ``run``."""
+def register(subparsers: Subcommands) -> None:
+    """Add the bank commands; each runs through ``run``."""
     propose_parser = subparsers.add_parser("propose", help="propose a new record")
     _ = propose_parser.add_argument("type", choices=sorted(TYPES))
     _field_flags(propose_parser)
@@ -969,13 +958,13 @@ def register(subparsers: Subparsers) -> None:
     area_parser = subparsers.add_parser("area", help="one area's records, unknowns and links")
     _ = area_parser.add_argument("area")
     status_parser = subparsers.add_parser("status", help="pin, counts, cited records not current, open unknowns")
-    _ = subparsers.add_parser("sync", help="fetch origin main, then reconcile states")
-    _ = subparsers.add_parser("rebuild", help="rebuild the bank from the journal")
+    sync_parser = subparsers.add_parser("sync", help="fetch origin main, then reconcile states (lead only)")
+    rebuild_parser = subparsers.add_parser("rebuild", help="rebuild the bank from the journal (lead only; needs the free-disk floor)")
     for parser in (recall_parser, area_parser, status_parser, verify_parser):
         _ = parser.add_argument("--json", action="store_true", help="print JSON")
-    check_parser = subparsers.choices["check"]
-    _ = check_parser.add_argument("--bank", action="store_true", help="assert the instance and compare every document")
-    _ = check_parser.add_argument("--pin", action="store_true", help="list cited records not current")
+    for parser in (propose_parser, revise_parser, supersede_parser, resolve_parser, add_parser, verify_parser, recall_parser, area_parser,
+                   status_parser, sync_parser, rebuild_parser):
+        parser.set_defaults(handler=run)
 
 
 def _string(values: Mapping[str, object], name: str) -> str | None:
@@ -1081,20 +1070,17 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
             raise Refused(f"unknown command {command!r}")
 
 
-def run(options: argparse.Namespace, report_check: Callable[[Path, str], int]) -> int:
-    """Print one online command's output. Exit 0, or 1 for problems, refusals and an unavailable service.
-    ``check`` without flags runs ``--ci`` and ``--bank``; ``--ci`` output comes from the core."""
+def run(options: argparse.Namespace) -> int:
+    """Print one bank command's output (``--json``: its data). Exit 0, or 1 for problems, refusals and an
+    unavailable service. ``check`` here is its ``--bank`` and ``--pin`` part; the CLI runs ``--ci``."""
     values: dict[str, object] = dict(vars(options))
     command = values.get("command")
     try:
         root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
-        core = 0
-        if command == "check" and (_flag(values, "ci") or not (_flag(values, "bank") or _flag(values, "pin"))):
-            core = report_check(root, _string(values, "base") or "origin/main")
         output = execute(values, root)
-    except (Refused, RecordError, JournalError, GitError, LookupError, HindsightError, BankError, ProtectedPathsError, TimeoutError, OSError) as error:
+    except (Refused, RecordError, JournalError, GitError, LookupError, HindsightError, BankError, ProtectedPathsError, ServiceError, OSError) as error:
         print(f"memory {command}: {error}", file=sys.stderr)
         return 1
     if output.lines or output.data:
         print(json.dumps(output.data, ensure_ascii=False, indent=2, sort_keys=True) if _flag(values, "json") else "\n".join(output.lines))
-    return output.status or core
+    return output.status

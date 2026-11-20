@@ -281,7 +281,7 @@ class GetTests(Repository):
         with patch.dict(os.environ, {"ICARUS_MEMORY_HOME": str(self.top / "no-service")}):
             status, _, error = self.run_get("F-101")
         self.assertEqual(1, status)
-        self.assertIn("connection.json", error)
+        self.assertIn("connection.env", error)
 
 
 class ProtectedPathsTests(Repository):
