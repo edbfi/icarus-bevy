@@ -4,6 +4,11 @@
       "type": "stdio",
       "command": "bash",
       "args": ["-c", "exec bash \"$(git rev-parse --show-toplevel)/.agents/rea/rea.sh\" \"$@\"", "rea", "mcp"]
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["-c", "cd \"$(git rev-parse --show-toplevel)\" && exec python3 -m tools.memory \"$@\"", "memory", "mcp"]
     }
   }
 }

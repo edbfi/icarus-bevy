@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Command line of ``python3 -m tools.memory``: the offline commands ``get --offline``, ``check --ci``
-and ``protected-paths``. Commands that need the service are added on top of this module.
+"""Command line of ``python3 -m tools.memory``.
+
+One dispatch mechanism: every subcommand sets ``handler`` (``set_defaults``), a function from the parsed
+options to the exit status. This module defines ``get``, ``check`` and ``protected-paths``; each other
+module adds its commands with one ``register(commands)`` call below (``online``: the bank commands;
+``durability``: ``service``, ``backup``, ``restore``; ``mcp``: the stdio MCP server).
 
 Exit status: 0 success; 1 problems, an unknown ID or unreadable input; 2 usage;
 ``EXIT_NO_JOURNAL`` (3) when ``check`` finds no segment in the working tree or the reference tree.
@@ -14,19 +18,19 @@ import argparse
 import json
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from tools.memory.canonical import render_text
 from tools.memory.check import run_check
+from tools.memory import durability, mcp, online
 from tools.memory.gitio import GitError, descends, git
 from tools.memory.journal import JournalError, read_git, read_tree
-from tools.memory.model import JSON, RecordError, as_mapping
+from tools.memory.model import JSON, RecordError
 from tools.memory.paths import ProtectedPathsError, protected_paths
-from tools.memory.state import Entry, State, partition, replay
+from tools.memory.state import RELEASE_CONFIG, Entry, State, partition, pinned_build, replay
 
 EXIT_NO_JOURNAL = 3
-RELEASE_CONFIG = "config/release.toml"
 ACCEPTANCE_REF = "origin/main"
 
 
@@ -35,39 +39,49 @@ class Options(argparse.Namespace):
     id: str = ""
     offline: bool = False
     history: bool = False
+    all_proposals: bool = False
     json: bool = False
     ci: bool = False
+    bank: bool = False
+    pin: bool = False
     base: str = ACCEPTANCE_REF
+    handler: Callable[[Options], int] | None = None
+
+
+def parser() -> argparse.ArgumentParser:
+    """The whole command line; ``--help`` prints the command list."""
+    top = argparse.ArgumentParser(prog="memory", description="The project's memory tool (.agents/rules/memory.md).")
+    commands = top.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    get = commands.add_parser("get", help="one record by exact GET, verified against the journal")
+    _ = get.add_argument("id", help="ID or evidence selector (M-N/ev_<12 hex>)")
+    _ = get.add_argument("--offline", action="store_true", help="read the journal in this worktree; no service")
+    _ = get.add_argument("--history", action="store_true", help="also list every revision")
+    _ = get.add_argument("--all-proposals", action="store_true", help="also show other worktrees' proposed superseders and resolvers")
+    _ = get.add_argument("--json", action="store_true", help="print JSON")
+    get.set_defaults(handler=run_get)
+    check = commands.add_parser("check", help="journal, citations, forks, notices; --bank and --pin need the bank or the pin")
+    _ = check.add_argument("--ci", action="store_true", help="the checks that need no service")
+    _ = check.add_argument("--bank", action="store_true", help="assert the instance and compare every document with the journal")
+    _ = check.add_argument("--pin", action="store_true", help="list cited records not current")
+    _ = check.add_argument("--base", default=ACCEPTANCE_REF, help=f"accepted tree-ish (default {ACCEPTANCE_REF})")
+    _ = check.add_argument("--json", action="store_true", help="print JSON of --bank and --pin")
+    check.set_defaults(handler=run_check_command)
+    paths = commands.add_parser("protected-paths", help="paths scratch cleanup must keep; fails closed")
+    paths.set_defaults(handler=run_protected_paths)
+    online.register(commands)
+    durability.register(commands)
+    mcp.register(commands)
+    return top
 
 
 def parse_options(argv: Sequence[str] | None) -> Options:
-    parser = argparse.ArgumentParser(prog="memory", description="The project's memory tool (.agents/rules/memory.md).")
-    commands = parser.add_subparsers(dest="command", required=True)
-    get = commands.add_parser("get", help="show one record from the journal")
-    _ = get.add_argument("id", help="ID or evidence selector (M-N/ev_<12 hex>)")
-    _ = get.add_argument("--offline", action="store_true", help="read the journal in this worktree")
-    _ = get.add_argument("--history", action="store_true", help="also list every revision")
-    _ = get.add_argument("--json", action="store_true", help="print JSON")
-    check = commands.add_parser("check", help="check the journal and citations")
-    _ = check.add_argument("--ci", action="store_true", help="the checks that need no service")
-    _ = check.add_argument("--base", default=ACCEPTANCE_REF, help=f"accepted tree-ish (default {ACCEPTANCE_REF})")
-    _ = commands.add_parser("protected-paths", help="paths scratch cleanup must keep; fails closed")
     options = Options()
-    _ = parser.parse_args(argv, namespace=options)
+    _ = parser().parse_args(argv, namespace=options)
     return options
 
 
 def repository_root() -> Path:
     return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
-
-
-def pinned_build(root: Path) -> str:
-    """``build_id`` of the pinned release in ``config/release.toml``."""
-    release = as_mapping(as_mapping(tomllib.loads((root / RELEASE_CONFIG).read_text(encoding="utf-8")), RELEASE_CONFIG).get("release"), "release")
-    build = release.get("build_id")
-    if not isinstance(build, int):
-        raise RecordError(f"{RELEASE_CONFIG}: release.build_id must be an integer")
-    return str(build)
 
 
 def document_state(entry: Entry, accepted: set[str] | None) -> str:
@@ -153,31 +167,51 @@ def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
-    if options.command == "protected-paths":
-        try:
-            result = protected_paths(Path.cwd())
-        except ProtectedPathsError as error:
-            print(f"memory protected-paths: {error}; treat every path as protected", file=sys.stderr)
-            return 1
-        if result.paths:
-            print("\n".join(result.paths))
-        for notice in result.notices:
-            print(f"memory protected-paths: notice: {notice}", file=sys.stderr)
-        return 0
-    if (options.command == "get" and not options.offline) or (options.command == "check" and not options.ci):
-        print(f"memory {options.command}: only the offline form is available in this build (--offline, --ci)", file=sys.stderr)
+    if options.handler is None:
         return 2
+    return options.handler(options)
+
+
+def run_protected_paths(_options: Options) -> int:
+    try:
+        result = protected_paths(Path.cwd())
+    except ProtectedPathsError as error:
+        print(f"memory protected-paths: {error}; treat every path as protected", file=sys.stderr)
+        return 1
+    if result.paths:
+        print("\n".join(result.paths))
+    for notice in result.notices:
+        print(f"memory protected-paths: notice: {notice}", file=sys.stderr)
+    return 0
+
+
+def run_get(options: Options) -> int:
+    """``get --offline`` reads this worktree's journal; ``get`` reads the bank (``online.get``)."""
+    if not options.offline:
+        return online.run(options)
     try:
         root = repository_root()
-        if options.command == "check":
-            return report_check(root, options.base)
         state = replay(read_tree(root))
         result, lines = describe(root, state, options.id, history=options.history)
     except (GitError, JournalError, LookupError) as error:
-        print(f"memory {options.command}: {error}", file=sys.stderr)
+        print(f"memory get: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) if options.json else "\n".join(lines))
     return 0
+
+
+def run_check_command(options: Options) -> int:
+    """``--ci`` (the core), ``--bank`` and ``--pin`` (``online``); no flag runs ``--ci`` and ``--bank``."""
+    plain = not (options.ci or options.bank or options.pin)
+    try:
+        root = repository_root()
+    except GitError as error:
+        print(f"memory check: {error}", file=sys.stderr)
+        return 1
+    core = report_check(root, options.base) if options.ci or plain else 0
+    if not (options.bank or options.pin or plain):
+        return core
+    return online.run(options) or core
 
 
 def report_check(root: Path, base: str) -> int:

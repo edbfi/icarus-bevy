@@ -3,3 +3,9 @@ command = "bash"
 args = ["-c", 'exec bash "$(git rev-parse --show-toplevel)/.agents/rea/rea.sh" "$@"', "rea", "mcp"]
 startup_timeout_sec = 30
 tool_timeout_sec = 600
+
+[mcp_servers.memory]
+command = "bash"
+args = ["-c", 'cd "$(git rev-parse --show-toplevel)" && exec python3 -m tools.memory "$@"', "memory", "mcp"]
+startup_timeout_sec = 30
+tool_timeout_sec = 300

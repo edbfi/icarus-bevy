@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from hashlib import sha256
 import tempfile
 import unittest
 from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import override
+from unittest.mock import patch
 
 from tools.memory.check import Report, citations, revision_problems, run_check
 from tools.memory.cli import EXIT_NO_JOURNAL, main
@@ -228,6 +230,15 @@ class RevisabilityTests(unittest.TestCase):
         self.assertEqual(["an evidence status change appends a note"], revised(chain()[7], {"status": "missing"}))
         self.assertEqual(["notes may only be appended to"], revised(dict(chain()[7], notes=["a", "b"]), {"notes": ["b", "a"]}))
 
+    def test_supersedes_and_resolves_are_append_only_cites_and_refs_immutable(self) -> None:
+        accepted = chain()[4]
+        self.assertEqual([], revised(accepted, {"supersedes": ["F-101", "F-102"]}))
+        self.assertEqual([], revised(accepted, {"resolves": ["U-101"]}))
+        self.assertEqual(["supersedes may only be appended to"], revised(accepted, {"supersedes": ["F-101"]}))
+        self.assertEqual(["resolves may only be appended to"], revised(chain()[2], {"resolves": ["U-102"]}))
+        self.assertEqual(["cites changed; it is not revisable (supersede with a new record)"], revised(accepted, {"cites": ["M-101"]}))
+        self.assertEqual(["refs changed; it is not revisable (supersede with a new record)"], revised(accepted, {"refs": ["F-104"]}))
+
     def test_reference_body_is_revisable_and_its_title_is_not(self) -> None:
         header: dict[str, JSON] = {"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
                                    "scope": explicit(subjects=("tooling",)), "body_sha256": body_digest("one\n")}
@@ -276,7 +287,10 @@ class GetTests(Repository):
         self.assertIn("listed member ev_a1b2c3d4e5f6", output)
         status, output, error = self.run_get("F-999", "--offline")
         self.assertEqual((1, "", "memory get: no record F-999\n"), (status, output, error))
-        self.assertEqual(2, self.run_get("F-101")[0])
+        with patch.dict(os.environ, {"ICARUS_MEMORY_HOME": str(self.top / "no-service")}):
+            status, _, error = self.run_get("F-101")
+        self.assertEqual(1, status)
+        self.assertIn("connection.env", error)
 
 
 class ProtectedPathsTests(Repository):

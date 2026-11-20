@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const {spawnSync} = require('node:child_process');
+const {spawn, spawnSync} = require('node:child_process');
 const {createHash} = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -149,4 +149,27 @@ test('alternate assets require a matching verification stamp before serving', t 
   const verified = run(['serve'], env);
   assert.equal(verified.status, 1);
   assert.match(verified.stderr, /install first/);
+});
+
+test('install refuses while a memory service holds the shared assets lock', t => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'icarus-hindsight-locked-'));
+  t.after(() => fs.rmSync(repo, {recursive: true}));
+  const assets = path.join(repo, 'work', 'alternate');
+  fs.mkdirSync(assets, {recursive: true, mode: 0o700});
+  const lock = path.join(assets, 'assets.lock');
+  fs.writeFileSync(lock, '');
+  const holder = spawn('/usr/bin/flock', ['--shared', lock, 'sleep', '30'], {stdio: 'ignore'});
+  t.after(() => holder.kill());
+  while (spawnSync('/usr/bin/flock', ['--nonblock', '--exclusive', lock, 'true']).status === 0) {
+    spawnSync('sleep', ['0.05']);
+  }
+  const run = fixture(t, {
+    git: 'printf "%s\\n" "$FAKE_COMMON_DIR"',
+    df: 'printf "%s\\n" Available 99999999999',
+  });
+  const result = run(['install'], {
+    FAKE_COMMON_DIR: path.join(repo, '.git'), ICARUS_HINDSIGHT_ASSETS_ROOT: assets, ICARUS_HINDSIGHT_STATE_ROOT: assets,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Stop the running project instance before installing/);
 });

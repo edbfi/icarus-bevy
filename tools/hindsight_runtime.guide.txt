@@ -23,6 +23,14 @@ needs Bash, Git, curl, jq, OpenSSL and standard Linux utilities. Run
 bash tools/storage_report.sh before the first install. Installation and
 service use stop above the repository's 30 GiB floor, at a 31 GiB tripwire.
 
+The always-on memory service (.agents/rules/memory.md) runs from the same
+installed assets but not through this launcher. python3 -m tools.memory
+service install|start|stop|status|uninstall manages it as a systemd user
+unit with its own key, ports and data outside the checkout. The unit holds a
+shared lock on assets.lock, so stop it with python3 -m tools.memory service
+stop before running install again, then start it. The serve, health, codex
+and claude commands below belong to the evidence-catalog pilot only.
+
 Load the accepted private CLIProxyAPI HTTPS /v1 endpoint and its existing
 credential into ICARUS_HINDSIGHT_PROXY_BASE_URL and
 ICARUS_HINDSIGHT_PROXY_API_KEY through the shell's credential source. Set
