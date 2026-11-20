@@ -57,14 +57,16 @@ diagnosed provider/resource limitation, record the reason, and export
 
 ## Documentation
 
-`.agents/rules/docs.md` holds the layout, read tiers, caps and rules. In short:
-admit a finding only for a claim about the original, a measured native property
-or a conclusion something depends on (receipts are evidence index rows); at
-session close edit only what changed: digest, spec, finding rows (consolidate
-chains into a summary row), `unknowns.md`, `gates.md`, evidence rows (one REA
-bundle per session, cited as `M-NNN/ev_<12 hex>`). Cite IDs instead of
-restating claims; near a cap, split by topic or retire rows, never strip spaces.
-IDs are permanent. Run the milestone checklist in `docs.md` at milestones.
+Follow `.agents/rules/docs.md` for admission, read tiers, caps and session close.
+Admit claims about originals, measured native properties or decisions that depend
+on them. Index run receipts and one REA bundle per session. Cite permanent IDs,
+including `M-NNN/ev_<12 hex>`, and consolidate chains into summary findings.
+At session close update only changed authoritative material. Use typed catalog
+publication for active topics in `evidence-catalog/manifest.json`; their
+Markdown and JSONL views are generated. Follow the
+[catalog runbook](docs/runbooks/evidence-catalog.md) for exact lookup and writing.
+The [Hindsight guide](docs/runbooks/hindsight.md) covers optional recall.
+Run the documentation milestone checklist at milestones.
 
 ## Validate and deliver
 

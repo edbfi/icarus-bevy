@@ -63,7 +63,8 @@ Status.
    area digest; a spec if a durable fact changed; finding rows added or
    superseded; `unknowns.md`; `gates.md`; evidence index rows (one `rea-bundle`
    row per REA session, one receipt row per bounded run; a new row names one
-   digested file, never a directory; reuse a row before adding one). In status, only
+   digested file, never a directory; reuse a row before adding one). Publish
+   rows in managed topics through the catalog writer below. In status, only
    Next-tasks items may be marked done or removed. Create a digest only for a
    new question cluster.
 3. Consolidate before adding. When a new row would extend a chain of
@@ -97,7 +98,12 @@ Status.
    frozen artifact paths keep their original creation labels. Canonical workflow rules live under
    `.agents/rules/`; `CLAUDE.md` (`AGENTS.md`) summarizes and links to them.
 
-## Catalog pilot authoring
+## Catalog authoring
+
+The typed writer is the default for the ten topics listed under
+`authority.topics` in `evidence-catalog/manifest.json`. Their Markdown ledgers
+and JSONL shards are generated views maintained by publication. Unmanaged
+topics retain their current authoring path.
 
 Follow the [catalog runbook](../../docs/runbooks/evidence-catalog.md). Only a
 maintainer can authorize a transition. Review the complete request and record
@@ -125,8 +131,7 @@ Use a clean source tree, apply the complete reviewed patch with
 committing. Regenerate from a new reviewed request if the base or sources move.
 Commit the canonical files, manifest and generated views together. The catalog
 hook checks staged transitions against the request and ongoing view parity.
-Unmanaged topics continue to use the existing authoring process. Artifact
-locators and listed selectors are metadata. Bundle membership still requires
+Artifact locators and listed selectors are metadata. Bundle membership still requires
 the existing local lint.
 
 ## Caps
