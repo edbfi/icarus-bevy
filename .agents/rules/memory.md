@@ -271,7 +271,7 @@ back through `get`; nothing in it is ever a record.
 ## Checks
 
 `memory check --ci` runs in prek and CI without Hindsight: schema, sha256, ID
-uniqueness, `origin/main` segments unchanged, forks, acyclic supersession, link
+uniqueness, segments at the merge base with `origin/main` unchanged, forks, acyclic supersession, link
 targets, immutable fields, the derived/inferred confidence rule, new citations
 (code, `config/`, `docs/`, `CLAUDE.md`, `.agents/rules/`) resolving and not
 retired, decision and gate notices, and no added or modified legacy rows

@@ -131,6 +131,11 @@ class CheckTests(Repository):
         self.assertEqual(1, len(report.problems))
         self.assertIn("no merge base of origin/main and HEAD", report.problems[0])
 
+    def test_unknown_base_is_named_as_the_cause(self) -> None:
+        self.accept_chain()
+        report = run_check(self.root, "origin/absent")
+        self.assertEqual(["origin/absent is not a known commit here; fetch it before checking"], report.problems)
+
     def test_forks_against_the_base_fail_and_inherited_forks_are_notices(self) -> None:
         self.accept_chain()
         base = self.head("U-101").rev

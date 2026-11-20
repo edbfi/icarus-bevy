@@ -82,7 +82,11 @@ def descends(root: Path, commit: str) -> bool | None:
 
 
 def merge_base(root: Path, base: str) -> str:
-    """``git merge-base <base> HEAD``; a clear ``GitError`` when there is none (unrelated histories, shallow clone)."""
+    """``git merge-base <base> HEAD``; a ``GitError`` naming the cause when ``base`` is unknown or shares no history."""
+    try:
+        _ = git(root, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{base}^{{commit}}")
+    except GitError as error:
+        raise GitError(f"{base} is not a known commit here; fetch it before checking") from error
     try:
         return git(root, "merge-base", "--end-of-options", base, "HEAD").decode().strip()
     except GitError as error:
