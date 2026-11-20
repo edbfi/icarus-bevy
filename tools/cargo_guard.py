@@ -36,9 +36,9 @@ Contracts and limitations:
   contents; absent worktree/CI manifests retain lexical protection.
 * Protected evidence is what `memory protected-paths` reads (tools/memory/paths.py):
   active local-private records of every worktree's journal and, while a worktree
-  has one, its legacy evidence/ shards, read without tools/docs_lint.py. Each
+  has one, its legacy evidence/ shards, read without tools/docs_lint.py. Every
   path is checked against the primary checkout (the parent of the Git common
-  directory) and every existing worktree. An unreadable or
+  directory), and each worktree's own paths against that worktree as well. An unreadable or
   malformed journal, shard or manifest refuses cleanup under every policy. No
   journal and no legacy index in any worktree refuses under the local policy;
   the CI policy accepts it as an empty set (a fresh clone may have neither).
@@ -499,21 +499,26 @@ class Resolver:
         return known
 
 
-def evidence_rows(info: Identity, roots: Sequence[Path], deadline: float, policy: Policy) -> list[tuple[str, str]]:
-    """``(ID, path)`` of active local-private evidence in every checkout, from ``tools.memory.paths``."""
-    rows: set[tuple[str, str]] = set()
+def evidence_rows(info: Identity, roots: Sequence[Path], deadline: float, policy: Policy) -> list[tuple[Path, list[tuple[str, str]]]]:
+    """Where to resolve which ``(ID, path)`` rows of active local-private evidence (``tools.memory.paths``):
+    the union of every checkout's rows against the primary checkout, and each checkout's own rows against
+    itself, as the legacy index resolved them."""
+    union: set[tuple[str, str]] = set()
+    own: list[tuple[Path, list[tuple[str, str]]]] = []
     found = False
     try:
         for root in roots:
             if time.monotonic() > deadline:
                 raise GuardError("evidence metadata inventory exceeded 30 seconds")
             found = found or bool(paths.sources(root))
-            rows |= paths.evidence_rows(root)
+            rows = paths.evidence_rows(root)
+            union |= rows
+            own.append((root, sorted(rows)))
     except paths.ProtectedPathsError as error:
         raise GuardError(f"protected evidence unknown: {error}") from error
     if not found and policy.requires_evidence_source:
         raise GuardError(f"protected evidence unknown: no journal or legacy evidence index in any worktree of {info.root}")
-    return sorted(rows)
+    return [(info.common.parent, sorted(union)), *own]
 
 
 def evidence_veto(info: Identity, policy: Policy = LOCAL) -> None:
@@ -528,10 +533,7 @@ def evidence_veto(info: Identity, policy: Policy = LOCAL) -> None:
     roots = checkout_roots(info)
     if info.common.name != ".git":
         raise GuardError(f"protected evidence unknown: Git common directory {info.common} does not belong to a checkout")
-    # Records resolve against the primary checkout; legacy rows once resolved against their own worktree.
-    bases = list(dict.fromkeys([info.common.parent, *roots]))
-    rows = evidence_rows(info, bases, deadline, policy)
-    for root in bases:
+    for root, rows in evidence_rows(info, list(dict.fromkeys([info.common.parent, *roots])), deadline, policy):
         for identifier, row_path in rows:
             if time.monotonic() > deadline:
                 raise GuardError("evidence metadata inventory exceeded 30 seconds")
