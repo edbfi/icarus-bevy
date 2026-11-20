@@ -169,7 +169,7 @@ repos:
         entry: python3 -m tools.evidence_catalog check
         language: system
         pass_filenames: false
-        files: ^(docs/ledgers/|evidence/|evidence-catalog/|tools/evidence_catalog.*\.py$)
+        always_run: true
       - id: cargo-fmt
         name: Check Rust formatting
         entry: cargo fmt --all -- --check

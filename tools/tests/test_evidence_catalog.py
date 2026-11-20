@@ -241,6 +241,13 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(CatalogError, "generated source drift"):
             check_checkout(self.root)
 
+    def test_deleting_authority_cannot_replace_a_reviewed_release(self) -> None:
+        self.apply(self.request(activate=["foundation"]))
+        self.commit("activate")
+        _ = git(self.root, "rm", "-r", "--", "evidence-catalog")
+        with self.assertRaisesRegex(CatalogError, "missing catalog manifest"):
+            check_checkout(self.root)
+
 
 if __name__ == "__main__":
     _ = unittest.main()
