@@ -23,6 +23,7 @@ from tools.memory.hindsight import (
 )
 from tools.memory.journal import Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, load_json, sha256_hex
+from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
@@ -267,6 +268,41 @@ class PublicationTests(Online):
         self.assertEqual(["M-1642"], added.data["ids"])
         self.bank.put(Item("F-2000", "x", ("type:finding",), {}, "unset", ()))
         self.assertEqual("F-2001", self.new_finding("Invented: above the bank's highest"))
+
+
+class LegacyAllocationTests(Online):
+    """Allocation reads the legacy trees of every ref: present without IDs, absent, or a mix."""
+
+    def test_legacy_trees_without_ids(self) -> None:
+        self.put("docs/ledgers/findings.md", "| ID | claim |\n| --- | --- |\n")
+        self.put("evidence/area/001.jsonl", "")
+        commit_all(self.root)
+        self.assertEqual("F-001", self.new_finding("Invented: no legacy ID anywhere"))
+        self.put("work/case/r.txt", "bytes")
+        self.assertEqual(["M-001"], online.evidence_add(self.bank, self.root, "work/case/r.txt", "receipt", "Invented", now=self.tick()).data["ids"])
+
+    def test_legacy_trees_absent_on_every_ref(self) -> None:
+        commit_all(self.root)
+        self.assertEqual("F-001", self.new_finding("Invented: after cut-over"))
+
+    def test_a_mix_across_refs(self) -> None:
+        self.put("docs/ledgers/findings.md", "| F-130 | invented |\n")
+        commit_all(self.root)
+        _ = run_git(self.root, "branch", "old-full")
+        _ = run_git(self.root, "checkout", "-q", "-b", "old-empty")
+        self.put("docs/ledgers/findings.md", "| ID | claim |\n")
+        _ = run_git(self.root, "commit", "-qam", "emptied")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = run_git(self.root, "rm", "-rq", "docs/ledgers")
+        _ = run_git(self.root, "commit", "-qm", "cut-over")
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual("F-131", self.new_finding("Invented: above the old branch's legacy row"))
+        self.assertEqual(["U-001"], online.propose(self.bank, self.root, "unknown", changes(question="Invented?", severity="low", next_probe="Look",
+                                                                                         area="listing"), now=self.tick()).data["ids"])
+
+    def test_a_real_git_failure_still_raises(self) -> None:
+        with self.assertRaisesRegex(GitError, "git grep: exit status 128"):
+            _ = run_git_tool(self.root, "grep", "-e", "x", "no-such-tree", ok=(0, 1))
 
 
 class RevisionTests(Online):

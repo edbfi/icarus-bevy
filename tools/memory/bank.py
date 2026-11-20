@@ -44,7 +44,7 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from tools.memory.canonical import RenderError, canonical_json, entities, render_text, tags
-from tools.memory.gitio import GitError, changed_files, git, read_blobs, tree_files
+from tools.memory.gitio import GitError, changed_files, git, read_blobs, run_git, tree_files
 from tools.memory.hindsight import Document, Group, Hit, Item, Tags, Unit
 from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, load_cache, parse_segment, read_git, read_tree, save_cache
 from tools.memory.model import BUILD, ID, SELECTOR, Record, RecordError, as_mapping, id_key, is_array, load_json, sha256_hex
@@ -553,12 +553,9 @@ def legacy_numbers(root: Path, notices: list[str]) -> dict[str, int]:
     names = [f"{commit}:{tree}" for commit in sorted({*commits, *heads}) for tree in LEGACY_TREES]
     trees = sorted({tree for tree in _batch_check(root, names) if tree is not None})
     if trees:
-        try:
-            take(git(root, "-c", "grep.threads=4", "grep", "-h", "-o", "-I", "-E",
-                     r"(F|U|N|SL|RP|CP|REF|M)-[0-9]+", *trees).decode("utf-8", "replace"))
-        except GitError as error:
-            if "exit status 1" not in str(error) and str(error).strip() != "git grep:":
-                raise
+        # git grep exits 1 when no tree holds a matching ID; anything above 1 is a real failure.
+        _, output = run_git(root, "-c", "grep.threads=4", "grep", "-h", "-o", "-I", "-E", r"(F|U|N|SL|RP|CP|REF|M)-[0-9]+", *trees, ok=(0, 1))
+        take(output.decode("utf-8", "replace"))
     for checkout in checkouts:
         try:
             changed = changed_files(checkout, "HEAD", *LEGACY_TREES)
