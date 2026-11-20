@@ -41,9 +41,9 @@ from tools.memory.bank import (
 )
 from tools.memory.canonical import render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
-from tools.memory.gitio import GitError, descends, git, listed_files
+from tools.memory.gitio import GitError, descends, git, listed_files, read_blobs
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags
-from tools.memory.journal import JournalError, Revision, Segment, write_change_set
+from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, write_change_set
 from tools.memory.model import (
     ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, sha256_hex,
 )
@@ -429,7 +429,7 @@ def bundle_json(data: bytes) -> object:
 
 def bundle_members(data: bytes) -> tuple[int, list[str]]:
     """``records`` (distinct ``records[].evidence_id``) and ``members`` (those, then ``unknowns[].unknown_id``,
-    in bundle order) of an REA bundle, read as ``tools/docs_lint.py`` reads bundle membership: a bundle is REA's
+    in bundle order) of an REA bundle, read as the removed ``tools/docs_lint.py`` read bundle membership: a bundle is REA's
     output, so its numbers may be floats (scores); duplicate keys are still refused."""
     raw = bundle_json(data)
     if not is_object(raw):
@@ -569,22 +569,37 @@ def verify_record(primary: Path, record: Record) -> Verdict:
     return verdict("verified", path)
 
 
-def verify(root: Path, identifiers: Sequence[str], *, every: bool = False) -> Output:
+def staged_evidence(root: Path) -> list[Record]:
+    """Every evidence revision in the segments staged in Git's index (added or modified); an unreadable
+    segment raises, so the pre-commit hook fails closed."""
+    listed = git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=AM", "--", JOURNAL).decode().split("\0")
+    paths = sorted(path for path in listed if path)
+    found: list[Record] = []
+    for path, data in zip(paths, read_blobs(root, [f":{path}" for path in paths]), strict=True):
+        if data is None:
+            raise JournalError(f"{path}: staged but unreadable from the index")
+        found += [revision.record for revision in parse_segment(path, data).revisions if revision.record.type == "evidence"]
+    return found
+
+
+def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, staged: bool = False) -> Output:
     """``verified``, ``unavailable``, ``mismatched`` or ``legacy-unverifiable`` per evidence record; exit 1 on
-    ``mismatched`` or an active local-private record ``unavailable``."""
-    universe = gather(root)
-    view = universe.view
+    ``mismatched`` of an active record or an active local-private record ``unavailable``. ``staged``: every
+    evidence revision in the staged segments (the prek hook), whatever the replayed journal holds."""
     primary = primary_checkout(root)
-    if every:
-        names = sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key)
+    records: list[Record] = []
+    if staged:
+        records = staged_evidence(root)
     else:
-        names = [name.split("/", 1)[0] for name in identifiers]
-    verdicts: list[Verdict] = []
-    for name in names:
-        record = view.record(name)
-        if record is None or record.type != "evidence":
-            raise Refused(f"{name}: no evidence record in this checkout")
-        verdicts.append(verify_record(primary, record))
+        view = gather(root).view
+        names = (sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key) if every
+                 else [name.split("/", 1)[0] for name in identifiers])
+        for name in names:
+            record = view.record(name)
+            if record is None or record.type != "evidence":
+                raise Refused(f"{name}: no evidence record in this checkout")
+            records.append(record)
+    verdicts = [verify_record(primary, record) for record in records]
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
     failing = sum(1 for item in verdicts if item.failing)
@@ -1266,7 +1281,8 @@ def register(subparsers: Subcommands) -> None:
                                 help=f"record an REA bundle above {BUNDLE_PARSE_CAP // 1024**2} MiB without listing its members")
     verify_parser = subparsers.add_parser("verify", help="verify evidence bytes")
     _ = verify_parser.add_argument("ids", nargs="*")
-    _ = verify_parser.add_argument("--all", action="store_true", dest="every")
+    _ = verify_parser.add_argument("--all", action="store_true", dest="every", help="every evidence record of this checkout")
+    _ = verify_parser.add_argument("--staged", action="store_true", help="every evidence revision in staged segments (the pre-commit hook)")
     recall_parser = subparsers.add_parser("recall", help="ranked search, partitioned")
     _ = recall_parser.add_argument("query")
     _ = recall_parser.add_argument("--release")
@@ -1342,7 +1358,7 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
     """Run one parsed command (``values`` is ``vars`` of the parsed options)."""
     command = values.get("command")
     if command == "verify":
-        return verify(root, _strings(values, "ids"), every=_flag(values, "every"))
+        return verify(root, _strings(values, "ids"), every=_flag(values, "every"), staged=_flag(values, "staged"))
     if command == "check":
         merged = Output({}, [], 0)
         plain = not (_flag(values, "ci") or _flag(values, "bank") or _flag(values, "pin"))

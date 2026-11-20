@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Reference records for every legacy document the cut-over deletes, and the byte accounting of them.
+"""Reference records for every legacy document the cut-over deletes.
 
 ``references(root, revision)`` returns ``REF`` records whose body is source text verbatim, in this order
 (numbers are assigned in it, so specs keep ``REF-001`` to ``REF-011``):
@@ -21,24 +21,20 @@ line verbatim (``heading``) and the full commit ID (``revision``). Scope is ``le
 tokens come from its ``## Scope`` section (commits included); any other body's builds and releases come
 from the whole text, and no commit is taken, since prose has no source-revision cell.
 
-``account(root, revision, records)`` classifies every byte (each line with its LF) of every file under
-``ACCOUNTED`` at ``revision``: ``record`` (a table row or shard line reproduced by a record's verbatim
-``legacy`` cells), ``reference`` (text a REF body holds verbatim, in order), ``structural`` (table header
-and separator lines, blank shard lines) or ``unaccounted``.
+The byte accounting that proved every legacy byte reached a record, a REF body or a structural line ran in
+``memory parity`` until the cut-over removed that command; check out the cut-over's parent to run it.
 """
 
 from __future__ import annotations
 
 import re
-from collections import Counter
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from tools.evidence_catalog_model import COLUMNS, topic
 from tools.memory.gitio import git, read_blobs
+from tools.memory.legacy_reader import topic
 from tools.memory.legacy_rules import Migrated, MigrationError, extract, finish
-from tools.memory.model import JSON, Record, sha256_hex
+from tools.memory.model import JSON, sha256_hex
 
 SPECS = "docs/specs/"
 DIGESTS = "docs/research/"
@@ -47,7 +43,6 @@ LEDGERS = "docs/ledgers/"
 STATUS = "docs/implementation-status.md"
 EVIDENCE = "evidence/"
 EVIDENCE_README = "evidence/README.md"
-ACCOUNTED = (LEDGERS, SPECS, DIGESTS, STATUS, EVIDENCE)
 SEPARATOR = re.compile(r"\|(?:\s*:?-+:?\s*\|)+")
 MARKER = "<!-- table: its rows are migrated as records -->"
 
@@ -162,75 +157,3 @@ def references(root: Path, revision: str) -> list[Migrated]:
         record = finish(data, {"path": path, "cells": cells}, extraction, body)
         result.append(Migrated(record, f"{path}:1", extraction))
     return result
-
-
-@dataclass
-class Accounting:
-    """Bytes per class and per file; ``problems`` names every unaccounted line."""
-
-    bytes: Counter[str] = field(default_factory=Counter[str])
-    files: int = 0
-    problems: list[str] = field(default_factory=list[str])
-
-
-def renderings(record: Record, headers: Iterable[tuple[str, ...]]) -> set[str]:
-    """Every line ``record``'s verbatim legacy cells reproduce: its kept original, its shard row, or its
-    cells in the column order of the catalog or of a table header in its file."""
-    legacy = record.legacy
-    if legacy is None:
-        return set()
-    cells = legacy.cells
-    found = {cells[name] for name in ("original", "row") if name in cells}
-    orders: list[tuple[str, ...]] = []
-    prefix = record.id.split("-", 1)[0]
-    if prefix in COLUMNS:
-        orders.append((record.id, *(cells.get(name, "\0") for name in COLUMNS[prefix])))
-    for header in headers:
-        orders.append(tuple(cells.get(re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_"), "\0") for name in header))
-    found.update("| " + " | ".join(cell.replace("|", r"\|") for cell in order) + " |" for order in orders if "\0" not in order)
-    return found
-
-
-def account(root: Path, revision: str, records: Mapping[str, Record]) -> Accounting:
-    result = Accounting()
-    by_path: dict[str, list[Record]] = {}
-    for record in records.values():
-        if record.legacy is not None:
-            by_path.setdefault(record.legacy.path, []).append(record)
-    for path, text in sorted(texts(root, revision, *ACCOUNTED).items()):
-        if path.startswith(ARCHIVE):
-            continue
-        result.files += 1
-        owned = by_path.get(path, [])
-        body = next((record.body for record in owned if record.type == "reference" and record.body is not None), None)
-        if body == text:
-            result.bytes["reference"] += len(text.encode())
-            continue
-        lines = lines_of(text)
-        if path.endswith(".jsonl"):
-            rows = {cell for record in owned if record.type == "evidence" and record.legacy for cell in (record.legacy.cells.get("row"),) if cell}
-            for line in lines:
-                kind = "record" if line.text in rows else "structural" if not line.text else "unaccounted"
-                tally(result, path, line, kind)
-            continue
-        headers = [tuple(cell.strip() for cell in line.text.strip("|").split("|")) for line in lines if line.kind == "header"]
-        rows = {line for record in owned if record.type != "reference" for line in renderings(record, headers)}
-        prose = [line for line in (body or "").split("\n") if line != MARKER]
-        expected = [line.text for line in lines if line.kind == "prose"]
-        in_body = prose[:len(expected)] == expected and prose[len(expected):] in ([], [""])
-        for line in lines:
-            match line.kind:
-                case "header" | "separator":
-                    kind = "structural"
-                case "row":
-                    kind = "record" if line.text in rows else "unaccounted"
-                case _:
-                    kind = "reference" if in_body else "unaccounted"
-            tally(result, path, line, kind)
-    return result
-
-
-def tally(result: Accounting, path: str, line: Line, kind: str) -> None:
-    result.bytes[kind] += line.size
-    if kind == "unaccounted":
-        result.problems.append(f"{path}:{line.number}: {line.size} byte(s) in no record, reference or structural line")

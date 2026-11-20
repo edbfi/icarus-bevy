@@ -16,7 +16,7 @@ For each such record ``paths`` holds the path exactly as recorded (directories k
 ``/``) and every existing file the record's sha256 manifest lists (``tools/sha256_manifest.py``
 decides what is a manifest and where entries live; removal receipts list nothing to keep). Paths are
 relative to the primary checkout, found from the Git common directory, never a linked worktree. This
-reproduces ``tools/docs_lint.py --list-local`` for the legacy rows, and is what ``memory
+reproduces the removed ``tools/docs_lint.py --list-local`` for the legacy rows, and is what ``memory
 protected-paths`` prints: what exists to keep and back up.
 
 ``listed`` adds the lexical pins the scratch guards also honour, as ``tools/work_gc.py`` did before it

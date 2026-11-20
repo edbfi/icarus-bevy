@@ -74,7 +74,6 @@ python3 tools/cargo_guard.py test --locked --tests --no-run --message-format=jso
 python3 tools/cargo_guard.py --hold-target -- node tests/harness-inventory.cjs after "$HARNESS_CASE/after-build.jsonl" > "$HARNESS_CASE/after-inventory.json"
 node tests/harness-inventory.cjs compare "$BASELINE_INVENTORY" "$HARNESS_CASE/after-inventory.json"
 prek run --all-files --hook-stage manual
-python3 tools/docs_lint.py
 ```
 
 The helper runs only `--list --format terse`, once normally and once with

@@ -1,5 +1,3 @@
-Takes force at the cut-over commit that removes `docs/ledgers/`, `evidence/` and `evidence-catalog/`; until then `.agents/rules/docs.md` governs.
-
 # Memory rules
 
 Project knowledge lives in Hindsight 1.2.3, read and written only through
@@ -239,7 +237,9 @@ work-rules milestone routine.
 - `docs/gates.md`: preconditions and the owner's authorizations.
 - Architecture and runbooks: decisions and procedures; their game facts are
   records.
-- `docs/history/`, `docs/research/archive/`: frozen.
+- `docs/history/`, `docs/research/archive/`: frozen (no new files; links
+  unmaintained). Rewrite other documents in place, citing IDs;
+  `tools/docs_check.py` checks links, document paths and the frozen set.
 - `memory/journal/`.
 - Evidence bytes, in `work/` and the protected trees.
 

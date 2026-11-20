@@ -1,7 +1,7 @@
 //! Experimental read-only envelope inspection, never world import.
 //!
-//! Recovered field names and algorithm observations are documented in
-//! `docs/specs/save-format/prospect-envelope.md`. Payload serialization remains unknown.
+//! Recovered field names and algorithm observations are documented in the
+//! prospect envelope reference (REF-008). Payload serialization remains unknown.
 use std::collections::BTreeMap;
 use std::io::Read;
 

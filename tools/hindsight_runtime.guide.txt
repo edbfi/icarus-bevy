@@ -1,193 +1,28 @@
-Hindsight evidence recall
+Hindsight runtime for the memory service
 
-The evidence catalog resolves exact IDs and selectors from
-Git. Hindsight is an optional index over reviewed catalog rows. Use it for
-questions where the IDs are unknown, then read the returned rows in the catalog.
-The pilot found useful semantic matches alongside ranking misses and
-overconfident synthesis. Use cited Git rows for decisions and scope checks.
+tools/hindsight_runtime install provisions what the always-on memory service
+(.agents/rules/memory.md, docs/runbooks/memory-service.md) runs: a Python 3.14
+environment with hindsight-api-slim[local-onnx,embedded-db] 1.2.3, the pg0
+PostgreSQL 18.1.0 build and pinned public CPU ONNX snapshots, in the primary
+checkout's work/hindsight-runtime/. Every linked checkout shares it; never
+install per worktree.
 
-Local runtime
+The lock records one SHA-256-verified PyPI wheel per dependency and supports
+Linux x86_64, glibc 2.35 or later and CPython at /usr/bin/python3.14; uv
+installs it. The host needs Bash, Git, uv and standard Linux utilities. Run
+bash tools/storage_report.sh first; installation stops above the repository's
+30 GiB floor, at a 31 GiB tripwire. For an explicit alternate asset root under
+the primary checkout's work/, create an owner-only directory and set
+ICARUS_HINDSIGHT_ASSETS_ROOT.
 
-From any linked checkout, use tools/hindsight_runtime install once. The
-launcher shares a Python 3.14 environment, the pg0 PostgreSQL installation and
-pinned public CPU ONNX snapshots in the primary checkout's
-work/hindsight-runtime/. The lock pins hindsight-api-slim[local-onnx,embedded-db]
-at 1.2.3 and records one SHA-256-verified PyPI wheel per dependency. It supports
-Linux x86_64, glibc 2.35 or later and CPython at /usr/bin/python3.14. Use uv
-to install.
-Run install again when the wheel lock changes. For an explicit alternate
-asset root under the primary checkout's work/, create an owner-only
-directory and use ICARUS_HINDSIGHT_ASSETS_ROOT with both install and serve.
-The launcher verifies the selected environment before starting it. The host
-needs Bash, Git, curl, jq, OpenSSL and standard Linux utilities. Run
-bash tools/storage_report.sh before the first install. Installation and
-service use stop above the repository's 30 GiB floor, at a 31 GiB tripwire.
+The service holds a shared lock on assets.lock while it runs, so install
+refuses until it stops. Run install again whenever
+tools/hindsight_runtime.requirements.txt changes:
 
-The always-on memory service (.agents/rules/memory.md) runs from the same
-installed assets but not through this launcher. python3 -m tools.memory
-service install|start|stop|status|uninstall manages it as a systemd user
-unit with its own key, ports and data outside the checkout. The unit holds a
-shared lock on assets.lock, so stop it with python3 -m tools.memory service
-stop before running install again, then start it. The serve, health, codex
-and claude commands below belong to the evidence-catalog pilot only.
+python3 -m tools.memory service stop
+tools/hindsight_runtime install
+python3 -m tools.memory service start
 
-Load the accepted private CLIProxyAPI HTTPS /v1 endpoint and its existing
-credential into ICARUS_HINDSIGHT_PROXY_BASE_URL and
-ICARUS_HINDSIGHT_PROXY_API_KEY through the shell's credential source. Set
-HINDSIGHT_API_KEY to a separate high-entropy bearer key with at least 32
-letters, digits or ._~- characters. For a local session, a shell can generate
-it with export HINDSIGHT_API_KEY="$(openssl rand -hex 32)". Pass the same
-environment key to the service, bridge and client processes for that session.
-Use environment inheritance or your credential source for a second terminal.
-Keep secrets out of shell command literals, logs, Git, and generated client
-configuration.
-
-On this host, load the approved credential from the existing Claude settings
-and normalize the endpoint once. Run these commands with shell tracing off.
-
-set +x
-if proxy_base=$(jq -er '.env.ANTHROPIC_BASE_URL | strings | select(length > 0)' "$HOME/.claude/settings.json") &&
-   proxy_key=$(jq -er '.env.ANTHROPIC_AUTH_TOKEN | strings | select(length > 0)' "$HOME/.claude/settings.json"); then
-    proxy_base=${proxy_base%/}
-    export ICARUS_HINDSIGHT_PROXY_BASE_URL="${proxy_base%/v1}/v1"
-    export ICARUS_HINDSIGHT_PROXY_API_KEY="$proxy_key"
-fi
-unset proxy_base proxy_key
-export HINDSIGHT_API_KEY="$(openssl rand -hex 32)"
-
-tools/hindsight_runtime serve
-
-The service reports readiness in the foreground. From another terminal, run
-tools/hindsight_runtime health to check database readiness, anonymous denial
-and authenticated REST access. Ctrl-C or TERM stops Hindsight and PostgreSQL.
-After restarting, run health and the bridge's check command against the
-same scope and pointer. A new local bearer key is acceptable after restarting
-if all consumers use it. The launcher emits status only. Raw service logs can
-include provider errors or projected text and are discarded.
-
-Hindsight uses the exact gpt-6.2-sol alias via the configured provider for
-synthesis. Embedding and reranking use local CPU snapshots with the Hub offline
-after provisioning. HTTP and PostgreSQL bind to loopback. PostgreSQL has a
-separate random local database password managed in pg0's owner-only instance
-directory. The CLIProxyAPI and tenant credentials come from the environment.
-Document transfer is enabled for reviewed projection. Automatic consolidation
-and observations are disabled for the curated runtime.
-
-The default ports are 18581 for HTTP and 18582 for PostgreSQL. Use
-ICARUS_HINDSIGHT_PORT and ICARUS_HINDSIGHT_PG_PORT to select others. One
-REST/MCP key can reach every bank in an instance. Bank names and tags organize
-data for people who already share access. For different trust scopes use
-distinct ICARUS_HINDSIGHT_SCOPE slugs, keys, bridge state directories and
-databases. Use different ports if instances run simultaneously. These
-instances share the local OS owner. Keep material requiring a separate OS
-principal outside this deployment.
-
-Prepare and publish a projection
-
-Choose an owned, ignored case directory under the primary checkout's work/
-and create its case.json per the work rules.
-This example uses case_dir for that existing directory and
-$case_dir/reviewed for a fresh output. Use only an explicit allowlist of
-reviewed public catalog IDs. The example includes current, superseded and
-index-only candidates for review.
-
-printf '%s\n' '["F-1160","F-1162","M-1380","M-1382","U-081"]' > "$case_dir/allowlist.json"
-rev=$(git rev-parse HEAD)
-/usr/bin/python3.14 -m tools.evidence_hindsight prepare --topic listing \
-    --allowlist "$case_dir/allowlist.json" --out "$case_dir/reviewed" --rev "$rev"
-
-Inspect review.json and the projection ZIP contents before approval. The
-review describes the full selected rows and what is sent. Superseded and
-index-only rows remain exact-catalog references. Projected evidence-index
-metadata is limited to reviewed inline fields and omits artifact locators and
-hashes. Do not include original assets, saves, credentials, local artifact
-paths, capture payloads, logs, private bundles or qualification receipts.
---staged permits prepublication review. It confers no authority and requires
-committed source parity at publication. A digest binds reviewed bytes. The
-maintainer's review establishes authorization.
-
-After approval, assign its complete review_sha256 to approved and use the
-approved commit as rev.
-
-url=http://127.0.0.1:18581
-state="$case_dir/bridge"
-mkdir -p -m 700 -- "$state"
-/usr/bin/python3.14 -m tools.evidence_hindsight publish --prepared "$case_dir/reviewed" \
-    --approved-sha256 "$approved" --rev "$rev" --state "$state" --url "$url"
-/usr/bin/python3.14 -m tools.evidence_hindsight check --topic listing \
-    --state "$state" --url "$url"
-
-Publication verifies the committed source, transfers approved facts and checks
-exact recall before recording the active bank in bridge state. Preserve the
-case and bridge state for repeat checks. A failed check leaves the previous
-active pointer in place. A bank working after restart establishes index
-availability. Rebuild from a newly reviewed revision when its source changes.
-
-Use a separate bridge state directory for a feature-branch qualification.
-A squash creates a new commit, so the feature commit ordinarily is outside
-main's ancestry. After merge, prepare and review the projection from the
-final main commit and publish it to the main state directory. Run check
-from the current main checkout before using the new bank ID. The bridge
-requires the next publication to descend from the current pointer. If a
-pointer already tracks a feature commit outside main's ancestry, preserve
-that pointer and use a fresh state directory for main. Do not edit or move
-a pointer to force publication.
-
-Query and use clients
-
-Use /usr/bin/python3.14 -m tools.evidence_catalog lookup --rev HEAD with an exact ID or indexed
-selector for current Git. The bridge can also return exact catalog rows
-without the local service. For a conceptual question give it a loopback URL
-and optional exact fallback IDs.
-
-/usr/bin/python3.14 -m tools.evidence_hindsight query --topic listing \
-    --state "$state" F-1162
-/usr/bin/python3.14 -m tools.evidence_hindsight query --topic listing \
-    --state "$state" --url "$url" --candidate F-1162 \
-    'What makes the stock server browser show a listing as locked?'
-
-Add --draft when you want a model-written answer supported by retrieved
-rows. An ID-less question with no verified semantic result and no fallback ID
-yields no rows. Resolve every citation against its Git revision and check the
-build, scope, disposition and any related unknowns before using it. Hindsight
-mental models are optional stored drafts. Keep them scoped to a reviewed
-source set and refresh them after corrections. A stale model can continue
-serving its previous text. Verify the refreshed citations before using any
-summary, and keep canonical decisions in Git.
-
-Use the active bank ID printed by publication with either launcher. These
-flags register only the requested bank for that invocation and reuse the
-client's ordinary settings and model configuration.
-
-tools/hindsight_runtime codex "$bank"
-tools/hindsight_runtime claude "$bank"
-
-The client receives the loopback URL and a reference to the environment key.
-The server exposes only recall and reflect over MCP. Use recall to find
-candidates and reflect when you explicitly need a draft. Verify their outputs
-through the bridge or Git catalog before accepting claims. Use the bridge for
-exact lookups and publication over authenticated REST.
-
-Retention and recovery
-
-After publication inventory the active pointer, scope, and exact IDs of older
-banks. Keep the current generation and any approved rollback generation.
-Review the remaining bank IDs for retirement before importing more revisions.
-Preserve the reviewed packages and approvals needed to rebuild. Keep one
-shared package/model cache and avoid per-worktree installs. Check PostgreSQL
-and WAL growth with the storage report, and stop imports if the tripwire is
-near. Do not remove WAL files or edit bridge pointers by hand.
-
-For recovery, stop the owned scope before taking a database copy, or rebuild
-an empty separate scope from approved packages. Run check on the rebuilt
-active bank before switching consumers. If retiring old banks, verify their
-exact IDs and scope against the current pointer and obtain approval for those
-IDs. Preserve other scopes and the active generation. Database growth and
-physical space recovery depend on PostgreSQL maintenance and retained data.
-
-For the provisioned host pilot, use work/hindsight-runtime/bridge as state
-and listing as the topic. The bank is available in the non-secret
-work/hindsight-runtime/publication.json file. For linked worktrees use the
-primary checkout's absolute work path. A current query checks the HEAD catalog
-snapshot before consulting the bank. Pass --as-of-published to query or check
-the published revision explicitly when the source snapshot has moved.
+Nothing here starts a server, configures a model provider or registers a
+client: python3 -m tools.memory service manages the instance and the memory
+MCP server is the client interface.

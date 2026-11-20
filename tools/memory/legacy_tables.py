@@ -33,8 +33,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.evidence_catalog_model import PIPE, Index
-from tools.evidence_catalog_store import Catalog
+from tools.memory.legacy_reader import PIPE, Catalog, Index
 from tools.memory.gitio import read_blobs, tree_files
 from tools.memory.legacy_rules import BUILD, RELEASE, ROLE, Migrated, MigrationError, extract, finish, vocabulary
 from tools.memory.model import JSON, TYPES, as_mapping, id_key

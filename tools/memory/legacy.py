@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Migration of the legacy knowledge system, as it stands at one Git revision, into journal records.
 
-``export(root, rev)`` reads the revision through the typed evidence catalog (``resolved_catalog`` and
-``Index``: one parse path for F, U, N and M rows of every topic), converts each row by the rules in
+``export(root, rev)`` reads the revision through the frozen legacy reader (``tools.memory.legacy_reader``:
+one parse path for F, U, N and M rows of every topic), converts each row by the rules in
 ``tools.memory.legacy_rules``, adds what the catalog keeps only as text (``tools.memory.legacy_tables``:
 compatibility, campaign and lead tables, releases) and every document the cut-over deletes as a
 reference (``tools.memory.legacy_prose``: specs, digests, ledger prose, the status file, the evidence
@@ -20,12 +20,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.evidence_catalog_model import Entry, Index, references, topic
-from tools.evidence_catalog_publish import resolved_catalog
-from tools.evidence_catalog_store import Catalog, commit_id
 from tools.memory import legacy_prose, legacy_tables
 from tools.memory.gitio import git
 from tools.memory.journal import JOURNAL, Revision, read_tree, split_change_set, write_change_set
+from tools.memory.legacy_reader import Catalog, Entry, Index, commit_id, references, topic
 from tools.memory.legacy_rules import (
     COMMIT_CELLS, EVIDENCE_CELL, PROSE_SUPERSESSION, SELECTOR_SUFFIX, SELECTORS, Migrated, MigrationError, extract, finish,
     implied_status, standing, vocabulary,
@@ -197,7 +195,7 @@ def convert_bug(entry: Entry, index: Index) -> Migrated:
 
 
 def convert_evidence(entry: Entry) -> Migrated:
-    row = entry.record.evidence(entry.path, entry.line)
+    row = entry.record.evidence()
     data: dict[str, JSON] = {
         "id": row.identifier, "type": "evidence", "status": vocabulary(row.status, TYPES["evidence"].statuses),
         "path": row.path, "class": vocabulary(row.klass, EVIDENCE_CLASSES), "kind": vocabulary(row.kind, EVIDENCE_KINDS),
@@ -240,7 +238,7 @@ def commit_time(root: Path, revision: str) -> datetime:
 def export(root: Path, rev: str) -> Export:
     """Every record of the legacy system at ``rev``, converted; raises ``MigrationError``."""
     revision = commit_id(root, rev)
-    catalog = resolved_catalog(root, revision)
+    catalog = Catalog.at(root, revision)
     index = Index(catalog.documents)
     result = Export(revision, commit_time(root, revision), catalog=catalog, index=index)
     result.prose_links = prose_links(catalog)

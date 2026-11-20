@@ -53,19 +53,13 @@ REJECTED = [
 
 
 class LegacyReaderTests(unittest.TestCase):
-    # Delete at cut-over, with tools/docs_lint.py: it compares the old parser with legacy_rows.
-    def test_matches_the_legacy_lint_parser(self) -> None:
-        from tools.docs_lint import parse_shard
-
+    def test_reads_the_rows_the_legacy_lint_accepted_and_rejects_what_it_rejected(self) -> None:
+        # The fixture lines were checked against tools/docs_lint.py's parser until the cut-over removed it.
         text = "".join(json.dumps(row) + "\n" for row in ACCEPTED)
-        old, problems = parse_shard("evidence/area/001.jsonl", text)
-        self.assertEqual([], problems)
-        self.assertEqual([(row.identifier, row.klass, row.status, row.path) for row in old], legacy_rows("001.jsonl", text))
+        self.assertEqual([(str(row["id"]), str(row["class"]), str(row["status"]), str(row["path"])) for row in ACCEPTED], legacy_rows("001.jsonl", text))
         for line in REJECTED:
-            with self.subTest(line=line):
-                self.assertEqual(1, len(parse_shard("x", line + "\n")[1]))
-                with self.assertRaises(ProtectedPathsError):
-                    _ = legacy_rows("x", line + "\n")
+            with self.subTest(line=line), self.assertRaises(ProtectedPathsError):
+                _ = legacy_rows("x", line + "\n")
 
     def test_reads_only_what_protection_needs_and_rejects_unknown_vocabulary(self) -> None:
         self.assertEqual([("M-001", "local-private", "active", "work/a")],

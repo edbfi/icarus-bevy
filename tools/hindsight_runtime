@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Project-local Hindsight runtime and optional client registrations.
+# Provisions the pinned Hindsight runtime the memory service runs (python3 -m tools.memory service).
 set +x
 set -euo pipefail
 umask 077
@@ -11,7 +11,7 @@ fail() {
 }
 
 usage() {
-    printf '%s\n' 'Usage: tools/hindsight_runtime guide|install|serve|health|codex BANK [args...]|claude BANK [args...]'
+    printf '%s\n' 'Usage: tools/hindsight_runtime guide|install'
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -19,65 +19,8 @@ command=${1:-}
 case "$command" in
     -h|--help|'') usage; exit 0 ;;
     guide) cat -- "$script_dir/hindsight_runtime.guide.txt"; exit 0 ;;
-    install|serve|health|codex|claude) shift ;;
+    install) shift ;;
     *) usage >&2; exit 2 ;;
-esac
-
-port=${ICARUS_HINDSIGHT_PORT:-18581}
-pg_port=${ICARUS_HINDSIGHT_PG_PORT:-18582}
-scope=${ICARUS_HINDSIGHT_SCOPE:-project}
-key=${HINDSIGHT_API_KEY:-}
-base_url=${ICARUS_HINDSIGHT_PROXY_BASE_URL:-}
-proxy_key=${ICARUS_HINDSIGHT_PROXY_API_KEY:-}
-for configured_port in "$port" "$pg_port"; do
-    [[ $configured_port =~ ^[1-9][0-9]{3,4}$ ]] || fail 'Use ports between 1024 and 65535.'
-    (( configured_port >= 1024 && configured_port <= 65535 )) || fail 'Use ports between 1024 and 65535.'
-done
-[[ $port != "$pg_port" ]] || fail 'HTTP and PostgreSQL ports must differ.'
-[[ $scope =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || fail 'Use a scope slug of up to 32 lowercase letters, digits and hyphens.'
-url=http://127.0.0.1:$port
-
-require_key() {
-    [[ $key =~ ^[a-zA-Z0-9._~-]{32,}$ ]] ||
-        fail 'Set HINDSIGHT_API_KEY to a separate high-entropy bearer key of at least 32 characters.'
-}
-
-health() {
-    curl --disable --noproxy '*' --silent --fail --max-time 3 --output /dev/null "$url/health/ready" ||
-        return 1
-    local anonymous
-    anonymous=$(curl --disable --noproxy '*' --silent --max-time 3 --output /dev/null \
-        --write-out '%{http_code}' "$url/v1/default/banks") || return 1
-    [[ $anonymous == 401 ]] || return 1
-    printf 'header = "Authorization: Bearer %s"\n' "$key" |
-        curl --disable --config - --noproxy '*' --silent --fail --max-time 5 --output /dev/null "$url/v1/default/banks"
-}
-
-case "$command" in
-    health)
-        [[ $# == 0 ]] || fail 'health takes no arguments.'
-        require_key
-        health || fail 'Readiness or authenticated REST check failed.'
-        printf 'Hindsight ready at %s\n' "$url"
-        exit 0
-        ;;
-    codex|claude)
-        require_key
-        bank=${1:-}
-        [[ $bank =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]] || fail 'Pass the active bank ID as the first argument.'
-        shift
-        mcp_url=$url/mcp/$bank/
-        # The client expands this environment reference. No generated config contains the token.
-        if [[ $command == codex ]]; then
-            exec codex -c "mcp_servers.icarus_hindsight.url=\"$mcp_url\"" \
-                -c 'mcp_servers.icarus_hindsight.bearer_token_env_var="HINDSIGHT_API_KEY"' \
-                -c 'mcp_servers.icarus_hindsight.enabled=true' \
-                -c 'mcp_servers.icarus_hindsight.enabled_tools=["recall","reflect"]' "$@"
-        fi
-        # shellcheck disable=SC2016
-        printf -v mcp_config '{"mcpServers":{"icarus_hindsight":{"type":"http","url":"%s","headers":{"Authorization":"Bearer ${HINDSIGHT_API_KEY}"}}}}' "$mcp_url"
-        exec claude "$@" --mcp-config "$mcp_config"
-        ;;
 esac
 
 [[ $# == 0 ]] || fail "$command takes no arguments."
@@ -215,103 +158,3 @@ if [[ $command == install ]]; then
     printf 'Hindsight packages and CPU models ready in %s\n' "$assets_root"
     exit 0
 fi
-
-require_key
-[[ $base_url =~ ^https://[a-zA-Z0-9.-]+(:443)?/v1/?$ ]] ||
-    fail 'Set ICARUS_HINDSIGHT_PROXY_BASE_URL to the accepted HTTPS proxy /v1 endpoint.'
-[[ -n $proxy_key && $proxy_key != "$key" && ! $proxy_key =~ [[:space:]] ]] ||
-    fail 'Set ICARUS_HINDSIGHT_PROXY_API_KEY separately from the local bearer key.'
-has_space || fail 'Startup needs more than 31 GiB free.'
-pg0_install=$assets_root/pg0-install
-[[ -f $assets_lock ]] || fail 'Run tools/hindsight_runtime install to verify the selected environment.'
-exec 9<"$assets_lock"
-if [[ -x $pg0_install/18.1.0/bin/postgres ]]; then
-    flock -n -s 9 || fail 'Installation or first PostgreSQL initialization is in progress.'
-else
-    flock -n -x 9 || fail 'Stop other launcher instances before initializing PostgreSQL.'
-fi
-wheels_verified || fail 'Run tools/hindsight_runtime install to verify the selected environment.'
-[[ -x $venv/bin/python ]] || fail 'Run tools/hindsight_runtime install first.'
-models_present || fail 'Run tools/hindsight_runtime install first.'
-pg0_bin=$venv/lib/python3.14/site-packages/pg0/bin/pg0
-[[ -x $pg0_bin ]] || fail 'The pinned pg0 executable is missing.'
-scope_dir=$state_root/scopes/$scope
-mkdir -p -- "$scope_dir"
-exec 8>"$scope_dir/runtime.lock"
-flock -n -x 8 || fail 'A Hindsight runtime already owns this scope.'
-pg0_home=$scope_dir/pg0
-pg0_meta=$pg0_home/instances/hindsight/instance.json
-if [[ -f $pg0_meta ]]; then
-    db_password=$(jq -er '.password | select(type == "string")' "$pg0_meta") ||
-        fail 'Could not read the embedded database credential.'
-    [[ $db_password =~ ^[a-f0-9]{64}$ ]] || fail 'The embedded database credential is malformed.'
-else
-    db_password=$(openssl rand -hex 32)
-fi
-
-run_server() {
-    clean_environment
-    export HOME="$scope_dir/home" TMPDIR="$scope_dir/tmp"
-    export XDG_CONFIG_HOME="$HOME/config" XDG_DATA_HOME="$HOME/data" XDG_STATE_HOME="$HOME/state"
-    export XDG_CACHE_HOME="$scope_dir/.cache"
-    export PG0_HOME="$pg0_home" PG0_INSTALLATION_DIR="$pg0_install" PG0_EXECUTABLE="$pg0_bin" HF_HUB_OFFLINE=1
-    export HINDSIGHT_API_HOST=127.0.0.1 HINDSIGHT_API_PORT="$port"
-    export HINDSIGHT_API_DATABASE_URL="pg0://hindsight:$db_password@hindsight:$pg_port?listen_addresses=127.0.0.1"
-    export HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx HINDSIGHT_API_EMBEDDINGS_ONNX_DEVICE=cpu
-    export HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH="$embedding/onnx/model.onnx"
-    export HINDSIGHT_API_EMBEDDINGS_ONNX_TOKENIZER_NAME_OR_PATH="$embedding"
-    export HINDSIGHT_API_RERANKER_PROVIDER=onnx HINDSIGHT_API_RERANKER_ONNX_THREADS=2
-    export HINDSIGHT_API_RERANKER_ONNX_MODEL_PATH="$reranker/onnx/model.onnx"
-    export HINDSIGHT_API_RERANKER_ONNX_TOKENIZER_NAME_OR_PATH="$reranker"
-    export HINDSIGHT_API_LLM_PROVIDER=openai-responses HINDSIGHT_API_LLM_MODEL=gpt-6.2-sol
-    export HINDSIGHT_API_LLM_BASE_URL="${base_url%/}" HINDSIGHT_API_LLM_API_KEY="$proxy_key"
-    export HINDSIGHT_API_LLM_TIMEOUT=80 HINDSIGHT_API_LLM_MAX_RETRIES=0
-    export HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
-    export HINDSIGHT_API_TENANT_API_KEY="$key" HINDSIGHT_API_MCP_ENABLED_TOOLS=recall,reflect
-    export HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API=true
-    export HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION=false HINDSIGHT_API_ENABLE_OBSERVATIONS=false
-    export HINDSIGHT_API_AUDIT_LOG_ENABLED=false HINDSIGHT_API_LOG_LEVEL=WARNING
-    mkdir -p -- "$HOME" "$TMPDIR" "$XDG_CACHE_HOME"
-    cd -- "$scope_dir"
-    exec nice -n 10 "$venv/bin/python" -m hindsight_api.main
-}
-
-# Called by the EXIT trap.
-# shellcheck disable=SC2329
-stop_server() {
-    if kill -0 "$server_pid" 2>/dev/null; then
-        kill -TERM "$server_pid" 2>/dev/null || true
-        for _ in {1..10}; do
-            kill -0 "$server_pid" 2>/dev/null || break
-            sleep 1
-        done
-        kill -KILL "$server_pid" 2>/dev/null || true
-    fi
-    wait "$server_pid" 2>/dev/null || true
-    if [[ -f $pg0_home/instances/hindsight/data/postmaster.pid ]]; then
-        PG0_HOME=$pg0_home PG0_INSTALLATION_DIR=$pg0_install \
-            timeout --kill-after=2s 10s "$pg0_bin" stop --name hindsight </dev/null >/dev/null 2>&1 ||
-            printf 'hindsight: embedded PostgreSQL did not stop for scope %s\n' "$scope" >&2
-    fi
-}
-
-# Provider exceptions can include secrets, request text or URLs. Keep raw runtime output disabled.
-run_server </dev/null >/dev/null 2>&1 8>&- 9>&- &
-server_pid=$!
-trap stop_server EXIT
-trap 'exit 130' INT TERM HUP
-printf 'Starting Hindsight at %s for scope %s. Ctrl-C stops it.\n' "$url" "$scope"
-deadline=$((SECONDS + 180))
-while kill -0 "$server_pid" 2>/dev/null; do
-    has_space || fail 'Service stopped at the 31 GiB disk tripwire.'
-    if (( deadline != 0 )); then
-        if health; then
-            deadline=0
-            printf 'Hindsight ready at %s\n' "$url"
-        elif (( SECONDS >= deadline )); then
-            fail 'Startup timed out. Check the proxy endpoint and credentials, local ports and pinned assets.'
-        fi
-    fi
-    sleep 2
-done
-fail 'Service exited. Check the proxy endpoint and credentials, local ports and pinned assets.'

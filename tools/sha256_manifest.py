@@ -1,11 +1,11 @@
-"""sha256 pin manifests named by evidence rows: one reading for every tool.
+"""sha256 pin manifests named by evidence records: one reading for every tool.
 
-``tools/docs_lint.py`` verifies and backs up the files a manifest lists,
+``memory verify`` checks and ``memory protected-paths`` lists the files a manifest lists (``tools/memory``),
 ``tools/work_gc.py`` keeps them out of pruning and ``tools/cargo_guard.py``
-keeps them out of build targets. All three recognise, parse and resolve a
+keeps them out of build targets. All of them recognise, parse and resolve a
 manifest here, so they cannot disagree about which files it pins.
 
-A row's file is a manifest when its name says so (``*sha256*``, ``*fixity*``)
+A record's file is a manifest when its name says so (``*sha256*``, ``*fixity*``)
 or its first non-blank line is a ``sha256sum`` line, whatever its name. Lines
 are ``sha256sum`` lines in text or binary mode, or ``<bytes> <path>`` size lines,
 which some manifests append. An entry names a file relative to the manifest's

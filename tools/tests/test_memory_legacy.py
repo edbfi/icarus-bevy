@@ -14,26 +14,17 @@ the server app in a release profile.
 
 from __future__ import annotations
 
-import argparse
-import contextlib
-import io
 import json
 import tempfile
 import unittest
-from unittest import mock
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
 
-from tools.memory.journal import Revision, Segment, read_tree, write_change_set
+from tools.memory.journal import Revision, Segment, read_tree
 from tools.memory.legacy import Export, export, write
 from tools.memory.legacy_rules import extract, standing
-from tools.memory.legacy_prose import account
-from tools.memory.legacy_report import inbound, render, residue
 from tools.memory.model import JSON, Legacy, Record, RecordError
-from tools.memory import migrate
-from tools.memory.parity import parity
-from tools.memory.paths import ProtectedPathsError
 from tools.memory.salvage import salvage
 from tools.memory.state import partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
@@ -437,73 +428,10 @@ class ExportTests(LegacyRepository):
         self.assertEqual(names["F-102"], "legacy-scope")
         self.assertEqual(names["F-107"], "unscoped")
 
-    def test_report_residue_and_inbound(self) -> None:
-        self.assertEqual(residue(self.result, self.root), [])
-        without = Export(self.result.revision, self.result.created, [item for item in self.result.migrated if item.record.id != "REF-003"],
-                         catalog=self.result.catalog)
-        values = {item.value for item in residue(without, self.root)}
-        self.assertIn("NeverRecordedName", values)
-        self.assertIn("42.5", values)
-        found = {(item.path, item.target) for item in inbound(self.result, self.root)}
-        self.assertIn(("src/lib.rs", "docs/specs/net/widget.md"), found)
-        self.assertIn(("docs/implementation-status.md", "docs/specs/net/widget.md"), found)
-        self.assertIn(("evidence/widgets/001.jsonl", "docs/specs/net/widget.md"), found)
-        text = render(self.result, self.root)
-        self.assertIn("- F-106 superseded by F-107: docs/ledgers/findings/widgets.md:7: F-106 is retired in favor of F-107.", text)
-        self.assertIn("finding `standing` set from the row's own words on 1 of 10: F-107", text)
-        self.assertIn("no active finding is `current` for REL-3.0.92", text)
-        self.assertIn("- REL-3.0.92 (current): states version_string 3.0.92.100-rel-Test, server_build 29990010; lacks client_build, dates", text)
-        self.assertIn("finding `scope.commit`: 1: F-108 (several commits in row (abc1234, def5678))", text)
-
     def segments(self) -> tuple[Segment, ...]:
         out = self.top / "segments"
         _ = write(self.result, out)
         return read_tree(out)
-
-
-class ParityTests(LegacyRepository):
-    def test_the_export_passes_and_a_changed_record_fails(self) -> None:
-        out = self.top / "journal"
-        _ = write(self.result, out)
-        result = parity(self.root, "HEAD", out)
-        self.assertEqual(result.mismatches, [])
-        self.assertIn("finding 10", result.measured["counts"])
-        self.assertIn("reference 10", result.measured["counts"])
-        accounting = account(self.root, "HEAD", self.records)
-        self.assertEqual(accounting.problems, [])
-        self.assertEqual(sum(accounting.bytes.values()), sum(
-            (self.root / path).stat().st_size for path in run_git(self.root, "ls-files", "docs/ledgers", "docs/specs", "docs/research",
-                                                                  "docs/implementation-status.md", "evidence").split()))
-        self.assertGreater(accounting.bytes["structural"], 0)
-        lost = {identifier: record for identifier, record in self.records.items() if identifier not in ("REF-008", "M-103")}
-        problems = "\n".join(account(self.root, "HEAD", lost).problems)
-        self.assertIn("docs/ledgers/unknowns.md:1:", problems)
-        self.assertIn("evidence/widgets/001.jsonl:3:", problems)
-        tampered = self.top / "tampered"
-        revisions = [item for change_set in self.result.change_sets() for item in change_set.revisions]
-        changed: list[Revision] = []
-        for revision in revisions:
-            data = revision.record.to_json()
-            if revision.record.id == "F-102":
-                data["claim"] = "Something the row never said"
-            elif revision.record.id == "U-102":
-                data["refs"] = ["F-102"]
-            elif revision.record.id == "M-102":
-                data["path"] = "work/elsewhere/"
-            changed.append(Revision.of(Record.from_json(data, revision.record.body)))
-        _ = write_change_set(tampered, datetime(2026, 1, 5, tzinfo=UTC), changed)
-        mismatches = "\n".join(parity(self.root, "HEAD", tampered).mismatches)
-        self.assertIn("F-102: claim", mismatches)
-        self.assertIn("U-102: links", mismatches)
-        self.assertIn("M-102: path", mismatches)
-
-    def test_an_unreadable_manifest_is_a_reported_failure_not_a_traceback(self) -> None:
-        options = argparse.Namespace(rev="HEAD", journal=self.top / "journal")
-        stderr = io.StringIO()
-        with (mock.patch("tools.memory.parity.parity", side_effect=ProtectedPathsError("M-101: unreadable sha256 manifest work/x/fixity.sha256")),
-              mock.patch("tools.memory.migrate.repository_root", return_value=self.root), contextlib.redirect_stderr(stderr)):
-            self.assertEqual(migrate.run_parity(options), 1)
-        self.assertIn("memory parity: M-101: unreadable sha256 manifest", stderr.getvalue())
 
 
 class SalvageTests(LegacyRepository):
@@ -537,6 +465,27 @@ class SalvageTests(LegacyRepository):
         f111 = proposed["F-111"].scope
         assert f111 is not None
         self.assertEqual(f111.builds, ("server:29990001",))
+
+    def test_after_the_cut_over_main_is_read_from_its_journal(self) -> None:
+        root = self.root
+        _ = run_git(root, "checkout", "-q", "-b", "old-branch")
+        ledger = root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("| F-107 | Decision text", "| F-107 | Edited decision text")
+                              + "| F-111 | New branch claim | observed | review | high; server 29990001 | | active |\n")
+        _ = run_git(root, "commit", "-q", "-am", "old branch rows")
+        _ = run_git(root, "checkout", "-q", "main")
+        _ = write(self.result, root)
+        _ = run_git(root, "rm", "-q", "-r", "docs/ledgers", "evidence")
+        _ = run_git(root, "add", "-A")
+        _ = run_git(root, "commit", "-q", "-m", "cut over")
+        result = salvage(root, "old-branch")
+        self.assertEqual({revision.record.id: revision.prev for revision in result.proposals},
+                         {"F-107": (Revision.of(self.records["F-107"]).rev,), "F-111": ()})
+        self.assertEqual(result.kinds["F-111"], "new")
+        self.assertEqual(result.conflicts, [])
+        _ = run_git(root, "checkout", "-q", "-b", "after-cut-over")
+        self.assertEqual((salvage(root, "after-cut-over").proposals, salvage(root, "after-cut-over").unsalvaged), ([], []),
+                         "a branch without legacy trees has nothing to salvage")
 
 
 if __name__ == "__main__":

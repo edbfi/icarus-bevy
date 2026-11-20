@@ -22,7 +22,7 @@ from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
-from tools.memory.journal import Revision, read_tree, write_change_set
+from tools.memory.journal import JournalError, Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
@@ -597,6 +597,21 @@ class EvidenceTests(Online):
         linked = self.top / "linked"
         _ = run_git(self.root, "worktree", "add", "-q", "--detach", str(linked))
         self.assertIn("M-001: verified", online.verify(linked, ["M-001"]).lines[0])
+
+    def test_staged_verifies_every_evidence_revision_in_staged_segments_and_fails_closed(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        self.assertEqual(["verify: 0 verified, 0 unavailable, 0 mismatched, 0 legacy-unverifiable; 0 failing"], online.verify(self.root, (), staged=True).lines)
+        _ = run_git(self.root, "add", "memory/journal")
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((0, "M-001: verified (work/case/receipt.txt)"), (staged.status, staged.lines[0]))
+        self.put("work/case/receipt.txt", "tampered")
+        self.assertEqual(1, online.verify(self.root, (), staged=True).status)
+        segment = next((self.root / "memory/journal").rglob("*.jsonl"))
+        _ = segment.write_bytes(segment.read_bytes() + b"not json\n")
+        _ = run_git(self.root, "add", "memory/journal")
+        with self.assertRaises(JournalError):
+            _ = online.verify(self.root, (), staged=True)
 
     def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
         self.put("work/case/receipt.txt", "invented receipt")

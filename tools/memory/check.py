@@ -32,9 +32,9 @@ from tools.memory.journal import JournalError, read_git, read_tree
 from tools.memory.model import LEGACY, Record
 from tools.memory.state import State, replay
 
-# The cut-over commit, which deletes the legacy trees, switches both on.
-LEGACY_FROZEN = False
-REQUIRE_JOURNAL = False
+# Switched on by the cut-over commit, which deleted the legacy trees and committed the journal.
+LEGACY_FROZEN = True
+REQUIRE_JOURNAL = True
 LEGACY_DIRS = ("docs/ledgers", "evidence", "evidence-catalog")
 GATES = "docs/gates.md"
 CITATION_ROOTS = ("src", "tests", "examples", "tools", "config", "docs", "CLAUDE.md", "AGENTS.md", ".agents/rules")

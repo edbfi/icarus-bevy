@@ -103,8 +103,9 @@ class CheckTests(Repository):
             path.unlink()
         report = self.check()
         self.assertFalse(report.no_journal)
-        self.assertIn("removed or changed", report.problems[0])
-        self.assertEqual(["src/old.rs:1: F-101: no record F-101"], report.problems[1:])
+        self.assertEqual("no journal: memory/journal/ holds no segment, and this repository requires one", report.problems[0])
+        self.assertIn("removed or changed", report.problems[1])
+        self.assertEqual(["src/old.rs:1: F-101: no record F-101"], report.problems[2:])
 
     def test_required_journal(self) -> None:
         commit_all(self.root)

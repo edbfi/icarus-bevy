@@ -69,7 +69,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from tools.docs_lint import LEGACY_NOTE, LISTED_SELECTOR
+from tools.memory.legacy_reader import LEGACY_NOTE, LISTED_SELECTOR
 from tools.memory.model import JSON, LEGACY, STANDINGS, TYPES, Record, id_key
 
 BUILD = re.compile(r"(?<![\w.])(?<![0-9],)(?:[Bb]uild)?(2[0-9]{7})(?!\w|[.,][0-9])")

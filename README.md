@@ -24,8 +24,8 @@
 
 **This currently runs a headless foundation, not an ICARUS-compatible server.**
 Networking, authentication, gameplay, original-world compatibility and
-official-save import remain unimplemented and unvalidated. Offline research has resumed; current results and remaining gates are in the
-[checkpoint](docs/implementation-status.md#summary).
+official-save import remain unimplemented and unvalidated. Offline research has resumed; milestone state and next tasks are in the
+[plan](docs/linux-dedicated-server-plan.md#milestone-state).
 
 ## Quick start
 
@@ -50,8 +50,10 @@ gameplay tables are not runtime inputs. Nothing original is bundled here.
 
 ## Documentation
 
-The [documentation map](docs/README.md) lists every document with its role and
-bound: plan, status, gates, ledgers, specs, research digests and runbooks.
+The [documentation map](docs/README.md) lists the documents kept in Git: plan,
+gates, architecture and runbooks. Findings, unknowns, bugs, references and
+evidence are project records in the memory service, read and written only
+through `python3 -m tools.memory` ([memory rules](.agents/rules/memory.md)).
 
 ## Contributing
 
