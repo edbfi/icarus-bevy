@@ -1,0 +1,305 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The memory service and its durability without a running service: homes, the connection file, unit
+generation, configuration assertions, the floor, watermarks, rotation, backup with a stand-in
+``pg_dump``, and the drill's comparison. Every key, path and document is invented."""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import tempfile
+import unittest
+from contextlib import redirect_stderr
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import NamedTuple, override
+from unittest.mock import patch
+
+from tools.memory.cli import main
+from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compare, restore, retained, rotate, verify
+from tools.memory.service import (
+    API_PORT, BACKUP_TIMER, BACKUP_UNIT, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
+    connection, ensure_settings, feature_problems, home, install, parse_settings, read_settings, render_settings, require_floor, unit_files,
+    unit_word,
+)
+
+KEY, PASSWORD = "1" * 64, "2" * 64
+
+
+class Usage(NamedTuple):
+    total: int
+    used: int
+    free: int
+
+
+class Scratch(unittest.TestCase):
+    root: Path = Path()
+    where: Home = Home(Path(), Path(), Path())
+
+    @override
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.where = Home.under(self.root / "memory")
+
+
+class Homes(unittest.TestCase):
+    def test_xdg_defaults_and_overrides(self) -> None:
+        self.assertEqual(home({"HOME": "/h"}), Home(Path("/h/.config/icarus-memory"), Path("/h/.local/share/icarus-memory"), Path("/h/.local/state/icarus-memory")))
+        chosen = home({"HOME": "/h", "XDG_CONFIG_HOME": "/c", "XDG_DATA_HOME": "/d", "XDG_STATE_HOME": "relative"})
+        self.assertEqual((chosen.config, chosen.data, chosen.state), (Path("/c/icarus-memory"), Path("/d/icarus-memory"), Path("/h/.local/state/icarus-memory")))
+        self.assertFalse(chosen.scratch)
+
+    def test_icarus_memory_home_is_one_scratch_root(self) -> None:
+        chosen = home({"HOME": "/h", "XDG_CONFIG_HOME": "/c", "ICARUS_MEMORY_HOME": "/s"})
+        self.assertEqual((chosen.config, chosen.data, chosen.state, chosen.scratch), (Path("/s/config"), Path("/s/data"), Path("/s/state"), True))
+        self.assertEqual((chosen.connection_file, chosen.pg0_home, chosen.backups), (Path("/s/config/connection.env"), Path("/s/data/pg0"), Path("/s/state/backups")))
+
+
+class ConnectionFile(Scratch):
+    def test_created_owner_only_and_read_back(self) -> None:
+        settings = ensure_settings(self.where)
+        for directory in (self.where.config, self.where.data, self.where.state, self.where.backups):
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.where.connection_file.stat().st_mode & 0o777, 0o600)
+        found = connection(self.where)
+        self.assertEqual((found.url, found.bank, found.key), (f"http://127.0.0.1:{API_PORT}", "icarus", settings.key))
+        self.assertNotIn(settings.key, repr(found) + repr(settings))
+        self.assertEqual(ensure_settings(self.where), settings, "an existing file is kept")
+        self.assertIn(f"@hindsight:{PG_PORT}?listen_addresses=127.0.0.1&fsync=on&synchronous_commit=on", self.where.connection_file.read_text())
+
+    def test_group_or_world_access_is_refused(self) -> None:
+        _ = ensure_settings(self.where)
+        for mode in (0o640, 0o604, 0o620, 0o602):
+            os.chmod(self.where.connection_file, mode)
+            with self.assertRaisesRegex(ServiceError, "0600"):
+                _ = connection(self.where)
+        os.chmod(self.where.connection_file, 0o400)
+        self.assertEqual(connection(self.where).bank, "icarus")
+
+    def test_symlink_and_missing_file_are_refused(self) -> None:
+        _ = ensure_settings(self.where)
+        target = self.root / "elsewhere.env"
+        _ = self.where.connection_file.rename(target)
+        with self.assertRaisesRegex(ServiceError, "install"):
+            _ = connection(self.where)
+        self.where.connection_file.symlink_to(target)
+        with self.assertRaises(ServiceError):
+            _ = connection(self.where)
+
+    def test_only_the_generated_shape_parses(self) -> None:
+        good = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus"))
+        self.assertEqual(parse_settings(good).pg_password, PASSWORD)
+        for broken in (
+            good + "EXTRA=1\n",
+            good.replace("127.0.0.1\n", "0.0.0.0\n", 1),
+            good.replace("&fsync=on", ""),
+            good.replace(KEY, "short"),
+            good.replace("ICARUS_MEMORY_BANK=icarus", "ICARUS_MEMORY_BANK=other"),
+            good.replace(f"@hindsight:{PG_PORT}", f"@hindsight:{API_PORT}"),
+            good + f"HINDSIGHT_API_TENANT_API_KEY={KEY}\n",
+        ):
+            with self.assertRaises(ServiceError):
+                _ = parse_settings(broken)
+
+
+class Units(Scratch):
+    def test_service_unit_carries_the_instance_settings_and_no_secret(self) -> None:
+        settings = ensure_settings(self.where)
+        files = unit_files(self.where, Assets(self.root / "runtime"), self.root / "primary", "/usr/bin/python3")
+        self.assertEqual(sorted(files), sorted([UNIT, BACKUP_UNIT, BACKUP_TIMER]))
+        service = files[UNIT]
+        for name, value in SETTINGS.items():
+            self.assertIn(f"Environment={name}={value}\n", service)
+        for line in ("StartLimitBurst=10", "RestartSec=5", f"EnvironmentFile={self.where.connection_file}", "KillMode=control-group", "Restart=on-failure", "CPUQuota=400%",
+                     "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
+                     f"ExecStartPre=-{self.root}/runtime/venv/lib/python3.14/site-packages/pg0/bin/pg0 stop --name hindsight --timeout 30",
+                     f"ExecStart=/usr/bin/flock --shared --nonblock {self.root}/runtime/assets.lock {self.root}/runtime/venv/bin/python -m hindsight_api.main"):
+            self.assertIn(line + "\n", service)
+        self.assertIn(f"WorkingDirectory={self.root}/primary\n", files[BACKUP_UNIT])
+        self.assertIn("ExecStart=/usr/bin/python3 -m tools.memory backup\n", files[BACKUP_UNIT])
+        self.assertIn("OnCalendar=daily\n", files[BACKUP_TIMER])
+        text = "".join(files.values())
+        self.assertNotIn(settings.key, text)
+        self.assertNotIn(settings.pg_password, text)
+
+    def test_words_are_escaped_for_systemd(self) -> None:
+        self.assertEqual(unit_word("/plain/path-1.2"), "/plain/path-1.2")
+        self.assertEqual(unit_word("/with space/100%/$HOME"), '"/with space/100%%/$$HOME"')
+        self.assertEqual(unit_word('a"b\\c'), '"a\\"b\\\\c"')
+
+    def test_install_never_manages_a_scratch_home(self) -> None:
+        with self.assertRaisesRegex(ServiceError, "ICARUS_MEMORY_HOME"):
+            _ = install(self.where, Assets(self.root / "runtime"), self.root)
+        self.assertFalse(self.where.config.exists())
+
+
+class Configuration(unittest.TestCase):
+    def test_bank_config_requires_no_overrides_and_the_values(self) -> None:
+        config: dict[str, object] = {"retain_extraction_mode": "chunks", "retain_chunk_size": 1800, "enable_observations": False,
+                                     "enable_auto_consolidation": False, "enable_reranking": True}
+        self.assertEqual(bank_config_problems({"config": config, "overrides": {}}), [])
+        problems = bank_config_problems({"config": config | {"retain_chunk_size": 3000, "enable_observations": 0}, "overrides": {"retain_chunk_size": 3000}})
+        self.assertEqual(len(problems), 3)
+        self.assertTrue(problems[0].startswith("bank overrides present"))
+
+    def test_features_must_be_off_on_1_2_3(self) -> None:
+        flags: dict[str, object] = {"mcp": False, "bank_config_api": False, "file_upload_api": False, "document_import_api": False,
+                                    "observations": False, "llm_trace": False, "worker": True}
+        self.assertEqual(feature_problems({"api_version": "1.2.3", "features": flags}), [])
+        self.assertEqual(len(feature_problems({"api_version": "1.2.4", "features": flags | {"mcp": True}})), 2)
+        self.assertEqual(len(feature_problems({})), 7)
+
+
+class Floor(Scratch):
+    def test_floor_is_30_gib(self) -> None:
+        require_floor(self.root, free=lambda _path: FLOOR)
+        with self.assertRaisesRegex(FloorError, "30 GiB floor"):
+            require_floor(self.root, free=lambda _path: FLOOR - 1)
+
+    def test_backup_and_restore_refuse_below_the_floor(self) -> None:
+        _ = ensure_settings(self.where)
+        with patch("tools.memory.service.shutil.disk_usage", return_value=Usage(FLOOR * 2, FLOOR * 2 - 1024, 1024)):
+            with self.assertRaises(FloorError):
+                _ = backup(self.where, Assets(self.root / "runtime"))
+        self.assertEqual(list(self.where.backups.iterdir()), [])
+
+
+class Watermarks(unittest.TestCase):
+    def test_canonical_round_trip(self) -> None:
+        mark = Watermark("a" * 40, ("c" * 64, "b" * 64, "c" * 64))
+        data = mark.encode()
+        self.assertEqual(data, b'{"origin_main":"' + b"a" * 40 + b'","segments":["' + b"b" * 64 + b'","' + b"c" * 64 + b'"]}\n')
+        self.assertEqual(Watermark.decode(data), Watermark("a" * 40, ("b" * 64, "c" * 64)))
+        self.assertEqual(NO_JOURNAL.encode(), b'{"origin_main":null,"segments":[]}\n')
+
+    def test_invalid_watermarks_are_refused(self) -> None:
+        with self.assertRaises(ServiceError):
+            _ = Watermark("main", ()).encode()
+        with self.assertRaises(ServiceError):
+            _ = Watermark(None, ("x",)).encode()
+        for data in (b'{"segments":[],"origin_main":null}\n', b'{"origin_main":null}\n', b'{"origin_main":null,"segments":[1]}\n', b"[]\n", b"{"):
+            with self.assertRaises(ServiceError):
+                _ = Watermark.decode(data)
+
+
+def stamp(day: int, hour: int = 3) -> datetime:
+    return datetime(2026, 11, 1, hour, tzinfo=UTC) + timedelta(days=day)
+
+
+class Rotation(Scratch):
+    def test_seven_daily_and_four_weekly(self) -> None:
+        stamps = [stamp(day, hour) for day in range(40) for hour in (3, 15)]
+        keep = retained(stamps)
+        # Days 33-39 are 4-10 December 2026 (ISO weeks 49 and 50); weeks 47 and 48 end on days 21 and 28.
+        self.assertEqual(keep, {stamp(day, 15) for day in (21, 28, *range(33, 40))})
+        self.assertEqual(retained([]), set())
+
+    def test_rotate_removes_complete_sets_only(self) -> None:
+        self.where.backups.mkdir(parents=True)
+        for day in range(12):
+            name = f"icarus-memory-{stamp(day).strftime('%Y%m%dT%H%M%SZ')}"
+            for suffix in (".dump", ".watermark.json", ".sha256"):
+                _ = (self.where.backups / (name + suffix)).write_bytes(b"x")
+        incomplete = self.where.backups / "icarus-memory-20261001T000000Z.dump"
+        _ = incomplete.write_bytes(b"x")
+        removed = rotate(self.where.backups)
+        kept = sorted(path.name for path in self.where.backups.glob("*.sha256"))
+        self.assertEqual(len(kept), len(retained(stamp(day) for day in range(12))))
+        self.assertEqual(len(removed), 3 * (12 - len(kept)))
+        self.assertTrue(incomplete.exists())
+
+
+FAKE_PG_DUMP = """#!/bin/sh
+printf '%s\\n' "$@" > "{log}"
+printf 'PGPASSWORD=%s\\n' "$PGPASSWORD" >> "{log}"
+while [ "$#" -gt 0 ]; do if [ "$1" = -f ]; then printf 'PGDMP invented dump' > "$2"; fi; shift; done
+"""
+
+
+class Backups(Scratch):
+    def runtime(self) -> Assets:
+        runtime = Assets(self.root / "runtime")
+        runtime.pg_bin.mkdir(parents=True)
+        tool = runtime.pg_bin / "pg_dump"
+        _ = tool.write_text(FAKE_PG_DUMP.format(log=self.root / "pg_dump.log"), encoding="utf-8")
+        tool.chmod(0o700)
+        return runtime
+
+    def test_backup_writes_dump_watermark_and_sidecar(self) -> None:
+        settings = ensure_settings(self.where)
+        mark = Watermark("d" * 40, ("e" * 64,))
+        with patch("tools.memory.service.shutil.disk_usage", return_value=Usage(FLOOR * 4, FLOOR, FLOOR * 3)):
+            made = backup(self.where, self.runtime(), watermark=lambda: mark, now=stamp(0))
+        self.assertEqual(made.backup.dump.name, "icarus-memory-20261101T030000Z.dump")
+        self.assertEqual(verify(made.backup), mark)
+        for path in made.backup.members():
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        arguments = (self.root / "pg_dump.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(arguments[0], "-Fc")
+        self.assertIn(str(settings.pg_port), arguments)
+        self.assertNotIn(settings.pg_password, arguments[:-1], "the password goes by environment only")
+        self.assertEqual(arguments[-1], f"PGPASSWORD={settings.pg_password}")
+        self.assertEqual(json.loads(made.backup.watermark.read_bytes()), {"origin_main": "d" * 40, "segments": ["e" * 64]})
+
+    def test_verify_detects_tampering_and_incomplete_sets(self) -> None:
+        _ = ensure_settings(self.where)
+        with patch("tools.memory.service.shutil.disk_usage", return_value=Usage(FLOOR * 4, FLOOR, FLOOR * 3)):
+            made = backup(self.where, self.runtime(), now=stamp(1))
+        self.assertEqual(verify(made.backup), NO_JOURNAL)
+        _ = made.backup.watermark.write_bytes(b'{"origin_main":null,"segments":["' + b"f" * 64 + b'"]}\n')
+        with self.assertRaisesRegex(ServiceError, "sha256 does not match"):
+            _ = verify(made.backup)
+        made.backup.sidecar.unlink()
+        with self.assertRaisesRegex(ServiceError, "incomplete"):
+            _ = verify(made.backup)
+        with self.assertRaisesRegex(ServiceError, "not a memory backup name"):
+            _ = verify(Backup(self.root / "other.dump"))
+
+    def test_restore_never_manages_a_scratch_home(self) -> None:
+        with self.assertRaisesRegex(ServiceError, "--drill"):
+            _ = restore(self.where, Assets(self.root / "runtime"), self.root / "x.dump", replace=True)
+
+
+class FakeBank:
+    """A read-only stand-in for the REST API holding one bank."""
+
+    def __init__(self, documents: dict[str, tuple[str, list[str]]]) -> None:
+        self.documents: dict[str, tuple[str, list[str]]] = documents
+
+    def get(self, path: str) -> dict[str, object]:
+        if path.startswith("/v1/default/banks?"):
+            return {"banks": [{"bank_id": "icarus"}]}
+        if path.startswith("/v1/default/banks/icarus/documents?"):
+            items: list[object] = [{"id": key, "content_hash": str(hash(text)), "tags": tags} for key, (text, tags) in self.documents.items()]
+            return {"items": items, "total": len(items)}
+        text, _tags = self.documents[path.rsplit("/", 1)[1]]
+        return {"original_text": text, "document_metadata": {"segment": "zz"}}
+
+
+class Drill(unittest.TestCase):
+    def test_compare_finds_every_difference(self) -> None:
+        live = FakeBank({"ZZ-TEST-1": ("one", ["a", "b"]), "ZZ-TEST-2": ("two", ["c"])})
+        self.assertEqual(compare(live, FakeBank(dict(live.documents))), (2, []))
+        _, problems = compare(live, FakeBank({"ZZ-TEST-1": ("one", ["b", "a"]), "ZZ-TEST-3": ("two", ["c"])}))
+        self.assertEqual(problems, ["icarus/ZZ-TEST-2: missing from restored", "icarus/ZZ-TEST-3: missing from live"])
+        _, problems = compare(live, FakeBank({"ZZ-TEST-1": ("one", ["a"]), "ZZ-TEST-2": ("TWO", ["c"])}))
+        self.assertEqual(problems, ["icarus/ZZ-TEST-1: differs", "icarus/ZZ-TEST-2: differs"])
+
+
+class CommandLine(unittest.TestCase):
+    def test_restore_needs_a_file_or_drill(self) -> None:
+        for argv in (["restore"], ["restore", "x.dump", "--drill"], ["restore", "--drill", "--replace"]):
+            with redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(main(argv), 2)
+            self.assertIn("FILE [--replace] or --drill", error.getvalue())
+
+    def test_settings_survive_a_scratch_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": root}):
+            created = ensure_settings(home())
+            self.assertEqual(read_settings(home()), created)
+            self.assertTrue(Path(root, "config/connection.env").is_file())
+
+
+if __name__ == "__main__":
+    _ = unittest.main()
