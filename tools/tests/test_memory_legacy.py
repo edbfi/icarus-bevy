@@ -24,6 +24,7 @@ from typing import override
 from tools.memory.journal import Revision, Segment, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
 from tools.memory.legacy_rules import extract, standing
+from tools.memory.legacy_prose import account
 from tools.memory.legacy_report import inbound, render, residue
 from tools.memory.model import JSON, Legacy, Record, RecordError
 from tools.memory.parity import parity
@@ -183,6 +184,7 @@ def build_repository(root: Path) -> None:
         "docs/research/net/widgets.md": DIGEST,
         "docs/implementation-status.md": "# Status\n\nSee [the spec](specs/net/widget.md).\n",
         "src/lib.rs": "//! See `docs/specs/net/widget.md` (F-102, F-101).\n",
+        "evidence/README.md": "# Evidence index\n\nOne row per artifact.\n",
         "config/release.toml": RELEASE,
         "tests/fixtures/releases/3.0.91-client.toml": FIXTURE_CLIENT,
         "tests/fixtures/releases/3.0.91.toml": FIXTURE_SERVER,
@@ -256,12 +258,36 @@ class LegacyResolverTests(unittest.TestCase):
             _ = Record.from_json(data)
 
 
+class GapTests(unittest.TestCase):
+    @staticmethod
+    def finding(*gaps: str, scope: JSON = None) -> dict[str, JSON]:
+        data: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                 "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": list[JSON](gaps)}
+        if scope is not None:
+            data["scope"] = scope
+        return data
+
+    def test_a_gap_may_name_a_scope_part_with_detail(self) -> None:
+        record = Record.from_json(self.finding("scope.commit: several commits in row (abc1234, def5678)", "standing",
+                                               scope={"basis": "legacy-text", "releases": ["3.0.91"]}))
+        self.assertEqual(record.gaps, ("scope.commit: several commits in row (abc1234, def5678)", "standing"))
+        _ = Record.from_json(self.finding("scope", "scope.commit: several commits in row (a, b)", "standing"))
+
+    def test_a_gap_names_an_absent_field(self) -> None:
+        with self.assertRaisesRegex(RecordError, "listed as missing but present"):
+            _ = Record.from_json(self.finding("scope.commit: x", "standing", scope={"basis": "legacy-text", "commit": "abc1234"}))
+        with self.assertRaisesRegex(RecordError, "is not a field"):
+            _ = Record.from_json(self.finding("scope.other: x", "scope", "standing"))
+        with self.assertRaisesRegex(RecordError, "standing: required field missing"):
+            _ = Record.from_json(self.finding("scope"))
+
+
 class ExportTests(LegacyRepository):
     def test_counts_and_ids(self) -> None:
         kinds = sorted(record.id for record in self.records.values())
         self.assertEqual(kinds, sorted([
             *(f"F-{n}" for n in range(101, 111)), "U-101", "U-102", "N-101", "M-101", "M-102", "M-103", "M-104", "SL-001",
-            "RP-001", "RP-002", "CP-001", "CP-002", "REF-001", "REF-002", "REL-3.0.91", "REL-3.0.92",
+            "RP-001", "RP-002", "CP-001", "CP-002", *(f"REF-{n:03d}" for n in range(1, 11)), "REL-3.0.91", "REL-3.0.92",
         ]))
 
     def test_cells_are_verbatim_and_gaps_list_what_is_missing(self) -> None:
@@ -293,6 +319,7 @@ class ExportTests(LegacyRepository):
         self.assertEqual((f105.builds, f105.releases, f105.commit), (("any:29990001",), ("3.0.91",), "a1b2c3d"))
         self.assertIsNone(self.record("F-108").scope)
         self.assertEqual(self.result.commits["F-108"], ("abc1234", "def5678"))
+        self.assertEqual(self.record("F-108").gaps, ("scope", "scope.commit: several commits in row (abc1234, def5678)", "standing"))
         self.assertIn("scope", self.record("F-107").gaps)
         # M-101's label names server 29990001; F-101 cites M-101 but states no build.
         self.assertIn("scope", self.record("F-101").gaps)
@@ -345,6 +372,26 @@ class ExportTests(LegacyRepository):
         assert widget.scope is not None and widget.legacy is not None
         self.assertEqual((widget.scope.builds, widget.scope.releases, widget.scope.commit), (("server:29990001",), ("3.0.91",), "c0ffee3"))
         self.assertEqual(self.record("REF-001").text("title"), "Another")
+        assert widget.legacy is not None
+        self.assertEqual(widget.legacy.cells["revision"], run_git(self.root, "rev-parse", "HEAD").strip())
+
+    def test_documents_the_cut_over_deletes_are_references(self) -> None:
+        paths = {record.legacy.path: record for record in self.records.values() if record.type == "reference" and record.legacy}
+        self.assertEqual([paths[path].id for path in (
+            "docs/specs/net/another.md", "docs/specs/net/widget.md", "docs/research/net/widgets.md", "docs/ledgers/bugs.md",
+            "docs/ledgers/compatibility.md", "docs/ledgers/findings/retired/widgets.md", "docs/ledgers/findings/widgets.md",
+            "docs/ledgers/unknowns.md", "docs/implementation-status.md", "evidence/README.md")], [f"REF-{n:03d}" for n in range(1, 11)])
+        self.assertEqual(paths["docs/research/net/widgets.md"].body, DIGEST)
+        unknowns = paths["docs/ledgers/unknowns.md"]
+        self.assertEqual(unknowns.body, "# Unknowns\n\nStatus: open, investigating, blocked, contradicted, resolved.\n\n"
+                         + "<!-- table: its rows are migrated as records -->\n")
+        self.assertEqual((unknowns.text("title"), unknowns.text("area")), ("Unknowns", "unknowns"))
+        compatibility = paths["docs/ledgers/compatibility.md"]
+        scope = compatibility.scope
+        assert scope is not None and compatibility.body is not None
+        # "Server observations apply to build N": the role is not next to the number.
+        self.assertEqual((scope.builds, scope.commit), (("any:29990001",), None))
+        self.assertEqual(compatibility.body.count("<!-- table:"), 2)
 
     def test_releases_from_explicit_statements(self) -> None:
         pinned = self.record("REL-3.0.92")
@@ -385,16 +432,22 @@ class ExportTests(LegacyRepository):
         self.assertEqual(names["F-107"], "unscoped")
 
     def test_report_residue_and_inbound(self) -> None:
-        values = {item.value for item in residue(self.result, self.root)}
+        self.assertEqual(residue(self.result, self.root), [])
+        without = Export(self.result.revision, self.result.created, [item for item in self.result.migrated if item.record.id != "REF-003"],
+                         catalog=self.result.catalog)
+        values = {item.value for item in residue(without, self.root)}
         self.assertIn("NeverRecordedName", values)
         self.assertIn("42.5", values)
-        self.assertNotIn("0x140001234", values)
         found = {(item.path, item.target) for item in inbound(self.result, self.root)}
         self.assertIn(("src/lib.rs", "docs/specs/net/widget.md"), found)
         self.assertIn(("docs/implementation-status.md", "docs/specs/net/widget.md"), found)
         self.assertIn(("evidence/widgets/001.jsonl", "docs/specs/net/widget.md"), found)
         text = render(self.result, self.root)
         self.assertIn("- F-106 superseded by F-107: docs/ledgers/findings/widgets.md:7: F-106 is retired in favor of F-107.", text)
+        self.assertIn("finding `standing` set from the row's own words on 1 of 10: F-107", text)
+        self.assertIn("no active finding is `current` for REL-3.0.92", text)
+        self.assertIn("- REL-3.0.92 (current): states version_string 3.0.92.100-rel-Test, server_build 29990010; lacks client_build, dates", text)
+        self.assertIn("finding `scope.commit`: 1: F-108 (several commits in row (abc1234, def5678))", text)
 
     def segments(self) -> tuple[Segment, ...]:
         out = self.top / "segments"
@@ -409,6 +462,17 @@ class ParityTests(LegacyRepository):
         result = parity(self.root, "HEAD", out)
         self.assertEqual(result.mismatches, [])
         self.assertIn("finding 10", result.measured["counts"])
+        self.assertIn("reference 10", result.measured["counts"])
+        accounting = account(self.root, "HEAD", self.records)
+        self.assertEqual(accounting.problems, [])
+        self.assertEqual(sum(accounting.bytes.values()), sum(
+            (self.root / path).stat().st_size for path in run_git(self.root, "ls-files", "docs/ledgers", "docs/specs", "docs/research",
+                                                                  "docs/implementation-status.md", "evidence").split()))
+        self.assertGreater(accounting.bytes["structural"], 0)
+        lost = {identifier: record for identifier, record in self.records.items() if identifier not in ("REF-008", "M-103")}
+        problems = "\n".join(account(self.root, "HEAD", lost).problems)
+        self.assertIn("docs/ledgers/unknowns.md:1:", problems)
+        self.assertIn("evidence/widgets/001.jsonl:3:", problems)
         tampered = self.top / "tampered"
         revisions = [item for change_set in self.result.change_sets() for item in change_set.revisions]
         changed: list[Revision] = []
@@ -434,6 +498,7 @@ class SalvageTests(LegacyRepository):
         _ = run_git(root, "checkout", "-q", "-b", "feature")
         ledger = root / "docs/ledgers/findings/widgets.md"
         _ = ledger.write_text(ledger.read_text().replace("| F-107 | Decision text", "| F-107 | Edited decision text")
+                              .replace("# Findings: Widgets", "# Findings: Widgets and gadgets")
                               + "| F-111 | New branch claim | observed | review; M-105 | high; server 29990001 | | active |\n"
                               + "| F-112 | Branch takes a number main also takes | observed | review | high; x | | active |\n")
         shard = root / "evidence/widgets/001.jsonl"
@@ -446,7 +511,12 @@ class SalvageTests(LegacyRepository):
         _ = run_git(root, "commit", "-q", "-am", "main row")
         result = salvage(root, "feature")
         self.assertEqual({revision.record.id: bool(revision.prev) for revision in result.proposals}, {"F-107": True, "F-111": False, "M-105": False})
-        self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
+        on_main = Revision.of(self.records["F-107"])
+        self.assertEqual(next(revision.prev for revision in result.proposals if revision.record.id == "F-107"), (on_main.rev,))
+        # A changed row changes its verbatim legacy cells, which never change: it must become a superseding record.
+        self.assertEqual(result.unrevisable, {"F-107": ("claim", "legacy")})
+        self.assertIn("docs/ledgers/findings/widgets.md: changed on feature; revise the body of REF-007 by hand", result.notices)
+        self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
         self.assertEqual(sorted(result.unsalvaged), ["F-107", "F-111", "F-112", "M-105"])
         proposed = {revision.record.id: revision.record for revision in result.proposals}

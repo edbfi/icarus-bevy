@@ -34,7 +34,8 @@ Migration moves records; it never upgrades, invents or fills. Every rule is mech
     glued to a word, ``-`` or ``.`` (``COMMIT``), found only in the cells the legacy schema reserves for
     source revisions and limits (a finding's Evidence and Scope and limits cells, the Evidence cell of a
     compatibility row, a lead's Static evidence, a spec's Scope section). Elsewhere such words are pawn
-    IDs, tag hashes or GUID parts. A row with several distinct commits keeps none (``Extraction.commits`` lists them).
+    IDs, tag hashes or GUID parts. A row with several distinct commits keeps none and names them in a gap,
+    ``scope.commit: several commits in row (a, b)``.
 
   Builds named only in a cited evidence label are never copied. A row without tokens has no scope;
   ``scope`` is then a gap where the type requires it.
@@ -169,10 +170,18 @@ def implied_status(cell: str, kind: str) -> str | None:
     return None
 
 
-def finish(data: dict[str, JSON], legacy: dict[str, JSON]) -> Record:
-    """Add ``legacy`` and the gaps (required fields the row does not state), then validate."""
+def finish(data: dict[str, JSON], legacy: dict[str, JSON], extraction: Extraction | None = None, body: str | None = None) -> Record:
+    """Add ``legacy`` and the gaps, then validate. Gaps: required fields the row does not state, and
+    ``scope.commit: several commits in row (a, b)`` when the row names more than one commit."""
     data["legacy"] = legacy
     kind = str(data["type"])
-    if gaps := [name for name in TYPES[kind].required if name not in data]:
-        data["gaps"] = list[JSON](gaps)
-    return Record.from_json(data)
+    gaps = [name for name in TYPES[kind].required if name not in data and not (name == "body" and body is not None)]
+    if extraction is not None and len(extraction.commits) > 1:
+        gaps.append(several_commits(extraction.commits))
+    if gaps:
+        data["gaps"] = list[JSON](sorted(gaps, key=id_key))
+    return Record.from_json(data, body)
+
+
+def several_commits(commits: Sequence[str]) -> str:
+    return f"scope.commit: several commits in row ({', '.join(commits)})"

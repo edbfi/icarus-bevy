@@ -9,15 +9,16 @@ journal holds at cut-over:
 - ``accepted``: ``main`` already holds the same record (for example through a squash merge); no proposal.
 - ``new``: ``main`` has no record with the ID; a first revision.
 - ``revision``: ``main`` holds the ID and so did the merge-base: a revision naming ``main``'s record as
-  ``prev``. Fields the rules do not let a revision change (a finding's claim, an evidence path...) are
-  listed in ``unrevisable``: such a row must become a new record that supersedes the old one.
+  ``prev`` (by ``rev``). Fields the rules do not let a revision change (``check``'s allow-list: anything
+  but status, appended notes and verified_on, a REF body, an unknown's next probe) are listed in ``unrevisable``: such a row must become a new record that supersedes the old one.
 - ``conflict``: ``main`` holds the ID, the merge-base did not, and the contents differ: both sides
   allocated the number, or ``main`` took an earlier draft. Never proposed; it needs a new ID or a
   reconciliation by hand.
 
 New compatibility and campaign rows get positional IDs at export, so their IDs are only provisional.
-Spec and digest edits are not rows; they are listed for review. ``unsalvaged`` holds every proposal or
-conflict whose revision is not yet in ``ref``'s own journal.
+A document the branch changed (a spec, digest, ledger prose, the status file) is listed by path with
+the main REF whose body to revise, since a REF's ``legacy`` never changes and its body is revised by hand. ``unsalvaged`` holds every proposal or
+conflict whose content (ID and sha256) is not yet in ``ref``'s own journal.
 """
 
 from __future__ import annotations
@@ -25,15 +26,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.memory.check import NOT_REVISABLE
+from tools.memory.check import APPEND_ONLY, REVISABLE
 from tools.memory.gitio import git
 from tools.memory.journal import Revision, read_git
 from tools.memory.legacy import Export, export
 from tools.memory.model import Record, id_key
 
 MAIN = "main"
-LEGACY_DIRS = ("docs/ledgers", "evidence")
-SYNTHESIS_DIRS = ("docs/specs", "docs/research")
 SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 
 
@@ -51,14 +50,16 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
 
 
-def changed_paths(root: Path, base: str, head: str, prefixes: tuple[str, ...]) -> list[str]:
-    output = git(root, "diff", "--name-only", "--no-renames", "-z", base, head, "--", *prefixes).decode()
-    return sorted(path for path in output.split("\0") if path)
+def documents(records: dict[str, Record]) -> dict[str, Record]:
+    """REF records by source path."""
+    return {record.legacy.path: record for record in records.values() if record.type == "reference" and record.legacy is not None}
 
 
 def unrevisable_fields(old: Record, new: Record) -> tuple[str, ...]:
-    names = NOT_REVISABLE.get(new.type, ())
-    return tuple(name for name in names if (old.scope != new.scope if name == "scope" else old.fields.get(name) != new.fields.get(name)))
+    """Fields that differ although ``check``'s allow-list (``REVISABLE``, ``APPEND_ONLY``, status) does not let a revision change them."""
+    before, after = old.to_json(), new.to_json()
+    allowed = {"status", *APPEND_ONLY, *REVISABLE.get(new.type, ())}
+    return tuple(name for name in sorted(before.keys() | after.keys()) if name not in allowed and before.get(name) != after.get(name))
 
 
 def commit(root: Path, ref: str) -> str:
@@ -91,11 +92,19 @@ def salvage(root: Path, ref: str) -> Salvage:
             result.unrevisable[identifier] = fields
         if record.type in ("compatibility", "report") and prev is None:
             result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
-        result.proposals.append(Revision.of(record, [Revision.of(prev).sha256] if prev is not None else []))
-    result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key))
-    result.notices.extend(f"{path}: spec or digest changed; not a legacy row, review it by hand" for path in changed_paths(root, base, head, SYNTHESIS_DIRS))
-    journal = {revision.sha256 for segment in read_git(root, head) for revision in segment.revisions}
-    result.unsalvaged = [revision.record.id for revision in result.proposals if revision.sha256 not in journal]
+        # ``main``'s journal holds each migrated record as a first revision, so that revision's ``rev`` is the prev.
+        result.proposals.append(Revision.of(record, [Revision.of(prev).rev] if prev is not None else []))
+    result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
+                          if before[identifier].type in SALVAGED)
+    main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
+    for path, record in sorted(documents(after).items()):
+        on_main = main_refs.get(path)
+        if on_main is None:
+            result.notices.append(f"{path}: new document; propose a REF for it by hand")
+        elif record.body not in (on_main.body, base_bodies.get(path)):
+            result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
+    journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
+    result.unsalvaged = [revision.record.id for revision in result.proposals if (revision.record.id, revision.sha256) not in journal]
     result.unsalvaged += [new.id for _old, new in result.conflicts]
     result.proposals.sort(key=lambda revision: (revision.record.type, id_key(revision.record.id)))
     return result

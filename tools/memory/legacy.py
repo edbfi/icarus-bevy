@@ -4,8 +4,9 @@
 ``export(root, rev)`` reads the revision through the typed evidence catalog (``resolved_catalog`` and
 ``Index``: one parse path for F, U, N and M rows of every topic), converts each row by the rules in
 ``tools.memory.legacy_rules``, adds what the catalog keeps only as text (``tools.memory.legacy_tables``:
-compatibility, campaign and lead tables, specs, releases), and returns every record once, as a first
-revision. Nothing is checked out and no artifact is read or hashed.
+compatibility, campaign and lead tables, releases) and every document the cut-over deletes as a
+reference (``tools.memory.legacy_prose``: specs, digests, ledger prose, the status file, the evidence
+README), and returns every record once, as a first revision. Nothing is checked out and no artifact is read or hashed.
 
 ``write(result, out)`` writes the segments under ``out/memory/journal``, one change set per record
 type, each segment created at the revision's commit time: exporting one revision twice yields
@@ -22,7 +23,7 @@ from pathlib import Path
 from tools.evidence_catalog_model import Entry, Index, references, topic
 from tools.evidence_catalog_publish import resolved_catalog
 from tools.evidence_catalog_store import Catalog, commit_id
-from tools.memory import legacy_tables
+from tools.memory import legacy_prose, legacy_tables
 from tools.memory.gitio import git
 from tools.memory.journal import JOURNAL, Revision, read_tree, split_change_set, write_change_set
 from tools.memory.legacy_rules import (
@@ -156,7 +157,7 @@ def convert_finding(entry: Entry, index: Index, prose: Sequence[ProseLink]) -> M
     put_links(data, legacy, links)
     if (implied := implied_status(status, "finding")) is not None:
         legacy["implied_status"] = implied
-    return Migrated(finish(data, legacy), f"{entry.path}:{entry.line}", extraction)
+    return Migrated(finish(data, legacy, extraction), f"{entry.path}:{entry.line}", extraction)
 
 
 def convert_unknown(entry: Entry, index: Index) -> Migrated:
@@ -178,7 +179,7 @@ def convert_unknown(entry: Entry, index: Index) -> Migrated:
     put_links(data, legacy, row_links(entry, index, resolved=implied == "resolved"))
     if implied is not None:
         legacy["implied_status"] = implied
-    return Migrated(finish(data, legacy), f"{entry.path}:{entry.line}", extraction)
+    return Migrated(finish(data, legacy, extraction), f"{entry.path}:{entry.line}", extraction)
 
 
 def convert_bug(entry: Entry, index: Index) -> Migrated:
@@ -192,7 +193,7 @@ def convert_bug(entry: Entry, index: Index) -> Migrated:
         data["scope"] = extraction.scope
     legacy: dict[str, JSON] = {"path": entry.path, "cells": legacy_cells(entry)}
     put_links(data, legacy, row_links(entry, index, resolved=False))
-    return Migrated(finish(data, legacy), f"{entry.path}:{entry.line}", extraction)
+    return Migrated(finish(data, legacy, extraction), f"{entry.path}:{entry.line}", extraction)
 
 
 def convert_evidence(entry: Entry) -> Migrated:
@@ -258,7 +259,7 @@ def export(root: Path, rev: str) -> Export:
             case _:
                 result.migrated.append(convert_evidence(entry))
     result.migrated.extend(legacy_tables.tables(catalog))
-    result.migrated.extend(legacy_tables.references(root, revision))
+    result.migrated.extend(legacy_prose.references(root, revision))
     result.migrated.extend(legacy_tables.releases(root, revision, index))
     seen: set[str] = set()
     for item in result.migrated:

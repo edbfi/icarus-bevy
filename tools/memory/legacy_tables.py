@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The legacy sources the evidence catalog keeps only as text: compatibility and bug tables, specs, releases.
+"""The legacy sources the evidence catalog keeps only as text: compatibility and bug tables, and releases.
 
 Conversions follow ``tools.memory.legacy_rules`` (verbatim cells, ``legacy:`` values, gaps, legacy-text scope).
 
@@ -13,8 +13,7 @@ Conversions follow ``tools.memory.legacy_rules`` (verbatim cells, ``legacy:`` va
   problem | Status | Next evidence``) become ``RP-001...`` in file order and static-lead rows (``Lead |
   ...``) keep the ``SL-NNN`` that opens their Lead cell; the lead text is the rest of that cell. Any
   other table in these two files, except the catalog's own N table, is an error.
-- **Specs** (``references``): every ``docs/specs/**/*.md`` in path order is ``REF-001...``; the body is
-  the file verbatim, the title its ``# `` line, the scope the tokens of its ``## Scope`` section.
+- Specs and other documents become references in ``tools.memory.legacy_prose``.
 - **Releases** (``releases``): ``REL-x.y.z`` from explicit statements only, each kept in ``sources``:
   the ``[release]`` table of ``config/release.toml`` (status ``current``) and of each
   ``tests/fixtures/releases/*.toml`` (``past``), and finding rows that pair a build with a release
@@ -38,11 +37,10 @@ from tools.evidence_catalog_model import PIPE, Index
 from tools.evidence_catalog_store import Catalog
 from tools.memory.gitio import read_blobs, tree_files
 from tools.memory.legacy_rules import BUILD, RELEASE, ROLE, Migrated, MigrationError, extract, finish, vocabulary
-from tools.memory.model import JSON, TYPES, Record, as_mapping, id_key, sha256_hex
+from tools.memory.model import JSON, TYPES, as_mapping, id_key
 
 COMPATIBILITY = "docs/ledgers/compatibility.md"
 BUGS = "docs/ledgers/bugs.md"
-SPECS = "docs/specs/"
 RELEASE_CONFIG = "config/release.toml"
 RELEASE_FIXTURES = "tests/fixtures/releases/"
 SURFACES = ("Surface", "Status", "Required proof")
@@ -137,7 +135,7 @@ def tables(catalog: Catalog) -> list[Migrated]:
         extraction = extract({slug(name): cell for name, cell in named.items()}, ("evidence",))
         if extraction.scope is not None:
             data["scope"] = extraction.scope
-        result.append(Migrated(finish(data, legacy_of(row)), f"{row.path}:{row.line}", extraction))
+        result.append(Migrated(finish(data, legacy_of(row), extraction), f"{row.path}:{row.line}", extraction))
     for row in table_rows(BUGS, text_lines(catalog, BUGS)):
         named = dict(zip(row.header, row.cells, strict=True))
         cells = {slug(name): cell for name, cell in named.items()}
@@ -166,7 +164,7 @@ def tables(catalog: Catalog) -> list[Migrated]:
             raise MigrationError(f"{row.path}:{row.line}: unrecognised table {' | '.join(row.header)}")
         if extraction.scope is not None:
             data["scope"] = extraction.scope
-        result.append(Migrated(finish(data, legacy_of(row)), f"{row.path}:{row.line}", extraction))
+        result.append(Migrated(finish(data, legacy_of(row), extraction), f"{row.path}:{row.line}", extraction))
     return result
 
 
@@ -179,45 +177,6 @@ def git_texts(root: Path, revision: str, prefix: str) -> dict[str, str]:
             raise MigrationError(f"{revision}:{path}: blob missing")
         texts[path] = data.decode("utf-8")
     return texts
-
-
-def section(text: str, heading: str) -> tuple[str, int]:
-    """The lines under ``## heading`` up to the next ``## ``, and the line number of the heading."""
-    lines = text.split("\n")
-    for number, line in enumerate(lines):
-        if line == f"## {heading}":
-            end = next((index for index in range(number + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
-            return "\n".join(lines[number + 1:end]), number + 1
-    return "", 0
-
-
-def references(root: Path, revision: str) -> list[Migrated]:
-    """REF records of every spec at ``revision``, in path order."""
-    result: list[Migrated] = []
-    specs = {path: text for path, text in git_texts(root, revision, SPECS).items() if path.endswith(".md")}
-    for number, (path, body) in enumerate(sorted(specs.items()), 1):
-        first = body.split("\n", 1)[0]
-        data: dict[str, JSON] = {"id": f"REF-{number:03d}", "type": "reference", "status": "current"}
-        if first.startswith("# ") and first[2:].strip():
-            data["title"] = first[2:].strip()
-        if (area := path.removeprefix(SPECS).split("/")[0]) and "/" in path.removeprefix(SPECS):
-            data["area"] = area
-        scope_text, line = section(body, "Scope")
-        extraction = extract({"scope": scope_text}, ("scope",))
-        if extraction.scope is not None:
-            data["scope"] = extraction.scope
-        legacy: dict[str, JSON] = {"path": path, "cells": {"heading": first}}
-        record = finish_reference(data, legacy, body)
-        result.append(Migrated(record, f"{path}:{line}", extraction))
-    return result
-
-
-def finish_reference(data: dict[str, JSON], legacy: dict[str, JSON], body: str) -> Record:
-    data["body_sha256"] = sha256_hex(body.encode())
-    data["legacy"] = legacy
-    if gaps := [name for name in TYPES["reference"].required if name not in data and name != "body"]:
-        data["gaps"] = list[JSON](gaps)
-    return Record.from_json(data, body)
 
 
 @dataclass(frozen=True)

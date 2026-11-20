@@ -12,7 +12,9 @@ Invariants of every parsed ``Record``:
 - A record is *migrated* exactly when ``legacy`` is set. Only a migrated record may carry
   ``legacy:<verbatim>`` enum values, ``gaps``, ``assigned_at_migration`` (required on migrated CP and RP
   records, forbidden elsewhere), a ``legacy-text`` scope basis or an ``any:<id>`` build.
-- Every required field is present, or, on a migrated record only, named in ``gaps``.
+- Every required field is present, or, on a migrated record only, named in ``gaps``. A gap is a field
+  name or ``scope.<part>``, optionally followed by ``: <detail>`` (``scope.commit: several commits in
+  row (a, b)``); the field it names is absent.
 - Strings are NFC, carry no control character other than TAB and LF, and are non-empty. Field values
   are single trimmed lines; only a REF ``body`` and verbatim ``legacy`` cells may span lines.
 - No ``null``, no ``false`` flag and no empty list is ever stored: absent means omitted.
@@ -76,6 +78,7 @@ EVIDENCE_KINDS = ("receipt", "rea-bundle", "report", "review", "revision", "inpu
 OUTCOMES = ("pass", "fail", "aborted")
 SUBJECTS = ("original-server", "original-client", "native", "decision", "private-input", "tooling")
 BASES = ("explicit", "legacy-text")
+SCOPE_PARTS = ("subjects", "builds", "releases", "commit")
 IMPLIED = ("superseded", "resolved", "retired")
 DECISION_FIELDS = ("instruction", "instruction_date", "instruction_source")
 
@@ -617,14 +620,16 @@ def _validate(reader: _Reader, record: Record) -> None:
     spec, migrated = record.spec, record.migrated
     known = {*spec.fields, "scope", "refs", "body", "supersedes", "resolves", "cites", "verified_on", "notes"}
     for gap in record.gaps:
+        name = gap_field(gap)
         if not migrated:
             reader.fail("gaps", "only a migrated record lists gaps")
-        if gap not in known:
+        if name not in known and not (name.startswith("scope.") and name[6:] in SCOPE_PARTS):
             reader.fail("gaps", f"{gap!r} is not a field of a {record.type}")
-        if _present(record, gap):
+        if _present(record, name):
             reader.fail("gaps", f"{gap!r} is listed as missing but present")
+    missing = {gap_field(gap) for gap in record.gaps}
     for name in spec.required:
-        if not _present(record, name) and name not in record.gaps:
+        if not _present(record, name) and name not in missing:
             reader.fail(name, "required field missing" + (" (list it in gaps if the legacy row lacks it)" if migrated else ""))
     if record.assigned_at_migration != (migrated and record.type in ("compatibility", "report")):
         reader.fail("assigned_at_migration", "is set exactly on migrated CP and RP records")
@@ -653,7 +658,18 @@ def _validate(reader: _Reader, record: Record) -> None:
             reader.fail("run", "present exactly on run evidence")
 
 
+def gap_field(gap: str) -> str:
+    """The field a gap names: ``<field>``, ``scope.<part>``, either optionally followed by ``: <detail>``."""
+    return gap.split(":", 1)[0]
+
+
 def _present(record: Record, name: str) -> bool:
+    if name.startswith("scope."):
+        scope = record.scope
+        if scope is None:
+            return False
+        part = name.removeprefix("scope.")
+        return bool(scope.commit) if part == "commit" else bool({"subjects": scope.subjects, "builds": scope.builds, "releases": scope.releases}.get(part))
     match name:
         case "scope":
             return record.scope is not None

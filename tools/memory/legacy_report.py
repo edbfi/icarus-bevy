@@ -3,9 +3,9 @@
 
 ``render(result, root)`` returns Markdown with, in order: counts per type; every record with gaps,
 grouped by type and gap; every ``legacy:<verbatim>`` value with its count and IDs; links taken from
-ledger prose; rows whose several commits leave the scope without one; the judgments the rows force;
-release records with their notes; citations kept as text; the residue; inbound references to spec and
-digest paths.
+ledger prose; rows whose several commits leave the scope without one; the judgments the rows force
+(standing, partitions against the current release); release records with what each lacks and its
+notes; citations kept as text; the residue; inbound references to spec and digest paths.
 
 - **Residue** (``residue``): every concrete value in the research digests (``docs/research/<area>/``,
   not the archive), in ledger lines outside table rows and in ``docs/implementation-status.md`` that
@@ -29,8 +29,10 @@ from pathlib import Path
 from tools.evidence_catalog_model import ID_IN_TEXT
 from tools.memory.check import CITATION
 from tools.memory.gitio import git, read_blobs
+from tools.memory.journal import JOURNAL, Revision, Segment
 from tools.memory.legacy import Export
 from tools.memory.model import LEGACY, Record, id_key
+from tools.memory.state import partition, replay
 
 VALUE = re.compile(
     r"`([^`\n]+)`|(0x[0-9A-Fa-f]+)|([0-9]{4}-[0-9]{2}-[0-9]{2})|([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)+|[0-9]{2,})"
@@ -181,9 +183,16 @@ def render(result: Export, root: Path) -> str:
     gaps: dict[tuple[str, str], list[str]] = defaultdict(list)
     for record in records:
         for gap in record.gaps:
-            gaps[(record.type, gap)].append(record.id)
-    for (kind, gap), identifiers in sorted(gaps.items()):
-        lines.append(f"- {kind} `{gap}`: {len(identifiers)}: {_ids(identifiers)}")
+            name, _, detail = gap.partition(": ")
+            gaps[(record.type, name)].append(f"{record.id} ({detail})" if detail else record.id)
+    kinds = Counter[str]()
+    for (_kind, name), identifiers in gaps.items():
+        kinds[name] += len(identifiers)
+    lines.append("Records per gap kind (all types): " + ", ".join(f"`{name}` {count}" for name, count in sorted(kinds.items())) + ".")
+    lines.append(f"Records with at least one gap: {sum(1 for record in records if record.gaps)} of {len(records)}.")
+    lines.append("")
+    for (kind, name), identifiers in sorted(gaps.items()):
+        lines.append(f"- {kind} `{name}`: {len(identifiers)}: {', '.join(sorted(identifiers, key=lambda item: id_key(item.split(' ', 1)[0])))}")
     lines.extend(["", "## Values outside the vocabulary (`legacy:`)", ""])
     legacy_values: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for record in records:
@@ -202,9 +211,15 @@ def render(result: Export, root: Path) -> str:
         by_type[record.type].append(record.id)
     lines.append(f"- bug status `fixed` (no status column; the table states the former behavior and the change): {_ids(by_type['bug'])}")
     lines.append(f"- lead status `open` (the table calls the leads hypotheses to test): {_ids(by_type['lead'])}")
-    lines.append(f"- reference status `current` (spec on the current surface): {_ids(by_type['reference'])}")
+    lines.append(f"- reference status `current` (documents on the current surface): {_ids(by_type['reference'])}")
     standing = [record.id for record in records if record.type == "finding" and "standing" in record.fields]
-    lines.append(f"- finding `standing` set from the row's own words: {len(standing)}" + (f": {_ids(standing)}" if standing else ""))
+    findings = len(by_type["finding"])
+    if standing:
+        lines.append(f"- finding `standing` set from the row's own words on {len(standing)} of {findings}: {_ids(standing)}")
+    else:
+        lines.append(f"- `standing` is unset on every one of the {findings} migrated findings: no legacy row states confirmed, candidate"
+                     + " or refuted in so many words (as a `;`-separated part of a cell), so it is a gap on each")
+    lines.extend(current_lines(records))
     lines.append("- `subjects` set: 0 (never: no legacy table states a subject)")
     scoped = Counter(record.type for record in records if record.scope is not None)
     lines.append("- records with a legacy-text scope: " + ", ".join(f"{kind} {count}" for kind, count in sorted(scoped.items())))
@@ -212,7 +227,7 @@ def render(result: Export, root: Path) -> str:
     for record in records:
         if record.type == "release":
             stated = ", ".join(f"{name} {record.fields[name]}" for name in ("version_string", "server_build", "client_build") if name in record.fields)
-            lines.append(f"- {record.id} ({record.status}): {stated or 'no field stated'}; gaps {', '.join(record.gaps) or 'none'}")
+            lines.append(f"- {record.id} ({record.status}): states {stated or 'no field'}; lacks {', '.join(record.gaps) or 'nothing'}")
             lines.extend(f"  - note: {note}" for note in record.notes)
     lines.extend(["", "## Citations kept as text (not edges)", ""])
     lines.extend(f"- {name}: {count}" for name, count in sorted(text_citations(result).items()))
@@ -229,6 +244,30 @@ def render(result: Export, root: Path) -> str:
         f"- {item.path}:{item.line} -> {item.target}" + (" (frozen)" if item.path.startswith(FROZEN) else "") for item in references
     )
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def current_lines(records: list[Record]) -> list[str]:
+    """Partitions of the active findings against the current REL record, and why none can be ``current``."""
+    state = replay([Segment(f"{JOURNAL}/report", "", tuple(Revision.of(record) for record in records))])
+    release = next((record for record in records if record.type == "release" and record.status == "current"), None)
+    if release is None:
+        return ["- no REL record is current, so no partition is computed"]
+    placed = Counter[str]()
+    pins: list[str] = []
+    for record in records:
+        if record.type == "finding" and state.status(record.id) == "active":
+            where = partition(record, release, lambda _commit: None)
+            placed[where.name] += 1
+            if where.names_pin:
+                pins.append(record.id)
+    lines = [f"- active findings against {release.id}: " + ", ".join(f"{name} {count}" for name, count in sorted(placed.items()))
+             + f"; {len(pins)} legacy-scope rows name the pin ({_ids(pins) or 'none'})"]
+    if not placed["current"]:
+        lines.append(f"- no active finding is `current` for {release.id}: every migrated scope is `legacy-text`, which the partition"
+                     + " rule places in `legacy-scope` (never verified, even when a token names the pin) or, without tokens, in"
+                     + " `unscoped`; only an explicit scope, a `verified_on` for the release or a build-independent decision is"
+                     + " `current`, and migration writes none of these")
+    return lines
 
 
 def _grouped(found: list[Residue]) -> list[tuple[str, list[Residue]]]:

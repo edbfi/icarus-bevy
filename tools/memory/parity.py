@@ -18,6 +18,9 @@ Every mismatch is a line naming its ID; the gate passes only with none. It check
 - **Replay**: no replay problem, dangling link, supersession cycle or fork.
 - **``check --ci``** on a scratch clone of ``rev`` holding the journal, so the citation scan covers the
   repository's code and documents; the census of citations to retired records is reported.
+- **Bytes**: every byte of every file under ``docs/ledgers/``, ``docs/specs/``, ``docs/research/`` (not
+  ``archive/``), ``docs/implementation-status.md`` and ``evidence/`` is in a record's verbatim legacy
+  cells, a REF body, or a structural line (``tools.memory.legacy_prose.account``).
 - **``protected-paths``** from the journal alone equals the legacy ``docs_lint`` local list for the
   same revision's shards, both resolved against the primary checkout.
 """
@@ -39,6 +42,7 @@ from tools.evidence_catalog_store import commit_id
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, run_check
 from tools.memory.gitio import GitError, listed_files, read_blobs, tree_files
 from tools.memory.journal import JOURNAL, read_tree
+from tools.memory.legacy_prose import account
 from tools.memory.legacy_rules import PROSE_SUPERSESSION, SELECTORS, vocabulary
 from tools.memory.model import CONFIDENCES, EVIDENCE_CLASSES, EVIDENCE_KINDS, FINDING_KINDS, SEVERITIES, TYPES, Record, id_key
 from tools.memory.paths import primary_checkout, protected_paths_for
@@ -58,7 +62,8 @@ class Parity:
 
 def raw_counts(root: Path, revision: str) -> tuple[dict[str, int], list[str]]:
     """Record counts from a plain scan of the legacy files, and the finding numbers that have no row."""
-    files = tree_files(root, revision, "docs/ledgers") | tree_files(root, revision, "evidence") | tree_files(root, revision, "docs/specs")
+    files = {**tree_files(root, revision, "docs/ledgers"), **tree_files(root, revision, "evidence"), **tree_files(root, revision, "docs/specs"),
+             **tree_files(root, revision, "docs/research"), **tree_files(root, revision, "docs/implementation-status.md")}
     paths = sorted(files)
     texts = {path: (data or b"").decode() for path, data in zip(paths, read_blobs(root, [files[path] for path in paths]), strict=True)}
     counts: Counter[str] = Counter()
@@ -80,7 +85,13 @@ def raw_counts(root: Path, revision: str) -> tuple[dict[str, int], list[str]]:
             counts["compatibility"] += sum(1 for line in lines if line.startswith("|")) - 2 * len(separators)
         elif path.startswith("evidence/") and path.endswith(".jsonl"):
             counts["evidence"] += sum(1 for line in lines if line.strip())
+        if path.startswith("docs/ledgers/") and any(line.strip() and not line.startswith("|") for line in lines):
+            counts["reference"] += 1
         elif path.startswith("docs/specs/") and path.endswith(".md"):
+            counts["reference"] += 1
+        elif path.startswith("docs/research/") and not path.startswith("docs/research/archive/") and path.count("/") == 3 and path.endswith(".md"):
+            counts["reference"] += 1
+        elif path in ("docs/implementation-status.md", "evidence/README.md"):
             counts["reference"] += 1
     unallocated = [f"F-{number:03d}" for number in range(1, max(numbers, default=0) + 1) if number not in numbers]
     return dict(counts), unallocated
@@ -317,6 +328,10 @@ def parity(root: Path, rev: str, journal: Path) -> Parity:
                 if resolution.problem is not None:
                     result.fail(f"{identifier}: {citation}: {resolution.problem}")
     result.measured["selectors"] = ", ".join(f"{kind} {count}" for kind, count in sorted(selectors.items())) + f" (total {sum(selectors.values())})"
+    accounting = account(root, revision, {identifier: entry.record for identifier, entry in state.entries.items()})
+    result.measured["byte accounting"] = (f"{accounting.files} files: " + ", ".join(f"{kind} {count}" for kind, count in sorted(accounting.bytes.items()))
+                                          + f" (total {sum(accounting.bytes.values())})")
+    result.mismatches.extend(accounting.problems)
     primary = primary_checkout(root)
     with tempfile.TemporaryDirectory(prefix="memory-parity-") as scratch:
         tree = scratch_clone(primary, revision, journal, Path(scratch))
