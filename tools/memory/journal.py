@@ -6,9 +6,14 @@ A segment holds one change set, or one slice of a change set larger than ``SEGME
     memory/journal/YYYY/MM/<YYYYMMDDTHHMMSSZ>-<first 12 hex of the file's sha256>.jsonl
 
 Line 1 is the header ``{"created":"<UTC timestamp>","format":"icarus-memory-journal","revisions":N,"version":1}``;
-each further line is one revision ``{"body"?:...,"prev":[...],"record":{...},"sha256":"..."}``. Every line is
-canonical JSON ending in LF. The name binds the bytes, so concurrent branches never collide and a
-half-written or edited segment no longer matches its name.
+each further line is one revision ``{"body"?:...,"prev":[...],"record":{...},"rev":"...","sha256":"..."}``.
+Every line is canonical JSON ending in LF. The name binds the bytes, so concurrent branches never collide
+and a half-written or edited segment no longer matches its name.
+
+A revision has two digests. ``sha256`` is the record's content digest (what the bank holds and read-back
+verifies). ``rev`` is the revision's identity, the sha256 of the canonical JSON ``{"prev": [...], "record":
+{...}}``; ``prev`` names earlier revisions by ``rev``. Returning a record to earlier content therefore makes
+a new revision with the same ``sha256`` and a different ``rev``.
 
 Readers are strict: anything that is not exactly this format raises ``JournalError`` naming the path
 (and line). The only file they skip is the writer's temporary file, ``.<name>.<pid>.tmp``, which an
@@ -21,6 +26,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 import re
 
@@ -42,10 +48,10 @@ class JournalError(ValueError):
 
 @dataclass(frozen=True)
 class Revision:
-    """A record revision: its content, the sha256 of its canonical JSON, and the revisions it follows.
+    """A record revision: its content, the content digest ``sha256``, and the revisions it follows.
 
-    ``prev`` is sorted; it is empty for a record's first revision and names two or more heads when the
-    revision reconciles a fork.
+    ``prev`` holds revision identities (``rev``), sorted; it is empty for a record's first revision and
+    names two or more heads when the revision reconciles a fork. ``rev`` covers ``prev`` and the record.
     """
 
     record: Record
@@ -57,11 +63,16 @@ class Revision:
         """A revision of ``record`` after ``prev``; refuses records without an admissible canonical form or text."""
         _ = render_text(record)
         if len(set(prev)) != len(prev) or not all(SHA256.fullmatch(item) for item in prev):
-            raise JournalError(f"{record.id}: prev must be distinct sha256 digests")
+            raise JournalError(f"{record.id}: prev must be distinct revision identities (sha256 digests)")
         return cls(record, record_sha256(record), tuple(sorted(prev)))
 
+    @cached_property
+    def rev(self) -> str:
+        """The revision identity: sha256 of the canonical JSON of ``{"prev": [...], "record": {...}}``."""
+        return sha256_hex(canonical_json({"prev": list(self.prev), "record": self.record.to_json()}))
+
     def to_json(self) -> dict[str, JSON]:
-        result: dict[str, JSON] = {"prev": list(self.prev), "record": self.record.to_json(), "sha256": self.sha256}
+        result: dict[str, JSON] = {"prev": list(self.prev), "record": self.record.to_json(), "rev": self.rev, "sha256": self.sha256}
         if self.record.body is not None:
             result["body"] = self.record.body
         return result
@@ -72,8 +83,8 @@ class Revision:
     @classmethod
     def from_json(cls, data: object) -> Revision:
         raw = as_mapping(data, "revision")
-        if not {"prev", "record", "sha256"} <= raw.keys() <= {"prev", "record", "sha256", "body"}:
-            raise JournalError(f"revision keys must be prev, record, sha256 and an optional body, not {sorted(raw)}")
+        if not {"prev", "record", "rev", "sha256"} <= raw.keys() <= {"prev", "record", "rev", "sha256", "body"}:
+            raise JournalError(f"revision keys must be prev, record, rev, sha256 and an optional body, not {sorted(raw)}")
         body = raw.get("body")
         if body is not None and not isinstance(body, str):
             raise JournalError("revision body must be a string")
@@ -84,6 +95,8 @@ class Revision:
         revision = cls.of(record, [str(item) for item in prev])
         if raw["sha256"] != revision.sha256:
             raise JournalError(f"{record.id}: sha256 {raw['sha256']!r} does not match the record ({revision.sha256})")
+        if raw["rev"] != revision.rev:
+            raise JournalError(f"{record.id}: rev {raw['rev']!r} does not match prev and record ({revision.rev})")
         return revision
 
 
@@ -107,39 +120,52 @@ def _stamp(created: datetime) -> tuple[str, str]:
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ"), utc.strftime("%Y%m%dT%H%M%SZ")
 
 
-def encode_segment(created: datetime, revisions: Sequence[Revision]) -> tuple[str, bytes]:
-    """The repository-relative path and bytes of one segment; ``JournalError`` past ``SEGMENT_LIMIT``."""
-    if not revisions:
+def _header(created: datetime, count: int) -> bytes:
+    timestamp, _ = _stamp(created)
+    return canonical_json({"created": timestamp, "format": FORMAT, "revisions": count, "version": VERSION}) + b"\n"
+
+
+def _assemble(created: datetime, lines: Sequence[bytes]) -> tuple[str, bytes]:
+    if not lines:
         raise JournalError("a segment holds at least one revision")
-    timestamp, stamp = _stamp(created)
-    header: JSON = {"created": timestamp, "format": FORMAT, "revisions": len(revisions), "version": VERSION}
-    data = canonical_json(header) + b"\n" + b"".join(revision.line() for revision in revisions)
+    data = _header(created, len(lines)) + b"".join(lines)
     if len(data) > SEGMENT_LIMIT:
-        raise JournalError(f"segment of {len(revisions)} revisions is {len(data)} bytes; the limit is {SEGMENT_LIMIT}")
+        raise JournalError(f"segment of {len(lines)} revisions is {len(data)} bytes; the limit is {SEGMENT_LIMIT}")
+    _, stamp = _stamp(created)
     return f"{JOURNAL}/{stamp[:4]}/{stamp[4:6]}/{stamp}-{sha256_hex(data)[:12]}.jsonl", data
 
 
+def encode_segment(created: datetime, revisions: Sequence[Revision]) -> tuple[str, bytes]:
+    """The repository-relative path and bytes of one segment; ``JournalError`` past ``SEGMENT_LIMIT``."""
+    return _assemble(created, [revision.line() for revision in revisions])
+
+
 def split_change_set(created: datetime, revisions: Sequence[Revision]) -> list[tuple[str, bytes]]:
-    """A change set as segments of at most ``SEGMENT_LIMIT`` bytes each, filled in order."""
+    """A change set as segments of at most ``SEGMENT_LIMIT`` bytes each, filled in order.
+
+    Deterministic: the same ``created`` and revisions always give the same paths and bytes, so a
+    migration that passes an explicit timestamp can regenerate its segments exactly.
+    """
     segments: list[tuple[str, bytes]] = []
-    current: list[Revision] = []
+    current: list[bytes] = []
+    size = 0
     for revision in revisions:
-        try:
-            _ = encode_segment(created, [*current, revision])
-            current.append(revision)
-        except JournalError:
-            if not current:
-                raise
-            segments.append(encode_segment(created, current))
-            current = [revision]
+        line = revision.line()
+        if current and len(_header(created, len(current) + 1)) + size + len(line) > SEGMENT_LIMIT:
+            segments.append(_assemble(created, current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line)
     if current:
-        segments.append(encode_segment(created, current))
+        segments.append(_assemble(created, current))
     return segments
 
 
 def write_change_set(root: Path, created: datetime, revisions: Sequence[Revision]) -> tuple[Path, ...]:
     """Write a change set under ``root`` durably (temp file, fsync, rename, fsync directory); returns the paths.
 
+    ``created`` is the explicit segment timestamp: the same ``created`` and revisions always give the same
+    file names and bytes (a migration passes a fixed one; an interactive write passes the current UTC time).
     Writing a segment that already exists with the same bytes is a no-op, so a retried write is safe.
     """
     written: list[Path] = []

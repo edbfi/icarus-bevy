@@ -2,7 +2,7 @@
 """Replay: a deterministic function from journal segments to record state, and read-time partitions.
 
 ``replay(segments)`` depends only on the set of segments, never on the order they were read in.
-Per ID it keeps every revision (by sha256), the heads (revisions no other revision names as ``prev``)
+Per ID it keeps every revision (keyed by its identity ``rev``), the heads (revisions no other revision names as ``prev``)
 and the problems a malformed history shows (an unknown ``prev``, a repeated revision, a ``prev``
 cycle). Two heads are a fork, shown as ``conflict`` until a reconciling revision names both.
 
@@ -34,7 +34,7 @@ class Located:
 
 @dataclass(frozen=True)
 class Entry:
-    """Every revision of one ID. ``heads`` is sorted by sha256 and never empty; ``head`` is its first."""
+    """Every revision of one ID. ``revisions`` is keyed by ``rev``; ``heads`` holds ``rev`` values, sorted, never empty; ``head`` is its first."""
 
     id: str
     revisions: Mapping[str, Located]
@@ -53,16 +53,16 @@ class Entry:
         return self.head.revision.record
 
     def history(self) -> tuple[Located, ...]:
-        """Every revision, each after all of its ``prev`` (ties by sha256)."""
+        """Every revision, each after all of its ``prev`` (ties by ``rev``)."""
         depth: dict[str, int] = {}
 
-        def depth_of(sha: str, seen: frozenset[str]) -> int:
-            if sha not in depth:
-                prev = [item for item in self.revisions[sha].revision.prev if item in self.revisions and item not in seen]
-                depth[sha] = 1 + max((depth_of(item, seen | {sha}) for item in prev), default=-1)
-            return depth[sha]
+        def depth_of(rev: str, seen: frozenset[str]) -> int:
+            if rev not in depth:
+                prev = [item for item in self.revisions[rev].revision.prev if item in self.revisions and item not in seen]
+                depth[rev] = 1 + max((depth_of(item, seen | {rev}) for item in prev), default=-1)
+            return depth[rev]
 
-        return tuple(self.revisions[sha] for sha in sorted(self.revisions, key=lambda sha: (depth_of(sha, frozenset()), sha)))
+        return tuple(self.revisions[rev] for rev in sorted(self.revisions, key=lambda rev: (depth_of(rev, frozenset()), rev)))
 
 
 @dataclass(frozen=True)
@@ -141,8 +141,8 @@ class State:
         problems: list[str] = []
         for identifier in sorted(self.entries, key=id_key):
             entry = self.entries[identifier]
-            for sha in entry.heads:
-                record = entry.revisions[sha].revision.record
+            for rev in entry.heads:
+                record = entry.revisions[rev].revision.record
                 named = [("supersedes", target) for target in record.links.supersedes]
                 named += [("resolves", target) for target in record.links.resolves]
                 named += [("refs", target) for target in record.links.refs]
@@ -183,21 +183,21 @@ def replay(segments: Iterable[Segment]) -> State:
     problems: list[str] = []
     for segment in sorted(segments, key=lambda item: item.path):
         for revision in segment.revisions:
-            known = located[revision.record.id].get(revision.sha256)
+            known = located[revision.record.id].get(revision.rev)
             if known is not None:
-                problems.append(f"{revision.record.id}: revision {revision.sha256[:12]} appears in {known.segment} and {segment.path}")
+                problems.append(f"{revision.record.id}: revision {revision.rev[:12]} appears in {known.segment} and {segment.path}")
                 continue
-            located[revision.record.id][revision.sha256] = Located(revision, segment.path)
+            located[revision.record.id][revision.rev] = Located(revision, segment.path)
     entries: dict[str, Entry] = {}
     for identifier in sorted(located, key=id_key):
         revisions = located[identifier]
         named: set[str] = set()
-        for sha in sorted(revisions):
-            for prev in revisions[sha].revision.prev:
+        for rev in sorted(revisions):
+            for prev in revisions[rev].revision.prev:
                 named.add(prev)
                 if prev not in revisions:
-                    problems.append(f"{identifier}: revision {sha[:12]} names unknown prev {prev[:12]}")
-        heads = tuple(sorted(sha for sha in revisions if sha not in named))
+                    problems.append(f"{identifier}: revision {rev[:12]} names unknown prev {prev[:12]}")
+        heads = tuple(sorted(rev for rev in revisions if rev not in named))
         if not heads or _has_cycle(revisions):
             problems.append(f"{identifier}: prev links form a cycle")
             heads = heads or tuple(sorted(revisions))
@@ -205,8 +205,8 @@ def replay(segments: Iterable[Segment]) -> State:
     superseded_by: dict[str, set[str]] = defaultdict(set)
     resolved_by: dict[str, set[str]] = defaultdict(set)
     for identifier, entry in entries.items():
-        for sha in entry.heads:
-            record = entry.revisions[sha].revision.record
+        for rev in entry.heads:
+            record = entry.revisions[rev].revision.record
             for target in record.links.supersedes:
                 superseded_by[target].add(identifier)
             for target in record.links.resolves:
@@ -224,15 +224,15 @@ def replay(segments: Iterable[Segment]) -> State:
 def _has_cycle(revisions: Mapping[str, Located]) -> bool:
     state: dict[str, int] = {}
 
-    def visit(sha: str) -> bool:
-        state[sha] = 1
-        for prev in revisions[sha].revision.prev:
+    def visit(rev: str) -> bool:
+        state[rev] = 1
+        for prev in revisions[rev].revision.prev:
             if prev in revisions and (state.get(prev) == 1 or (prev not in state and visit(prev))):
                 return True
-        state[sha] = 2
+        state[rev] = 2
         return False
 
-    return any(sha not in state and visit(sha) for sha in sorted(revisions))
+    return any(rev not in state and visit(rev) for rev in sorted(revisions))
 
 
 @dataclass(frozen=True)

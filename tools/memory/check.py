@@ -1,16 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``memory check --ci``: every check of the rules' Checks section that needs no Hindsight.
 
-``run_check(root, base)`` compares the working tree at ``root`` with Git ``base`` (normally
-``origin/main``) and returns a ``Report``: failing ``problems``, non-failing ``notices``, and
-``no_journal`` when the working tree holds no segment (nothing else is checked then).
+``run_check(root, base)`` checks the working tree at ``root`` and returns a ``Report``: failing
+``problems``, non-failing ``notices``, and ``no_journal`` when neither the working tree nor the
+reference tree holds a segment (nothing else is checked then; with ``require_journal`` that is also a
+problem).
 
-Checks, in report order: segment format and every revision's sha256 (the reader), replay problems
-(repeated revisions, unknown ``prev``), ``base`` segments unchanged, forks created against ``base``
-(fail) or inherited from it (notice), acyclic supersession, link targets and bundle membership,
-fields that are not revisable, the derived/inferred confidence rule, citations in code and documents
-(every one resolves; one new to a file does not name a retired record), decision and gate notices,
-and, once ``LEGACY_FROZEN`` is switched on, no added or modified legacy rows (``salvage_problems``).
+Two trees are read. The *reference* is ``git merge-base <base> HEAD``: what this branch started from,
+so a branch merely behind ``base`` is not blamed for what ``base`` gained since. It decides removed or
+changed segments and which files the branch changed (new citations, the gate notice, salvage). ``base``
+itself (normally ``origin/main``) is the *acceptance* set: forks are found in the union of its segments
+and the working tree's, and the confidence rule's sources must be accepted there. No merge base
+(unrelated histories, a shallow clone) is a problem, never a guess.
+
+Checks, in report order: segment format, ``rev`` and ``sha256`` (the reader), replay problems
+(repeated revisions, unknown ``prev``), reference segments unchanged, forks created against ``base``
+(fail) or inherited from it (notice), acyclic supersession, link targets and bundle membership, fields
+revised beyond ``REVISABLE``, the derived/inferred confidence rule, citations in code and documents
+(every one resolves; one new to a file does not name a retired record), decision and gate notices, and,
+once ``LEGACY_FROZEN`` is switched on, no added or modified legacy rows (``salvage_problems``).
 """
 
 from __future__ import annotations
@@ -19,13 +27,14 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.memory.gitio import GitError, changed_files, listed_files, read_blobs
+from tools.memory.gitio import GitError, changed_files, listed_files, merge_base, read_blobs
 from tools.memory.journal import JournalError, read_git, read_tree
-from tools.memory.model import Record
+from tools.memory.model import LEGACY, Record
 from tools.memory.state import State, replay
 
-# The cut-over commit, which deletes the legacy trees, switches this on.
+# The cut-over commit, which deletes the legacy trees, switches both on.
 LEGACY_FROZEN = False
+REQUIRE_JOURNAL = False
 LEGACY_DIRS = ("docs/ledgers", "evidence", "evidence-catalog")
 GATES = "docs/gates.md"
 CITATION_ROOTS = ("src", "tests", "examples", "tools", "config", "docs", "CLAUDE.md", "AGENTS.md", ".agents/rules")
@@ -37,10 +46,12 @@ CITATION_EXCLUDED = ("memory/journal/", "docs/history/", "docs/research/archive/
 CITATION = re.compile(
     r"(?<![\w-])(?:(?:F|U|N|SL|RP|CP|REF|M)-[0-9]{3,}|REL-[0-9]+\.[0-9]+\.[0-9]+)(?:/(?:(?:ev|unk)_[0-9a-f]+|E-[0-9]{3,}))?(?![\w-])"
 )
-NOT_REVISABLE: dict[str, tuple[str, ...]] = {
-    "finding": ("claim", "kind", "standing", "scope"),
-    "evidence": ("path", "sha256", "size", "class", "kind", "date", "members"),
-}
+# What a revision may change in place (rules, "Revisions"); every other key of ``Record.to_json`` is
+# immutable, including fields added to the model later, ``legacy`` and ``gaps``. On every type ``status``
+# may change (to a vocabulary value; an evidence status change appends a note) and ``APPEND_ONLY`` lists
+# may grow. A REF revises its body, which its JSON holds as ``body_sha256``.
+REVISABLE: dict[str, frozenset[str]] = {"reference": frozenset({"body_sha256"}), "unknown": frozenset({"next_probe"})}
+APPEND_ONLY = ("notes", "verified_on")
 
 
 @dataclass
@@ -55,30 +66,37 @@ def citations(text: str) -> list[tuple[int, str]]:
     return [(number, match[0]) for number, line in enumerate(text.split("\n"), 1) for match in CITATION.finditer(line)]
 
 
-def run_check(root: Path, base: str = "origin/main", *, legacy_frozen: bool = LEGACY_FROZEN) -> Report:
+def run_check(
+    root: Path, base: str = "origin/main", *, legacy_frozen: bool = LEGACY_FROZEN, require_journal: bool = REQUIRE_JOURNAL,
+) -> Report:
     report = Report()
     try:
         segments = read_tree(root)
-        if not segments:
-            report.no_journal = True
-            return report
-        base_segments = read_git(root, base)
+        reference = merge_base(root, base)
+        reference_segments = read_git(root, reference)
+        accepted_segments = read_git(root, base)
     except (GitError, JournalError) as error:
         report.problems.append(str(error))
         return report
-    now, before = replay(segments), replay(base_segments)
+    if not segments and require_journal:
+        report.problems.append("no journal: memory/journal/ holds no segment, and this repository requires one")
+    if not segments and not reference_segments:
+        report.no_journal = True
+        return report
+    now, before = replay(segments), replay(accepted_segments)
     report.problems.extend(now.problems)
     paths = {segment.path for segment in segments}
     report.problems.extend(
-        f"{segment.path}: segment of {base} removed or changed; accepted segments are immutable"
-        for segment in base_segments if segment.path not in paths
+        f"{segment.path}: segment of {base} (merge base {reference[:12]}) removed or changed; accepted segments are immutable"
+        for segment in reference_segments if segment.path not in paths
     )
-    accepted = {sha for entry in before.entries.values() for sha in entry.revisions}
-    for identifier, entry in now.entries.items():
+    accepted = {rev for entry in before.entries.values() for rev in entry.revisions}
+    union = replay({segment.path: segment for segment in (*accepted_segments, *segments)}.values())
+    for identifier, entry in union.entries.items():
         if not entry.conflict:
             continue
-        heads = ", ".join(sha[:12] for sha in entry.heads)
-        if any(sha not in accepted for sha in entry.heads):
+        heads = ", ".join(rev[:12] for rev in entry.heads)
+        if any(rev not in accepted for rev in entry.heads):
             report.problems.append(f"{identifier}: forks the record against {base} (heads {heads}); revise the current head or name every head as prev")
         else:
             report.notices.append(f"{identifier}: unreconciled fork in {base} (heads {heads}); the next change must name both as prev")
@@ -87,46 +105,50 @@ def run_check(root: Path, base: str = "origin/main", *, legacy_frozen: bool = LE
     report.problems.extend(revision_problems(now))
     report.problems.extend(confidence_problems(now, before))
     try:
-        report.problems.extend(citation_problems(root, base, now))
-        if changed_files(root, base, GATES, kinds="ACDMRT"):
+        report.problems.extend(citation_problems(root, reference, now))
+        if changed_files(root, reference, GATES, kinds="ACDMRT"):
             report.notices.append(f"{GATES} changes: outside an agent's merge authority; file the PR and report it to the owner")
         if legacy_frozen:
-            report.problems.extend(salvage_problems(root, base))
+            report.problems.extend(salvage_problems(root, reference))
     except GitError as error:
         report.problems.append(str(error))
     for identifier, entry in sorted(now.entries.items()):
-        if any(sha not in accepted and item.revision.record.text("kind") == "decision"
-               for sha, item in entry.revisions.items() if item.revision.record.type == "finding"):
+        if any(rev not in accepted and item.revision.record.text("kind") == "decision"
+               for rev, item in entry.revisions.items() if item.revision.record.type == "finding"):
             report.notices.append(f"{identifier}: adds or revises a decision finding; outside an agent's merge authority: file the PR and report it to the owner")
     return report
 
 
 def revision_problems(state: State) -> list[str]:
-    """Each revision against each of its ``prev``: fields that are not revisable, append-only lists, evidence status notes."""
+    """Each revision against each of its ``prev``: changes beyond ``REVISABLE``, append-only lists, status rules."""
     problems: list[str] = []
     for identifier, entry in sorted(state.entries.items()):
-        for sha, located in sorted(entry.revisions.items()):
+        for rev, located in sorted(entry.revisions.items()):
             new = located.revision.record
             reconciles = len(located.revision.prev) > 1
             for prev in located.revision.prev:
                 if prev in entry.revisions:
                     old = entry.revisions[prev].revision.record
-                    problems.extend(f"{identifier}: revision {sha[:12]}: {problem}" for problem in _compare(old, new, reconciles))
+                    problems.extend(f"{identifier}: revision {rev[:12]}: {problem}" for problem in _compare(old, new, reconciles))
     return problems
 
 
 def _compare(old: Record, new: Record, reconciles: bool) -> list[str]:
+    before, after = old.to_json(), new.to_json()
+    allowed = {"status", *APPEND_ONLY, *REVISABLE.get(new.type, ())}
     problems = [
         f"{name} changed; it is not revisable (supersede with a new record)"
-        for name in NOT_REVISABLE.get(new.type, ())
-        if (old.scope != new.scope if name == "scope" else old.fields.get(name) != new.fields.get(name))
+        for name in sorted(before.keys() | after.keys()) if name not in allowed and before.get(name) != after.get(name)
     ]
-    for name, before, after in (("notes", old.notes, new.notes), ("verified_on", old.links.verified_on, new.links.verified_on)):
-        kept = set(before) <= set(after) if reconciles else after[:len(before)] == before
+    for name, earlier, later in (("notes", old.notes, new.notes), ("verified_on", old.links.verified_on, new.links.verified_on)):
+        kept = set(earlier) <= set(later) if reconciles else later[:len(earlier)] == earlier
         if not kept:
             problems.append(f"{name} may only be appended to")
-    if new.type == "evidence" and old.status != new.status and len(new.notes) <= len(old.notes):
-        problems.append("an evidence status change appends a note")
+    if old.status != new.status:
+        if new.status.startswith(LEGACY):
+            problems.append("a revised status takes a value from the vocabulary")
+        if new.type == "evidence" and len(new.notes) <= len(old.notes):
+            problems.append("an evidence status change appends a note")
     return problems
 
 

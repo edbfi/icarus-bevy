@@ -79,3 +79,11 @@ def descends(root: Path, commit: str) -> bool | None:
         capture_output=True, check=False,
     )
     return {0: True, 1: False}.get(result.returncode)
+
+
+def merge_base(root: Path, base: str) -> str:
+    """``git merge-base <base> HEAD``; a clear ``GitError`` when there is none (unrelated histories, shallow clone)."""
+    try:
+        return git(root, "merge-base", "--end-of-options", base, "HEAD").decode().strip()
+    except GitError as error:
+        raise GitError(f"no merge base of {base} and HEAD (unrelated histories or a shallow clone; fetch full history): {error}") from error

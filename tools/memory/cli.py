@@ -3,7 +3,9 @@
 and ``protected-paths``. Commands that need the service are added on top of this module.
 
 Exit status: 0 success; 1 problems, an unknown ID or unreadable input; 2 usage;
-``EXIT_NO_JOURNAL`` (3) when ``check`` finds no journal at all.
+``EXIT_NO_JOURNAL`` (3) when ``check`` finds no segment in the working tree or the reference tree.
+Exit 3 is never a pass: a hook or CI step that runs ``check --ci`` must treat every non-zero status,
+3 included, as a failure once it is wired in.
 """
 
 from __future__ import annotations
@@ -76,7 +78,7 @@ def document_state(entry: Entry, accepted: set[str] | None) -> str:
         return "unknown"
     if entry.heads[0] in accepted:
         return "accepted"
-    return "pending" if any(sha in accepted for sha in entry.revisions) else "proposed"
+    return "pending" if any(rev in accepted for rev in entry.revisions) else "proposed"
 
 
 def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple[dict[str, JSON], list[str]]:
@@ -88,7 +90,7 @@ def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple
     entry = state.entries[identifier]
     record = entry.record
     try:
-        accepted: set[str] | None = {revision.sha256 for segment in read_git(root, ACCEPTANCE_REF) for revision in segment.revisions}
+        accepted: set[str] | None = {revision.rev for segment in read_git(root, ACCEPTANCE_REF) for revision in segment.revisions}
     except (GitError, JournalError):
         accepted = None
     try:
@@ -100,9 +102,9 @@ def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple
     status = state.status(identifier)
     superseded_by, successors, resolved_by = state.superseded_by.get(identifier, ()), state.successors(identifier), state.resolved_by.get(identifier, ())
     heads: list[JSON] = [
-        {"sha256": sha, "segment": entry.revisions[sha].segment, "prev": list(entry.revisions[sha].revision.prev),
-         "text": render_text(entry.revisions[sha].revision.record)}
-        for sha in entry.heads
+        {"rev": rev, "sha256": entry.revisions[rev].revision.sha256, "segment": entry.revisions[rev].segment,
+         "prev": list(entry.revisions[rev].revision.prev), "text": render_text(entry.revisions[rev].revision.record)}
+        for rev in entry.heads
     ]
     result: dict[str, JSON] = {
         "id": identifier, "state": document_state(entry, accepted), "status": status, "stored_status": record.status,
@@ -132,20 +134,20 @@ def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple
         lines.append(f"superseded by: {', '.join(superseded_by)} (terminal: {', '.join(successors)})")
     if resolved_by:
         lines.append(f"resolved by: {', '.join(resolved_by)}")
-    for sha in entry.heads:
-        located = entry.revisions[sha]
+    for rev in entry.heads:
+        located = entry.revisions[rev]
         prev = ", ".join(item[:12] for item in located.revision.prev) or "none"
-        lines.append(f"{'conflict head' if entry.conflict else 'revision'}: {sha} in {located.segment} (prev {prev})")
-        if entry.conflict and sha != entry.heads[0]:
+        lines.append(f"{'conflict head' if entry.conflict else 'revision'}: {rev} in {located.segment} (prev {prev})")
+        if entry.conflict and rev != entry.heads[0]:
             lines.extend(["", render_text(located.revision.record), ""])
     if history:
         result["history"] = [
-            {"sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev), "record": item.revision.record.to_json()}
+            {"rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev), "record": item.revision.record.to_json()}
             for item in entry.history()
         ]
         lines.append("history:")
         for item in entry.history():
-            lines.extend(["", f"{item.revision.sha256} in {item.segment}", render_text(item.revision.record)])
+            lines.extend(["", f"{item.revision.rev} in {item.segment}", render_text(item.revision.record)])
     return result, lines
 
 

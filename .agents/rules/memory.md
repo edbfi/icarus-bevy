@@ -104,8 +104,10 @@ Supersession is acyclic.
   links.
 - Not revisable (supersede with a new record): a finding's claim, kind,
   standing, scope; evidence path, sha256, size, class, kind, date, members.
-- Each revision names its `prev` sha256. `memory check --ci` fails a PR that
-  forks a record against its base. A fork that reaches `origin/main` shows as two
+- Each revision has an identity `rev`, the sha256 of the canonical JSON of its
+  `prev` and record; `prev` names revision identities, so returning a record to
+  earlier content is a new revision. `memory check --ci` fails a PR that forks a
+  record against its base. A fork that reaches `origin/main` shows as two
   heads labelled `conflict`; the next change must be a reconciling revision
   naming both as `prev`, and CI reports unreconciled forks.
 - Segments in `origin/main` are immutable. An unmerged segment may be
@@ -115,14 +117,14 @@ Supersession is acyclic.
 
 - Canonical JSON: keys sorted, no insignificant whitespace, UTF-8, NFC; `sha256`
   is its digest. Text: the tool's deterministic rendering, LF only, no other
-  control characters, at most 1,800 characters, ID, type, status and claim first
-  (ranking sees only a unit's first 512 tokens).
+  control characters but TAB, at most 1,800 characters (a REF body is exempt),
+  ID, type, status and claim first (ranking sees only a unit's first 512 tokens).
 - A REF's text is its body; its canonical JSON holds header fields and the
   body's sha256, never the body.
 - One retain item per document. `<ID>` holds the accepted head (or the proposal
   if never accepted); `<ID>@<12 hex>` exists only for a pending revision of an
   accepted record. Prior revisions live in the journal.
-- Metadata: `record` (canonical JSON), `sha256`, `prev`, `segment`.
+- Metadata: `record` (canonical JSON), `sha256`, `rev`, `prev`, `segment`.
 - Tags on every document: `type:`, `id:`, `state:` (accepted, proposed, pending,
   orphaned, conflict), derived `status:`, `area:`, `basis:`, `seg:`, and each
   `subject:`, `build:`, `release:`. Untagged documents are invalid.

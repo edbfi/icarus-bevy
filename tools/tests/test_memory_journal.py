@@ -11,7 +11,9 @@ import unittest
 from pathlib import Path
 from typing import override
 
-from tools.memory.journal import SEGMENT_LIMIT, JournalError, Revision, Segment, encode_segment, parse_segment, read_git, read_tree, split_change_set
+from tools.memory.journal import (
+    SEGMENT_LIMIT, JournalError, Revision, Segment, encode_segment, parse_segment, read_git, read_tree, split_change_set, write_change_set,
+)
 from tools.memory.model import JSON, Record
 from tools.memory.state import Partition, State, partition, replay
 from tools.tests.memory_fixtures import (
@@ -61,6 +63,15 @@ class JournalTests(unittest.TestCase):
         self.assertTrue(all(len(data) <= SEGMENT_LIMIT for _path, data in parts))
         self.assertEqual(len(items), sum(len(parse_segment(path, data).revisions) for path, data in parts))
 
+    def test_splitting_and_names_are_deterministic(self) -> None:
+        items = revisions([finding(f"F-{number}", "Invented " + "y" * 1500) for number in range(300, 400)])
+        self.assertEqual(split_change_set(CREATED, items), split_change_set(CREATED, items))
+        other = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        first = [path.relative_to(self.root) for path in write_change_set(self.root, CREATED, items)]
+        second = [path.relative_to(other) for path in write_change_set(other, CREATED, items)]
+        self.assertEqual(first, second)
+        self.assertTrue(all((self.root / path).read_bytes() == (other / path).read_bytes() for path in first))
+
     def test_half_written_and_edited_segments_are_refused(self) -> None:
         (path,) = write(self.root, chain())
         data = path.read_bytes()
@@ -84,6 +95,11 @@ class JournalTests(unittest.TestCase):
         tampered = data.replace(b"Invented: the prompt", b"Invented: a prompt")
         with self.assertRaisesRegex(JournalError, "does not match the record"):
             _ = parse_segment(rename(name, tampered), tampered)
+        rev = Revision.of(Record.from_json(chain()[0])).rev
+        self.assertIn(f'"rev":"{rev}"'.encode(), line)
+        forged = data.replace(rev.encode(), b"0" * 64)
+        with self.assertRaisesRegex(JournalError, "rev '0+' does not match prev and record"):
+            _ = parse_segment(rename(name, forged), forged)
         with self.assertRaisesRegex(JournalError, "not a segment path"):
             _ = parse_segment("memory/journal/2026/12/" + name.rsplit("/", 1)[1], data)
 
@@ -145,24 +161,52 @@ class ReplayTests(unittest.TestCase):
 
     def test_fork_and_reconciliation(self) -> None:
         first = Revision.of(record(chain()[5]))
-        left = Revision.of(record(dict(chain()[5], status="investigating")), [first.sha256])
-        right = Revision.of(record(dict(chain()[5], next_probe="Read the other invented handler")), [first.sha256])
+        left = Revision.of(record(dict(chain()[5], status="investigating")), [first.rev])
+        right = Revision.of(record(dict(chain()[5], next_probe="Read the other invented handler")), [first.rev])
         forked = replay([segment("a", [first]), segment("b", [left]), segment("c", [right])])
         entry = forked.entries["U-101"]
         self.assertTrue(entry.conflict)
-        self.assertEqual(tuple(sorted((left.sha256, right.sha256))), entry.heads)
-        merged = Revision.of(record(dict(chain()[5], status="investigating", next_probe="Read both")), [left.sha256, right.sha256])
+        self.assertEqual(tuple(sorted((left.rev, right.rev))), entry.heads)
+        merged = Revision.of(record(dict(chain()[5], status="investigating", next_probe="Read both")), [left.rev, right.rev])
         reconciled = replay([segment("a", [first]), segment("b", [left]), segment("c", [right]), segment("d", [merged])])
         self.assertFalse(reconciled.entries["U-101"].conflict)
-        self.assertEqual((merged.sha256,), reconciled.entries["U-101"].heads)
-        self.assertEqual([first.sha256], [item.revision.sha256 for item in reconciled.entries["U-101"].history()][:1])
-        self.assertEqual(merged.sha256, reconciled.entries["U-101"].history()[-1].revision.sha256)
+        self.assertEqual((merged.rev,), reconciled.entries["U-101"].heads)
+        self.assertEqual([first.rev], [item.revision.rev for item in reconciled.entries["U-101"].history()][:1])
+        self.assertEqual(merged.rev, reconciled.entries["U-101"].history()[-1].revision.rev)
+
+    def assert_reverts(self, contents: list[Record]) -> Revision:
+        """Each content after the previous; the last returns to the first. Replays cleanly to one head."""
+        chained = [Revision.of(contents[0])]
+        for content in contents[1:]:
+            chained.append(Revision.of(content, [chained[-1].rev]))
+        self.assertEqual(chained[0].sha256, chained[-1].sha256)
+        self.assertNotEqual(chained[0].rev, chained[-1].rev)
+        state = replay([segment(f"s{index}", [item]) for index, item in enumerate(chained)])
+        entry = state.entries[contents[0].id]
+        self.assertEqual(((), (chained[-1].rev,), len(chained)), (state.problems, entry.heads, len(entry.revisions)))
+        self.assertEqual([item.rev for item in chained], [item.revision.rev for item in entry.history()])
+        self.assertEqual(contents[-1], entry.record)
+        return chained[-1]
+
+    def test_returning_to_earlier_content_is_a_new_revision(self) -> None:
+        opened = record(chain()[5])
+        self.assertEqual("open", self.assert_reverts([opened, record(dict(chain()[5], status="blocked")), opened]).record.status)
+        active = record(chain()[0])
+        self.assertEqual("active", self.assert_reverts([active, record(dict(chain()[0], status="retired")), active]).record.status)
+        header: dict[str, JSON] = {"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                   "scope": explicit(subjects=("tooling",))}
+
+        def reference(body: str) -> Record:
+            return Record.from_json(dict(header, body_sha256=sha256(body.encode()).hexdigest()), body)
+
+        self.assertEqual("first\n", self.assert_reverts([reference("first\n"), reference("second\n"), reference("first\n")]).record.body)
 
     def test_replay_ignores_segment_order(self) -> None:
         items = revisions(chain())
         first = Revision.of(record(chain()[5]))
-        later = Revision.of(record(dict(chain()[5], status="blocked")), [first.sha256])
-        segments = [segment(f"s{index}", [item]) for index, item in enumerate([*items, later])]
+        later = Revision.of(record(dict(chain()[5], status="blocked")), [first.rev])
+        back = Revision.of(record(chain()[5]), [later.rev])
+        segments = [segment(f"s{index}", [item]) for index, item in enumerate([*items, later, back])]
         expected = summary(replay(segments))
         rng = random.Random(11)
         for _ in range(10):

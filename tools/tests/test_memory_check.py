@@ -5,19 +5,22 @@ from __future__ import annotations
 
 import io
 import json
+from hashlib import sha256
 import tempfile
 import unittest
 from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import override
 
-from tools.memory.check import Report, citations, run_check
+from tools.memory.check import Report, citations, revision_problems, run_check
 from tools.memory.cli import EXIT_NO_JOURNAL, main
-from tools.memory.journal import Revision, read_tree, write_change_set
+from tools.memory.journal import Revision, Segment, read_tree, write_change_set
 from tools.memory.model import JSON, Record, as_mapping, is_array, load_json
 from tools.memory.paths import ProtectedPathsError, protected_paths
+from tools.memory.state import replay
 from tools.tests.memory_fixtures import (
-    CREATED, DIGEST, NEW_SERVER, chain, clean_git_environment, commit_all, evidence, finding, new_repository, run_git, write,
+    CREATED, DIGEST, NEW_CLIENT, NEW_SERVER, chain, clean_git_environment, commit_all, evidence, explicit, finding, new_repository,
+    release, run_git, write,
 )
 
 
@@ -93,11 +96,44 @@ class CheckTests(Repository):
         for path in (self.root / "memory/journal").rglob("*.jsonl"):
             path.unlink()
         _ = write(self.root, chain()[:3])
-        self.assertIn("segment of origin/main removed or changed", "\n".join(self.check().problems))
+        self.assertIn("segment of origin/main (merge base", "\n".join(self.check().problems))
+        for path in (self.root / "memory/journal").rglob("*.jsonl"):
+            path.unlink()
+        report = self.check()
+        self.assertFalse(report.no_journal)
+        self.assertIn("removed or changed", report.problems[0])
+        self.assertEqual(["src/old.rs:1: F-101: no record F-101"], report.problems[1:])
+
+    def test_required_journal(self) -> None:
+        commit_all(self.root)
+        report = run_check(self.root, "origin/main", require_journal=True)
+        self.assertTrue(report.no_journal)
+        self.assertEqual(["no journal: memory/journal/ holds no segment, and this repository requires one"], report.problems)
+
+    def test_a_branch_behind_its_base_is_not_blamed_for_what_the_base_gained(self) -> None:
+        self.accept_chain()
+        _ = run_git(self.root, "switch", "-q", "-c", "feature")
+        _ = run_git(self.root, "switch", "-q", "main")
+        _ = write(self.root, [finding("F-407", "Invented later observation")], second=1)
+        self.put("docs/gates.md", "Invented gate\n")
+        self.put("src/later.rs", "// F-101\n")
+        commit_all(self.root)
+        _ = run_git(self.root, "switch", "-q", "feature")
+        self.assertEqual(Report(), self.check())
+        self.revise(dict(chain()[1], claim="Invented: rewritten claim"), [self.head("F-102").rev], 2)
+        self.assertIn("claim changed", "\n".join(self.check().problems))
+
+    def test_unrelated_histories_fail_clearly(self) -> None:
+        self.accept_chain()
+        _ = run_git(self.root, "switch", "-q", "--orphan", "stray")
+        _ = run_git(self.root, "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "stray")
+        report = self.check()
+        self.assertEqual(1, len(report.problems))
+        self.assertIn("no merge base of origin/main and HEAD", report.problems[0])
 
     def test_forks_against_the_base_fail_and_inherited_forks_are_notices(self) -> None:
         self.accept_chain()
-        base = self.head("U-101").sha256
+        base = self.head("U-101").rev
         self.revise(dict(chain()[5], status="investigating"), [base], 1)
         self.assertEqual([], self.check().problems)
         self.revise(dict(chain()[5], status="blocked"), [base], 2)
@@ -110,15 +146,15 @@ class CheckTests(Repository):
 
     def test_fields_that_are_not_revisable(self) -> None:
         self.accept_chain()
-        self.revise(dict(chain()[1], claim="Invented: rewritten claim"), [self.head("F-102").sha256], 1)
-        self.revise(dict(chain()[7], status="missing"), [self.head("M-102").sha256], 2)
+        self.revise(dict(chain()[1], claim="Invented: rewritten claim"), [self.head("F-102").rev], 1)
+        self.revise(dict(chain()[7], status="missing"), [self.head("M-102").rev], 2)
         problems = "\n".join(self.check().problems)
         self.assertIn("claim changed; it is not revisable", problems)
         self.assertIn("an evidence status change appends a note", problems)
 
     def test_appended_notes_and_status_with_note_pass(self) -> None:
         self.accept_chain()
-        self.revise(dict(chain()[7], status="missing", notes=["Invented: the case was lost"]), [self.head("M-102").sha256], 1)
+        self.revise(dict(chain()[7], status="missing", notes=["Invented: the case was lost"]), [self.head("M-102").rev], 1)
         self.assertEqual([], self.check().problems)
 
     def test_derived_high_needs_accepted_observed_sources(self) -> None:
@@ -149,6 +185,63 @@ class CheckTests(Repository):
         self.assertEqual([], self.check().problems)
         self.assertEqual(["evidence/area/001.jsonl: adds or modifies legacy rows; turn them into proposals with memory salvage"],
                          self.check(frozen=True).problems)
+
+
+def revised(old: dict[str, JSON], changes: dict[str, JSON], body: tuple[str, str] | None = None) -> list[str]:
+    """Problems of one revision of ``old`` applying ``changes`` (``body``: the REF body before and after)."""
+    first = Revision.of(Record.from_json(old, body[0] if body else None))
+    second = Revision.of(Record.from_json(dict(old, **changes), body[1] if body else None), [first.rev])
+    return [problem.split(": ", 2)[2] for problem in revision_problems(replay([Segment("s", "t", (first, second))]))]
+
+
+def body_digest(body: str) -> str:
+    return sha256(body.encode()).hexdigest()
+
+
+class RevisabilityTests(unittest.TestCase):
+    def assert_revisions(self, old: dict[str, JSON], allowed: dict[str, JSON], rejected: dict[str, JSON]) -> None:
+        self.assertEqual([], revised(old, allowed))
+        self.assertEqual([f"{name} changed; it is not revisable (supersede with a new record)" for name in sorted(rejected)],
+                         revised(old, rejected))
+
+    def test_one_allowed_and_one_rejected_revision_per_type(self) -> None:
+        scope = explicit(subjects=("tooling",))
+        self.assert_revisions(chain()[0], {"status": "retired", "notes": ["Invented note"]}, {"confidence": "high"})
+        self.assert_revisions(chain()[0], {"verified_on": [{"build": f"server:{NEW_SERVER}", "cites": ["M-102"]}]}, {"area": "other"})
+        self.assert_revisions(chain()[5], {"status": "blocked", "next_probe": "Another invented probe"}, {"question": "Changed?"})
+        self.assert_revisions(chain()[5], {"status": "investigating"}, {"severity": "high"})
+        self.assert_revisions({"id": "N-101", "type": "bug", "status": "open", "trigger": "Invented", "change": "Invented fix",
+                               "refs": ["F-101"], "tests": ["invented_test"]}, {"status": "fixed"}, {"tests": ["other_test"]})
+        self.assert_revisions({"id": "SL-101", "type": "lead", "status": "open", "lead": "Invented", "static_evidence": "Invented",
+                               "refute_by": "Invented"}, {"status": "refuted"}, {"refute_by": "Other"})
+        self.assert_revisions({"id": "RP-101", "type": "report", "status": "unreproduced", "problem": "Invented", "priority": 1,
+                               "next_evidence": "Invented"}, {"status": "reproduced"}, {"priority": 2})
+        self.assert_revisions({"id": "CP-101", "type": "compatibility", "status": "unknown", "name": "Invented", "qualifier": "Invented",
+                               "required_proof": "Invented", "scope": scope}, {"status": "observed"}, {"qualifier": "Other"})
+        self.assert_revisions(release("REL-9.0.2", NEW_SERVER, NEW_CLIENT), {"status": "past"}, {"sources": ["other"]})
+        self.assert_revisions(chain()[7], {"status": "missing", "notes": ["Invented: lost"]}, {"label": "Other label"})
+        self.assertEqual(["an evidence status change appends a note"], revised(chain()[7], {"status": "missing"}))
+        self.assertEqual(["notes may only be appended to"], revised(dict(chain()[7], notes=["a", "b"]), {"notes": ["b", "a"]}))
+
+    def test_reference_body_is_revisable_and_its_title_is_not(self) -> None:
+        header: dict[str, JSON] = {"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                   "scope": explicit(subjects=("tooling",)), "body_sha256": body_digest("one\n")}
+        self.assertEqual([], revised(header, {"body_sha256": body_digest("two\n"), "status": "retired"}, ("one\n", "two\n")))
+        self.assertEqual(["title changed; it is not revisable (supersede with a new record)"],
+                         revised(header, {"title": "Other"}, ("one\n", "one\n")))
+
+    def test_decision_quote_and_legacy_never_change(self) -> None:
+        decision = finding("F-404", "Owner chose invented policy", kind="decision", scope={"basis": "explicit", "subjects": ["decision"]},
+                           instruction="Do it.", instruction_date="2026-11-20", instruction_source="invented thread")
+        self.assertEqual(["instruction changed; it is not revisable (supersede with a new record)"], revised(decision, {"instruction": "Do it now."}))
+        self.assertEqual(["instruction_date changed; it is not revisable (supersede with a new record)"],
+                         revised(decision, {"instruction_date": "2026-11-21"}))
+        legacy: JSON = {"path": "docs/ledgers/findings/invented.md", "cells": {"status": "active"}}
+        migrated = finding("F-201", "Invented legacy", legacy=legacy, gaps=["standing"])
+        del migrated["standing"]
+        self.assertEqual(["legacy changed; it is not revisable (supersede with a new record)"],
+                         revised(migrated, {"legacy": {"path": "docs/ledgers/findings/other.md", "cells": {"status": "active"}}}))
+        self.assertEqual(["a revised status takes a value from the vocabulary"], revised(migrated, {"status": "legacy:bounded"}))
 
 
 class GetTests(Repository):
