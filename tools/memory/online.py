@@ -733,8 +733,11 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
         target = documents[0]
         pending = [item for item in documents if item.state == "pending"]
         problems = [problem for item in documents for problem in check_document(bank, item)]
+        # A document that differs although the stamp said the bank was current was written outside the tool:
+        # the full reconciliation rewrites it from the journal, and the read reports what it repaired.
+        repaired: list[str] = []
         if problems and current.reconcile_now():
-            problems = [problem for item in documents for problem in check_document(bank, item)]
+            repaired, problems = problems, [problem for item in documents for problem in check_document(bank, item)]
         record = target.revision.record
         release, reason = release_for(universe, root, None)
         placed, phrase = place(root, record, release, reason)
@@ -745,7 +748,7 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
             "sha256": target.revision.sha256, "rev": target.revision.rev, "segment": target.segment, "text": target.item.content,
             "record": record.to_json(), "partition": placed, "superseded_by": list(settled.superseded_by.get(identifier, ())),
             "successors": list(settled.successors(identifier)), "resolved_by": list(settled.resolved_by.get(identifier, ())),
-            "proposed": [item.json() for item in proposed], "verified": not problems, "problems": list(problems),
+            "proposed": [item.json() for item in proposed], "verified": not problems, "problems": list(problems), "repaired": list(repaired),
             "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
         }
         lines = [target.item.content, "", f"state: {target.state}", f"status: {target.status}" + (f" (stored {record.status})" if target.status != record.status else ""),
@@ -783,6 +786,7 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
             lines.append("history:")
             for item in entry.history():
                 lines.extend(["", f"{item.revision.rev} in {item.segment}", render_text(item.revision.record)])
+        lines.extend(f"repaired: {problem}; rewritten from the journal (something wrote to the bank outside the tool)" for problem in repaired)
         lines.extend(f"problem: {problem}" for problem in problems)
         return Output(data, lines, 1 if problems else 0)
 
@@ -892,8 +896,11 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             return fetched, found
 
         fetched, checked = verify_hits()
-        if not all(checked.values()) and current.reconcile_now():
+        repaired = sorted((document for document, ok in checked.items() if not ok), key=id_key)
+        if repaired and current.reconcile_now():
             fetched, checked = verify_hits()
+        else:
+            repaired = []
         for identifier in named:
             data, line = summary(fetched, wanted, identifier)
             exact.append(data)
@@ -933,10 +940,11 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         reranking = config.get("enable_reranking") is not False
         ranker = (f"reranker on, at most {RERANKER_CANDIDATES} candidates (instance-wide; Hindsight 1.2.3 takes no per-request cap)"
                   if reranking else "reranker off (bank config); fused ranking only")
+        lines.extend(f"repaired: {document}: differed from the journal; rewritten from it (something wrote to the bank outside the tool)" for document in repaired)
         lines.append(f"ranking: {ranker}")
         data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact, "ranking": {
             "reranking": reranking, "candidates": RERANKER_CANDIDATES if reranking else None, "scope": "instance"},
-                                 "partitions": {name: items for name, items in sections.items() if items}}
+                                 "partitions": {name: items for name, items in sections.items() if items}, "repaired": list[JSON](repaired)}
         if all_proposals:
             others = ranked(True)[:limit]
             listing = [summary(bank, wanted, document_id.split("@", 1)[0]) for document_id in others]

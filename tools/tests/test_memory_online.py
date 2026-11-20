@@ -898,8 +898,22 @@ class StampTests(Online):
         self.assertEqual(["F-104: not applied (missing or differing content)", "F-104: 1 memory unit(s); expected one holding the document text"],
                          checked.data_problems())
         self.assertNotIn(bank_module.MARKER, "\n".join(checked.lines))
-        self.assertEqual(0, online.get(self.bank, self.root, "F-104").status, "the trusted read heals what it verifies")
+        healed = online.get(self.bank, self.root, "F-104")
+        self.assertEqual(0, healed.status, "the trusted read heals what it verifies")
+        self.assertEqual(["F-104: text differs from the journal"], healed.data["repaired"])
+        self.assertIn("repaired: F-104: text differs from the journal; rewritten from the journal", "\n".join(healed.lines))
         self.assertEqual(0, online.check_bank(self.bank, self.root).status)
+        self.assertEqual([], online.get(self.bank, self.root, "F-104").data["repaired"], "nothing to repair the second time")
+        self.bank.held["F-104"] = Document("F-104", "tampered", sha256_hex(b"tampered"), held.tags, held.metadata, (), None)
+        hit = Hit("F-104", "tampered", held.tags, held.metadata, 1.0)
+
+        def only_the_tampered_hit(*_args: object, **_kwargs: object) -> list[Hit]:
+            return [hit]
+
+        _ = self.enterContext(patch.object(self.bank, "recall", only_the_tampered_hit))
+        recalled = online.recall(self.bank, self.root, "invented")
+        self.assertEqual(["F-104"], recalled.data["repaired"])
+        self.assertIn("repaired: F-104: differed from the journal", "\n".join(recalled.lines))
 
 
 class ParseCacheTests(unittest.TestCase):
