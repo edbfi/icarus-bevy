@@ -1078,11 +1078,16 @@ def status(bank: Bank, root: Path) -> Output:
         for kind in sorted(by_type):
             lines.append(f"{kind}: " + ", ".join(f"{count} {name}" for name, count in sorted(by_type[kind].items())))
         lines.append("partitions (records other than evidence and releases): " + ", ".join(f"{by_partition.get(name, 0)} {name}" for name in PARTITIONS))
-        lines.append(f"cited records not current ({len(cited)}):")
-        lines.extend(f"  {identifier}: {why} (first cited at {where})" for identifier, why, where in cited)
+        # Startup reading: the text gives counts and what to act on; ``--json`` and ``check --pin`` list every record.
+        reasons: dict[str, int] = {}
+        for _identifier, why, _where in cited:
+            reasons[why.split(" ", 1)[0]] = reasons.get(why.split(" ", 1)[0], 0) + 1
+        lines.append(f"cited records not current: {len(cited)}" + (" (" + ", ".join(f"{count} {name}" for name, count in sorted(reasons.items())) + ")" if cited else "")
+                     + ("; memory check --pin lists each" if cited else ""))
         lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
-        lines.append(f"evidence not known good on disk ({len(unverified)}); run verify --all for digests")
-        lines.extend(f"  {identifier}: {why}" for identifier, why in unverified)
+        undigested = sum(1 for _identifier, why in unverified if why == "no sha256")
+        lines.append(f"active evidence not known good on disk: {len(unverified)} ({undigested} without a digest); verify --all checks digests")
+        lines.extend(f"  {identifier}: {why}" for identifier, why in unverified if why != "no sha256")
         lines.extend(f"notice: {notice}" for notice in current.applied.notices)
         data: dict[str, JSON] = {
             "pin": release.id if release is not None else None, "reason": reason,

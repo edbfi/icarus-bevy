@@ -670,8 +670,9 @@ class ReadingTests(Online):
         state = online.status(self.bank, self.root)
         summary = "\n".join(state.lines)
         self.assertIn("pin: REL-9.0.2", summary)
-        self.assertIn("F-101: superseded (first cited at src/lib.rs:1)", summary)
-        self.assertNotIn("F-103: ", summary)
+        self.assertIn("cited records not current: 1 (1 superseded); memory check --pin lists each", summary)
+        self.assertEqual([{"id": "F-101", "why": "superseded", "where": "src/lib.rs:1"}], state.data["cited_not_current"])
+        self.assertIn("F-101: superseded (first cited at src/lib.rs:1)", "\n".join(online.check_pin(self.root).lines))
         self.assertIn("M-101: missing: work/invented-case/rea-bundle.json", summary)
         self.assertEqual(state.data, online.status(self.bank, self.root).data)
 
