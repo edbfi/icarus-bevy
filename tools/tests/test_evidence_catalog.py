@@ -14,8 +14,8 @@ from unittest.mock import patch as patch_environment
 
 from tools.evidence_catalog import main
 from tools.evidence_catalog_model import CatalogError, Index, Record, json_line
-from tools.evidence_catalog_publish import Request, check_checkout, patch, prepare, resolved_catalog
-from tools.evidence_catalog_store import Catalog, commit_id, git, legacy_files, load_directory
+from tools.evidence_catalog_publish import Request, check_checkout, check_history, patch, prepare, resolved_catalog
+from tools.evidence_catalog_store import AUTHORITY, Catalog, commit_id, git, legacy_files, load_directory
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = "9fb2b6ef9e0a7c1788fada5a054dd13ce2ac0e1d"
@@ -148,6 +148,7 @@ class PublicationTests(unittest.TestCase):
         return code, output.getvalue()
 
     def test_activation_edit_and_release_keep_legacy_views(self) -> None:
+        base = commit_id(self.root, "HEAD")
         legacy = (self.root / FINDING).read_bytes()
         self.apply(self.request(activate=["foundation"]))
         check_checkout(self.root)
@@ -174,6 +175,8 @@ class PublicationTests(unittest.TestCase):
         self.apply(self.request(release=["foundation"]))
         check_checkout(self.root)
         self.commit("release")
+        head = commit_id(self.root, "HEAD")
+        self.assertEqual((0, ""), self.cli("check-history", "--base", base, "--head", head))
         self.assertEqual(updated, (self.root / FINDING).read_bytes())
         _ = (self.root / FINDING).write_bytes(updated + b"\n")
         check_checkout(self.root)
@@ -261,6 +264,101 @@ class PublicationTests(unittest.TestCase):
         check_checkout(self.root)
         with self.assertRaisesRegex(CatalogError, "generated source drift"):
             check_checkout(self.root, staged=True)
+
+    def test_history_rejects_coordinated_edit_with_matching_generated_view(self) -> None:
+        self.apply(self.request(activate=["foundation"]))
+        self.commit("activate")
+        base = commit_id(self.root, "HEAD")
+        approved = prepare(self.root, self.request(upsert=[{
+            "path": FINDING, "id": "F-001", "fields": {**self.fields, "claim": "Approved change"},
+        }]))
+        altered = prepare(self.root, self.request(upsert=[{
+            "path": FINDING, "id": "F-001", "fields": {**self.fields, "claim": "Unreviewed change"},
+        }]))
+        spoofed = Catalog(base, altered.authority.documents, approved.authority.authority)
+        for path, value in spoofed.files().items():
+            _ = (self.root / AUTHORITY / path).write_bytes(value)
+        _ = (self.root / FINDING).write_bytes(altered.views[FINDING])
+        self.commit("coordinated edit")
+        # Checking a clean checkout has no parent context.
+        check_checkout(self.root, staged=True)
+        with self.assertRaisesRegex(CatalogError, "differs from replay"):
+            check_history(self.root, base, commit_id(self.root, "HEAD"))
+
+    def test_history_rejects_intermediate_generated_drift_and_authority_removal(self) -> None:
+        self.apply(self.request(activate=["foundation"]))
+        self.commit("activate")
+        base = commit_id(self.root, "HEAD")
+        path = self.root / FINDING
+        original = path.read_bytes()
+        _ = path.write_bytes(original + b"\n")
+        self.commit("generated-only drift")
+        _ = path.write_bytes(original)
+        self.commit("restore generated view")
+        head = commit_id(self.root, "HEAD")
+        with self.assertRaisesRegex(CatalogError, "generated source drift"):
+            check_history(self.root, base, head)
+        _ = git(self.root, "rm", "-r", "--", AUTHORITY)
+        self.commit("remove authority")
+        with self.assertRaisesRegex(CatalogError, "missing catalog manifest"):
+            check_history(self.root, head, commit_id(self.root, "HEAD"))
+
+    def test_history_checks_the_pinned_integration_merge(self) -> None:
+        fork = commit_id(self.root, "HEAD")
+        self.apply(self.request(activate=["foundation"]))
+        self.commit("feature activation")
+        head = commit_id(self.root, "HEAD")
+        _ = git(self.root, "checkout", "--detach", fork)
+        _ = (self.root / "unrelated.md").write_text("An unrelated base change.\n")
+        self.commit("advance target")
+        base = commit_id(self.root, "HEAD")
+        _ = git(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                "-c", "commit.gpgsign=false", "merge", "--no-commit", "--no-ff", head)
+        self.commit("integration merge")
+        integration = commit_id(self.root, "HEAD")
+        check_history(self.root, base, head, integration)
+        with self.assertRaisesRegex(CatalogError, "pinned base and head"):
+            check_history(self.root, fork, head, integration)
+        generated = self.root / FINDING
+        _ = generated.write_bytes(generated.read_bytes() + b"\n")
+        _ = git(self.root, "add", "--", FINDING)
+        _ = git(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                "-c", "commit.gpgsign=false", "commit", "--amend", "--no-edit", "--quiet")
+        with self.assertRaisesRegex(CatalogError, "generated source drift"):
+            check_history(self.root, base, head, commit_id(self.root, "HEAD"))
+
+    def test_history_checks_side_commit_even_if_merge_discards_its_change(self) -> None:
+        self.apply(self.request(activate=["foundation"]))
+        self.commit("activate")
+        base = commit_id(self.root, "HEAD")
+        generated = self.root / FINDING
+        _ = generated.write_bytes(generated.read_bytes() + b"\n")
+        self.commit("side drift")
+        invalid = commit_id(self.root, "HEAD")
+        _ = git(self.root, "checkout", "--detach", base)
+        _ = git(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                "-c", "commit.gpgsign=false", "merge", "--no-ff", "-s", "ours", "-m", "discard drift", invalid)
+        check_checkout(self.root)
+        with self.assertRaisesRegex(CatalogError, f"{invalid}: generated source drift"):
+            check_history(self.root, base, commit_id(self.root, "HEAD"))
+
+    def test_future_history_uses_squash_target_without_replaying_its_missing_review_base(self) -> None:
+        self.apply(self.request(activate=["foundation"]))
+        active = load_directory(self.root / AUTHORITY)
+        missing = "0" * 39 + "1"
+        old_request = Request.parse({"base": missing, "activate": ["foundation"]})
+        squash = Catalog(missing, active.documents, {
+            "topics": ["foundation"], "request": old_request.payload, "approved_sha256": old_request.approval(),
+        })
+        for path, value in squash.files().items():
+            _ = (self.root / AUTHORITY / path).write_bytes(value)
+        self.commit("trusted squash onto target")
+        base = commit_id(self.root, "HEAD")
+        self.apply(self.request(upsert=[{
+            "path": FINDING, "id": "F-001", "fields": {**self.fields, "claim": "Following review"},
+        }]))
+        self.commit("subsequent reviewed edit")
+        check_history(self.root, base, commit_id(self.root, "HEAD"))
 
 
 if __name__ == "__main__":

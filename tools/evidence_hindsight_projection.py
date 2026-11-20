@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -77,6 +78,18 @@ def full_revision(root: Path, value: str) -> str:
     if not COMMIT.fullmatch(value) or commit_id(root, value) != value:
         raise CatalogError("expected a full Git commit ID")
     return value
+
+
+def require_ancestor(root: Path, ancestor: str, revision: str, role: str) -> None:
+    result = subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(root), "merge-base", "--is-ancestor", ancestor, revision],
+        capture_output=True, check=False,
+    )
+    if result.returncode == 1:
+        raise CatalogError(f"{role} {ancestor} is not an ancestor of publication commit {revision}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip() or "no Git diagnostic"
+        raise CatalogError(f"git merge-base ancestry check failed (exit {result.returncode}): {detail}")
 
 
 @dataclass(frozen=True)
@@ -248,7 +261,7 @@ def load(root: Path, tree: str, review: Review) -> Projection:
 def committed(root: Path, revision: str, review: Review) -> Projection:
     rev = full_revision(root, revision)
     if review.staged:
-        _ = git(root, "merge-base", "--is-ancestor", full_revision(root, review.base), rev)
+        require_ancestor(root, full_revision(root, review.base), rev, "staged review base")
     elif rev != review.base:
         raise CatalogError("publication commit differs from the reviewed commit")
     return load(root, rev, review)

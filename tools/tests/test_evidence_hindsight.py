@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
+from subprocess import CompletedProcess
 import tempfile
 import unittest
 from http.client import HTTPConnection
@@ -17,7 +18,7 @@ from tools.evidence_hindsight import (
 from tools.evidence_hindsight_client import (
     CONTROL_TIMEOUT, RECALL_TIMEOUT, REFLECT_TIMEOUT, Hit, Hindsight, HindsightError, HindsightTimeout, verify_hit,
 )
-from tools.evidence_hindsight_projection import Projection, committed, review_file
+from tools.evidence_hindsight_projection import Projection, committed, require_ancestor, review_file
 from tools.tests.test_evidence_catalog import fixture_git_environment
 
 FINDINGS = "docs/ledgers/findings/foundation.md"
@@ -208,6 +209,42 @@ class EvidenceHindsightTests(unittest.TestCase):
         after = read_publication(self.repo, pointer, "foundation")
         self.assertNotEqual(before.projection.review.bank, after.projection.review.bank)
         self.assertEqual({"F-002"}, set(after.projection.rows))
+
+    def test_divergent_commit_keeps_active_pointer_and_refuses_staged_replay(self) -> None:
+        _ = (self.repo / "branch-marker.txt").write_text("feature")
+        feature = self.commit()
+        first = self.prepare_topic("first", feature)
+        approved = digest((first / "review.json").read_bytes())
+        url = "http://127.0.0.1:8080"
+        with patch("tools.evidence_hindsight.Hindsight", FakeHindsight):
+            _ = publish(self.repo, first, approved, feature, self.state, url)
+        pointer = self.state / "foundation.json"
+        existing = pointer.read_bytes()
+        staged = self.prepare_topic("staged")
+        _data, review, _archive = review_file(staged)
+
+        # A sibling commit with identical catalog blobs still cannot replace this pointer.
+        _ = git(self.repo, "switch", "--quiet", "--detach", self.revision)
+        _ = (self.repo / "branch-marker.txt").write_text("squashed")
+        sibling = self.commit()
+        replacement = self.prepare_topic("sibling", sibling)
+        approved = digest((replacement / "review.json").read_bytes())
+        with (
+            patch("tools.evidence_hindsight.Hindsight", side_effect=AssertionError("opened unrelated bank")),
+            self.assertRaisesRegex(CatalogError, "active publication commit .* is not an ancestor"),
+        ):
+            _ = publish(self.repo, replacement, approved, sibling, self.state, url)
+        self.assertEqual(existing, pointer.read_bytes())
+        with self.assertRaisesRegex(CatalogError, "staged review base .* is not an ancestor"):
+            _ = committed(self.repo, sibling, review)
+
+    def test_git_ancestry_error_reports_operational_failure(self) -> None:
+        result = CompletedProcess(["git"], 128, b"", b"fatal: unable to read commit")
+        with (
+            patch("tools.evidence_hindsight_projection.subprocess.run", return_value=result),
+            self.assertRaisesRegex(CatalogError, r"git merge-base ancestry check failed \(exit 128\): fatal"),
+        ):
+            require_ancestor(self.repo, self.revision, self.revision, "test base")
 
     def test_stale_active_snapshot_uses_current_git_without_sending_to_hindsight(self) -> None:
         publication = self.make_publication()

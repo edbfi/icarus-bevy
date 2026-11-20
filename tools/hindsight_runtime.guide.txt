@@ -11,9 +11,13 @@ Local runtime
 From any linked checkout, use tools/hindsight_runtime install once. The
 launcher shares a Python 3.14 environment, the pg0 PostgreSQL installation and
 pinned public CPU ONNX snapshots in the primary checkout's
-work/hindsight-runtime/. It uses the wheel-only lock for
-hindsight-api-slim[local-onnx,embedded-db]==1.2.3 and requires uv and
-system Python at /usr/bin/python3.14. The host needs Bash, Git, curl, jq,
+work/hindsight-runtime/. The wheel-only lock pins one SHA-256-verified PyPI wheel per dependency for
+hindsight-api-slim[local-onnx,embedded-db]==1.2.3. It supports Linux x86_64,
+glibc 2.35 or later and CPython at /usr/bin/python3.14. Use uv to install.
+Run install again when the wheel lock changes. For an explicit alternate
+asset root under the primary checkout's work/, create an owner-only
+directory and use ICARUS_HINDSIGHT_ASSETS_ROOT with both install and serve.
+The launcher verifies the selected environment before starting it. The host needs Bash, Git, curl, jq,
 OpenSSL and the standard Linux utilities used by the launcher. Run
 bash tools/storage_report.sh before the first install. Installation and
 service use stop above the repository's 30 GiB floor, at a 31 GiB tripwire.
@@ -109,6 +113,16 @@ exact recall before recording the active bank in bridge state. Preserve the
 case and bridge state for repeat checks. A failed check leaves the previous
 active pointer in place. A bank working after restart establishes index
 availability. Rebuild from a newly reviewed revision when its source changes.
+
+Use a separate bridge state directory for a feature-branch qualification.
+A squash creates a new commit, so the feature commit ordinarily is outside
+main's ancestry. After merge, prepare and review the projection from the
+final main commit and publish it to the main state directory. Run check
+from the current main checkout before using the new bank ID. The bridge
+requires the next publication to descend from the current pointer. If a
+pointer already tracks a feature commit outside main's ancestry, preserve
+that pointer and use a fresh state directory for main. Do not edit or move
+a pointer to force publication.
 
 Query and use clients
 

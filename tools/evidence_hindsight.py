@@ -43,6 +43,7 @@ from tools.evidence_hindsight_projection import (
     full_revision,
     load,
     read_bounded,
+    require_ancestor,
     review_bytes,
     review_file,
     safe_row,
@@ -177,7 +178,7 @@ def publish(
         except FileNotFoundError:
             previous = None
         if previous is not None:
-            _ = git(root, "merge-base", "--is-ancestor", previous.revision, revision)
+            require_ancestor(root, previous.revision, revision, "active publication commit")
 
         client = Hindsight(url, review.bank)
         client.require_authenticated_service()

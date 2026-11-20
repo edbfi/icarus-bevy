@@ -59,6 +59,7 @@ from tools.evidence_catalog_store import (
     commit_id,
     git,
     index_files,
+    legacy_files,
     read_blobs,
     read_index_blob,
     read_regular,
@@ -139,12 +140,20 @@ def authority_topics(catalog: Catalog) -> frozenset[str]:
 
 
 def git_authority(root: Path, rev: str) -> tuple[Catalog | None, dict[str, bytes]]:
-    files = read_blobs(root, rev, tree_files(root, rev, (AUTHORITY,)))
+    files = authority_files(root, rev)
     if not files:
         return None, {}
-    catalog = Catalog.from_files({path.removeprefix(f"{AUTHORITY}/"): data for path, data in files.items()})
+    catalog = catalog_from_authority(files)
     _ = authority_topics(catalog)
     return catalog, files
+
+
+def authority_files(root: Path, rev: str) -> dict[str, bytes]:
+    return read_blobs(root, rev, tree_files(root, rev, (AUTHORITY,)))
+
+
+def catalog_from_authority(files: Mapping[str, bytes]) -> Catalog:
+    return Catalog.from_files({path.removeprefix(f"{AUTHORITY}/"): data for path, data in files.items()})
 
 
 def view_files(catalog: Catalog) -> dict[str, bytes]:
@@ -435,23 +444,77 @@ def check_checkout(root: Path, *, staged: bool = False) -> None:
     current = candidate_files(root, AUTHORITY, staged=staged_files)
     if not current and not committed:
         return
-    catalog = Catalog.from_files({path.removeprefix(f"{AUTHORITY}/"): data for path, data in current.items()})
-    topics = authority_topics(catalog)
     before = read_blobs(root, base, committed)
-    transitioning = current != before
+    catalog = catalog_from_authority(current)
     views = candidate_files(
-        root, *LEGACY_ROOTS, staged=staged_files, legacy=True, topics=None if transitioning else topics,
+        root, *LEGACY_ROOTS, staged=staged_files, legacy=True,
+        topics=authority_topics(catalog) if current == before else None,
     )
+    check_transition(root, base, catalog, current, before, views)
+
+
+def check_transition(
+    root: Path, base: str, catalog: Catalog, current: Mapping[str, bytes], before: Mapping[str, bytes],
+    views: Mapping[str, bytes],
+) -> None:
     check_owned(catalog, views)
-    if transitioning:
+    if current != before:
         authority = catalog.authority
         if authority is None:
             raise CatalogError("missing reviewed transition")
         request = Request.parse(as_object(authority["request"], "request"))
         if request.base != base:
-            raise CatalogError("reviewed transition is stale for the current HEAD")
+            raise CatalogError("reviewed transition is stale for the parent commit")
         expected = prepare(root, request)
         if current != {path: data for path, data in expected.after.items() if path.startswith(f"{AUTHORITY}/")}:
             raise CatalogError("catalog differs from replay of the reviewed request")
         if expected.views != views:
             raise CatalogError("legacy sources differ from replay of the reviewed request")
+
+
+def check_commit(root: Path, commit: str, parents: list[str]) -> None:
+    if not parents:
+        raise CatalogError("catalog history is missing a parent commit")
+    first, *others = parents
+    if not git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", first, commit,
+               "--", AUTHORITY, *LEGACY_ROOTS):
+        return
+    before = authority_files(root, first)
+    current = authority_files(root, commit)
+    if not current and not before:
+        return
+    catalog = catalog_from_authority(current)
+    views = legacy_files(root, commit)
+    if current != before:
+        for other in others:
+            if current != authority_files(root, other):
+                continue
+            common = git(root, "merge-base", "--all", first, other).decode().split()
+            if len(common) == 1 and before == authority_files(root, common[0]):
+                # The side's transition was checked on its own commit or is in the trusted base.
+                check_owned(catalog, views)
+                return
+    check_transition(root, first, catalog, current, before, views)
+
+
+def check_history(root: Path, base: str, head: str, merge: str | None = None) -> None:
+    """Replay changes introduced by a pull request against its pinned target and source."""
+    for rev in (base, head) if merge is None else (base, head, merge):
+        if not COMMIT.fullmatch(rev) or commit_id(root, rev) != rev:
+            raise CatalogError("catalog history requires full Git commit IDs")
+    if git(root, "rev-parse", "--is-shallow-repository").strip() != b"false":
+        raise CatalogError("catalog history requires a complete Git checkout")
+    _ = git(root, "merge-base", base, head)
+    commits = git(root, "rev-list", "--topo-order", "--reverse", "--parents",
+                  f"{base}..{head}").decode().splitlines()
+    if merge is not None:
+        integration = git(root, "rev-list", "--parents", "-n", "1", merge).decode().split()
+        if integration != [merge, base, head]:
+            raise CatalogError("pull request merge commit differs from its pinned base and head")
+        commits.append(" ".join(integration))
+    for line in commits:
+        commit, *parents = line.split()
+        try:
+            check_commit(root, commit, parents)
+        except CatalogError as error:
+            raise CatalogError(f"{commit}: {error}") from error

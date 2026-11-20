@@ -14,6 +14,7 @@ from tools.evidence_catalog_model import CatalogError, Index, json_line, topic
 from tools.evidence_catalog_publish import (
     Request,
     check_checkout,
+    check_history,
     patch,
     prepare,
     require_clean_sources,
@@ -34,6 +35,9 @@ class Options(argparse.Namespace):
     request: Path = Path()
     approved_sha256: str = ""
     staged: bool = False
+    base: str = ""
+    head: str = ""
+    merge: str | None = None
 
 
 def options(argv: Sequence[str] | None) -> Options:
@@ -62,6 +66,10 @@ def options(argv: Sequence[str] | None) -> Options:
     _ = publish.add_argument("--out", type=Path, required=True)
     check = commands.add_parser("check", help="enforce generated views for opted-in checkout topics")
     _ = check.add_argument("--staged", action="store_true", help="read candidate files from the Git index")
+    history = commands.add_parser("check-history", help="replay catalog changes in a pull request")
+    _ = history.add_argument("--base", required=True)
+    _ = history.add_argument("--head", required=True)
+    _ = history.add_argument("--merge", help="also check the pull request merge commit")
     return parser.parse_args(argv, namespace=Options())
 
 
@@ -87,6 +95,8 @@ def run(args: Options) -> None:
     root = args.repo.resolve()
     if args.command == "check":
         check_checkout(root, staged=args.staged)
+    elif args.command == "check-history":
+        check_history(root, args.base, args.head, args.merge)
     elif args.command == "migrate":
         revision = commit_id(root, args.rev or "")
         catalog = resolved_catalog(root, revision)
