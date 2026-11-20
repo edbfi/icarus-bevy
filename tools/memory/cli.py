@@ -19,12 +19,11 @@ from tools.memory.canonical import render_text
 from tools.memory.check import run_check
 from tools.memory.gitio import GitError, descends, git
 from tools.memory.journal import JournalError, read_git, read_tree
-from tools.memory.model import JSON, RecordError, as_mapping
+from tools.memory.model import JSON, RecordError
 from tools.memory.paths import ProtectedPathsError, protected_paths
-from tools.memory.state import Entry, State, partition, replay
+from tools.memory.state import RELEASE_CONFIG, Entry, State, partition, pinned_build, replay
 
 EXIT_NO_JOURNAL = 3
-RELEASE_CONFIG = "config/release.toml"
 ACCEPTANCE_REF = "origin/main"
 
 
@@ -35,6 +34,8 @@ class Options(argparse.Namespace):
     history: bool = False
     json: bool = False
     ci: bool = False
+    bank: bool = False
+    pin: bool = False
     base: str = ACCEPTANCE_REF
 
 
@@ -50,6 +51,9 @@ def parse_options(argv: Sequence[str] | None) -> Options:
     _ = check.add_argument("--ci", action="store_true", help="the checks that need no service")
     _ = check.add_argument("--base", default=ACCEPTANCE_REF, help=f"accepted tree-ish (default {ACCEPTANCE_REF})")
     _ = commands.add_parser("protected-paths", help="paths scratch cleanup must keep; fails closed")
+    from tools.memory import online  # imported here: it reads this module's parsed options
+
+    online.register(commands)
     options = Options()
     _ = parser.parse_args(argv, namespace=options)
     return options
@@ -57,15 +61,6 @@ def parse_options(argv: Sequence[str] | None) -> Options:
 
 def repository_root() -> Path:
     return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
-
-
-def pinned_build(root: Path) -> str:
-    """``build_id`` of the pinned release in ``config/release.toml``."""
-    release = as_mapping(as_mapping(tomllib.loads((root / RELEASE_CONFIG).read_text(encoding="utf-8")), RELEASE_CONFIG).get("release"), "release")
-    build = release.get("build_id")
-    if not isinstance(build, int):
-        raise RecordError(f"{RELEASE_CONFIG}: release.build_id must be an integer")
-    return str(build)
 
 
 def document_state(entry: Entry, accepted: set[str] | None) -> str:
@@ -162,9 +157,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         for notice in result.notices:
             print(f"memory protected-paths: notice: {notice}", file=sys.stderr)
         return 0
-    if (options.command == "get" and not options.offline) or (options.command == "check" and not options.ci):
-        print(f"memory {options.command}: only the offline form is available in this build (--offline, --ci)", file=sys.stderr)
-        return 2
+    if options.command not in ("get", "check") or not (options.offline or options.ci) or options.bank or options.pin:
+        from tools.memory import online
+
+        return online.run(options, report_check)
     try:
         root = repository_root()
         if options.command == "check":
