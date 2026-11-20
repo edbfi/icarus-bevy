@@ -213,6 +213,12 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+# Parsed segments by (path, sha256 of the bytes): parsing is deterministic and a ``Segment`` immutable, so
+# the same bytes at the same path (a working tree and origin/main, or the next call of a long-lived process)
+# are verified once per process.
+_PARSED: dict[tuple[str, str], Segment] = {}
+
+
 def parse_segment(path: str, data: bytes) -> Segment:
     """Parse and verify one segment found at repository-relative ``path``."""
     name = PurePosixPath(path).name
@@ -221,8 +227,17 @@ def parse_segment(path: str, data: bytes) -> Segment:
         raise JournalError(f"{path}: not a segment path ({JOURNAL}/YYYY/MM/<YYYYMMDDTHHMMSSZ>-<12 hex>.jsonl)")
     if len(data) > SEGMENT_LIMIT:
         raise JournalError(f"{path}: {len(data)} bytes exceeds the {SEGMENT_LIMIT}-byte segment limit")
-    if sha256_hex(data)[:12] != match[4]:
+    digest = sha256_hex(data)
+    if digest[:12] != match[4]:
         raise JournalError(f"{path}: content does not match its name (half-written or edited segment)")
+    if (known := _PARSED.get((path, digest))) is not None:
+        return known
+    segment = _parse_lines(path, data, match)
+    _PARSED[(path, digest)] = segment
+    return segment
+
+
+def _parse_lines(path: str, data: bytes, match: re.Match[str]) -> Segment:
     try:
         lines = data.decode("utf-8").split("\n")
     except UnicodeDecodeError as error:

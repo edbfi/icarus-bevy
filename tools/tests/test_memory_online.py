@@ -103,7 +103,9 @@ class FakeBank:
         return [Document(item.id, None, item.content_hash, item.tags, item.metadata, item.entities, item.event_date) for item in found]
 
     def units(self, *, text: str | None = None, document_id: str | None = None) -> list[Unit]:
-        units = [Unit(f"u-{item.id}", item.id, item.text or "", "world", item.tags) for item in self.held.values()] + self.extra_units
+        """One unit per document, or chunks of at most 1,800 characters of a longer text, as Hindsight's chunks mode."""
+        units = [Unit(f"u-{item.id}-{start}", item.id, (item.text or "")[start:start + 1800], "world", item.tags)
+                 for item in self.held.values() for start in range(0, max(len(item.text or ""), 1), 1800)] + self.extra_units
         return [unit for unit in units if (text is None or text.casefold() in unit.text.casefold())
                 and (document_id is None or unit.document_id == document_id)]
 
@@ -650,6 +652,17 @@ class SyncAndRebuildTests(Online):
         self.assertEqual(2, self.bank.async_calls)
         self.assertEqual(0, online.check_bank(self.bank, self.root).status)
         self.assertEqual(0, online.rebuild(self.bank, self.root).data["retained"])
+
+    def test_a_long_reference_body_is_held_in_chunks(self) -> None:
+        self.accepted_chain()
+        body = "# Invented reference\n\n" + "".join(f"Invented paragraph {number} about the listing lock.\n\n" for number in range(120))
+        output = online.propose(self.bank, self.root, "reference", Changes({"title": "Invented long reference", "scope": {
+            "basis": "explicit", "subjects": ["tooling"]}}, body=body), now=self.tick())
+        self.assertEqual(0, output.status)
+        self.assertGreater(len(self.bank.units(document_id="REF-001")), 2)
+        self.assertEqual(0, online.check_bank(self.bank, self.root).status)
+        self.bank.extra_units.append(Unit("stray", "REF-001", "Invented text the body never held", "world", ()))
+        self.assertIn("REF-001: ", "\n".join(online.check_bank(self.bank, self.root).lines))
 
     def test_check_bank_finds_drift(self) -> None:
         self.accepted_chain()

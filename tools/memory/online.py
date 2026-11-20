@@ -1085,12 +1085,25 @@ def compare_bank(bank: Bank, root: Path) -> Output:
             problems.append(f"memory unit {unit.id} has no document")
             continue
         units_by.setdefault(unit.document_id, []).append(unit.text)
+    present = {item.id for item in held}
     for document_id, target in wanted.items():
-        texts = units_by.get(document_id, [])
-        if document_id in {item.id for item in held} and texts != [target.item.content]:
-            problems.append(f"{document_id}: {len(texts)} memory unit(s); expected one holding the document text")
+        if document_id in present and (problem := unit_problem(target.item.content, units_by.get(document_id, []))):
+            problems.append(f"{document_id}: {problem}")
     lines = [*problems, *(f"notice: {notice}" for notice in notices), f"check --bank: {len(wanted)} journal document(s), {len(held)} bank document(s), {len(problems)} problem(s)"]
     return Output({"problems": list[JSON](problems), "notices": list[JSON](notices), "documents": len(held), "expected": len(wanted)}, lines, 1 if problems else 0)
+
+
+CHUNK = 1800
+
+
+def unit_problem(content: str, texts: Sequence[str]) -> str | None:
+    """Why a document's memory units do not hold its text: one unit equal to it, or for a text longer than
+    the chunk size (a REF body) at least one unit per chunk, each a piece of the text."""
+    if len(content) <= CHUNK:
+        return None if list(texts) == [content] else f"{len(texts)} memory unit(s); expected one holding the document text"
+    if len(texts) < -(-len(content) // CHUNK) or not all(text.strip() and text.strip() in content for text in texts):
+        return f"{len(texts)} memory unit(s) do not hold the {len(content)}-character text in chunks of at most {CHUNK}"
+    return None
 
 
 def check_pin(root: Path) -> Output:
