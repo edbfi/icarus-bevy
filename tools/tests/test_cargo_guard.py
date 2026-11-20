@@ -1,4 +1,7 @@
-"""Synthetic fixtures and small Python subprocesses; never run Cargo/real targets."""
+"""Synthetic fixtures and small Python subprocesses; never run Cargo/real targets.
+
+Evidence fixtures are invented legacy shards and journal segments read through ``tools.memory.paths``.
+"""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -13,12 +16,15 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import NamedTuple, TextIO, override
+from typing import IO, NamedTuple, TextIO, override
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools import cargo_guard as guard
+from tools.memory.journal import Revision, write_change_set
+from tools.memory.model import Record
+from tools.tests.memory_fixtures import CREATED, evidence
 
 
 class CargoGuardTests(unittest.TestCase):
@@ -32,8 +38,11 @@ class CargoGuardTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name) / "checkout"
         self.root.mkdir()
-        common = Path(directory.name) / "git-common"
+        # The primary checkout is the parent of the Git common directory.
+        common = self.root / ".git"
         common.mkdir()
+        # Today's checkouts carry the legacy index; tests of a checkout without one remove it.
+        (self.root / "evidence").mkdir()
         self.info = guard.Identity(self.root, common)
         guard.state_directory(self.info)
         home = Path(directory.name) / "cargo-home"
@@ -86,6 +95,9 @@ class CargoGuardTests(unittest.TestCase):
                "kind": "input", "date": None, "label": "authored metadata fixture",
                "status": status, "legacy": True}
         _ = self.write("evidence/fixture/001.jsonl", json.dumps(row) + "\n")
+
+    def journal(self, checkout: Path, path: str) -> None:
+        _ = write_change_set(checkout, CREATED, [Revision.of(Record.from_json(evidence("M-101", path)))])
 
     def test_common_lock_serializes_worktrees_and_keeps_inode(self) -> None:
         other = guard.Identity(self.root.parent / "other", self.info.common)
@@ -393,10 +405,10 @@ with g.build_lock(i) as b:
         guard.evidence_veto(self.info)
         self.evidence("reference-data/absent/fixity.sha256")
         original = Path.open
-        def metadata_only(path: Path, mode: str = "r", *, encoding: str | None = None) -> TextIO:
+        def metadata_only(path: Path, mode: str = "r", buffering: int = -1, encoding: str | None = None) -> IO[bytes] | TextIO:
             self.assertTrue(path.suffix == ".jsonl", f"artifact opened: {path}")
-            self.assertEqual(mode, "r")
-            return original(path, "r", encoding=encoding)
+            self.assertIn(mode, ("r", "rb"))
+            return original(path, mode, buffering, encoding)
         # Absent manifests need only index metadata; no referenced artifact reads.
         with patch.object(Path, "open", autospec=True, side_effect=metadata_only):
             guard.evidence_veto(self.info)
@@ -565,8 +577,63 @@ with g.build_lock(i) as b:
         with patch.object(guard, "git_text", return_value=f"worktree {other}\0"), self.assertRaisesRegex(guard.GuardError, "active evidence"):
             guard.evidence_veto(self.info)
         _ = self.write("evidence/fixture/001.jsonl", '{"status":"active"}\n')
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(guard.GuardError, "protected evidence unknown: .*missing keys"):
             guard.evidence_veto(self.info)
+        for status, klass in (("Active", "local-private"), ("active", "private")):
+            row = {"id": "M-001", "path": "work/x", "class": klass, "status": status}
+            _ = self.write("evidence/fixture/001.jsonl", json.dumps(row) + "\n")
+            with self.subTest(status=status, klass=klass), self.assertRaisesRegex(guard.GuardError, "unknown evidence class"):
+                guard.evidence_veto(self.info)
+
+    def test_linked_worktree_branch_only_legacy_shard_vetoes(self) -> None:
+        # The cut-over state: the primary has a journal and no legacy index; an old worktree keeps its rows.
+        shutil.rmtree(self.root / "evidence")
+        self.journal(self.root, "work/case/receipt.txt")
+        old = self.root.parent / "old"
+        (old / "evidence/area").mkdir(parents=True)
+        row = {"id": "M-002", "path": "target/debug/branch-only", "class": "local-private", "status": "active"}
+        _ = (old / "evidence/area/001.jsonl").write_text(json.dumps(row) + "\n")
+        guard.evidence_veto(self.info)
+        records = f"worktree {self.root}\0worktree {old}\0"
+        with patch.object(guard, "git_text", return_value=records), self.assertRaisesRegex(guard.GuardError, "active evidence overlaps target: M-002"):
+            guard.evidence_veto(self.info)
+
+    def test_journal_only_pin_vetoes(self) -> None:
+        shutil.rmtree(self.root / "evidence")
+        self.journal(self.root, "target/release/kept.bin")
+        with self.assertRaisesRegex(guard.GuardError, "active evidence overlaps target: M-101"):
+            guard.evidence_veto(self.info)
+        # A record in a linked worktree's journal resolves against the primary checkout too.
+        linked = self.root.parent / "linked"
+        linked.mkdir()
+        _ = (self.root / "memory").rename(linked / "memory")
+        (self.root / "evidence").mkdir()
+        records = f"worktree {self.root}\0worktree {linked}\0"
+        with patch.object(guard, "git_text", return_value=records), self.assertRaisesRegex(guard.GuardError, "M-101"):
+            guard.evidence_veto(self.info)
+
+    def test_malformed_journal_refuses_under_every_policy(self) -> None:
+        _ = self.write("memory/journal/2026/11/broken.jsonl", "{}\n")
+        for policy in (guard.LOCAL, guard.CI):
+            with self.subTest(policy=policy), self.assertRaisesRegex(guard.GuardError, "protected evidence unknown: .*not a segment path"):
+                guard.evidence_veto(self.info, policy)
+
+    def test_no_evidence_source_refuses_locally_and_is_empty_in_ci(self) -> None:
+        (self.root / "evidence").rmdir()
+        with self.assertRaisesRegex(guard.GuardError, "no journal or legacy evidence index"):
+            guard.evidence_veto(self.info)
+        guard.evidence_veto(self.info, guard.CI)
+        self.own()
+        with patch.object(guard, "run_owned", side_effect=self.fake_cargo):
+            with self.assertRaisesRegex(guard.GuardError, "no journal or legacy evidence index"):
+                self.execute(retire=True)
+            with guard.build_lock(self.info, 0) as fd:
+                guard.execute(self.info, (), self.env, build_fd=fd, retire=True, policy=guard.CI)
+        self.assertIsNone(self.state()["generation"])
+
+    def test_guard_does_not_depend_on_the_docs_lint(self) -> None:
+        source = Path(guard.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("docs_lint", source.replace("without tools/docs_lint.py", ""))
 
     def test_process_readable_matches_veto_despite_unreadable_neighbors(self) -> None:
         proc = self.root / "proc"

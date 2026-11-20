@@ -177,7 +177,7 @@ def evidence_rows(checkout: Path) -> set[tuple[str, str]]:
                 rows.add((record.id, path))
     for shard in legacy_shards(checkout):
         try:
-            text = shard.read_text(encoding="utf-8")
+            text = shard.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError) as error:
             raise ProtectedPathsError(f"{shard}: unreadable: {error}") from error
         for identifier, klass, status, path in legacy_rows(str(shard), text):
