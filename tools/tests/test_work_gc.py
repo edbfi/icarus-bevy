@@ -1,4 +1,8 @@
-"""Authored fixtures for the work/ scratch lint; no repository files are read."""
+"""Authored fixtures for the work/ scratch lint, in temporary Git repositories; no repository files are read.
+
+Pins come from ``memory protected-paths`` (``tools/memory/paths.py``): invented legacy shards, invented
+journal segments, and linked worktrees of the fixture repository.
+"""
 
 import contextlib
 import io
@@ -13,6 +17,10 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools import sha256_manifest, work_gc  # noqa: E402
+from tools.memory.journal import Revision, write_change_set  # noqa: E402
+from tools.memory.model import Record  # noqa: E402
+from tools.memory.paths import ProtectedPathsError  # noqa: E402
+from tools.tests.memory_fixtures import CREATED, clean_git_environment, evidence, new_repository, run_git  # noqa: E402
 
 # main() reads the clock, so fixtures age relative to the real time.
 NOW = float(int(time.time()))
@@ -29,14 +37,18 @@ def no_references(_root: Path, _name: str) -> list[str]:
 
 
 class WorkGcTest(unittest.TestCase):
+    top: Path = Path()
     root: Path = Path()
 
     @override
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        (self.root / ".git").mkdir()
+        self.top = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.root = self.top / "primary"
+        self.root.mkdir()
+        self.enterContext(clean_git_environment())
+        new_repository(self.root)
+        # An empty first commit, so linked worktrees check out nothing of the fixture.
+        _ = run_git(self.root, "commit", "-q", "--allow-empty", "-m", "fixture")
         (self.root / "evidence" / "area").mkdir(parents=True)
         (self.root / "work").mkdir()
         (self.root / "icarus-orig").mkdir()
@@ -48,12 +60,25 @@ class WorkGcTest(unittest.TestCase):
         _ = path.write_bytes(data)
         return path
 
-    def evidence(self, *paths: str, status: str = "active") -> None:
+    def evidence(self, *paths: str, status: str = "active", checkout: Path | None = None) -> None:
+        """One legacy shard in ``checkout`` (default the primary) listing ``paths`` as local-private rows."""
         lines = [
             json.dumps({"id": f"M-{index:03d}", "path": path, "class": "local-private", "status": status})
             for index, path in enumerate(paths, start=1)
         ]
-        _ = (self.root / "evidence" / "area" / "001.jsonl").write_text("\n".join(lines) + "\n")
+        shard = (checkout or self.root) / "evidence" / "area" / "001.jsonl"
+        shard.parent.mkdir(parents=True, exist_ok=True)
+        _ = shard.write_text("\n".join(lines) + "\n")
+
+    def journal(self, checkout: Path, *paths: str) -> None:
+        """One journal segment in ``checkout`` recording ``paths`` as active local-private evidence."""
+        records = [Record.from_json(evidence(f"M-{index:03d}", path)) for index, path in enumerate(paths, start=101)]
+        _ = write_change_set(checkout, CREATED, [Revision.of(record) for record in records])
+
+    def linked(self, name: str = "linked") -> Path:
+        checkout = self.top / name
+        _ = run_git(self.root, "worktree", "add", "-q", "--detach", str(checkout))
+        return checkout
 
     def project(self, case: str) -> None:
         _ = self.write(f"work/{case}/project/Case.gpr")
@@ -239,8 +264,27 @@ class WorkGcTest(unittest.TestCase):
         found = self.case(report, case)
         self.assertNotIn(path, [item.path for item in found.candidates])
         self.assertIn(path, [item.path for item in found.held + found.deferred])
-        self.assertEqual(work_gc.prune(report, NOW), [])
+        if report.pin_problem is None:
+            self.assertEqual(work_gc.prune(report, NOW), [])
+        else:
+            self.assert_refuses(report)
         self.assertTrue(path.exists())
+
+    def assert_refuses(self, report: work_gc.Report) -> None:
+        """Unknown protected paths: prune and retire delete nothing, and every mode exits non-zero."""
+        self.assertIsNotNone(report.pin_problem)
+        with self.assertRaisesRegex(SystemExit, "nothing pruned"):
+            _ = work_gc.prune(report, NOW)
+        with self.assertRaisesRegex(SystemExit, "nothing retired"):
+            _ = work_gc.retire(report, [case.name for case in report.cases], NOW)
+        for mode in ([], ["--check"], ["--json"], ["--prune"], ["--retire", *(case.name for case in report.cases)]):
+            with self.subTest(mode=mode), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    status = work_gc.main(["--root", str(self.root), "--settle-hours", "0", *mode])
+                except SystemExit as error:
+                    status = error.code
+                self.assertNotIn(status, (0, None))
+        self.assertFalse((self.root / "work/.gc/log.jsonl").exists())
 
     def test_any_named_manifest_pins_what_it_lists(self) -> None:
         copy = self.official_copy()
@@ -312,8 +356,8 @@ class WorkGcTest(unittest.TestCase):
                     _ = work_gc.retire(report, [name], NOW)
                 with self.assertRaises(SystemExit):
                     _ = work_gc.retire(report, ["loose.log"], NOW)
-                self.assertIn(f"work/{name}/official-fixity.sha256", report.pin_problems)
-                self.assertEqual(work_gc.prune(report, NOW), [])
+                self.assertIn(f"work/{name}/official-fixity.sha256", report.pin_problem or "")
+                self.assert_refuses(report)
                 self.assertTrue(copy.exists() and free.exists())
 
     def test_unusable_manifest_in_one_case_defers_the_case_it_would_pin(self) -> None:
@@ -335,7 +379,7 @@ class WorkGcTest(unittest.TestCase):
         self.evidence("work/c/removed.sha256")
         self.age()
         report = self.scan()
-        self.assertEqual(report.pin_problems, {})
+        self.assertIsNone(report.pin_problem)
         self.assertIsNone(self.case(report, "c").guard)
         self.assert_held(copy)
         self.assert_held(sized)
@@ -354,6 +398,41 @@ class WorkGcTest(unittest.TestCase):
         self.evidence("work/loose-fixity.sha256")
         self.age()
         self.assert_held(copy)
+
+    def prefix(self, case: str = "c") -> Path:
+        """A Wine prefix, reproducible scratch, in a closed case."""
+        _ = self.write(f"work/{case}/case.json", b'{"state": "closed"}')
+        _ = self.write(f"work/{case}/prefix/version")
+        _ = self.write(f"work/{case}/prefix/pfx/system.reg")
+        return self.root / f"work/{case}/prefix"
+
+    def test_absent_listed_files_are_pinned_lexically(self) -> None:
+        prefix = self.prefix()
+        _ = self.manifest("work/c/fixity.sha256", "prefix/drive_c/saved/restore-me.sav")
+        self.evidence("work/c/fixity.sha256")
+        self.age()
+        # The listed file is absent, yet the directory that should hold it is never pruned.
+        self.assertIn(prefix / "drive_c/saved/restore-me.sav", work_gc.protected_paths(self.root))
+        self.assert_held(prefix)
+        # Restored from a backup, it is protected the moment it reappears.
+        restored = self.write("work/c/prefix/drive_c/saved/restore-me.sav", b"restored")
+        os.utime(restored, (OLD, OLD))
+        self.assert_held(prefix)
+        self.assertTrue(restored.exists())
+
+    def test_removal_receipt_entries_are_pinned(self) -> None:
+        prefix = self.prefix()
+        (receipt,) = sha256_manifest.REMOVAL_RECEIPTS
+        _ = self.write("work/c/removed.sha256", f"{'0' * 64}  prefix/drive_c/removed.bin\n{len(COPY)} prefix/drive_c/removed.bin\n".encode())
+        row = {"id": receipt, "path": "work/c/removed.sha256", "class": "local-private", "status": "active"}
+        _ = (self.root / "evidence/area/001.jsonl").write_text(json.dumps(row) + "\n")
+        self.age()
+        self.assertIn(prefix / "drive_c/removed.bin", work_gc.protected_paths(self.root))
+        self.assert_held(prefix)
+        other = self.root / "work/c/removed.sha256"
+        _ = other.write_text(f"{'0' * 64}  elsewhere.bin\n")
+        os.utime(other, (OLD, OLD))
+        self.assertEqual(self.kinds(self.case(self.scan(), "c").candidates), {("work/c/prefix", "wine-prefix")})
 
     def test_manifest_detected_by_content_whatever_its_name(self) -> None:
         copy = self.official_copy()
@@ -403,7 +482,80 @@ class WorkGcTest(unittest.TestCase):
             self.assertEqual(index.inside(path), any(work_gc.is_within(pin, path) for pin in pinned), probe)
 
     def test_failed_reference_search_counts_as_a_reference(self) -> None:
-        self.assertNotEqual(work_gc.tracked_references(self.root, "anything"), [])
+        outside = self.top / "not-a-repository"
+        outside.mkdir()
+        self.assertNotEqual(work_gc.tracked_references(outside, "anything"), [])
+        _ = self.write("notes.md", b"see work/mentioned-20261120\n")
+        self.assertEqual(work_gc.tracked_references(self.root, "mentioned-20261120"), ["notes.md"])
+        self.assertEqual(work_gc.tracked_references(self.root, "absent-20261120"), [])
+
+    def test_linked_worktree_branch_only_legacy_shard_pins_a_path(self) -> None:
+        self.project("branch")
+        self.project("free")
+        linked = self.linked()
+        self.evidence("work/branch/project/", checkout=linked)
+        self.age()
+        report = self.scan()
+        self.assertEqual(self.case(report, "branch").candidates, [])
+        self.assertEqual(len(self.case(report, "branch").held), 3)
+        self.assertTrue(self.case(report, "branch").indexed)
+        self.assertEqual(len(self.case(report, "free").candidates), 3)
+        with self.assertRaisesRegex(SystemExit, "pins a path"):
+            _ = work_gc.retire(report, ["branch"], NOW)
+
+    def test_journal_only_pin_after_cut_over(self) -> None:
+        # The cut-over state: no legacy index in the primary, a journal there, legacy rows only in an old worktree.
+        (self.root / "evidence" / "area").rmdir()
+        (self.root / "evidence").rmdir()
+        for name in ("journal", "old", "free"):
+            self.project(name)
+        self.journal(self.root, "work/journal/project/Case.rep/idata/00/data.gbf")
+        self.evidence("work/old/", checkout=self.linked("old-worktree"))
+        self.age()
+        report = self.scan()
+        self.assertIsNone(report.pin_problem)
+        self.assertEqual(self.kinds(self.case(report, "journal").held), {("work/journal/project/Case.rep", "ghidra-project")})
+        self.assertEqual(self.case(report, "old").candidates, [])
+        self.assertTrue(self.case(report, "old").indexed)
+        self.assertEqual(len(self.case(report, "free").candidates), 3)
+        removed = work_gc.prune(report, NOW)
+        self.assertEqual({item.path.parent.parent.name for item in removed}, {"journal", "free"})
+        self.assertTrue((self.root / "work/journal/project/Case.rep/idata/00/data.gbf").exists())
+        self.assertTrue((self.root / "work/old/project/Case.rep").exists())
+
+    def test_malformed_journal_or_no_source_refuses_to_prune(self) -> None:
+        self.project("a")
+        _ = self.write("memory/journal/2026/11/broken.jsonl", b"{}\n")
+        self.age()
+        report = self.scan()
+        self.assertIn("not a segment path", report.pin_problem or "")
+        self.assertEqual(self.case(report, "a").candidates, [])
+        self.assert_refuses(report)
+        self.assertTrue((self.root / "work/a/project/Case.rep").exists())
+        (self.root / "memory/journal/2026/11/broken.jsonl").unlink()
+        _ = self.write("evidence/area/001.jsonl", b'{"id": "M-001", "path": "work/x"}\n')
+        self.assertIn("missing keys", self.scan().pin_problem or "")
+        for directory in ("memory", "evidence"):
+            for path in sorted((self.root / directory).rglob("*"), reverse=True):
+                _ = path.rmdir() if path.is_dir() else path.unlink()
+            (self.root / directory).rmdir()
+        report = self.scan()
+        self.assertIn("no worktree has a journal", report.pin_problem or "")
+        self.assert_refuses(report)
+
+    def test_runs_against_the_primary_checkout_from_a_linked_worktree(self) -> None:
+        self.project("a")
+        linked = self.linked()
+        self.age()
+        self.assertEqual(work_gc.find_root(linked), self.root)
+        output = io.StringIO()
+        with contextlib.chdir(linked), contextlib.redirect_stdout(output):
+            self.assertEqual(work_gc.main(["--json", "--settle-hours", "0"]), 0)
+        report = work_gc.load_object(output.getvalue())
+        self.assertIsNotNone(report)
+        self.assertIn('"name": "a"', output.getvalue())
+        with self.assertRaises(ProtectedPathsError):
+            _ = work_gc.protected_paths(linked)
 
     def test_relative_arguments_resolve_against_the_process_directory(self) -> None:
         cwd = self.root

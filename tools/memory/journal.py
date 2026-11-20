@@ -23,7 +23,7 @@ interrupted write leaves behind and which never holds an accepted revision.
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cached_property
@@ -256,8 +256,11 @@ def parse_segment(path: str, data: bytes) -> Segment:
     return Segment(path, created, tuple(revisions))
 
 
-def read_tree(root: Path) -> tuple[Segment, ...]:
-    """Every segment in the working tree at ``root``, sorted by path; ``()`` when there is no journal."""
+def read_tree(root: Path, parse: Callable[[str, bytes], Segment] = parse_segment) -> tuple[Segment, ...]:
+    """Every segment in the working tree at ``root``, sorted by path; ``()`` when there is no journal.
+
+    ``parse`` turns a segment's repository-relative path and bytes into a ``Segment``; a caller reading many
+    worktrees passes one that reuses segments it has already parsed."""
     base = root / JOURNAL
     if not base.exists() and not base.is_symlink():
         return ()
@@ -274,7 +277,7 @@ def read_tree(root: Path) -> tuple[Segment, ...]:
             data = path.read_bytes()
         except OSError as error:
             raise JournalError(f"{relative}: unreadable: {error}") from error
-        segments.append(parse_segment(relative, data))
+        segments.append(parse(relative, data))
     return tuple(segments)
 
 
