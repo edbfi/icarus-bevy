@@ -16,14 +16,14 @@ from typing import cast, override
 from unittest.mock import patch
 
 from tools.memory import bank as bank_module, durability, journal, online, service
-from tools.memory.durability import Watermark
 from tools.memory.bank import Applied, Bank, BankError, Desired, Universe, desired, gather
+from tools.memory.durability import Watermark
+from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
 from tools.memory.journal import Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
-from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
