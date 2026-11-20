@@ -4,7 +4,7 @@
 One dispatch mechanism: every subcommand sets ``handler`` (``set_defaults``), a function from the parsed
 options to the exit status. This module defines ``get``, ``check`` and ``protected-paths``; each other
 module adds its commands with one ``register(commands)`` call below (``online``: the bank commands;
-``durability``: ``service``, ``backup``, ``restore``).
+``durability``: ``service``, ``backup``, ``restore``; ``mcp``: the stdio MCP server).
 
 Exit status: 0 success; 1 problems, an unknown ID or unreadable input; 2 usage;
 ``EXIT_NO_JOURNAL`` (3) when ``check`` finds no segment in the working tree or the reference tree.
@@ -23,7 +23,7 @@ from pathlib import Path
 
 from tools.memory.canonical import render_text
 from tools.memory.check import run_check
-from tools.memory import durability, online
+from tools.memory import durability, mcp, online
 from tools.memory.gitio import GitError, descends, git
 from tools.memory.journal import JournalError, read_git, read_tree
 from tools.memory.model import JSON, RecordError
@@ -70,6 +70,7 @@ def parser() -> argparse.ArgumentParser:
     paths.set_defaults(handler=run_protected_paths)
     online.register(commands)
     durability.register(commands)
+    mcp.register(commands)
     return top
 
 
