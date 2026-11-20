@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
-from tools.memory import durability, online, service
+from tools.memory import bank as bank_module, durability, journal, online, service
 from tools.memory.durability import Watermark
 from tools.memory.bank import Applied, Bank, BankError, Desired, Universe, desired, gather
 from tools.memory.hindsight import (
@@ -766,3 +766,90 @@ class DurabilitySeamTests(Online):
         self.bank.settings["retain_chunk_size"] = 3000
         self.assertEqual(["journal: config retain_chunk_size is 3000, expected 1800"], check(Connection("http://127.0.0.1:1", "k" * 64, "icarus"), mark))
         self.assertIn("no origin/main", durability.watermark_problems(self.top, Watermark("a" * 40, ()))[0])
+
+
+class StampTests(Online):
+    """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
+
+    listings: int = 0
+
+    def counted(self) -> None:
+        documents = self.bank.documents
+
+        def counting(tags: Tags | None = None) -> list[Document]:
+            self.listings += 1
+            return documents(tags)
+
+        _ = self.enterContext(patch.object(self.bank, "documents", counting))
+
+    def test_an_unchanged_journal_skips_the_bank_diff(self) -> None:
+        self.accepted_chain()
+        _ = online.get(self.bank, self.root, "F-101")
+        self.counted()
+        for _ in range(3):
+            self.assertEqual(0, online.get(self.bank, self.root, "F-102").status)
+            _ = online.recall(self.bank, self.root, "listing lock")
+        self.assertEqual(0, self.listings, "no document listing, so no diff")
+        self.assertIn(bank_module.MARKER, self.bank.held)
+
+    def test_a_new_local_segment_or_commit_reconciles(self) -> None:
+        self.accepted_chain()
+        _ = online.get(self.bank, self.root, "F-101")
+        self.counted()
+        _ = write(self.root, [finding("F-140", "Invented: written without the tool")], second=40)
+        self.assertEqual(0, online.get(self.bank, self.root, "F-140").status)
+        self.assertGreater(self.listings, 0, "a new local segment reconciles")
+        self.assertIn("F-140", self.bank.held)
+        self.listings = 0
+        commit_all(self.root, "accepted")
+        _ = online.get(self.bank, self.root, "F-140")
+        self.assertGreater(self.listings, 0, "a new origin/main commit reconciles")
+        self.assertIn("state:accepted", self.doc("F-140").tags)
+
+    def test_a_bank_whose_marker_differs_is_reconciled(self) -> None:
+        self.accepted_chain()
+        _ = online.get(self.bank, self.root, "F-101")
+        del self.bank.held["F-104"]
+        self.bank.put(Item(bank_module.MARKER, "memory stamp restored", ("marker:stamp",), {"stamp": "0" * 64}, "unset", ()))
+        self.counted()
+        _ = online.status(self.bank, self.root)
+        self.assertGreater(self.listings, 0)
+        self.assertIn("F-104", self.bank.held, "a restored bank is replayed forward")
+
+    def test_a_trusted_read_that_finds_drift_reconciles_and_check_bank_never_trusts(self) -> None:
+        self.accepted_chain()
+        _ = online.get(self.bank, self.root, "F-101")
+        held = self.doc("F-104")
+        self.bank.held["F-104"] = Document("F-104", "tampered", sha256_hex(b"tampered"), held.tags, held.metadata, (), None)
+        checked = online.check_bank(self.bank, self.root)
+        self.assertEqual(["F-104: not applied (missing or differing content)", "F-104: 1 memory unit(s); expected one holding the document text"],
+                         checked.data_problems())
+        self.assertNotIn(bank_module.MARKER, "\n".join(checked.lines))
+        self.assertEqual(0, online.get(self.bank, self.root, "F-104").status, "the trusted read heals what it verifies")
+        self.assertEqual(0, online.check_bank(self.bank, self.root).status)
+
+
+class ParseCacheTests(unittest.TestCase):
+    def test_the_cache_round_trips_and_refuses_what_it_did_not_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, clean_git_environment():
+            top = Path(directory)
+            root = top / "repo"
+            root.mkdir()
+            new_repository(root)
+            _ = write(root, chain())
+            cache = top / "cache.pickle"
+            _ = journal.forget_cache()
+            first = read_tree(root)
+            journal.save_cache(cache)
+            self.assertEqual(0o600, cache.stat().st_mode & 0o777)
+            _ = journal.forget_cache()
+            journal.load_cache(cache)
+            self.assertEqual(first, read_tree(root))
+            self.assertEqual(len(first), journal.forget_cache(), "every segment came from the cache")
+            cache.chmod(0o644)
+            journal.load_cache(cache)
+            self.assertEqual(0, journal.forget_cache(), "a cache others could write is ignored")
+            cache.chmod(0o600)
+            _ = cache.write_bytes(b"not a pickle")
+            journal.load_cache(cache)
+            self.assertEqual(0, journal.forget_cache())

@@ -113,7 +113,7 @@ class Units(Scratch):
         for name, value in SETTINGS.items():
             self.assertIn(f"Environment={name}={value}\n", service)
         for line in ("StartLimitBurst=10", "RestartSec=5", f"EnvironmentFile={self.where.connection_file}", "KillMode=control-group", "Restart=on-failure", "CPUQuota=400%",
-                     "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
+                     "MemoryHigh=3584M", "MemoryMax=4608M", "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
                      f"ExecStartPre=-{self.root}/runtime/venv/lib/python3.14/site-packages/pg0/bin/pg0 stop --name hindsight --timeout 30",
                      f"ExecStart=/usr/bin/flock --shared --nonblock {self.root}/runtime/assets.lock {self.root}/runtime/venv/bin/python -m hindsight_api.main"):
             self.assertIn(line + "\n", service)

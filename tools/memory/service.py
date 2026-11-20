@@ -74,6 +74,9 @@ EMBEDDING = "models--intfloat--multilingual-e5-small/snapshots/614241f622f53c4ee
 RERANKER = "models--hindsight-ai--hs-rerank-1/snapshots/927f5be31280298a51cf29af8a29cb111ed812c5"
 PG_VERSION = "18.1.0"
 
+# Reranker candidates per recall. Hindsight 1.2.3's recall request has no per-request cap (its ``rerank``
+# options are prune and dedup only), so this is instance-wide, set in the unit's environment below.
+RERANKER_CANDIDATES = 50
 # Every Hindsight setting the instance depends on; values are checked against config.py of 1.2.3.
 SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_LLM_PROVIDER": "none",
@@ -87,7 +90,7 @@ SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_ENABLE_BANK_CONFIG_API": "false",
     "HINDSIGHT_API_MCP_ENABLED": "false",
     "HINDSIGHT_API_LLM_TRACE_ENABLED": "false",
-    "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": "50",
+    "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": str(RERANKER_CANDIDATES),
     "HINDSIGHT_API_WORKER_ID": "icarus-memory",
     "HINDSIGHT_API_TENANT_EXTENSION": "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension",
     "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
@@ -477,6 +480,10 @@ TimeoutStopSec=60
 Restart=on-failure
 RestartSec=5
 CPUQuota=400%
+# Measured at 3,500 records: API steady 2.05 GiB after recalls (1.6 GiB idle), PostgreSQL 0.16 GiB;
+# a rebuild's bulk retain peaks near 2.75 + 0.6 GiB. Reclaim above 3.5 GiB; never more than 4.5 GiB.
+MemoryHigh=3584M
+MemoryMax=4608M
 Nice=10
 LimitCORE=0
 # Raw output can carry the database URI; it is discarded.

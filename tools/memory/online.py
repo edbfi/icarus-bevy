@@ -26,27 +26,29 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    Applied, Bank, BankError, Desired, Universe, allocate, derived_status, desired, diff, gather, read_back, reconcile, shared_elsewhere,
+    MARKER, Applied, Bank, BankError, Desired, Universe, Wanted, allocate, derived_status, desired, diff, gather, read_back, reconcile,
+    shared_elsewhere, unchanged,
 )
 from tools.memory.canonical import render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
 from tools.memory.gitio import GitError, descends, git, listed_files
-from tools.memory.hindsight import AllOf, AnyOf, Client, Group, HindsightError, Not, Tags
+from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags
 from tools.memory.journal import JournalError, Revision, Segment, write_change_set
 from tools.memory.model import (
     ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, sha256_hex,
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
-from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor
+from tools.memory.service import RERANKER_CANDIDATES, ServiceError, Subcommands, connection, home, host_lock, require_floor
 from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, partition, pinned_build, replay
 
 FETCH_TIMEOUT = 120
@@ -83,11 +85,22 @@ class Output:
 
 @dataclass
 class Session:
+    """``trusted``: the bank diff was skipped on the reconcile stamp; ``reconcile_now`` drops that trust."""
+
     root: Path
     bank: Bank
     universe: Universe
     applied: Applied
     now: datetime
+    trusted: bool = False
+
+    def reconcile_now(self) -> bool:
+        """A read whose verification failed on a trusted stamp reconciles in full once; True if it did."""
+        if not self.trusted:
+            return False
+        self.trusted = False
+        self.applied = reconcile(self.bank, self.universe)
+        return True
 
 
 def now_utc() -> datetime:
@@ -95,14 +108,18 @@ def now_utc() -> datetime:
 
 
 @contextmanager
-def session(bank: Bank, root: Path, *, now: datetime | None = None, orphan: bool = False, bulk: bool = False) -> Generator[Session]:
-    """Under the host lock: gather the journal, finish an interrupted regeneration, and reconcile the bank with it (replay first)."""
+def session(bank: Bank, root: Path, *, now: datetime | None = None, orphan: bool = False, bulk: bool = False,
+            read: bool = False) -> Generator[Session]:
+    """Under the host lock: gather the journal, finish an interrupted regeneration, and reconcile the bank with
+    it (replay first). A ``read`` skips the bank diff when the reconcile stamp shows nothing new (``unchanged``);
+    a write always reconciles in full."""
     with host_lock():
         universe = gather(root)
         if heal_regeneration(universe):
             universe = gather(root)
-        applied = reconcile(bank, universe, orphan=orphan, bulk=bulk)
-        yield Session(root, bank, universe, applied, now or now_utc())
+        trusted = read and unchanged(bank, universe)
+        applied = Applied(notices=list(universe.notices)) if trusted else reconcile(bank, universe, orphan=orphan, bulk=bulk)
+        yield Session(root, bank, universe, applied, now or now_utc(), trusted)
 
 
 def validate(universe: Universe, revisions: Sequence[Revision], *, replacing: str | None = None) -> list[str]:
@@ -141,7 +158,7 @@ def publish(current: Session, revisions: Sequence[Revision], *, replacing: str |
         remove_segment(current.root / replacing)
     current.universe = gather(current.root)
     current.applied = reconcile(current.bank, current.universe)
-    if problems := read_back(current.bank, desired(current.universe), revisions):
+    if problems := read_back(current.bank, Wanted(current.universe), revisions):
         raise BankError("; ".join(problems))
     return tuple(path.relative_to(current.root).as_posix() for path in written)
 
@@ -175,8 +192,8 @@ def heal_regeneration(universe: Universe) -> list[str]:
 
 
 def published(current: Session, revisions: Sequence[Revision], paths: Sequence[str]) -> Output:
-    wanted = desired(current.universe)
-    documents = [item.document_id for item in wanted.values() if any(item.revision == revision for revision in revisions)]
+    wanted = Wanted(current.universe)
+    documents = [item.document_id for revision in revisions for item in wanted.of(revision.record.id) if item.revision == revision]
     lines = [f"{revision.record.id}: {revision.sha256[:12]} written to {', '.join(paths)}" for revision in revisions]
     lines += [f"applied and read back: {', '.join(documents)}"]
     data: dict[str, JSON] = {"ids": [revision.record.id for revision in revisions], "segments": list(paths), "documents": list(documents),
@@ -625,7 +642,28 @@ def overlay(universe: Universe, identifier: str, *, every: bool, index: Mapping[
     return [item for item in (proposals(universe) if index is None else index).get(identifier, []) if every or item.mine]
 
 
-def summary(bank: Bank, wanted: Mapping[str, Desired], identifier: str) -> tuple[dict[str, JSON], str]:
+class Reader(Protocol):
+    """Exact document GET: a ``Bank``, or ``Fetched``."""
+
+    def document(self, document_id: str) -> Document | None: ...
+
+
+class Fetched:
+    """Exact GETs done concurrently up front (a read's hits and their one-hop links), then served from memory."""
+
+    def __init__(self, bank: Bank, document_ids: Iterable[str]) -> None:
+        self.bank: Bank = bank
+        unique = list(dict.fromkeys(document_ids))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            self.found: dict[str, Document | None] = dict(zip(unique, pool.map(bank.document, unique), strict=True))
+
+    def document(self, document_id: str) -> Document | None:
+        if document_id not in self.found:
+            self.found[document_id] = self.bank.document(document_id)
+        return self.found[document_id]
+
+
+def summary(bank: Reader, wanted: Wanted, identifier: str) -> tuple[dict[str, JSON], str]:
     """A linked record by exact GET of its ``<ID>`` document: ID, state, first line."""
     target = wanted.get(identifier)
     document = bank.document(identifier)
@@ -654,18 +692,18 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
     """Exact document GET, verified against the replayed journal, with state, partition, derived links
     (accepted ones; this worktree's proposals overlaid, every worktree's with ``all_proposals``), pending
     revisions, conflicts and evidence status."""
-    with session(bank, root) as current:
+    with session(bank, root, read=True) as current:
         universe, state, settled = current.universe, current.universe.state, current.universe.settled
         resolution = state.resolve(citation)
         if resolution.problem is not None:
             raise LookupError(resolution.problem)
         identifier = resolution.target
-        wanted = desired(universe)
-        target = wanted[identifier]
-        problems = check_document(bank, target)
-        pending = [item for item in wanted.values() if item.record_id == identifier and item.state == "pending"]
-        for item in pending:
-            problems.extend(check_document(bank, item))
+        documents = Wanted(universe).of(identifier)
+        target = documents[0]
+        pending = [item for item in documents if item.state == "pending"]
+        problems = [problem for item in documents for problem in check_document(bank, item)]
+        if problems and current.reconcile_now():
+            problems = [problem for item in documents for problem in check_document(bank, item)]
         record = target.revision.record
         release, reason = release_for(universe, root, None)
         placed, phrase = place(root, record, release, reason)
@@ -766,9 +804,9 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
     hits under their terminal successor, one hop of links and resolvers by exact GET. Retirement and
     derived links are the accepted ones (as the bank shows them); this worktree's proposed superseders and
     resolvers are overlaid, every worktree's with ``all_proposals``."""
-    with session(bank, root) as current:
+    with session(bank, root, read=True) as current:
         universe, state, settled = current.universe, current.universe.state, current.universe.settled
-        wanted = desired(universe)
+        wanted = Wanted(universe)
         index = proposals(universe)
         mine = universe.local_stems
         stamp = pinned_timestamp(state)
@@ -776,10 +814,6 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         named = list(dict.fromkeys(match[0].upper() for match in QUERY_ID.finditer(query)))
         exact: list[JSON] = []
         lines: list[str] = []
-        for identifier in named:
-            data, line = summary(bank, wanted, identifier)
-            exact.append(data)
-            lines.append(f"named: {line}")
 
         def ranked(others: bool) -> list[str]:
             groups = visibility(mine, include_evidence=include_evidence, others=others)
@@ -809,21 +843,43 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         sections: dict[str, list[JSON]] = {name: [] for name in (*PARTITIONS, "unknown", "not-in-journal")}
         texts: dict[str, list[str]] = {name: [] for name in sections}
         listed = set(shown)
+
+        def links_of(item: Shown, target: Desired) -> list[str]:
+            return sorted({*target.revision.record.links.targets(), *settled.superseded_by.get(item.identifier, ()),
+                           *settled.resolved_by.get(item.identifier, ())} - listed - set(item.retired), key=id_key)
+
+        needed = [*named, *(name for item in shown.values() if (want := wanted.get(item.document)) is not None
+                            for name in (want.document_id, *links_of(item, want), *item.retired))]
+
+        def verify_hits() -> tuple[Fetched, dict[str, bool]]:
+            fetched = Fetched(bank, needed)
+            found: dict[str, bool] = {}
+            for value in shown.values():
+                if (want := wanted.get(value.document)) is not None:
+                    held = fetched.document(want.document_id)
+                    found[value.document] = held is not None and held.text == want.item.content
+            return fetched, found
+
+        fetched, checked = verify_hits()
+        if not all(checked.values()) and current.reconcile_now():
+            fetched, checked = verify_hits()
+        for identifier in named:
+            data, line = summary(fetched, wanted, identifier)
+            exact.append(data)
+            lines.append(f"named: {line}")
         for item in sorted(shown.values(), key=lambda value: value.rank):
             target = wanted.get(item.document)
             if target is None:
                 sections["not-in-journal"].append({"id": item.identifier, "document": item.document})
                 texts["not-in-journal"].append(f"{item.document}: in the bank but not in any gathered journal")
                 continue
-            document = bank.document(target.document_id)
-            verified = document is not None and document.text == target.item.content
+            verified = checked.get(item.document, False)
             placed, phrase = place(root, target.revision.record, rel, reason)
             name = str(placed["name"])
-            links = sorted({*target.revision.record.links.targets(), *settled.superseded_by.get(item.identifier, ()),
-                            *settled.resolved_by.get(item.identifier, ())} - listed - set(item.retired), key=id_key)
+            links = links_of(item, target)
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
-            linked = [summary(bank, wanted, link) for link in links]
-            retired = [summary(bank, wanted, old) for old in sorted(set(item.retired), key=id_key)]
+            linked = [summary(fetched, wanted, link) for link in links]
+            retired = [summary(fetched, wanted, old) for old in sorted(set(item.retired), key=id_key)]
             sections[name].append({
                 "id": item.identifier, "document": target.document_id, "state": target.state, "status": target.status, "partition": placed,
                 "text": target.item.content, "verified": verified, "retired": [data for data, _ in retired], "links": [data for data, _ in linked],
@@ -842,7 +898,13 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             if blocks:
                 lines.append(f"== {name} ==")
                 lines.extend(blocks)
-        data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact,
+        config, _overrides = bank.config()
+        reranking = config.get("enable_reranking") is not False
+        ranker = (f"reranker on, at most {RERANKER_CANDIDATES} candidates (instance-wide; Hindsight 1.2.3 takes no per-request cap)"
+                  if reranking else "reranker off (bank config); fused ranking only")
+        lines.append(f"ranking: {ranker}")
+        data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact, "ranking": {
+            "reranking": reranking, "candidates": RERANKER_CANDIDATES if reranking else None, "scope": "instance"},
                                  "partitions": {name: items for name, items in sections.items() if items}}
         if all_proposals:
             others = ranked(True)[:limit]
@@ -858,7 +920,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
 
 def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], release: Record | None, reason: str) -> tuple[list[JSON], list[str]]:
     """One row per record: state, the accepted-link status the bank shows, partition, headline and this worktree's proposals."""
-    view, states = universe.view, {item.record_id: item.state for item in desired(universe).values() if "@" not in item.document_id}
+    view, wanted = universe.view, Wanted(universe)
+    states = {identifier: documents[0].state for identifier in identifiers if (documents := wanted.of(identifier))}
     index = proposals(universe)
     rows: list[JSON] = []
     lines: list[str] = []
@@ -876,7 +939,7 @@ def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], rele
 
 def area(bank: Bank, root: Path, name: str) -> Output:
     """Records of one area by status and partition, its open unknowns and the closure of their links."""
-    with session(bank, root) as current:
+    with session(bank, root, read=True) as current:
         universe = current.universe
         view = universe.view
         release, reason = release_for(universe, root, None)
@@ -946,7 +1009,7 @@ def cited_not_current(root: Path, universe: Universe, release: Record | None, re
 def status(bank: Bank, root: Path) -> Output:
     """The pin; counts by type, status and partition; cited records not current; open unknowns; evidence
     that is not known good on disk (missing bytes or no digest; ``verify --all`` checks digests)."""
-    with session(bank, root) as current:
+    with session(bank, root, read=True) as current:
         universe = current.universe
         view = universe.view
         release, reason = release_for(universe, root, None)
@@ -1047,7 +1110,8 @@ def check_bank(bank: Bank, root: Path) -> Output:
 
 
 def compare_bank(bank: Bank, root: Path) -> Output:
-    """``check --bank`` without the host lock (the caller holds it)."""
+    """``check --bank`` without the host lock (the caller holds it). Always the full comparison: the reconcile
+    stamp is never trusted, and its marker document is only checked for its own shape."""
     universe = gather(root)
     problems: list[str] = []
     notices: list[str] = list(universe.notices)
@@ -1063,7 +1127,11 @@ def compare_bank(bank: Bank, root: Path) -> Output:
         if count := bank.count(kind):
             problems.append(f"{count} {kind} exist; none may")
     wanted = desired(universe)
-    held = bank.documents()
+    everything = bank.documents()
+    held = [document for document in everything if document.id != MARKER]
+    for document in everything:
+        if document.id == MARKER and (document.tags != ("marker:stamp",) or set(document.metadata) != {"stamp"}):
+            problems.append(f"{MARKER}: the reconcile marker has unexpected tags or metadata")
     plan = diff(wanted, held, universe.known)
     problems += [f"{item.document_id}: not applied (missing or differing content)" for item in plan.retain]
     problems += [f"{name}: tags differ from the journal" for name, _ in plan.retag]
@@ -1083,6 +1151,8 @@ def compare_bank(bank: Bank, root: Path) -> Output:
             problems.append(f"memory unit {unit.id} is of type {unit.kind}; only world facts may exist")
         if unit.document_id is None:
             problems.append(f"memory unit {unit.id} has no document")
+            continue
+        if unit.document_id == MARKER:
             continue
         units_by.setdefault(unit.document_id, []).append(unit.text)
     present = {item.id for item in held}

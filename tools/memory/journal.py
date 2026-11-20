@@ -23,11 +23,13 @@ interrupted write leaves behind and which never holds an accepted revision.
 from __future__ import annotations
 
 import os
+import pickle
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path, PurePosixPath
+from typing import cast
 import re
 
 from tools.memory.canonical import canonical_json, record_sha256, render_text
@@ -102,11 +104,13 @@ class Revision:
 
 @dataclass(frozen=True)
 class Segment:
-    """One segment file: its repository-relative POSIX path, header timestamp and revisions in file order."""
+    """One segment file: its repository-relative POSIX path, header timestamp and revisions in file order;
+    ``sha256`` is the digest of its bytes (set by the reader)."""
 
     path: str
     created: str
     revisions: tuple[Revision, ...]
+    sha256: str = ""
 
     @property
     def name(self) -> str:
@@ -214,9 +218,73 @@ def _fsync_directory(path: Path) -> None:
 
 
 # Parsed segments by (path, sha256 of the bytes): parsing is deterministic and a ``Segment`` immutable, so
-# the same bytes at the same path (a working tree and origin/main, or the next call of a long-lived process)
-# are verified once per process.
+# the same bytes at the same path (a working tree and origin/main, the next call of a long-lived process,
+# or the next process through ``load_cache``) are verified once.
 _PARSED: dict[tuple[str, str], Segment] = {}
+_USED: set[tuple[str, str]] = set()
+_LOADED: set[Path] = set()
+_DIRTY: list[bool] = [False]
+CACHE_VERSION = 1
+
+
+def _fingerprint() -> str:
+    """The code a cached ``Segment`` was built by: this module, the model and the canonical form."""
+    here = Path(__file__).parent
+    return sha256_hex(b"".join((here / name).read_bytes() for name in ("journal.py", "model.py", "canonical.py")))
+
+
+def load_cache(path: Path) -> None:
+    """Prime the parse memo from ``path``, written by ``save_cache`` from the same code. The file must be a
+    regular file owned by this user without group or world access (the state directory is 0700): a pickle
+    is trusted as the user's own. Anything else, or any mismatch, is ignored and costs only a re-parse."""
+    if path in _LOADED:
+        return
+    _LOADED.add(path)
+    try:
+        info = path.lstat()
+        if not path.is_file() or path.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return
+        loaded = cast(object, pickle.loads(path.read_bytes()))
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ImportError, TypeError, ValueError):
+        return
+    if not isinstance(loaded, tuple) or len(cast(tuple[object, ...], loaded)) != 3:
+        return
+    version, fingerprint, entries = cast(tuple[object, object, object], loaded)
+    if version != CACHE_VERSION or fingerprint != _fingerprint() or not isinstance(entries, dict):
+        return
+    for key, segment in cast(dict[object, object], entries).items():
+        if isinstance(key, tuple) and isinstance(segment, Segment):
+            path_digest = cast(tuple[object, ...], key)
+            if len(path_digest) == 2 and isinstance(path_digest[0], str) and isinstance(path_digest[1], str):
+                _PARSED[(path_digest[0], path_digest[1])] = segment
+
+
+def forget_cache() -> int:
+    """Drop the parse memo (and which cache files were loaded); returns how many segments it held."""
+    held = len(_PARSED)
+    _PARSED.clear()
+    _USED.clear()
+    _LOADED.clear()
+    _DIRTY[0] = False
+    return held
+
+
+def save_cache(path: Path) -> None:
+    """Write the segments this process used (so the cache never outgrows the journals it serves), atomically
+    at mode 0600, after this process parsed a segment the cache did not hold."""
+    if not _DIRTY[0]:
+        return
+    _DIRTY[0] = False
+    entries = {key: _PARSED[key] for key in sorted(_USED) if key in _PARSED}
+    data = pickle.dumps((CACHE_VERSION, _fingerprint(), entries), protocol=pickle.HIGHEST_PROTOCOL)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            _ = handle.write(data)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def parse_segment(path: str, data: bytes) -> Segment:
@@ -230,10 +298,12 @@ def parse_segment(path: str, data: bytes) -> Segment:
     digest = sha256_hex(data)
     if digest[:12] != match[4]:
         raise JournalError(f"{path}: content does not match its name (half-written or edited segment)")
+    _USED.add((path, digest))
     if (known := _PARSED.get((path, digest))) is not None:
         return known
     segment = _parse_lines(path, data, match)
-    _PARSED[(path, digest)] = segment
+    _DIRTY[0] = True
+    _PARSED[(path, digest)] = segment = Segment(segment.path, segment.created, segment.revisions, digest)
     return segment
 
 

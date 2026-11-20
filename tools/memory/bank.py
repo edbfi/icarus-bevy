@@ -39,14 +39,16 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from tools.memory.canonical import RenderError, canonical_json, entities, render_text, tags
 from tools.memory.gitio import GitError, changed_files, git, read_blobs, tree_files
 from tools.memory.hindsight import Document, Group, Hit, Item, Tags, Unit
-from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, read_git, read_tree
-from tools.memory.model import BUILD, ID, SELECTOR, Record, id_key, sha256_hex
+from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, load_cache, parse_segment, read_git, read_tree, save_cache
+from tools.memory.model import BUILD, ID, SELECTOR, Record, RecordError, as_mapping, id_key, is_array, load_json, sha256_hex
+from tools.memory.service import home, write_private
 from tools.memory.paths import ProtectedPathsError, worktrees
 from tools.memory.state import Entry, State, replay
 
@@ -99,10 +101,26 @@ class Universe:
     own: tuple[Segment, ...]
     accepted: frozenset[str]
     main_known: bool
-    state: State
-    view: State
-    settled: State
+    main_commit: str | None = None
     notices: tuple[str, ...] = ()
+
+    # The replays are computed when first read: a ``get`` needs ``state`` and ``settled``, never ``view``.
+    @cached_property
+    def state(self) -> State:
+        return replay(self.segments)
+
+    @cached_property
+    def view(self) -> State:
+        return replay(self.own)
+
+    @cached_property
+    def settled(self) -> State:
+        return replay(self.main)
+
+    @property
+    def stamp(self) -> Stamp:
+        """What reconciling the bank with this universe makes it hold (see ``Stamp``)."""
+        return Stamp(self.main_commit, tuple(sorted({segment.sha256 for segment in self.segments})))
 
     @property
     def local_stems(self) -> frozenset[str]:
@@ -143,8 +161,22 @@ def ref_commits(root: Path, *, checked_out: bool = True) -> tuple[str, ...]:
     return tuple(sorted({commit for _name, commit, checkout in refs(root) if checked_out or not checkout}))
 
 
+CACHE_FILE = "journal-cache.pickle"
+
+
 def gather(root: Path, base: str = ACCEPTANCE_REF) -> Universe:
-    """Every segment known on this host; see the module docstring for what is fatal."""
+    """Every segment known on this host (see the module docstring for what is fatal), parsed through the
+    state directory's parse cache (``journal.load_cache``)."""
+    cache = home().state / CACHE_FILE
+    if cache.parent.is_dir():
+        load_cache(cache)
+    universe = _gather(root, base)
+    if cache.parent.is_dir():
+        save_cache(cache)
+    return universe
+
+
+def _gather(root: Path, base: str) -> Universe:
     notices: list[str] = []
     local = read_tree(root)
     try:
@@ -184,9 +216,15 @@ def gather(root: Path, base: str = ACCEPTANCE_REF) -> Universe:
                 continue
             by_name[segment.name] = segment
     segments = tuple(sorted(by_name.values(), key=lambda item: item.path))
-    accepted = frozenset(key for entry in replay(main).entries.values() for key in entry.revisions)
+    accepted = frozenset(revision.rev for segment in main for revision in segment.revisions)
     own = tuple(sorted({segment.name: segment for segment in (*main, *local)}.values(), key=lambda item: item.path))
-    return Universe(root, segments, main, local, own, accepted, main_known, replay(segments), replay(own), replay(main), tuple(notices))
+    commit: str | None = None
+    if main_known:
+        try:
+            commit = git(root, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{base}^{{commit}}").decode().strip()
+        except GitError:
+            commit = None
+    return Universe(root, segments, main, local, own, accepted, main_known, commit, tuple(notices))
 
 
 def shared_elsewhere(root: Path, path: str) -> bool:
@@ -267,28 +305,48 @@ def accepted_heads(entry: Entry, accepted: frozenset[str]) -> tuple[str, ...]:
     return tuple(sorted(mine - named))
 
 
-def desired(universe: Universe) -> dict[str, Desired]:
-    """Every document the bank should hold, by document ID (see the module docstring)."""
-    state = universe.state
-    found: dict[str, Desired] = {}
+def desired_for(universe: Universe, identifier: str) -> list[Desired]:
+    """The documents one record ID should have: ``<ID>`` and its pending revisions (see the module docstring)."""
+    entry = universe.state.entries[identifier]
+    found: list[Desired] = []
 
-    def add(document_id: str, entry: Entry, rev: str, document_state: str) -> None:
+    def add(document_id: str, rev: str, document_state: str) -> None:
         located = entry.revisions[rev]
         status = derived_status(universe.settled, located.revision.record)
         item = item_for(document_id, located.revision, located.segment, document_state, status)
-        found[document_id] = Desired(document_id, entry.id, document_state, status, located.revision, located.segment, item)
+        found.append(Desired(document_id, entry.id, document_state, status, located.revision, located.segment, item))
 
-    for identifier in sorted(state.entries, key=id_key):
-        entry = state.entries[identifier]
-        heads = accepted_heads(entry, universe.accepted)
-        if heads:
-            add(identifier, entry, heads[0], "conflict" if len(heads) > 1 else "accepted")
-            for rev in entry.heads:
-                if rev not in universe.accepted:
-                    add(f"{identifier}@{rev[:12]}", entry, rev, "pending")
-        else:
-            add(identifier, entry, entry.heads[0], "conflict" if entry.conflict else "proposed")
+    heads = accepted_heads(entry, universe.accepted)
+    if heads:
+        add(identifier, heads[0], "conflict" if len(heads) > 1 else "accepted")
+        for rev in entry.heads:
+            if rev not in universe.accepted:
+                add(f"{identifier}@{rev[:12]}", rev, "pending")
+    else:
+        add(identifier, entry.heads[0], "conflict" if entry.conflict else "proposed")
     return found
+
+
+def desired(universe: Universe) -> dict[str, Desired]:
+    """Every document the bank should hold, by document ID."""
+    return {item.document_id: item for identifier in sorted(universe.state.entries, key=id_key) for item in desired_for(universe, identifier)}
+
+
+class Wanted:
+    """``desired`` computed per record on demand: a read that touches a few records never renders them all."""
+
+    def __init__(self, universe: Universe) -> None:
+        self.universe: Universe = universe
+        self._of: dict[str, list[Desired]] = {}
+
+    def of(self, identifier: str) -> list[Desired]:
+        """The documents of record ``identifier`` (empty for an unknown ID)."""
+        if identifier not in self._of:
+            self._of[identifier] = desired_for(self.universe, identifier) if identifier in self.universe.state.entries else []
+        return self._of[identifier]
+
+    def get(self, document_id: str) -> Desired | None:
+        return next((item for item in self.of(document_id.split("@", 1)[0]) if item.document_id == document_id), None)
 
 
 @dataclass(frozen=True)
@@ -334,7 +392,7 @@ def diff(wanted: Mapping[str, Desired], held: Sequence[Document], known: frozens
     delete: list[str] = []
     unexplained: list[Document] = []
     for document in sorted(held, key=lambda item: id_key(item.id)):
-        if document.id in wanted:
+        if document.id in wanted or document.id == MARKER:
             continue
         if document.metadata.get("rev", "") in known:
             delete.append(document.id)
@@ -396,15 +454,69 @@ def reconcile(bank: Bank, universe: Universe, *, bulk: bool = False, orphan: boo
         if not after.empty:
             missing = [item.document_id for item in after.retain] + [name for name, _ in after.retag] + list(after.delete)
             raise BankError(f"bank still differs from the journal after applying it: {', '.join(missing[:10])}")
+    mark(bank, universe.stamp)
     result.notices.extend(universe.notices)
     return result
 
 
-def read_back(bank: Bank, wanted: Mapping[str, Desired], revisions: Sequence[Revision]) -> list[str]:
+# The reconcile stamp: what the bank was last reconciled to, so a read with nothing new skips the bank diff.
+
+MARKER = "memory-stamp"
+STAMP_FILE = "memory.stamp.json"
+
+
+@dataclass(frozen=True)
+class Stamp:
+    """The ``origin/main`` commit and the sha256 of every segment a reconciliation applied. ``digest`` names
+    it; the bank holds the same digest in its ``MARKER`` document, so a restored or foreign-written bank
+    (whose marker differs) is never trusted."""
+
+    origin_main: str | None
+    segments: tuple[str, ...]
+
+    @property
+    def digest(self) -> str:
+        return sha256_hex(canonical_json({"origin_main": self.origin_main, "segments": list(self.segments)}))
+
+    def json(self) -> bytes:
+        return canonical_json({"digest": self.digest, "origin_main": self.origin_main, "segments": list(self.segments)})
+
+
+def marker_item(stamp: Stamp) -> Item:
+    return Item(MARKER, f"memory stamp {stamp.digest}", ("marker:stamp",), {"stamp": stamp.digest}, "unset", ())
+
+
+def mark(bank: Bank, stamp: Stamp) -> None:
+    """After a full reconciliation: the marker document in the bank, then the stamp file under the host lock."""
+    marker = marker_item(stamp)
+    held = bank.document(MARKER)
+    if held is None or held.text != marker.content or held.metadata != dict(marker.metadata):
+        bank.retain([marker])
+    write_private(home().state / STAMP_FILE, stamp.json())
+
+
+def unchanged(bank: Bank, universe: Universe) -> bool:
+    """Whether a read may skip the bank diff: the stamp file names this ``origin/main`` commit, holds every
+    gathered segment, and the bank's marker carries its digest. Anything else, unreadable included, is no."""
+    try:
+        raw = as_mapping(load_json((home().state / STAMP_FILE).read_bytes()), STAMP_FILE)
+    except (OSError, RecordError):
+        return False
+    segments, origin = raw.get("segments"), raw.get("origin_main")
+    if not is_array(segments) or not all(isinstance(item, str) for item in segments) or not (origin is None or isinstance(origin, str)):
+        return False
+    stamp = Stamp(origin, tuple(str(item) for item in segments))
+    if raw.get("digest") != stamp.digest or origin != universe.main_commit or not set(universe.stamp.segments) <= set(stamp.segments):
+        return False
+    held = bank.document(MARKER)
+    return held is not None and held.metadata.get("stamp") == stamp.digest
+
+
+def read_back(bank: Bank, wanted: Wanted, revisions: Sequence[Revision]) -> list[str]:
     """Exact GET of each published revision's document; problems if its text, sha256 or metadata differ."""
     problems: list[str] = []
     for revision in revisions:
-        target = next((item for item in wanted.values() if item.revision == revision), None)
+        target = next((item for item in wanted.of(revision.record.id) if item.revision == revision), None)
         if target is None:
             continue
         document = bank.document(target.document_id)
