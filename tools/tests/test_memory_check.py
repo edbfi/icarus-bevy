@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from hashlib import sha256
 import tempfile
 import unittest
 from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import override
+from unittest.mock import patch
 
 from tools.memory.check import Report, citations, revision_problems, run_check
 from tools.memory.cli import EXIT_NO_JOURNAL, main
@@ -276,7 +278,10 @@ class GetTests(Repository):
         self.assertIn("listed member ev_a1b2c3d4e5f6", output)
         status, output, error = self.run_get("F-999", "--offline")
         self.assertEqual((1, "", "memory get: no record F-999\n"), (status, output, error))
-        self.assertEqual(2, self.run_get("F-101")[0])
+        with patch.dict(os.environ, {"ICARUS_MEMORY_HOME": str(self.top / "no-service")}):
+            status, _, error = self.run_get("F-101")
+        self.assertEqual(1, status)
+        self.assertIn("connection.json", error)
 
 
 class ProtectedPathsTests(Repository):

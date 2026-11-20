@@ -49,9 +49,12 @@ CITATION = re.compile(
 # What a revision may change in place (rules, "Revisions"); every other key of ``Record.to_json`` is
 # immutable, including fields added to the model later, ``legacy`` and ``gaps``. On every type ``status``
 # may change (to a vocabulary value; an evidence status change appends a note) and ``APPEND_ONLY`` lists
-# may grow. A REF revises its body, which its JSON holds as ``body_sha256``.
+# may grow: ``notes`` and ``verified_on`` keep their order, so an existing prefix stays; ``supersedes`` and
+# ``resolves`` are sorted link sets, so every earlier target stays (a record accepted earlier may later
+# be found to supersede or resolve another). ``cites`` and ``refs`` are immutable once written.
+# A REF revises its body, which its JSON holds as ``body_sha256``.
 REVISABLE: dict[str, frozenset[str]] = {"reference": frozenset({"body_sha256"}), "unknown": frozenset({"next_probe"})}
-APPEND_ONLY = ("notes", "verified_on")
+APPEND_ONLY = ("notes", "verified_on", "supersedes", "resolves")
 
 
 @dataclass
@@ -143,6 +146,9 @@ def _compare(old: Record, new: Record, reconciles: bool) -> list[str]:
     for name, earlier, later in (("notes", old.notes, new.notes), ("verified_on", old.links.verified_on, new.links.verified_on)):
         kept = set(earlier) <= set(later) if reconciles else later[:len(earlier)] == earlier
         if not kept:
+            problems.append(f"{name} may only be appended to")
+    for name in ("supersedes", "resolves"):
+        if not set(old.links.named(name)) <= set(new.links.named(name)):
             problems.append(f"{name} may only be appended to")
     if old.status != new.status:
         if new.status.startswith(LEGACY):

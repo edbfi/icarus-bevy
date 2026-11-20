@@ -14,14 +14,17 @@ about itself) and ``resolved_by``. ``State.status`` is the derived status: ``sup
 
 from __future__ import annotations
 
+import tomllib
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from tools.memory.journal import Revision, Segment
-from tools.memory.model import ID, SELECTOR, Record, id_key, type_of
+from tools.memory.model import ID, SELECTOR, Record, RecordError, as_mapping, id_key, type_of
 
 PARTITIONS = ("current", "other-build", "legacy-scope", "native", "unscoped")
+RELEASE_CONFIG = "config/release.toml"
 
 
 @dataclass(frozen=True)
@@ -288,3 +291,12 @@ def partition(record: Record, release: Record, descends: Callable[[str], bool | 
     if record.text("kind") == "decision" or "decision" in scope.subjects:
         return Partition("current")
     return Partition("unscoped")
+
+
+def pinned_build(root: Path) -> str:
+    """``build_id`` of the pinned release in ``config/release.toml``."""
+    release = as_mapping(as_mapping(tomllib.loads((root / RELEASE_CONFIG).read_text(encoding="utf-8")), RELEASE_CONFIG).get("release"), "release")
+    build = release.get("build_id")
+    if not isinstance(build, int):
+        raise RecordError(f"{RELEASE_CONFIG}: release.build_id must be an integer")
+    return str(build)
