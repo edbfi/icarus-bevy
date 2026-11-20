@@ -34,6 +34,17 @@ Contracts and limitations:
   hash/path metadata when present (tools/sha256_manifest.py decides which rows
   are manifests, from the name or at most the first 4 KiB), never other artifact
   contents; absent worktree/CI manifests retain lexical protection.
+* Protected evidence is what `memory protected-paths` reads (tools/memory/paths.py):
+  active local-private records of every worktree's journal and, while a worktree
+  has one, its legacy evidence/ shards, read without tools/docs_lint.py. Every
+  path is checked against the primary checkout, and each worktree's own paths
+  against that worktree as well. Refusals: under every policy, an unreadable or
+  malformed journal, shard or manifest, a reading past the 30-second budget
+  (checked inside the journal read; each distinct segment is parsed once per
+  run), and a Git common directory not named .git (paths.checkout_of: no primary
+  checkout to resolve against; CI's actions/checkout clone has one); under the
+  local policy only, no journal and no legacy index in any worktree, which the CI
+  policy accepts as an empty set (a fresh clone may have neither).
 * PREPARED identifies reusable partial artifacts before invoking Cargo; validation
   is a separate success flag. Failed commands/timeouts retain this identity.
   Persist needs_clean before CLEAN; retry retires it. Recover stale owned regular
@@ -63,7 +74,7 @@ Contracts and limitations:
 from __future__ import annotations
 
 import argparse
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
@@ -83,7 +94,9 @@ from typing import TypeIs, cast
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import docs_lint, sha256_manifest, work_gc
+from tools import sha256_manifest, work_gc
+from tools.memory import paths
+from tools.memory.model import as_mapping, load_json
 
 GIB = 1024**3
 RAM_FLOOR = 3 * GIB
@@ -106,10 +119,12 @@ TERMINATION = {signal.SIGHUP, signal.SIGINT, signal.SIGTERM}
 @dataclass(frozen=True)
 class Policy:
     disk_floor: int = DISK_FLOOR
+    # A worktree with no journal and no legacy evidence index is a refusal, not an empty protected set.
+    requires_evidence_source: bool = True
 
 
 LOCAL = Policy()
-CI = Policy(disk_floor=4 * GIB)
+CI = Policy(disk_floor=4 * GIB, requires_evidence_source=False)
 
 
 class GuardError(RuntimeError):
@@ -487,7 +502,34 @@ class Resolver:
         return known
 
 
-def evidence_veto(info: Identity) -> None:
+def evidence_rows(info: Identity, primary: Path, roots: Sequence[Path], deadline: float, policy: Policy) -> list[tuple[Path, list[tuple[str, str]]]]:
+    """Where to resolve which ``(ID, path)`` rows of active local-private evidence (``tools.memory.paths``):
+    the union of every checkout's rows against the primary checkout, and each checkout's own rows against
+    itself, as the legacy index resolved them."""
+    union: set[tuple[str, str]] = set()
+    own: list[tuple[Path, list[tuple[str, str]]]] = []
+    found = False
+
+    def tick() -> None:
+        if time.monotonic() > deadline:
+            raise GuardError("evidence metadata inventory exceeded 30 seconds")
+
+    reader = paths.Reader(tick)
+    try:
+        for root in roots:
+            tick()
+            found = found or bool(paths.sources(root))
+            rows = reader.evidence_rows(root)
+            union |= rows
+            own.append((root, sorted(rows)))
+    except paths.ProtectedPathsError as error:
+        raise GuardError(f"protected evidence unknown: {error}") from error
+    if not found and policy.requires_evidence_source:
+        raise GuardError(f"protected evidence unknown: no journal or legacy evidence index in any worktree of {info.root}")
+    return [(primary, sorted(union)), *own]
+
+
+def evidence_veto(info: Identity, policy: Policy = LOCAL) -> None:
     deadline = time.monotonic() + 30
     remaining_bytes = FIXITY_METADATA_BYTES
     remaining_entries = FIXITY_METADATA_ENTRIES
@@ -496,51 +538,49 @@ def evidence_veto(info: Identity) -> None:
     checked_paths: set[Path] = set()
     resolver = Resolver()
     target = str(info.target)
-    for root in checkout_roots(info):
-        for shard in evidence_shards(root / "evidence"):
-            with shard.open(encoding="utf-8") as handle:
-                for number, line in enumerate(handle, start=1):
-                    if time.monotonic() > deadline:
-                        raise GuardError("evidence metadata inventory exceeded 30 seconds")
-                    row = docs_lint.ManifestRow.from_record(str(shard), number, docs_lint.parse_json_object(line))
-                    if row.status not in docs_lint.RECORD_STATUSES or row.klass not in docs_lint.RECORD_CLASSES:
-                        raise GuardError(f"unknown evidence lifecycle/class in {shard}:{number}")
-                    if row.status != "active" or row.klass != "local-private":
-                        continue
-                    path = root / row.path
-                    if path in checked_paths:
-                        continue
-                    checked_paths.add(path)
-                    protected = [path]
-                    if path.name == work_gc.FIXITY_NAME:
-                        protected.append(path.parent)
-                    resolved = [os.path.realpath(item) if ".." in item.parts else resolver.resolve(str(item)) for item in protected]
-                    if any(paths_overlap(target, entry) for entry in [*protected, *resolved]):
-                        raise GuardError(f"active evidence overlaps target: {row.identifier}")
-                    resolved_manifest = Path(resolved[0])
-                    context = (resolved_manifest, path.parent)
-                    if context in checked_contexts:
-                        continue
-                    checked_contexts.add(context)
-                    parsed = parsed_manifests.get(resolved_manifest)
-                    if parsed is None:
-                        size, entries = read_fixity_metadata(root, path, remaining_bytes, remaining_entries)
-                        parsed = parsed_manifests[resolved_manifest] = ((root, path), entries)
-                        remaining_bytes -= size
-                        remaining_entries -= len(entries)
-                    # Candidates depend on the root and lexical path the manifest is reached through.
-                    parsed_in, entries = parsed
-                    top, directory = os.path.normpath(root), os.path.dirname(os.path.normpath(path))
-                    # Parsing is shared, but each lexical parent is a distinct dependency context.
-                    for entry in entries:
-                        if time.monotonic() > deadline:
-                            raise GuardError("evidence metadata inventory exceeded 30 seconds")
-                        candidates = (tuple(map(str, entry.candidates)) if parsed_in == (root, path)
-                                      else sha256_manifest.candidate_texts(top, directory, entry.path))
-                        if not candidates:
-                            raise GuardError(f"unreadable fixity metadata: {path}: {entry.path} leaves the repository")
-                        if any(paths_overlap(target, item) or paths_overlap(target, resolver.resolve(item)) for item in candidates):
-                            raise GuardError(f"active fixity entry overlaps target: {path}: {entry.path}")
+    try:
+        primary = paths.checkout_of(info.common)
+    except paths.ProtectedPathsError as error:
+        raise GuardError(f"protected evidence unknown: {error}") from error
+    roots = list(dict.fromkeys([primary, *checkout_roots(info)]))
+    for root, rows in evidence_rows(info, primary, roots, deadline, policy):
+        for identifier, row_path in rows:
+            if time.monotonic() > deadline:
+                raise GuardError("evidence metadata inventory exceeded 30 seconds")
+            path = root / row_path
+            if path in checked_paths:
+                continue
+            checked_paths.add(path)
+            protected = [path]
+            if path.name == work_gc.FIXITY_NAME:
+                protected.append(path.parent)
+            resolved = [os.path.realpath(item) if ".." in item.parts else resolver.resolve(str(item)) for item in protected]
+            if any(paths_overlap(target, entry) for entry in [*protected, *resolved]):
+                raise GuardError(f"active evidence overlaps target: {identifier}")
+            resolved_manifest = Path(resolved[0])
+            context = (resolved_manifest, path.parent)
+            if context in checked_contexts:
+                continue
+            checked_contexts.add(context)
+            parsed = parsed_manifests.get(resolved_manifest)
+            if parsed is None:
+                size, entries = read_fixity_metadata(root, path, remaining_bytes, remaining_entries)
+                parsed = parsed_manifests[resolved_manifest] = ((root, path), entries)
+                remaining_bytes -= size
+                remaining_entries -= len(entries)
+            # Candidates depend on the root and lexical path the manifest is reached through.
+            parsed_in, entries = parsed
+            top, directory = os.path.normpath(root), os.path.dirname(os.path.normpath(path))
+            # Parsing is shared, but each lexical parent is a distinct dependency context.
+            for entry in entries:
+                if time.monotonic() > deadline:
+                    raise GuardError("evidence metadata inventory exceeded 30 seconds")
+                candidates = (tuple(map(str, entry.candidates)) if parsed_in == (root, path)
+                              else sha256_manifest.candidate_texts(top, directory, entry.path))
+                if not candidates:
+                    raise GuardError(f"unreadable fixity metadata: {path}: {entry.path} leaves the repository")
+                if any(paths_overlap(target, item) or paths_overlap(target, resolver.resolve(item)) for item in candidates):
+                    raise GuardError(f"active fixity entry overlaps target: {path}: {entry.path}")
 
 
 def read_fixity_metadata(root: Path, path: Path, byte_budget: int, entry_budget: int) -> tuple[int, list[sha256_manifest.Entry]]:
@@ -563,24 +603,6 @@ def read_fixity_metadata(root: Path, path: Path, byte_budget: int, entry_budget:
         if isinstance(error, GuardError):
             raise
         raise GuardError(f"unreadable fixity metadata: {path}: {error}") from error
-
-
-def evidence_shards(directory: Path) -> Iterator[Path]:
-    if not directory.exists():
-        return
-    if not directory.is_dir() or directory.is_symlink():
-        raise GuardError(f"invalid evidence metadata directory: {directory}")
-    for parent, dirs, files in os.walk(directory, followlinks=False, onerror=raise_walk_error):
-        for name in (*dirs, *files):
-            entry = Path(parent) / name
-            if entry.is_symlink():
-                raise GuardError(f"evidence index symlink requires review: {entry}")
-        for name in files:
-            if name.endswith(".jsonl"):
-                shard = Path(parent) / name
-                if not shard.is_file() or shard.stat().st_size > docs_lint.SHARD_CAP:
-                    raise GuardError(f"invalid evidence shard metadata: {shard}")
-                yield shard
 
 
 def process_veto(info: Identity, proc: Path = PROC) -> int:
@@ -648,10 +670,10 @@ def cargo_lock_probe(info: Identity) -> None:
                 os.close(fd)
 
 
-def cleanup_veto(info: Identity, env: Mapping[str, str]) -> None:
+def cleanup_veto(info: Identity, env: Mapping[str, str], policy: Policy = LOCAL) -> None:
     _ = check_configuration(info, env)
     _ = target_inventory(info.target, strict=True)
-    evidence_veto(info)
+    evidence_veto(info, policy)
     _ = process_veto(info)
     cargo_lock_probe(info)
 
@@ -779,7 +801,7 @@ def read_state(info: Identity) -> dict[str, object] | None:
         raise GuardError("guard state must not be a symlink")
     if not info.state.exists():
         return None
-    state = docs_lint.parse_json_object(info.state.read_text())
+    state = as_mapping(load_json(info.state.read_text()), "guard state")
     if state.get("schema") != SCHEMA or state.get("root") != str(info.root) or state.get("target") != str(info.target):
         raise GuardError("guard ownership identity differs; explicit review/adoption required")
     if info.target.exists():
@@ -817,11 +839,11 @@ def write_state(info: Identity, current: dict[str, str] | None, *, needs_clean: 
         os.close(directory)
 
 
-def clean(info: Identity, env: Mapping[str, str], *, pass_fds: tuple[int, ...]) -> None:
+def clean(info: Identity, env: Mapping[str, str], *, pass_fds: tuple[int, ...], policy: Policy = LOCAL) -> None:
     """Caller holds build lock + exclusive target lease; Cargo owns deletion."""
     if read_state(info) is None:
         raise GuardError("cleanup requires guard ownership")
-    cleanup_veto(info, env)
+    cleanup_veto(info, env, policy)
     write_state(info, None, needs_clean=True)
     _ = run_owned(["cargo", "clean", "--locked"], info, env, pass_fds=pass_fds,
                   timeout=300, monitor_space=False)
@@ -847,7 +869,7 @@ def execute(info: Identity, args: Sequence[str], env: Mapping[str, str], *, buil
         if adopt is not None:
             if adopt != str(info.target) or not info.target.is_dir():
                 raise GuardError("adoption must name the existing canonical absolute target path")
-            cleanup_veto(info, env)
+            cleanup_veto(info, env, policy)
             info.target.chmod(0o700)
             write_state(info, None, needs_clean=True)
             print(f"cargo_guard: adopted {info.target}; next build fully retires it", file=sys.stderr)
@@ -861,7 +883,7 @@ def execute(info: Identity, args: Sequence[str], env: Mapping[str, str], *, buil
                 write_state(info, None)
             state = None
         if retire:
-            clean(info, owned_env, pass_fds=descriptors)
+            clean(info, owned_env, pass_fds=descriptors, policy=policy)
             return
         toolchain = run_owned(["cargo", "--version"], info, owned_env, pass_fds=descriptors,
                               timeout=30, monitor_space=False, capture=True)
@@ -874,7 +896,7 @@ def execute(info: Identity, args: Sequence[str], env: Mapping[str, str], *, buil
             raise GuardError("RUSTUP_TOOLCHAIN must match the active pinned toolchain/host")
         current = generation(info, config, toolchain + rustc)
         if state is not None and (state.get("needs_clean") or state.get("generation") != current):
-            clean(info, owned_env, pass_fds=descriptors)
+            clean(info, owned_env, pass_fds=descriptors, policy=policy)
         # PREPARED identifies partial artifacts too. Validation is a separate field.
         write_state(info, current)
         before, _ = target_inventory(info.target)
