@@ -349,20 +349,24 @@ def restore(where: Home, runtime: Assets, dump: Path, *, replace: bool, replay: 
         if where.pg0_home.exists():
             _ = where.pg0_home.rename(previous)
         _ = staging.rename(where.pg0_home)
-        prepare_runtime_directories(where)
         try:
+            prepare_runtime_directories(where)
             _ = start_unit(settings)
             failed = [f"{check.name}: {check.detail}" for check in health(settings, runtime) if not check.ok]
             if failed:
                 raise ServiceError("; ".join(failed))
             replay(settings.connection(), mark)
-        except (ServiceError, OSError, subprocess.TimeoutExpired) as error:
+        except BaseException as error:
+            # Any failure after the swap (a bank, journal or Git error in replay, an interrupt) puts the previous
+            # data directory back and restarts the old unit; the restored one is kept in staging for inspection.
             _ = systemctl("stop", UNIT, check=False)
             stop_postgres(where.pg0_home, runtime)
             _ = where.pg0_home.rename(staging)
             if previous.exists():
                 _ = previous.rename(where.pg0_home)
                 _ = systemctl("start", UNIT, check=False)
+            if not isinstance(error, Exception):
+                raise
             raise ServiceError(f"the restored instance failed ({error}); the previous data directory is back, the restored one is {staging}") from error
         if previous.exists():
             shutil.rmtree(previous)
