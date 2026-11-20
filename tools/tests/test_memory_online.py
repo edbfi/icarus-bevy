@@ -539,6 +539,32 @@ class QualificationTests(Online):
 
 
 class EvidenceTests(Online):
+    def test_a_bundle_above_the_cap_is_refused_unless_members_are_waived(self) -> None:
+        bundle = {"records": [{"evidence_id": MEMBER}], "unknowns": []}
+        self.put("work/case/big-bundle.json", json.dumps(bundle))
+        size = (self.root / "work/case/big-bundle.json").stat().st_size
+        _ = self.enterContext(patch.object(online, "BUNDLE_PARSE_CAP", size - 1))
+        parsed: list[bytes] = []
+
+        def recorded(data: bytes) -> tuple[int, list[str]]:
+            parsed.append(data)
+            return 0, []
+
+        _ = self.enterContext(patch.object(online, "bundle_members", recorded))
+        with self.assertRaisesRegex(Refused, f"REA bundle of {size} bytes exceeds the {size - 1}-byte parse cap; its members would not be listed"):
+            _ = online.evidence_add(self.bank, self.root, "work/case/big-bundle.json", "rea-bundle", "Invented big bundle", now=self.tick())
+        self.assertEqual((), read_tree(self.root))
+        output = online.evidence_add(self.bank, self.root, "work/case/big-bundle.json", "rea-bundle", "Invented big bundle", without_members=True,
+                                     now=self.tick())
+        record = Record.from_json(load_json(self.doc("M-001").metadata["record"]))
+        self.assertEqual(((), None), (record.items("members"), record.number("records")))
+        self.assertEqual((f"members not listed: the bundle's {size} bytes exceed the {size - 1}-byte parse cap",), record.notes)
+        self.assertEqual([], parsed, "a bundle above the cap is never read whole")
+        self.assertEqual(0, output.status)
+        with self.assertRaisesRegex(Refused, "matches 0 listed members"):
+            _ = self.new_finding("Invented: cites a member of the unlisted bundle", cites=["M-001/ev_a1b2c3d4e5f6"])
+        self.assertEqual("verified", online.verify_record(self.root, record).outcome)
+
     def test_add_bundle_and_verify_outcomes(self) -> None:
         bundle = {"records": [{"evidence_id": MEMBER}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
         self.put("work/case/rea-bundle.json", json.dumps(bundle))
