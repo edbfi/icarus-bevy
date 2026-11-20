@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# Project-local Hindsight runtime and optional client registrations.
+set +x
+set -euo pipefail
+umask 077
+ulimit -c 0
+
+fail() {
+    printf 'hindsight: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    printf '%s\n' 'Usage: tools/hindsight_runtime guide|install|serve|health|codex BANK [args...]|claude BANK [args...]'
+}
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+command=${1:-}
+case "$command" in
+    -h|--help|'') usage; exit 0 ;;
+    guide) cat -- "$script_dir/hindsight_runtime.guide.txt"; exit 0 ;;
+    install|serve|health|codex|claude) shift ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+port=${ICARUS_HINDSIGHT_PORT:-18581}
+pg_port=${ICARUS_HINDSIGHT_PG_PORT:-18582}
+scope=${ICARUS_HINDSIGHT_SCOPE:-project}
+key=${HINDSIGHT_API_KEY:-}
+base_url=${ICARUS_HINDSIGHT_PROXY_BASE_URL:-}
+proxy_key=${ICARUS_HINDSIGHT_PROXY_API_KEY:-}
+for configured_port in "$port" "$pg_port"; do
+    [[ $configured_port =~ ^[1-9][0-9]{3,4}$ ]] || fail 'Use ports between 1024 and 65535.'
+    (( configured_port >= 1024 && configured_port <= 65535 )) || fail 'Use ports between 1024 and 65535.'
+done
+[[ $port != "$pg_port" ]] || fail 'HTTP and PostgreSQL ports must differ.'
+[[ $scope =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || fail 'Use a scope slug of up to 32 lowercase letters, digits and hyphens.'
+url=http://127.0.0.1:$port
+
+require_key() {
+    [[ $key =~ ^[a-zA-Z0-9._~-]{32,}$ ]] ||
+        fail 'Set HINDSIGHT_API_KEY to a separate high-entropy bearer key of at least 32 characters.'
+}
+
+health() {
+    curl --disable --noproxy '*' --silent --fail --max-time 3 --output /dev/null "$url/health/ready" ||
+        return 1
+    local anonymous
+    anonymous=$(curl --disable --noproxy '*' --silent --max-time 3 --output /dev/null \
+        --write-out '%{http_code}' "$url/v1/default/banks") || return 1
+    [[ $anonymous == 401 ]] || return 1
+    printf 'header = "Authorization: Bearer %s"\n' "$key" |
+        curl --disable --config - --noproxy '*' --silent --fail --max-time 5 --output /dev/null "$url/v1/default/banks"
+}
+
+case "$command" in
+    health)
+        [[ $# == 0 ]] || fail 'health takes no arguments.'
+        require_key
+        health || fail 'Readiness or authenticated REST check failed.'
+        printf 'Hindsight ready at %s\n' "$url"
+        exit 0
+        ;;
+    codex|claude)
+        require_key
+        bank=${1:-}
+        [[ $bank =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]] || fail 'Pass the active bank ID as the first argument.'
+        shift
+        mcp_url=$url/mcp/$bank/
+        # The client expands this environment reference. No generated config contains the token.
+        if [[ $command == codex ]]; then
+            exec codex -c "mcp_servers.icarus_hindsight.url=\"$mcp_url\"" \
+                -c 'mcp_servers.icarus_hindsight.bearer_token_env_var="HINDSIGHT_API_KEY"' \
+                -c 'mcp_servers.icarus_hindsight.enabled=true' \
+                -c 'mcp_servers.icarus_hindsight.enabled_tools=["recall","reflect"]' "$@"
+        fi
+        # shellcheck disable=SC2016
+        printf -v mcp_config '{"mcpServers":{"icarus_hindsight":{"type":"http","url":"%s","headers":{"Authorization":"Bearer ${HINDSIGHT_API_KEY}"}}}}' "$mcp_url"
+        exec claude "$@" --mcp-config "$mcp_config"
+        ;;
+esac
+
+[[ $# == 0 ]] || fail "$command takes no arguments."
+common_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)
+repo_dir=$(cd -- "$(dirname -- "$common_dir")" && pwd -P)
+work_dir=$repo_dir/work
+[[ ! -L $work_dir ]] || fail 'The canonical work directory must stay inside the repository.'
+mkdir -p -- "$work_dir"
+default_root=$work_dir/hindsight-runtime
+state_root=${ICARUS_HINDSIGHT_STATE_ROOT:-$default_root}
+assets_root=${ICARUS_HINDSIGHT_ASSETS_ROOT:-$default_root}
+
+prepare_root() {
+    local requested=$1 resolved
+    if [[ $requested == "$default_root" && ! -e $requested && ! -L $requested ]]; then
+        mkdir -m 700 -- "$requested" 2>/dev/null || [[ -d $requested ]] || return 1
+    fi
+    resolved=$(realpath -e -- "$requested") || return 1
+    [[ $resolved == "$work_dir/"* && -d $resolved && -O $resolved && $(stat -c '%a' -- "$resolved") == 700 ]] ||
+        return 1
+    printf '%s\n' "$resolved"
+}
+
+state_root=$(prepare_root "$state_root") || fail 'State root must be an existing owner-only (0700) directory under the canonical work directory.'
+assets_root=$(prepare_root "$assets_root") || fail 'Assets root must be an existing owner-only (0700) directory under the canonical work directory.'
+if [[ $state_root == "$default_root" || $assets_root == "$default_root" ]]; then
+    (set -o noclobber
+     printf '%s\n' '{"state":"open","owner":"operator","purpose":"Project-local Hindsight runtime and scopes"}' > "$default_root/case.json"
+    ) 2>/dev/null || [[ -f $default_root/case.json ]] || fail 'Could not initialize the runtime case.'
+fi
+
+venv=$assets_root/venv
+requirements=$script_dir/hindsight_runtime.requirements.txt
+lock_digest=$(sha256sum "$requirements" | cut -d ' ' -f 1)
+install_stamp=$assets_root/wheels.sha256
+assets_lock=$assets_root/assets.lock
+model_cache=$assets_root/.cache/hf
+embedding_repo=intfloat/multilingual-e5-small
+embedding_revision=614241f622f53c4eeff9890bdc4f31cfecc418b3
+reranker_repo=hindsight-ai/hs-rerank-1
+reranker_revision=927f5be31280298a51cf29af8a29cb111ed812c5
+embedding=$model_cache/hub/models--${embedding_repo/\//--}/snapshots/$embedding_revision
+reranker=$model_cache/hub/models--${reranker_repo/\//--}/snapshots/$reranker_revision
+# Reserve a margin above the repository's 30 GiB floor.
+floor=$((31 * 1024 ** 3))
+has_space() {
+    local dir bytes
+    for dir in "$state_root" "$assets_root"; do
+        bytes=$(df -B1 --output=avail -- "$dir" | tail -1) || return 1
+        (( bytes > floor )) || return 1
+    done
+}
+
+wheels_verified() {
+    [[ -f $install_stamp && $(<"$install_stamp") == "$lock_digest" ]]
+}
+
+models_present() {
+    local file
+    for file in "$embedding"/{config.json,tokenizer.json,tokenizer_config.json,special_tokens_map.json,sentencepiece.bpe.model,onnx/model.onnx} \
+        "$reranker"/{config.json,tokenizer.json,tokenizer_config.json,onnx/model.onnx}; do
+        [[ -s $file ]] || return 1
+    done
+}
+
+clean_environment() {
+    # Keep only executable lookup. Prevent inherited provider, proxy, .env and cache settings
+    # from changing this instance. Empty HOME below is private runtime state.
+    local name
+    while IFS= read -r name; do
+        # shellcheck disable=SC2163
+        case "$name" in PATH) ;; *) export -n "$name" 2>/dev/null || true ;; esac
+    done < <(compgen -e)
+    export LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHON_DOTENV_DISABLED=1
+    export HF_HOME="$model_cache" HF_HUB_DISABLE_TELEMETRY=1 HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+    export OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false
+}
+
+# Invoked in a fresh bash under timeout.
+# shellcheck disable=SC2329
+install_runtime() {
+    export HOME="$assets_root/home" TMPDIR="$assets_root/tmp"
+    export XDG_CONFIG_HOME="$HOME/config" XDG_DATA_HOME="$HOME/data" XDG_STATE_HOME="$HOME/state"
+    export XDG_CACHE_HOME="$assets_root/.cache" UV_CACHE_DIR="$assets_root/.cache/uv"
+    export UV_HTTP_TIMEOUT=20 UV_HTTP_RETRIES=1 UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_INSTALLS=2
+    mkdir -p -- "$HOME" "$TMPDIR" "$UV_CACHE_DIR" "$model_cache"
+    cd -- "$assets_root"
+    [[ $(uname -sm) == 'Linux x86_64' ]] || fail 'The wheel lock supports Linux x86_64.'
+    local glibc
+    glibc=$(getconf GNU_LIBC_VERSION) || fail 'The wheel lock requires glibc 2.35 or later.'
+    [[ $glibc =~ ^glibc\ ([0-9]+)\.([0-9]+)$ ]] || fail 'The wheel lock requires glibc 2.35 or later.'
+    (( BASH_REMATCH[1] > 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] >= 35) )) ||
+        fail 'The wheel lock requires glibc 2.35 or later.'
+    [[ -x /usr/bin/python3.14 ]] || fail 'Install system Python 3.14 at /usr/bin/python3.14.'
+    if [[ ! -x $venv/bin/python ]]; then
+        uv --no-config venv --python /usr/bin/python3.14 --no-python-downloads "$venv"
+    fi
+    local -a refresh=()
+    wheels_verified || refresh+=(--reinstall)
+    uv --no-config pip sync --python "$venv/bin/python" --default-index https://pypi.org/simple \
+        --only-binary :all: --require-hashes --link-mode hardlink "${refresh[@]}" "$requirements"
+    uv --no-config pip check --python "$venv/bin/python"
+    if ! models_present; then
+        "$venv/bin/hf" download "$embedding_repo" --revision "$embedding_revision" --max-workers 2 \
+            config.json tokenizer.json tokenizer_config.json special_tokens_map.json sentencepiece.bpe.model onnx/model.onnx
+        "$venv/bin/hf" download "$reranker_repo" --revision "$reranker_revision" --max-workers 2 \
+            config.json tokenizer.json tokenizer_config.json onnx/model.onnx
+    fi
+    models_present || fail 'Pinned CPU model snapshots are incomplete.'
+    local stamp
+    stamp=$(mktemp -- "$install_stamp.XXXXXXXX")
+    printf '%s\n' "$lock_digest" > "$stamp"
+    mv -fT -- "$stamp" "$install_stamp"
+}
+
+if [[ $command == install ]]; then
+    has_space || fail 'Installation needs more than 31 GiB free.'
+    exec 9>"$assets_lock"
+    flock -n -x 9 || fail 'Stop the running project instance before installing.'
+    # The installer inherits no provider keys, shell startup files or user package configuration.
+    clean_environment
+    export assets_root model_cache embedding reranker embedding_repo embedding_revision reranker_repo reranker_revision
+    export venv requirements lock_digest install_stamp
+    export -f install_runtime models_present wheels_verified fail
+    timeout --kill-after=5s 900s bash -euo pipefail -c install_runtime 9>&- &
+    install_pid=$!
+    trap 'kill -TERM "$install_pid" 2>/dev/null || true; wait "$install_pid" 2>/dev/null || true' EXIT
+    trap 'exit 130' INT TERM HUP
+    while kill -0 "$install_pid" 2>/dev/null; do
+        has_space || fail 'Installation stopped at the 31 GiB disk tripwire.'
+        sleep 2
+    done
+    wait "$install_pid"
+    trap - EXIT INT TERM HUP
+    printf 'Hindsight packages and CPU models ready in %s\n' "$assets_root"
+    exit 0
+fi
+
+require_key
+[[ $base_url =~ ^https://[a-zA-Z0-9.-]+(:443)?/v1/?$ ]] ||
+    fail 'Set ICARUS_HINDSIGHT_PROXY_BASE_URL to the accepted HTTPS proxy /v1 endpoint.'
+[[ -n $proxy_key && $proxy_key != "$key" && ! $proxy_key =~ [[:space:]] ]] ||
+    fail 'Set ICARUS_HINDSIGHT_PROXY_API_KEY separately from the local bearer key.'
+has_space || fail 'Startup needs more than 31 GiB free.'
+pg0_install=$assets_root/pg0-install
+[[ -f $assets_lock ]] || fail 'Run tools/hindsight_runtime install to verify the selected environment.'
+exec 9<"$assets_lock"
+if [[ -x $pg0_install/18.1.0/bin/postgres ]]; then
+    flock -n -s 9 || fail 'Installation or first PostgreSQL initialization is in progress.'
+else
+    flock -n -x 9 || fail 'Stop other launcher instances before initializing PostgreSQL.'
+fi
+wheels_verified || fail 'Run tools/hindsight_runtime install to verify the selected environment.'
+[[ -x $venv/bin/python ]] || fail 'Run tools/hindsight_runtime install first.'
+models_present || fail 'Run tools/hindsight_runtime install first.'
+pg0_bin=$venv/lib/python3.14/site-packages/pg0/bin/pg0
+[[ -x $pg0_bin ]] || fail 'The pinned pg0 executable is missing.'
+scope_dir=$state_root/scopes/$scope
+mkdir -p -- "$scope_dir"
+exec 8>"$scope_dir/runtime.lock"
+flock -n -x 8 || fail 'A Hindsight runtime already owns this scope.'
+pg0_home=$scope_dir/pg0
+pg0_meta=$pg0_home/instances/hindsight/instance.json
+if [[ -f $pg0_meta ]]; then
+    db_password=$(jq -er '.password | select(type == "string")' "$pg0_meta") ||
+        fail 'Could not read the embedded database credential.'
+    [[ $db_password =~ ^[a-f0-9]{64}$ ]] || fail 'The embedded database credential is malformed.'
+else
+    db_password=$(openssl rand -hex 32)
+fi
+
+run_server() {
+    clean_environment
+    export HOME="$scope_dir/home" TMPDIR="$scope_dir/tmp"
+    export XDG_CONFIG_HOME="$HOME/config" XDG_DATA_HOME="$HOME/data" XDG_STATE_HOME="$HOME/state"
+    export XDG_CACHE_HOME="$scope_dir/.cache"
+    export PG0_HOME="$pg0_home" PG0_INSTALLATION_DIR="$pg0_install" PG0_EXECUTABLE="$pg0_bin" HF_HUB_OFFLINE=1
+    export HINDSIGHT_API_HOST=127.0.0.1 HINDSIGHT_API_PORT="$port"
+    export HINDSIGHT_API_DATABASE_URL="pg0://hindsight:$db_password@hindsight:$pg_port?listen_addresses=127.0.0.1"
+    export HINDSIGHT_API_EMBEDDINGS_PROVIDER=onnx HINDSIGHT_API_EMBEDDINGS_ONNX_DEVICE=cpu
+    export HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_PATH="$embedding/onnx/model.onnx"
+    export HINDSIGHT_API_EMBEDDINGS_ONNX_TOKENIZER_NAME_OR_PATH="$embedding"
+    export HINDSIGHT_API_RERANKER_PROVIDER=onnx HINDSIGHT_API_RERANKER_ONNX_THREADS=2
+    export HINDSIGHT_API_RERANKER_ONNX_MODEL_PATH="$reranker/onnx/model.onnx"
+    export HINDSIGHT_API_RERANKER_ONNX_TOKENIZER_NAME_OR_PATH="$reranker"
+    export HINDSIGHT_API_LLM_PROVIDER=openai-responses HINDSIGHT_API_LLM_MODEL=gpt-6.2-sol
+    export HINDSIGHT_API_LLM_BASE_URL="${base_url%/}" HINDSIGHT_API_LLM_API_KEY="$proxy_key"
+    export HINDSIGHT_API_LLM_TIMEOUT=80 HINDSIGHT_API_LLM_MAX_RETRIES=0
+    export HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+    export HINDSIGHT_API_TENANT_API_KEY="$key" HINDSIGHT_API_MCP_ENABLED_TOOLS=recall,reflect
+    export HINDSIGHT_API_ENABLE_DOCUMENT_IMPORT_API=true
+    export HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION=false HINDSIGHT_API_ENABLE_OBSERVATIONS=false
+    export HINDSIGHT_API_AUDIT_LOG_ENABLED=false HINDSIGHT_API_LOG_LEVEL=WARNING
+    mkdir -p -- "$HOME" "$TMPDIR" "$XDG_CACHE_HOME"
+    cd -- "$scope_dir"
+    exec nice -n 10 "$venv/bin/python" -m hindsight_api.main
+}
+
+# Called by the EXIT trap.
+# shellcheck disable=SC2329
+stop_server() {
+    if kill -0 "$server_pid" 2>/dev/null; then
+        kill -TERM "$server_pid" 2>/dev/null || true
+        for _ in {1..10}; do
+            kill -0 "$server_pid" 2>/dev/null || break
+            sleep 1
+        done
+        kill -KILL "$server_pid" 2>/dev/null || true
+    fi
+    wait "$server_pid" 2>/dev/null || true
+    if [[ -f $pg0_home/instances/hindsight/data/postmaster.pid ]]; then
+        PG0_HOME=$pg0_home PG0_INSTALLATION_DIR=$pg0_install \
+            timeout --kill-after=2s 10s "$pg0_bin" stop --name hindsight </dev/null >/dev/null 2>&1 ||
+            printf 'hindsight: embedded PostgreSQL did not stop for scope %s\n' "$scope" >&2
+    fi
+}
+
+# Provider exceptions can include secrets, request text or URLs. Keep raw runtime output disabled.
+run_server </dev/null >/dev/null 2>&1 8>&- 9>&- &
+server_pid=$!
+trap stop_server EXIT
+trap 'exit 130' INT TERM HUP
+printf 'Starting Hindsight at %s for scope %s. Ctrl-C stops it.\n' "$url" "$scope"
+deadline=$((SECONDS + 180))
+while kill -0 "$server_pid" 2>/dev/null; do
+    has_space || fail 'Service stopped at the 31 GiB disk tripwire.'
+    if (( deadline != 0 )); then
+        if health; then
+            deadline=0
+            printf 'Hindsight ready at %s\n' "$url"
+        elif (( SECONDS >= deadline )); then
+            fail 'Startup timed out. Check the proxy endpoint and credentials, local ports and pinned assets.'
+        fi
+    fi
+    sleep 2
+done
+fail 'Service exited. Check the proxy endpoint and credentials, local ports and pinned assets.'

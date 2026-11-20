@@ -62,6 +62,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^(\.agents/rea/rea\.sh|tools/tests/rea_launcher\.test\.cjs)$
+      - id: hindsight-runtime-tests
+        name: Test Hindsight runtime launch and client configuration
+        entry: node --test tools/tests/hindsight_runtime.test.cjs
+        language: system
+        pass_filenames: false
+        files: ^tools/(hindsight_runtime(?:\.guide\.txt|\.requirements\.txt)?|tests/hindsight_runtime\.test\.cjs)$
       - id: research-scope-tests
         name: Test offline research scope boundaries
         entry: node --test tools/tests/research-scope.test.cjs
@@ -164,6 +170,12 @@ repos:
         language: system
         pass_filenames: false
         files: (\.md$|^evidence/|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
+      - id: evidence-catalog
+        name: Check evidence catalog authority and generated views
+        entry: python3 -m tools.evidence_catalog check --staged
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: cargo-fmt
         name: Check Rust formatting
         entry: cargo fmt --all -- --check

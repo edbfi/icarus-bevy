@@ -1,26 +1,14 @@
 # Documentation map
 
-Rules, read tiers and caps: [`.agents/rules/docs.md`](../.agents/rules/docs.md).
-Lint: `python3 tools/docs_lint.py`. Startup reads stop at this map and
-[status](implementation-status.md); fetch ledger rows by ID.
+Start with [status](implementation-status.md) and
+[documentation rules](../.agents/rules/docs.md).
 
-| Path | Role | Bound |
-| --- | --- | --- |
-| [linux-dedicated-server-plan.md](linux-dedicated-server-plan.md) | goal, constraints, milestones, exit criteria, release targets | 16 KB |
-| [implementation-status.md](implementation-status.md) | summary, milestone state, next tasks | 16 KB, fixed headings |
-| [gates.md](gates.md) | preconditions that block actions (only home) | 16 KB |
-| [architecture.md](architecture.md) | design constraints, repository boundaries, toolchain | 16 KB |
-| [runbooks/](runbooks/) | operating procedures | 16 KB each |
-| [runbooks/authored-survival.md](runbooks/authored-survival.md) | schema-14/15 survival, bags and consumable Use | 16 KB |
-| [runbooks/controller-receive.md](runbooks/controller-receive.md) | controller receive metadata and interpretation | 16 KB |
-| [runbooks/join-password.md](runbooks/join-password.md) | password configuration, listing behavior and privacy | 16 KB |
-| [specs/](specs/) | durable format and protocol facts (`save-format/`, `network/`) | 16 KB each, fixed headings |
-| [research/](research/) | one digest per question cluster (`save-format/`, `network/`, `foundation/`) | 8 KB each, fixed headings |
-| [ledgers/findings/](ledgers/findings/) | active findings by area; `retired/` keeps retired rows in full | 48 KB per active file, 192 KB active total, 64 KB per retired file |
-| [ledgers/](ledgers/) | unknowns, bugs, compatibility; one row per item | 64 KB each; 400-byte rows |
-| [research/archive/](research/archive/) | dated reports, verbatim, frozen | none |
-| [history/](history/) | historical authorizations, verbatim, frozen | none |
-| [../evidence/](../evidence/README.md) | evidence index, one JSONL record per artifact; category folders mirror the findings ledgers; fetch by `grep -rhw --include='*.jsonl' M-ID evidence/` | 64 KB per shard, 2 KB records |
-
-The current prose surface (root `README.md` and everything here except archive,
-history and the ledgers, plus `evidence/README.md`) is capped at 224 KB in total.
+- [Plan](linux-dedicated-server-plan.md), [gates](gates.md),
+  [architecture](architecture.md) and [specs](specs/).
+- [Runbooks](runbooks/), including [survival](runbooks/authored-survival.md),
+  [controller receive](runbooks/controller-receive.md),
+  [join passwords](runbooks/join-password.md) and [catalog](runbooks/evidence-catalog.md).
+- [Research digests](research/) and [ledgers](ledgers/). Fetch findings, unknowns,
+  bugs, compatibility and [evidence selectors](../evidence/README.md) by ID.
+- [Research archive](research/archive/) and [history](history/) for frozen
+  reports and historical authorizations.

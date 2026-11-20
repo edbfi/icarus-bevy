@@ -63,7 +63,8 @@ Status.
    area digest; a spec if a durable fact changed; finding rows added or
    superseded; `unknowns.md`; `gates.md`; evidence index rows (one `rea-bundle`
    row per REA session, one receipt row per bounded run; a new row names one
-   digested file, never a directory; reuse a row before adding one). In status, only
+   digested file, never a directory; reuse a row before adding one). Publish
+   rows in managed topics through the catalog writer below. In status, only
    Next-tasks items may be marked done or removed. Create a digest only for a
    new question cluster.
 3. Consolidate before adding. When a new row would extend a chain of
@@ -96,6 +97,42 @@ Status.
    `Last reconciled: YYYY-MM-DD`. Use UTC for reconciliation and evidence dates;
    frozen artifact paths keep their original creation labels. Canonical workflow rules live under
    `.agents/rules/`; `CLAUDE.md` (`AGENTS.md`) summarizes and links to them.
+
+## Catalog authoring
+
+The typed writer is the default for the ten topics listed under
+`authority.topics` in `evidence-catalog/manifest.json`. Their Markdown ledgers
+and JSONL shards are generated views maintained by publication. Unmanaged
+topics retain their current authoring path.
+
+Follow the [catalog runbook](../../docs/runbooks/evidence-catalog.md). Only a
+maintainer can authorize a transition. Review the complete request and record
+its `request-id` in the review. The digest binds the reviewed bytes after
+canonical JSON encoding. The review and Git permissions establish authority.
+Activate only topics whose migration has passed parity at the reviewed base.
+
+A request is a JSON object with the full Git commit ID in `base` and at least
+one of the following arrays.
+
+- `activate` takes topic names, for example `["save-format-classes"]`. A topic
+  includes its active and retired findings and all matching evidence shards.
+  Nested shard paths join with hyphens. `unknowns`, `bugs` and `compatibility`
+  are separate topics.
+- `upsert` takes objects with `path`, `id` and the complete `fields` object
+  from `lookup`. Use decoded cell text, including literal pipes. New rows use
+  unused IDs and the same field names as a row of that type. Put new evidence
+  in the current shard or the next numbered shard in its existing category.
+  Set the optional top-level `reconciled` date for edited Markdown ledgers.
+- `release` takes topics to return to legacy authoring. Generated Markdown and
+  JSONL retain the latest records and resume their role as the source.
+
+Use a clean source tree, apply the complete reviewed patch with
+`git apply --index`, then run both catalog check and documentation lint before
+committing. Regenerate from a new reviewed request if the base or sources move.
+Commit the canonical files, manifest and generated views together. The catalog
+hook checks staged transitions against the request and ongoing view parity.
+Artifact locators and listed selectors are metadata. Bundle membership still requires
+the existing local lint.
 
 ## Caps
 
