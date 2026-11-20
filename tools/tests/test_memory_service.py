@@ -133,17 +133,21 @@ class Units(Scratch):
         self.assertNotIn(settings.key, text)
         self.assertNotIn(settings.pg_password, text)
 
-    def test_the_backup_explains_a_primary_checkout_without_the_tool(self) -> None:
+    def test_the_backup_explains_a_primary_checkout_whose_tool_predates_backup(self) -> None:
         primary = self.root / "primary"
         primary.mkdir()
-        environment = {"PATH": "/usr/bin:/bin", "ICARUS_MEMORY_PYTHON": "/bin/false"}
+        older = self.root / "older-python"
+        _ = older.write_text('#!/bin/sh\necho "memory: error: argument COMMAND: invalid choice: \'backup\'" >&2\nexit 2\n', encoding="utf-8")
+        current = self.root / "current-python"
+        _ = current.write_text('#!/bin/sh\necho "$@"\n', encoding="utf-8")
+        for fake in (older, current):
+            fake.chmod(0o700)
+        environment = {"PATH": "/usr/bin:/bin", "ICARUS_MEMORY_PYTHON": str(older)}
         result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual(1, result.returncode)
-        self.assertIn(f"the primary checkout {primary} has no tools/memory yet; it arrives when the memory tool is merged into main", result.stderr)
-        self.assertNotIn("Traceback", result.stderr)
-        (primary / "tools/memory").mkdir(parents=True)
-        _ = (primary / "tools/memory/__main__.py").write_text("")
-        environment["ICARUS_MEMORY_PYTHON"] = "/bin/echo"
+        self.assertEqual(f"memory backup: the memory tool in the primary checkout {primary} has no backup command yet; pull main there. " +
+                         "No backup was made.\n", result.stderr)
+        environment["ICARUS_MEMORY_PYTHON"] = str(current)
         result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual((0, "-m tools.memory backup\n"), (result.returncode, result.stdout))
 

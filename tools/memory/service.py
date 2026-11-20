@@ -438,10 +438,10 @@ def unit_word(value: str) -> str:
 
 
 PYTHON_VARIABLE = "ICARUS_MEMORY_PYTHON"
-# The backup runs the tool from the primary checkout; until the tool is merged into its main, say so.
+# The backup runs the tool from the primary checkout; when that checkout's tool predates ``backup``, say so.
 BACKUP_SCRIPT = (
-    'if [ -f tools/memory/__main__.py ]; then exec "$ICARUS_MEMORY_PYTHON" -m tools.memory backup; fi; '
-    'echo "memory backup: the primary checkout $PWD has no tools/memory yet; it arrives when the memory tool is merged into main. No backup was made." >&2; '
+    'if "$ICARUS_MEMORY_PYTHON" -m tools.memory backup --help >/dev/null 2>&1; then exec "$ICARUS_MEMORY_PYTHON" -m tools.memory backup; fi; '
+    'echo "memory backup: the memory tool in the primary checkout $PWD has no backup command yet; pull main there. No backup was made." >&2; '
     "exit 1"
 )
 
