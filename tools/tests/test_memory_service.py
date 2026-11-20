@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -19,8 +20,8 @@ from unittest.mock import patch
 from tools.memory.cli import main
 from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compare, restore, retained, rotate, verify
 from tools.memory.service import (
-    API_PORT, BACKUP_TIMER, BACKUP_UNIT, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
-    connection, ensure_settings, feature_problems, home, install, parse_settings, read_settings, render_settings, require_floor, unit_files,
+    API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
+    backup_interpreter, connection, ensure_settings, feature_problems, home, install, installed_interpreter, parse_settings, read_settings, render_settings, require_floor, unit_files,
     unit_word,
 )
 
@@ -117,11 +118,38 @@ class Units(Scratch):
                      f"ExecStart=/usr/bin/flock --shared --nonblock {self.root}/runtime/assets.lock {self.root}/runtime/venv/bin/python -m hindsight_api.main"):
             self.assertIn(line + "\n", service)
         self.assertIn(f"WorkingDirectory={self.root}/primary\n", files[BACKUP_UNIT])
-        self.assertIn("ExecStart=/usr/bin/python3 -m tools.memory backup\n", files[BACKUP_UNIT])
+        self.assertIn("Environment=ICARUS_MEMORY_PYTHON=/usr/bin/python3\n", files[BACKUP_UNIT])
+        self.assertIn("ExecStart=/bin/sh -c ", files[BACKUP_UNIT])
+        self.assertIn('exec \\"$$ICARUS_MEMORY_PYTHON\\" -m tools.memory backup', files[BACKUP_UNIT])
+        self.assertEqual("/usr/bin/python3", installed_interpreter(files[BACKUP_UNIT]))
         self.assertIn("OnCalendar=daily\n", files[BACKUP_TIMER])
         text = "".join(files.values())
         self.assertNotIn(settings.key, text)
         self.assertNotIn(settings.pg_password, text)
+
+    def test_the_backup_explains_a_primary_checkout_without_the_tool(self) -> None:
+        primary = self.root / "primary"
+        primary.mkdir()
+        environment = {"PATH": "/usr/bin:/bin", "ICARUS_MEMORY_PYTHON": "/bin/false"}
+        result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn(f"the primary checkout {primary} has no tools/memory yet; it arrives when the memory tool is merged into main", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        (primary / "tools/memory").mkdir(parents=True)
+        _ = (primary / "tools/memory/__main__.py").write_text("")
+        environment["ICARUS_MEMORY_PYTHON"] = "/bin/echo"
+        result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
+        self.assertEqual((0, "-m tools.memory backup\n"), (result.returncode, result.stdout))
+
+    def test_the_interpreter_skips_virtual_environments(self) -> None:
+        venv, system = self.root / "checkout/.venv", self.root / "system"
+        for directory in (venv / "bin", system / "bin"):
+            directory.mkdir(parents=True)
+            (directory / "python3").touch(mode=0o755)
+        (venv / "pyvenv.cfg").touch()
+        chosen = backup_interpreter({"PATH": f"{venv / 'bin'}:relative:{system / 'bin'}:/usr/bin"})
+        self.assertEqual(str(system / "bin/python3"), chosen)
+        self.assertIsNone(installed_interpreter(f"Environment=ICARUS_MEMORY_PYTHON={self.root / 'gone/python3'}\n"))
 
     def test_words_are_escaped_for_systemd(self) -> None:
         self.assertEqual(unit_word("/plain/path-1.2"), "/plain/path-1.2")

@@ -434,8 +434,20 @@ def unit_word(value: str) -> str:
     return '"' + escaped.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+PYTHON_VARIABLE = "ICARUS_MEMORY_PYTHON"
+# The backup runs the tool from the primary checkout; until the tool is merged into its main, say so.
+BACKUP_SCRIPT = (
+    'if [ -f tools/memory/__main__.py ]; then exec "$ICARUS_MEMORY_PYTHON" -m tools.memory backup; fi; '
+    'echo "memory backup: the primary checkout $PWD has no tools/memory yet; it arrives when the memory tool is merged into main. No backup was made." >&2; '
+    "exit 1"
+)
+
+
 def unit_files(where: Home, runtime: Assets, checkout: Path, interpreter: str) -> dict[str, str]:
-    """The service unit, and the daily backup service and timer, for this host. Never committed: they hold host paths."""
+    """The service unit, and the daily backup service and timer, for this host. Never committed: they hold host paths.
+
+    ``checkout`` is the primary checkout (the Git common directory's), whatever checkout installs or checks
+    them, so the backup always runs the tool from there."""
     # pg0 leaves a .pgpass in TMPDIR at every start; the runtime directory is removed at every stop.
     variables = service_environment(where, runtime) | {"TMPDIR": "%t/icarus-memory"}
     environment = "\n".join(f"Environment={unit_word(f'{name}={value}')}" if name != "TMPDIR" else f"Environment=TMPDIR={value}"
@@ -483,7 +495,8 @@ After={UNIT}
 Type=oneshot
 WorkingDirectory={unit_word(str(checkout))}
 Environment=PATH=/usr/bin:/bin
-ExecStart={" ".join(unit_word(item) for item in [interpreter, "-m", "tools.memory", "backup"])}
+Environment={unit_word(f"{PYTHON_VARIABLE}={interpreter}")}
+ExecStart=/bin/sh -c {unit_word(BACKUP_SCRIPT)}
 CPUQuota=400%
 Nice=10
 """
@@ -707,10 +720,22 @@ def start_unit(settings: Settings) -> float:
     return time.monotonic() - began
 
 
+def installed_interpreter(text: str) -> str | None:
+    """The interpreter an installed backup unit names, when it still exists and is executable."""
+    prefix = f"Environment={PYTHON_VARIABLE}="
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            value = line.removeprefix(prefix)
+            return value if _PLAIN.fullmatch(value) and os.access(value, os.X_OK) else None
+    return None
+
+
 def status_lines(where: Home, settings: Settings, runtime: Assets, checkout: Path) -> tuple[bool, list[str]]:
     checks: list[Check] = []
     installed = {name: (unit_directory() / name) for name in (UNIT, BACKUP_UNIT, BACKUP_TIMER)}
-    expected = unit_files(where, runtime, primary_checkout_of(checkout), backup_interpreter())
+    backup_unit = installed[BACKUP_UNIT].read_text(encoding="utf-8") if installed[BACKUP_UNIT].is_file() else ""
+    # The units are compared from any checkout: the primary checkout, and the interpreter they were installed with.
+    expected = unit_files(where, runtime, primary_checkout_of(checkout), installed_interpreter(backup_unit) or backup_interpreter())
     stale = [name for name, path in installed.items() if not path.is_file() or path.read_text(encoding="utf-8") != expected[name]]
     checks.append(Check("unit files", not stale, f"stale or missing: {', '.join(stale)}" if stale else "current"))
     active = unit_property("ActiveState")
@@ -735,9 +760,19 @@ def primary_checkout_of(start: Path) -> Path:
         raise ServiceError(str(error)) from error
 
 
-def backup_interpreter() -> str:
-    """The Python 3 the backup timer runs: the ``python3`` on PATH (as the hooks use), else this one."""
-    return shutil.which("python3") or sys.executable
+def backup_interpreter(environ: Mapping[str, str] | None = None) -> str:
+    """The Python 3 the backup timer runs: the first ``python3`` on PATH (as the hooks run it) that is not
+    in a virtual environment, else this one. A virtual environment's ``bin`` (``pyvenv.cfg`` beside it),
+    such as the checkout ``.venv`` that an interactive ``uv run python3`` alias puts first, is skipped:
+    it belongs to one checkout."""
+    env = os.environ if environ is None else environ
+    for directory in env.get("PATH", "").split(os.pathsep):
+        if not directory.startswith("/") or (Path(directory).parent / "pyvenv.cfg").exists():
+            continue
+        candidate = Path(directory) / "python3"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return sys.executable
 
 
 def install(where: Home, runtime: Assets, checkout: Path) -> float:
