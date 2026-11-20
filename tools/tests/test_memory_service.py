@@ -8,19 +8,26 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import NamedTuple, override
+from typing import NamedTuple, cast, override
 from unittest.mock import patch
 
+from tools.memory import durability
+from tools.memory.bank import BankError
 from tools.memory.cli import main
+from tools.memory.gitio import GitError
+from tools.memory.hindsight import HindsightError
+from tools.memory.journal import JournalError
 from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compare, restore, retained, rotate, verify
 from tools.memory.service import (
-    API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
+    API_PORT, BACKUP_SCRIPT, Api, Connection, BACKUP_TIMER, BACKUP_UNIT, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
     backup_interpreter, connection, ensure_settings, feature_problems, home, install, installed_interpreter, parse_settings, read_settings, render_settings, require_floor, unit_files,
     unit_word,
 )
@@ -127,17 +134,21 @@ class Units(Scratch):
         self.assertNotIn(settings.key, text)
         self.assertNotIn(settings.pg_password, text)
 
-    def test_the_backup_explains_a_primary_checkout_without_the_tool(self) -> None:
+    def test_the_backup_explains_a_primary_checkout_whose_tool_predates_backup(self) -> None:
         primary = self.root / "primary"
         primary.mkdir()
-        environment = {"PATH": "/usr/bin:/bin", "ICARUS_MEMORY_PYTHON": "/bin/false"}
+        older = self.root / "older-python"
+        _ = older.write_text('#!/bin/sh\necho "memory: error: argument COMMAND: invalid choice: \'backup\'" >&2\nexit 2\n', encoding="utf-8")
+        current = self.root / "current-python"
+        _ = current.write_text('#!/bin/sh\necho "$@"\n', encoding="utf-8")
+        for fake in (older, current):
+            fake.chmod(0o700)
+        environment = {"PATH": "/usr/bin:/bin", "ICARUS_MEMORY_PYTHON": str(older)}
         result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual(1, result.returncode)
-        self.assertIn(f"the primary checkout {primary} has no tools/memory yet; it arrives when the memory tool is merged into main", result.stderr)
-        self.assertNotIn("Traceback", result.stderr)
-        (primary / "tools/memory").mkdir(parents=True)
-        _ = (primary / "tools/memory/__main__.py").write_text("")
-        environment["ICARUS_MEMORY_PYTHON"] = "/bin/echo"
+        self.assertEqual(f"memory backup: the memory tool in the primary checkout {primary} has no backup command yet; pull main there. " +
+                         "No backup was made.\n", result.stderr)
+        environment["ICARUS_MEMORY_PYTHON"] = str(current)
         result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual((0, "-m tools.memory backup\n"), (result.returncode, result.stdout))
 
@@ -287,6 +298,81 @@ class Backups(Scratch):
     def test_restore_never_manages_a_scratch_home(self) -> None:
         with self.assertRaisesRegex(ServiceError, "--drill"):
             _ = restore(self.where, Assets(self.root / "runtime"), self.root / "x.dump", replace=True)
+
+
+class RestoreRollback(Backups):
+    """A failure after the data directories are swapped puts the previous one back, whatever its type."""
+
+    def test_any_replay_failure_restores_the_previous_data_directory(self) -> None:
+        installed = Home(self.root / "live/config", self.root / "live/data", self.root / "live/state")
+        units = self.root / "units"
+        units.mkdir()
+        _ = (units / UNIT).write_text("[Unit]\n", encoding="utf-8")
+        settings = ensure_settings(installed)
+        floor = patch("tools.memory.service.shutil.disk_usage", return_value=Usage(FLOOR * 4, FLOOR, FLOOR * 3))
+        with floor:
+            made = backup(installed, self.runtime(), now=stamp(2))
+        calls: list[tuple[str, ...]] = []
+
+        def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            del check
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        def restore_cluster(pg0_home: Path, _dump: Path, _settings: Settings, _runtime: Assets) -> None:
+            pg0_home.mkdir()
+            _ = (pg0_home / "restored").write_text("the dump", encoding="utf-8")
+
+        def noop(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        def no_checks(*_args: object) -> list[object]:
+            return []
+
+        def started(_settings: Settings) -> float:
+            return 0.0
+
+        def not_ready(_api: Api) -> bool:
+            return False
+
+        def unit_files_here() -> Path:
+            return units
+
+        for failure in (HindsightError("POST /memories: HTTP 500"), BankError("bank still differs"), GitError("git rev-parse: bad"),
+                        JournalError("memory/journal/x.jsonl: malformed"), KeyboardInterrupt()):
+            with self.subTest(type(failure).__name__):
+                for leftover in ("pg0", "pg0.previous", "pg0.restoring"):
+                    shutil.rmtree(installed.data / leftover, ignore_errors=True)
+                installed.pg0_home.mkdir()
+                _ = (installed.pg0_home / "previous").write_text("live data", encoding="utf-8")
+                calls.clear()
+
+                def replay(_target: Connection, _mark: Watermark, failure: BaseException = failure) -> None:
+                    raise failure
+
+                with (floor, patch.object(durability, "unit_directory", unit_files_here), patch.object(durability, "systemctl", systemctl),
+                      patch.object(durability, "stop_postgres", noop), patch.object(durability, "restore_cluster", restore_cluster),
+                      patch.object(durability, "start_unit", started), patch.object(durability, "health", no_checks),
+                      patch.object(Api, "ready", not_ready)):
+                    expected = KeyboardInterrupt if isinstance(failure, KeyboardInterrupt) else ServiceError
+                    with self.assertRaises(expected):
+                        _ = restore(installed, Assets(self.root / "runtime"), made.backup.dump, replace=True, replay=replay)
+                self.assertTrue((installed.pg0_home / "previous").is_file(), "the previous data directory is back")
+                self.assertFalse((installed.data / "pg0.previous").exists())
+                self.assertTrue((installed.data / "pg0.restoring/restored").is_file(), "the restored one is kept in staging")
+                self.assertEqual(("start", UNIT), calls[-1], "the old unit is started again")
+        self.assertEqual(settings.bank, "icarus")
+
+
+class Serve(Scratch):
+    def test_a_scratch_instance_refuses_a_port_in_use(self) -> None:
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = cast(tuple[str, int], taken.getsockname())[1]
+            settings = ensure_settings(self.where, port=port, pg_port=PG_PORT + 1000 if port != PG_PORT + 1000 else PG_PORT + 1001)
+            with self.assertRaisesRegex(ServiceError, f"port {port} is in use"):
+                _ = durability.serve(self.where, settings, Assets(self.root / "runtime"))
 
 
 class FakeBank:

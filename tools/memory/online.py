@@ -448,19 +448,31 @@ def evidence_path(root: Path, path: str) -> tuple[Path, str]:
     return target, relative
 
 
+def file_sha256(path: Path) -> str:
+    """The sha256 of a file, read in chunks (evidence can be large; the MCP server is long-lived)."""
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
 def evidence_add(bank: Bank, root: Path, path: str, kind: str, label: str, *, run: Mapping[str, JSON] | None = None,
-                 now: datetime | None = None) -> Output:
-    """Publish an M record whose sha256, size, date and bundle members come from the bytes."""
+                 without_members: bool = False, now: datetime | None = None) -> Output:
+    """Publish an M record whose sha256, size, date and bundle members come from the bytes. An REA bundle above
+    ``BUNDLE_PARSE_CAP`` is refused, since its members could not be listed and selector citations of it could
+    not be verified, unless ``without_members`` acknowledges that; the record then says so in a note."""
     target, relative = evidence_path(root, path)
-    with target.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    digest = file_sha256(target)
     info = target.stat()
     data: dict[str, JSON] = {
         "type": "evidence", "status": "active", "path": relative, "sha256": digest, "size": info.st_size, "kind": kind, "label": label,
         "class": "local-private" if relative.startswith(LOCAL_PREFIXES) else "tracked",
         "date": datetime.fromtimestamp(info.st_mtime, UTC).date().isoformat(),
     }
-    if kind == "rea-bundle":
+    if kind == "rea-bundle" and info.st_size > BUNDLE_PARSE_CAP:
+        if not without_members:
+            raise Refused(f"{relative}: REA bundle of {info.st_size} bytes exceeds the {BUNDLE_PARSE_CAP}-byte parse cap; its members would not be " +
+                          "listed and selector citations of it could not be verified (pass --without-members to record it so)")
+        data["notes"] = [f"members not listed: the bundle's {info.st_size} bytes exceed the {BUNDLE_PARSE_CAP}-byte parse cap"]
+    elif kind == "rea-bundle":
         records, members = bundle_members(target.read_bytes())
         data["records"] = records
         if members:
@@ -507,9 +519,8 @@ def verify_record(primary: Path, record: Record) -> Verdict:
         if record.migrated:
             return verdict("legacy-unverifiable", f"directory locator: {path}")
         return verdict("mismatched", f"not a file: {path}")
-    with target.open("rb") as handle:
-        if hashlib.file_digest(handle, "sha256").hexdigest() != digest:
-            return verdict("mismatched", f"sha256 differs: {path}")
+    if file_sha256(target) != digest:
+        return verdict("mismatched", f"sha256 differs: {path}")
     size = record.number("size")
     if size is not None and target.stat().st_size != size:
         return verdict("mismatched", f"size differs: {path}")
@@ -532,7 +543,7 @@ def verify_record(primary: Path, record: Record) -> Verdict:
             files = [candidate for candidate in entry.candidates if candidate.is_file() and not candidate.is_symlink()]
             if not files:
                 return verdict("unavailable", f"manifest entry missing: {entry.path}")
-            if entry.sha256 is not None and all(hashlib.sha256(item.read_bytes()).hexdigest() != entry.sha256 for item in files):
+            if entry.sha256 is not None and all(file_sha256(item) != entry.sha256 for item in files):
                 return verdict("mismatched", f"manifest entry sha256 differs: {entry.path}")
             if entry.size is not None and all(item.stat().st_size != entry.size for item in files):
                 return verdict("mismatched", f"manifest entry size differs: {entry.path}")
@@ -1218,6 +1229,8 @@ def register(subparsers: Subcommands) -> None:
     _ = add_parser.add_argument("--kind", required=True, choices=TYPES["evidence"].fields["kind"].vocabulary)
     _ = add_parser.add_argument("--label", required=True)
     _ = add_parser.add_argument("--run", help="JSON file of the run fields (kind run)")
+    _ = add_parser.add_argument("--without-members", action="store_true",
+                                help=f"record an REA bundle above {BUNDLE_PARSE_CAP // 1024**2} MiB without listing its members")
     verify_parser = subparsers.add_parser("verify", help="verify evidence bytes")
     _ = verify_parser.add_argument("ids", nargs="*")
     _ = verify_parser.add_argument("--all", action="store_true", dest="every")
@@ -1324,7 +1337,8 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
                 run = {name: _as_json(value) for name, value in as_mapping(load_json(_read(run_file)), run_file).items()}
                 if extra := sorted(set(run) - set(RUN)):
                     raise Refused(f"--run: unknown fields {', '.join(extra)}")
-            return evidence_add(bank, root, _string(values, "path") or "", _string(values, "kind") or "", _string(values, "label") or "", run=run)
+            return evidence_add(bank, root, _string(values, "path") or "", _string(values, "kind") or "", _string(values, "label") or "", run=run,
+                                without_members=_flag(values, "without_members"))
         case "get":
             return get(bank, root, _string(values, "id") or "", history=_flag(values, "history"), all_proposals=_flag(values, "all_proposals"))
         case "recall":

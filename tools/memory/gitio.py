@@ -16,10 +16,30 @@ class GitError(RuntimeError):
 
 
 def git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    """Standard output of a Git command that must exit 0."""
+    return run_git(root, *args, stdin=stdin)[1]
+
+
+def run_git(root: Path, *args: str, stdin: bytes | None = None, ok: tuple[int, ...] = (0,)) -> tuple[int, bytes]:
+    """Exit status and standard output of a Git command; a status outside ``ok`` raises ``GitError`` naming the
+    subcommand (``git grep`` exits 1 when nothing matches, which a caller passes as ``ok=(0, 1)``)."""
     result = subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args], input=stdin, capture_output=True, check=False)
-    if result.returncode:
-        raise GitError(f"git {args[0]}: {result.stderr.decode(errors='replace').strip()}")
-    return result.stdout
+    if result.returncode not in ok:
+        raise GitError(f"git {_subcommand(args)}: exit status {result.returncode}: {result.stderr.decode(errors='replace').strip()}")
+    return result.returncode, result.stdout
+
+
+def _subcommand(args: Sequence[str]) -> str:
+    """The Git subcommand in ``args``, past global options such as ``-c name=value``."""
+    skip = False
+    for item in args:
+        if skip:
+            skip = False
+        elif item in ("-c", "-C"):
+            skip = True
+        elif not item.startswith("-"):
+            return item
+    return args[0] if args else "git"
 
 
 def tree_files(root: Path, treeish: str, prefix: str) -> dict[str, str]:

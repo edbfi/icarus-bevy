@@ -168,8 +168,10 @@ TOOLS: tuple[Tool, ...] = (
          "bundle members taken from its bytes; kind run needs the run object.",
          {"path": STRING, "kind": {"type": "string", "enum": list[JSON](TYPES["evidence"].fields["kind"].vocabulary)}, "label": STRING,
           "run": {"type": "object", "description": "workload, targets, matched_reference, identities, start, end, environment, thresholds, " +
-                  "outcome, deviations"}}, ("path", "kind", "label"),
-         lambda c, a: online.evidence_add(c.bank(), c.root, text(a, "path"), text(a, "kind"), text(a, "label"), run=run_object(a))),
+                  "outcome, deviations"}, "without_members": {"type": "boolean", "description": "record an REA bundle above the 64 MiB " +
+                  "parse cap without listing its members"}}, ("path", "kind", "label"),
+         lambda c, a: online.evidence_add(c.bank(), c.root, text(a, "path"), text(a, "kind"), text(a, "label"), run=run_object(a),
+                                          without_members=flag(a, "without_members"))),
     Tool("verify", "Verify evidence bytes: verified, unavailable, mismatched or legacy-unverifiable per record (journal and disk only).",
          {"ids": {"type": "array", "items": STRING}, "all": BOOLEAN}, (),
          lambda c, a: online.verify(c.root, strings(a, "ids"), every=flag(a, "all"))),

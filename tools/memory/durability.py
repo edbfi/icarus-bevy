@@ -349,20 +349,24 @@ def restore(where: Home, runtime: Assets, dump: Path, *, replace: bool, replay: 
         if where.pg0_home.exists():
             _ = where.pg0_home.rename(previous)
         _ = staging.rename(where.pg0_home)
-        prepare_runtime_directories(where)
         try:
+            prepare_runtime_directories(where)
             _ = start_unit(settings)
             failed = [f"{check.name}: {check.detail}" for check in health(settings, runtime) if not check.ok]
             if failed:
                 raise ServiceError("; ".join(failed))
             replay(settings.connection(), mark)
-        except (ServiceError, OSError, subprocess.TimeoutExpired) as error:
+        except BaseException as error:
+            # Any failure after the swap (a bank, journal or Git error in replay, an interrupt) puts the previous
+            # data directory back and restarts the old unit; the restored one is kept in staging for inspection.
             _ = systemctl("stop", UNIT, check=False)
             stop_postgres(where.pg0_home, runtime)
             _ = where.pg0_home.rename(staging)
             if previous.exists():
                 _ = previous.rename(where.pg0_home)
                 _ = systemctl("start", UNIT, check=False)
+            if not isinstance(error, Exception):
+                raise
             raise ServiceError(f"the restored instance failed ({error}); the previous data directory is back, the restored one is {staging}") from error
         if previous.exists():
             shutil.rmtree(previous)
@@ -436,6 +440,10 @@ def serve(scratch: Home, settings: Settings, runtime: Assets) -> tuple[subproces
     nice 10, output discarded; returns the process and the seconds until it was ready. Stop it with ``stop_process``."""
     if not scratch.scratch:
         raise ServiceError("serve runs scratch homes only; the installed service runs under systemd")
+    # Another instance on the port would answer the readiness probe in this one's place.
+    for port in (settings.port, settings.pg_port):
+        if port_open(port):
+            raise ServiceError(f"port {port} is in use; a scratch instance needs its own ports")
     prepare_runtime_directories(scratch)
     env = service_environment(scratch, runtime) | settings.environment()
     process = subprocess.Popen(["/usr/bin/taskset", "-c", "0-3", "/usr/bin/nice", "-n", "10", *api_command(runtime)], env=env, cwd=scratch.data,

@@ -23,6 +23,7 @@ from tools.memory.hindsight import (
 )
 from tools.memory.journal import Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, load_json, sha256_hex
+from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
@@ -269,6 +270,41 @@ class PublicationTests(Online):
         self.assertEqual("F-2001", self.new_finding("Invented: above the bank's highest"))
 
 
+class LegacyAllocationTests(Online):
+    """Allocation reads the legacy trees of every ref: present without IDs, absent, or a mix."""
+
+    def test_legacy_trees_without_ids(self) -> None:
+        self.put("docs/ledgers/findings.md", "| ID | claim |\n| --- | --- |\n")
+        self.put("evidence/area/001.jsonl", "")
+        commit_all(self.root)
+        self.assertEqual("F-001", self.new_finding("Invented: no legacy ID anywhere"))
+        self.put("work/case/r.txt", "bytes")
+        self.assertEqual(["M-001"], online.evidence_add(self.bank, self.root, "work/case/r.txt", "receipt", "Invented", now=self.tick()).data["ids"])
+
+    def test_legacy_trees_absent_on_every_ref(self) -> None:
+        commit_all(self.root)
+        self.assertEqual("F-001", self.new_finding("Invented: after cut-over"))
+
+    def test_a_mix_across_refs(self) -> None:
+        self.put("docs/ledgers/findings.md", "| F-130 | invented |\n")
+        commit_all(self.root)
+        _ = run_git(self.root, "branch", "old-full")
+        _ = run_git(self.root, "checkout", "-q", "-b", "old-empty")
+        self.put("docs/ledgers/findings.md", "| ID | claim |\n")
+        _ = run_git(self.root, "commit", "-qam", "emptied")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = run_git(self.root, "rm", "-rq", "docs/ledgers")
+        _ = run_git(self.root, "commit", "-qm", "cut-over")
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual("F-131", self.new_finding("Invented: above the old branch's legacy row"))
+        self.assertEqual(["U-001"], online.propose(self.bank, self.root, "unknown", changes(question="Invented?", severity="low", next_probe="Look",
+                                                                                         area="listing"), now=self.tick()).data["ids"])
+
+    def test_a_real_git_failure_still_raises(self) -> None:
+        with self.assertRaisesRegex(GitError, "git grep: exit status 128"):
+            _ = run_git_tool(self.root, "grep", "-e", "x", "no-such-tree", ok=(0, 1))
+
+
 class RevisionTests(Online):
     def segments_of(self, identifier: str) -> list[str]:
         return [item.path for item in read_tree(self.root) if any(revision.record.id == identifier for revision in item.revisions)]
@@ -503,6 +539,32 @@ class QualificationTests(Online):
 
 
 class EvidenceTests(Online):
+    def test_a_bundle_above_the_cap_is_refused_unless_members_are_waived(self) -> None:
+        bundle = {"records": [{"evidence_id": MEMBER}], "unknowns": []}
+        self.put("work/case/big-bundle.json", json.dumps(bundle))
+        size = (self.root / "work/case/big-bundle.json").stat().st_size
+        _ = self.enterContext(patch.object(online, "BUNDLE_PARSE_CAP", size - 1))
+        parsed: list[bytes] = []
+
+        def recorded(data: bytes) -> tuple[int, list[str]]:
+            parsed.append(data)
+            return 0, []
+
+        _ = self.enterContext(patch.object(online, "bundle_members", recorded))
+        with self.assertRaisesRegex(Refused, f"REA bundle of {size} bytes exceeds the {size - 1}-byte parse cap; its members would not be listed"):
+            _ = online.evidence_add(self.bank, self.root, "work/case/big-bundle.json", "rea-bundle", "Invented big bundle", now=self.tick())
+        self.assertEqual((), read_tree(self.root))
+        output = online.evidence_add(self.bank, self.root, "work/case/big-bundle.json", "rea-bundle", "Invented big bundle", without_members=True,
+                                     now=self.tick())
+        record = Record.from_json(load_json(self.doc("M-001").metadata["record"]))
+        self.assertEqual(((), None), (record.items("members"), record.number("records")))
+        self.assertEqual((f"members not listed: the bundle's {size} bytes exceed the {size - 1}-byte parse cap",), record.notes)
+        self.assertEqual([], parsed, "a bundle above the cap is never read whole")
+        self.assertEqual(0, output.status)
+        with self.assertRaisesRegex(Refused, "matches 0 listed members"):
+            _ = self.new_finding("Invented: cites a member of the unlisted bundle", cites=["M-001/ev_a1b2c3d4e5f6"])
+        self.assertEqual("verified", online.verify_record(self.root, record).outcome)
+
     def test_add_bundle_and_verify_outcomes(self) -> None:
         bundle = {"records": [{"evidence_id": MEMBER}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
         self.put("work/case/rea-bundle.json", json.dumps(bundle))
