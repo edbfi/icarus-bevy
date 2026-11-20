@@ -256,6 +256,12 @@ def parse_segment(path: str, data: bytes) -> Segment:
     return Segment(path, created, tuple(revisions))
 
 
+def segment_bytes(segment: Segment) -> bytes:
+    """The exact bytes of a parsed segment: the reader admits only the canonical form, so they are determined."""
+    header: JSON = {"created": segment.created, "format": FORMAT, "revisions": len(segment.revisions), "version": VERSION}
+    return canonical_json(header) + b"\n" + b"".join(revision.line() for revision in segment.revisions)
+
+
 def read_tree(root: Path) -> tuple[Segment, ...]:
     """Every segment in the working tree at ``root``, sorted by path; ``()`` when there is no journal."""
     base = root / JOURNAL

@@ -14,7 +14,8 @@ A backup is three files in ``$XDG_STATE_HOME/icarus-memory/backups/`` named by i
 Rotation keeps the newest complete backup of each of the 7 most recent days and of each of the 4
 most recent ISO weeks that have one; everything else in the set is removed.
 
-Seams for the journal (the online slice supplies them; the defaults mean "no journal applied"):
+Seams for the journal (the defaults mean "no journal applied"; ``watermark``, ``replay_forward`` and
+``journal_comparison`` below supply them for the commands):
 
 - ``backup(..., watermark=)``: a ``Callable[[], Watermark]`` called *before* the dump starts, so the
   watermark never claims more than the dump holds (replay is idempotent).
@@ -48,9 +49,15 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from tools.memory.bank import BankError, gather, reconcile
+from tools.memory.gitio import GitError, git
+from tools.memory.hindsight import Client, HindsightError
+from tools.memory.journal import JournalError, segment_bytes
+from tools.memory.model import sha256_hex
+from tools.memory.online import compare_bank
 from tools.memory.service import (
-    UNIT, Api, Assets, Connection, Home, ServiceError, Settings, Subcommands, api_command, argument, checked_assets,
-    document_total, ensure_settings, health, home, make_directory, objects, prepare_runtime_directories, read_settings, repository_root,
+    UNIT, Api, Assets, Connection, Home, ServiceError, Settings, Subcommands, api_command, argument, checked_assets, connection,
+    document_total, ensure_bank, ensure_settings, health, home, host_lock, make_directory, objects, prepare_runtime_directories, read_settings, repository_root,
     require_floor, run_service, service_environment, start_unit, systemctl, unit_directory, wait_ready, write_private,
 )
 
@@ -424,6 +431,25 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
             _ = process.wait(10)
 
 
+def serve(scratch: Home, settings: Settings, runtime: Assets) -> tuple[subprocess.Popen[bytes], float]:
+    """Run the API of a scratch home (never the installed service) in its own session, held to 4 cores at
+    nice 10, output discarded; returns the process and the seconds until it was ready. Stop it with ``stop_process``."""
+    if not scratch.scratch:
+        raise ServiceError("serve runs scratch homes only; the installed service runs under systemd")
+    prepare_runtime_directories(scratch)
+    env = service_environment(scratch, runtime) | settings.environment()
+    process = subprocess.Popen(["/usr/bin/taskset", "-c", "0-3", "/usr/bin/nice", "-n", "10", *api_command(runtime)], env=env, cwd=scratch.data,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        seconds = wait_ready(Api(settings.connection()), alive=lambda: process.poll() is None)
+        ensure_bank(Api(settings.connection()), settings.bank)
+    except BaseException:
+        stop_process(process)
+        stop_postgres(scratch.pg0_home, runtime)
+        raise
+    return process, seconds
+
+
 def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = no_journal,
           journal_check: Callable[[Connection, Watermark], list[str]] = no_journal_check) -> Drilled:
     """Back up the live instance, restore that backup into a scratch home on other ports, compare it read-only with the live one, remove it."""
@@ -446,12 +472,8 @@ def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = 
             restore_cluster(scratch.pg0_home, made.backup.dump, settings, runtime)
         restore_seconds = time.monotonic() - began
         prepare_runtime_directories(scratch)
-        env = service_environment(scratch, runtime) | settings.environment()
-        process = subprocess.Popen(["/usr/bin/taskset", "-c", "0-3", "/usr/bin/nice", "-n", "10", *api_command(runtime)], env=env, cwd=scratch.data,
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        running = process
+        process, ready_seconds = serve(scratch, settings, runtime)
         restored = Api(settings.connection())
-        ready_seconds = wait_ready(restored, alive=lambda: running.poll() is None)
         problems = [f"{check.name}: {check.detail}" for check in health(settings, runtime) if not check.ok]
         documents, differences = compare(live, restored)
         problems.extend(differences)
@@ -464,13 +486,80 @@ def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = 
         shutil.rmtree(root)
 
 
+# The journal side of backup, restore and drill (the seams of ``backup``, ``restore`` and ``drill``).
+
+
+def watermark(root: Path) -> Watermark:
+    """Replay first, then the journal state the bank holds: the ``origin/main`` commit and the sha256 of
+    every applied segment. Called before the dump starts, so it never claims more than the dump holds."""
+    bank = Client(connection())
+    with host_lock():
+        universe = gather(root)
+        _ = reconcile(bank, universe, bulk=True)
+    return Watermark(origin_commit(root), tuple(sorted(sha256_hex(segment_bytes(segment)) for segment in universe.segments)))
+
+
+def origin_commit(root: Path) -> str | None:
+    try:
+        return git(root, "rev-parse", "--verify", "--quiet", "origin/main^{commit}").decode().strip()
+    except GitError:
+        return None
+
+
+def watermark_problems(root: Path, mark: Watermark) -> list[str]:
+    """Why replaying this checkout's journal onto a dump with ``mark`` would move it backwards: its
+    ``origin/main`` must be the watermark's or descend from it."""
+    if mark.origin_main is None:
+        return []
+    current = origin_commit(root)
+    if current is None:
+        return [f"the backup was taken at origin/main {mark.origin_main[:12]}; this checkout has no origin/main (fetch it)"]
+    if descends_from(root, mark.origin_main, current) is not True:
+        return [f"this checkout's origin/main {current[:12]} does not contain the backup's {mark.origin_main[:12]}; fetch first"]
+    return []
+
+
+def descends_from(root: Path, ancestor: str, commit: str) -> bool | None:
+    result = subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", "--end-of-options", ancestor, commit],
+                            capture_output=True, check=False)
+    return {0: True, 1: False}.get(result.returncode)
+
+
+def replay_forward(root: Path) -> Callable[[Connection, Watermark], None]:
+    """``restore``'s seam: check the watermark, then apply this checkout's journal to the restored instance."""
+
+    def run_replay(target: Connection, mark: Watermark) -> None:
+        if problems := watermark_problems(root, mark):
+            raise ServiceError("; ".join(problems))
+        with host_lock():
+            _ = reconcile(Client(target), gather(root), bulk=True)
+
+    return run_replay
+
+
+def journal_comparison(root: Path) -> Callable[[Connection, Watermark], list[str]]:
+    """The drill's seam: on the restored scratch instance, check the watermark, replay forward, then
+    compare the bank with the journal document by document (``check --bank``)."""
+
+    def compare(target: Connection, mark: Watermark) -> list[str]:
+        if problems := watermark_problems(root, mark):
+            return problems
+        bank = Client(target)
+        with host_lock():
+            _ = reconcile(bank, gather(root), bulk=True)
+            return [f"journal: {problem}" for problem in compare_bank(bank, root).data_problems()]
+
+    return compare
+
+
 # Command line
 
 
 def run_backup(_options: argparse.Namespace) -> int:
     try:
-        made = backup(home(), checked_assets(repository_root()))
-    except (ServiceError, OSError, subprocess.TimeoutExpired) as error:
+        root = repository_root()
+        made = backup(home(), checked_assets(root), watermark=lambda: watermark(root))
+    except (ServiceError, OSError, subprocess.TimeoutExpired, HindsightError, BankError, GitError, JournalError) as error:
         print(f"memory backup: {error}", file=sys.stderr)
         return 1
     print(f"memory backup: {made.backup.dump} ({made.size} bytes, {made.seconds:.1f} s)")
@@ -485,14 +574,15 @@ def run_restore(options: argparse.Namespace) -> int:
         print("memory restore: give FILE [--replace] or --drill", file=sys.stderr)
         return 2
     try:
-        runtime = checked_assets(repository_root())
+        root = repository_root()
+        runtime = checked_assets(root)
         if isinstance(file, str):
-            done = restore(home(), runtime, Path(file), replace=replace)
+            done = restore(home(), runtime, Path(file), replace=replace, replay=replay_forward(root))
             origin = done.watermark.origin_main or "none"
             print(f"memory restore: restored {file} in {done.seconds:.1f} s; watermark origin/main {origin}, {len(done.watermark.segments)} segment(s)")
             return 0
-        drilled = drill(home(), runtime)
-    except (ServiceError, OSError, subprocess.TimeoutExpired) as error:
+        drilled = drill(home(), runtime, watermark=lambda: watermark(root), journal_check=journal_comparison(root))
+    except (ServiceError, OSError, subprocess.TimeoutExpired, HindsightError, BankError, GitError, JournalError) as error:
         print(f"memory restore: {error}", file=sys.stderr)
         return 1
     made = drilled.made

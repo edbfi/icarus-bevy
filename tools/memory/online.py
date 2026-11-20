@@ -75,6 +75,11 @@ class Output:
     lines: list[str]
     status: int = 0
 
+    def data_problems(self) -> list[str]:
+        """``data["problems"]`` as strings (``check --bank``)."""
+        found = self.data.get("problems")
+        return [item for item in found if isinstance(item, str)] if isinstance(found, list) else []
+
 
 @dataclass
 class Session:
@@ -1035,10 +1040,11 @@ def check_bank(bank: Bank, root: Path) -> Output:
     """The Instance assertions and a document-by-document comparison with the journal. Changes nothing;
     holds the host lock so a concurrent write is never reported as drift."""
     with host_lock():
-        return _check_bank(bank, root)
+        return compare_bank(bank, root)
 
 
-def _check_bank(bank: Bank, root: Path) -> Output:
+def compare_bank(bank: Bank, root: Path) -> Output:
+    """``check --bank`` without the host lock (the caller holds it)."""
     universe = gather(root)
     problems: list[str] = []
     notices: list[str] = list(universe.notices)

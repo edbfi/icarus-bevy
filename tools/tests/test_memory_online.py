@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
-from tools.memory import online, service
+from tools.memory import durability, online, service
+from tools.memory.durability import Watermark
 from tools.memory.bank import Applied, Bank, BankError, Desired, Universe, desired, gather
 from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
@@ -699,3 +700,52 @@ class ClientTests(unittest.TestCase):
             with self.assertRaisesRegex(ServiceError, "loopback") as caught:
                 _ = connection()
             self.assertNotIn(settings.key, str(caught.exception))
+
+
+class DurabilitySeamTests(Online):
+    """The journal side of backup, restore and drill, against the fake bank."""
+
+    def patched(self) -> None:
+        bank = self.bank
+
+        def client(_target: Connection) -> FakeBank:
+            return bank
+
+        _ = self.enterContext(patch.object(durability, "Client", client))
+        _ = self.enterContext(patch.object(durability, "connection", lambda: Connection("http://127.0.0.1:1", "k" * 64, "icarus")))
+
+    def test_watermark_names_origin_main_and_every_applied_segment(self) -> None:
+        self.patched()
+        self.accepted_chain()
+        _ = write(self.root, [finding("F-120", "Invented: proposed after the merge")], second=20)
+        mark = durability.watermark(self.root)
+        self.assertEqual(run_git(self.root, "rev-parse", "origin/main").strip(), mark.origin_main)
+        files = sorted(path for path in (self.root / "memory/journal").rglob("*.jsonl"))
+        self.assertEqual(sorted(sha256_hex(path.read_bytes()) for path in files), list(mark.segments))
+        self.assertIn("F-120", self.bank.held, "replay first")
+        self.assertEqual(mark, Watermark.decode(mark.encode()))
+
+    def test_restore_replays_forward_from_the_watermark_and_refuses_to_go_back(self) -> None:
+        self.patched()
+        self.accepted_chain()
+        mark = durability.watermark(self.root)
+        self.bank.held.clear()
+        _ = write(self.root, [finding("F-121", "Invented: written after the backup")], second=21)
+        commit_all(self.root, "later")
+        durability.replay_forward(self.root)(Connection("http://127.0.0.1:1", "k" * 64, "icarus"), mark)
+        self.assertIn("state:accepted", self.doc("F-121").tags)
+        self.assertEqual(0, online.check_bank(self.bank, self.root).status)
+        later = durability.watermark(self.root)
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD~1")
+        with self.assertRaisesRegex(ServiceError, "does not contain the backup's"):
+            durability.replay_forward(self.root)(Connection("http://127.0.0.1:1", "k" * 64, "icarus"), later)
+
+    def test_the_drill_compares_the_restored_bank_with_the_journal(self) -> None:
+        self.patched()
+        self.accepted_chain()
+        mark = durability.watermark(self.root)
+        check = durability.journal_comparison(self.root)
+        self.assertEqual([], check(Connection("http://127.0.0.1:1", "k" * 64, "icarus"), mark))
+        self.bank.settings["retain_chunk_size"] = 3000
+        self.assertEqual(["journal: config retain_chunk_size is 3000, expected 1800"], check(Connection("http://127.0.0.1:1", "k" * 64, "icarus"), mark))
+        self.assertIn("no origin/main", durability.watermark_problems(self.top, Watermark("a" * 40, ()))[0])
