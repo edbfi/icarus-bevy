@@ -294,13 +294,15 @@ class Legacy:
 
     ``cells`` maps each source column to its verbatim cell (a JSONL row is kept whole under ``row``).
     ``superseded_by`` holds edges the old row stated about itself (``superseded-by F-NNN``, an evidence
-    row's ``superseded_by``); ``implied_status`` (superseded, resolved or retired) is the status its
-    legacy cell implied. Replay unions both with the links of newer records.
+    row's ``superseded_by``); ``resolved_by`` the findings a resolved unknown's row names as resolving it;
+    ``implied_status`` (superseded, resolved or retired) is the status its legacy cell implied. Replay
+    unions all three with the links of newer records.
     """
 
     path: str
     cells: dict[str, str]
     superseded_by: tuple[str, ...] = ()
+    resolved_by: tuple[str, ...] = ()
     implied_status: str | None = None
 
 
@@ -373,6 +375,8 @@ class Record:
             legacy: dict[str, JSON] = {"path": self.legacy.path, "cells": dict[str, JSON](self.legacy.cells)}
             if self.legacy.superseded_by:
                 legacy["superseded_by"] = list(self.legacy.superseded_by)
+            if self.legacy.resolved_by:
+                legacy["resolved_by"] = list(self.legacy.resolved_by)
             if self.legacy.implied_status:
                 legacy["implied_status"] = self.legacy.implied_status
             result["legacy"] = legacy
@@ -546,7 +550,7 @@ def _parse(raw: dict[str, object], body: str | None) -> Record:
 
 def _legacy(reader: _Reader, value: object, spec: TypeSpec) -> Legacy:
     raw = as_mapping(value, f"{reader.identifier}: legacy")
-    if extra := sorted(raw.keys() - {"path", "cells", "superseded_by", "implied_status"}):
+    if extra := sorted(raw.keys() - {"path", "cells", "superseded_by", "resolved_by", "implied_status"}):
         reader.fail("legacy", f"unknown fields {', '.join(extra)}")
     if "path" not in raw or "cells" not in raw:
         reader.fail("legacy", "needs path and cells")
@@ -560,8 +564,15 @@ def _legacy(reader: _Reader, value: object, spec: TypeSpec) -> Legacy:
         path=reader.string("legacy.path", raw["path"]),
         cells=cells,
         superseded_by=reader.ids("legacy.superseded_by", raw["superseded_by"], (spec.prefix,)) if "superseded_by" in raw else (),
+        resolved_by=_resolvers(reader, raw["resolved_by"], spec) if "resolved_by" in raw else (),
         implied_status=reader.enum("legacy.implied_status", raw["implied_status"], IMPLIED) if "implied_status" in raw else None,
     )
+
+
+def _resolvers(reader: _Reader, value: object, spec: TypeSpec) -> tuple[str, ...]:
+    if spec.prefix not in ("U", "SL", "RP"):
+        reader.fail("legacy.resolved_by", "only an unknown, lead or report is resolved")
+    return reader.ids("legacy.resolved_by", value, ("F",))
 
 
 def _scope(reader: _Reader, value: object) -> Scope:

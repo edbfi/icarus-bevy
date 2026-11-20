@@ -118,7 +118,7 @@ def entities(record: Record) -> tuple[str, ...]:
     """Sorted entities: linked IDs and selectors, builds, and identifiers in code spans of the text."""
     found = {*record.links.targets(), *(cite for cite in record.links.citations() if "/" in cite)}
     if record.legacy is not None:
-        found.update(record.legacy.superseded_by)
+        found.update(record.legacy.superseded_by, record.legacy.resolved_by)
     if record.scope is not None:
         found.update(record.scope.builds)
     found.update(item.build for item in record.links.verified_on)

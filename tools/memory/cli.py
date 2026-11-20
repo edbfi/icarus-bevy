@@ -14,13 +14,14 @@ import argparse
 import json
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from tools.memory.canonical import render_text
 from tools.memory.check import run_check
 from tools.memory.gitio import GitError, descends, git
 from tools.memory.journal import JournalError, read_git, read_tree
+from tools.memory.migrate import register as register_migration
 from tools.memory.model import JSON, RecordError, as_mapping
 from tools.memory.paths import ProtectedPathsError, protected_paths
 from tools.memory.state import Entry, State, partition, replay
@@ -38,6 +39,8 @@ class Options(argparse.Namespace):
     json: bool = False
     ci: bool = False
     base: str = ACCEPTANCE_REF
+    # Set by a subcommand that another module registers; ``main`` hands it the parsed options.
+    handler: Callable[[argparse.Namespace], int] | None = None
 
 
 def parse_options(argv: Sequence[str] | None) -> Options:
@@ -52,6 +55,7 @@ def parse_options(argv: Sequence[str] | None) -> Options:
     _ = check.add_argument("--ci", action="store_true", help="the checks that need no service")
     _ = check.add_argument("--base", default=ACCEPTANCE_REF, help=f"accepted tree-ish (default {ACCEPTANCE_REF})")
     _ = commands.add_parser("protected-paths", help="paths scratch cleanup must keep; fails closed")
+    register_migration(commands)
     options = Options()
     _ = parser.parse_args(argv, namespace=options)
     return options
@@ -153,6 +157,8 @@ def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = parse_options(argv)
+    if options.handler is not None:
+        return options.handler(options)
     if options.command == "protected-paths":
         try:
             result = protected_paths(Path.cwd())

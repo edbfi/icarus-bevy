@@ -8,7 +8,7 @@ cycle). Two heads are a fork, shown as ``conflict`` until a reconciling revision
 
 Links are stored once, on the newer record; ``State`` derives the inverses from every head:
 ``superseded_by`` (``supersedes`` edges, unioned with what a migrated record's legacy row stated
-about itself) and ``resolved_by``. ``State.status`` is the derived status: ``superseded``,
+about itself) and ``resolved_by`` (``resolves`` edges, unioned likewise). ``State.status`` is the derived status: ``superseded``,
 ``resolved``, a migrated record's implied ``retired``, else the stored status.
 """
 
@@ -148,6 +148,7 @@ class State:
                 named += [("refs", target) for target in record.links.refs]
                 if record.legacy is not None:
                     named += [("legacy.superseded_by", target) for target in record.legacy.superseded_by]
+                    named += [("legacy.resolved_by", target) for target in record.legacy.resolved_by]
                 problems.extend(f"{identifier}: {name}: no record {target}" for name, target in named if target not in self.entries)
                 for citation in record.links.citations():
                     if (problem := self.resolve(citation).problem) is not None:
@@ -213,6 +214,7 @@ def replay(segments: Iterable[Segment]) -> State:
                 resolved_by[target].add(identifier)
             if record.legacy is not None:
                 superseded_by[identifier].update(record.legacy.superseded_by)
+                resolved_by[identifier].update(record.legacy.resolved_by)
     return State(
         entries,
         {key: tuple(sorted(value, key=id_key)) for key, value in sorted(superseded_by.items())},
