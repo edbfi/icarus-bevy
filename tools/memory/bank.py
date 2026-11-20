@@ -10,10 +10,11 @@ de-duplicated by name.
 ``desired(universe)`` maps every document the bank should hold to its retain item, per the rules'
 Storage section. Over the union replay, for each record ID:
 
-- some revision accepted (its sha256 is in an ``origin/main`` segment, compared by content so squash
-  merges count): ``<ID>`` holds the head of the accepted revisions, ``state:accepted`` (``conflict``
-  when ``origin/main`` itself has two heads), and every union head that is not accepted is a pending
-  revision ``<ID>@<12 hex>``, ``state:pending``;
+- some revision accepted (the revision is in an ``origin/main`` segment; segments are content-named and
+  revisions content-addressed, so squash merges count): ``<ID>`` holds the head of the accepted
+  revisions, ``state:accepted`` (``conflict`` when ``origin/main`` itself has two heads), and every
+  union head that is not accepted is a pending revision ``<ID>@<12 hex>`` (the first 12 hex of the
+  revision's identity, the key of ``Entry.revisions``), ``state:pending``;
 - none accepted: ``<ID>`` holds the union head, ``state:proposed`` (``conflict`` on a fork).
 
 Tags carry the *derived* status, and the text renders it, so superseding or resolving a record

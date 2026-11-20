@@ -650,6 +650,9 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             })
             block = [f"{item.identifier} [{target.state}, {target.status}; {phrase}]" + ("" if verified else " (differs from the journal)"),
                      *(f"  {line}" for line in target.item.content.split("\n"))]
+            derived = [f"  {label}: {', '.join(names)}" for label, names in (
+                ("superseded by", state.superseded_by.get(item.identifier, ())), ("resolved by", state.resolved_by.get(item.identifier, ()))) if names]
+            block += derived
             block += [f"  retired under it: {line}" for _, line in retired]
             block += [f"  link: {line}" for _, line in linked]
             texts[name].append("\n".join(block))
