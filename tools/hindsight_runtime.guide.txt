@@ -11,14 +11,15 @@ Local runtime
 From any linked checkout, use tools/hindsight_runtime install once. The
 launcher shares a Python 3.14 environment, the pg0 PostgreSQL installation and
 pinned public CPU ONNX snapshots in the primary checkout's
-work/hindsight-runtime/. The wheel-only lock pins one SHA-256-verified PyPI wheel per dependency for
-hindsight-api-slim[local-onnx,embedded-db]==1.2.3. It supports Linux x86_64,
-glibc 2.35 or later and CPython at /usr/bin/python3.14. Use uv to install.
+work/hindsight-runtime/. The lock pins hindsight-api-slim[local-onnx,embedded-db]
+at 1.2.3 and records one SHA-256-verified PyPI wheel per dependency. It supports
+Linux x86_64, glibc 2.35 or later and CPython at /usr/bin/python3.14. Use uv
+to install.
 Run install again when the wheel lock changes. For an explicit alternate
 asset root under the primary checkout's work/, create an owner-only
 directory and use ICARUS_HINDSIGHT_ASSETS_ROOT with both install and serve.
-The launcher verifies the selected environment before starting it. The host needs Bash, Git, curl, jq,
-OpenSSL and the standard Linux utilities used by the launcher. Run
+The launcher verifies the selected environment before starting it. The host
+needs Bash, Git, curl, jq, OpenSSL and standard Linux utilities. Run
 bash tools/storage_report.sh before the first install. Installation and
 service use stop above the repository's 30 GiB floor, at a 31 GiB tripwire.
 
