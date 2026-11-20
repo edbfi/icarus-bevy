@@ -9,13 +9,14 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import NamedTuple, override
+from typing import NamedTuple, cast, override
 from unittest.mock import patch
 
 from tools.memory import durability
@@ -361,6 +362,17 @@ class RestoreRollback(Backups):
                 self.assertTrue((installed.data / "pg0.restoring/restored").is_file(), "the restored one is kept in staging")
                 self.assertEqual(("start", UNIT), calls[-1], "the old unit is started again")
         self.assertEqual(settings.bank, "icarus")
+
+
+class Serve(Scratch):
+    def test_a_scratch_instance_refuses_a_port_in_use(self) -> None:
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = cast(tuple[str, int], taken.getsockname())[1]
+            settings = ensure_settings(self.where, port=port, pg_port=PG_PORT + 1000 if port != PG_PORT + 1000 else PG_PORT + 1001)
+            with self.assertRaisesRegex(ServiceError, f"port {port} is in use"):
+                _ = durability.serve(self.where, settings, Assets(self.root / "runtime"))
 
 
 class FakeBank:

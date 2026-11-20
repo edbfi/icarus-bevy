@@ -440,6 +440,10 @@ def serve(scratch: Home, settings: Settings, runtime: Assets) -> tuple[subproces
     nice 10, output discarded; returns the process and the seconds until it was ready. Stop it with ``stop_process``."""
     if not scratch.scratch:
         raise ServiceError("serve runs scratch homes only; the installed service runs under systemd")
+    # Another instance on the port would answer the readiness probe in this one's place.
+    for port in (settings.port, settings.pg_port):
+        if port_open(port):
+            raise ServiceError(f"port {port} is in use; a scratch instance needs its own ports")
     prepare_runtime_directories(scratch)
     env = service_environment(scratch, runtime) | settings.environment()
     process = subprocess.Popen(["/usr/bin/taskset", "-c", "0-3", "/usr/bin/nice", "-n", "10", *api_command(runtime)], env=env, cwd=scratch.data,
