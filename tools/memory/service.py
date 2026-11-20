@@ -441,7 +441,7 @@ PYTHON_VARIABLE = "ICARUS_MEMORY_PYTHON"
 # The backup runs the tool from the primary checkout; when that checkout's tool predates ``backup``, say so.
 BACKUP_SCRIPT = (
     'if "$ICARUS_MEMORY_PYTHON" -m tools.memory backup --help >/dev/null 2>&1; then exec "$ICARUS_MEMORY_PYTHON" -m tools.memory backup; fi; '
-    'echo "memory backup: the memory tool in the primary checkout $PWD has no backup command yet; pull main there. No backup was made." >&2; '
+    'echo "memory backup: could not run the backup command of the memory tool in the primary checkout $PWD; it may predate the command (pull main there) or fail to start. No backup was made." >&2; '
     "exit 1"
 )
 

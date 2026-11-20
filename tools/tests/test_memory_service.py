@@ -27,7 +27,7 @@ from tools.memory.hindsight import HindsightError
 from tools.memory.journal import JournalError
 from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compare, restore, retained, rotate, verify
 from tools.memory.service import (
-    API_PORT, BACKUP_SCRIPT, Api, Connection, BACKUP_TIMER, BACKUP_UNIT, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
+    API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, Api, Connection, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
     backup_interpreter, connection, ensure_settings, feature_problems, home, install, installed_interpreter, parse_settings, read_settings, render_settings, require_floor, unit_files,
     unit_word,
 )
@@ -146,8 +146,8 @@ class Units(Scratch):
         environment = {"PATH": "/usr/bin:/bin", "ICARUS_MEMORY_PYTHON": str(older)}
         result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual(1, result.returncode)
-        self.assertEqual(f"memory backup: the memory tool in the primary checkout {primary} has no backup command yet; pull main there. " +
-                         "No backup was made.\n", result.stderr)
+        self.assertEqual(f"memory backup: could not run the backup command of the memory tool in the primary checkout {primary}; " +
+                         "it may predate the command (pull main there) or fail to start. No backup was made.\n", result.stderr)
         environment["ICARUS_MEMORY_PYTHON"] = str(current)
         result = subprocess.run(["/bin/sh", "-c", BACKUP_SCRIPT], cwd=primary, env=environment, capture_output=True, text=True, check=False)
         self.assertEqual((0, "-m tools.memory backup\n"), (result.returncode, result.stdout))
