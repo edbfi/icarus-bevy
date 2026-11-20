@@ -12,7 +12,9 @@ Invariants of every parsed ``Record``:
 - A record is *migrated* exactly when ``legacy`` is set. Only a migrated record may carry
   ``legacy:<verbatim>`` enum values, ``gaps``, ``assigned_at_migration`` (required on migrated CP and RP
   records, forbidden elsewhere), a ``legacy-text`` scope basis or an ``any:<id>`` build.
-- Every required field is present, or, on a migrated record only, named in ``gaps``.
+- Every required field is present, or, on a migrated record only, named in ``gaps``. A gap is a field
+  name or ``scope.<part>``, optionally followed by ``: <detail>`` (``scope.commit: several commits in
+  row (a, b)``); the field it names is absent.
 - Strings are NFC, carry no control character other than TAB and LF, and are non-empty. Field values
   are single trimmed lines; only a REF ``body`` and verbatim ``legacy`` cells may span lines.
 - No ``null``, no ``false`` flag and no empty list is ever stored: absent means omitted.
@@ -76,6 +78,7 @@ EVIDENCE_KINDS = ("receipt", "rea-bundle", "report", "review", "revision", "inpu
 OUTCOMES = ("pass", "fail", "aborted")
 SUBJECTS = ("original-server", "original-client", "native", "decision", "private-input", "tooling")
 BASES = ("explicit", "legacy-text")
+SCOPE_PARTS = ("subjects", "builds", "releases", "commit")
 IMPLIED = ("superseded", "resolved", "retired")
 DECISION_FIELDS = ("instruction", "instruction_date", "instruction_source")
 
@@ -294,13 +297,15 @@ class Legacy:
 
     ``cells`` maps each source column to its verbatim cell (a JSONL row is kept whole under ``row``).
     ``superseded_by`` holds edges the old row stated about itself (``superseded-by F-NNN``, an evidence
-    row's ``superseded_by``); ``implied_status`` (superseded, resolved or retired) is the status its
-    legacy cell implied. Replay unions both with the links of newer records.
+    row's ``superseded_by``); ``resolved_by`` the findings a resolved unknown's row names as resolving it;
+    ``implied_status`` (superseded, resolved or retired) is the status its legacy cell implied. Replay
+    unions all three with the links of newer records.
     """
 
     path: str
     cells: dict[str, str]
     superseded_by: tuple[str, ...] = ()
+    resolved_by: tuple[str, ...] = ()
     implied_status: str | None = None
 
 
@@ -373,6 +378,8 @@ class Record:
             legacy: dict[str, JSON] = {"path": self.legacy.path, "cells": dict[str, JSON](self.legacy.cells)}
             if self.legacy.superseded_by:
                 legacy["superseded_by"] = list(self.legacy.superseded_by)
+            if self.legacy.resolved_by:
+                legacy["resolved_by"] = list(self.legacy.resolved_by)
             if self.legacy.implied_status:
                 legacy["implied_status"] = self.legacy.implied_status
             result["legacy"] = legacy
@@ -546,7 +553,7 @@ def _parse(raw: dict[str, object], body: str | None) -> Record:
 
 def _legacy(reader: _Reader, value: object, spec: TypeSpec) -> Legacy:
     raw = as_mapping(value, f"{reader.identifier}: legacy")
-    if extra := sorted(raw.keys() - {"path", "cells", "superseded_by", "implied_status"}):
+    if extra := sorted(raw.keys() - {"path", "cells", "superseded_by", "resolved_by", "implied_status"}):
         reader.fail("legacy", f"unknown fields {', '.join(extra)}")
     if "path" not in raw or "cells" not in raw:
         reader.fail("legacy", "needs path and cells")
@@ -560,8 +567,15 @@ def _legacy(reader: _Reader, value: object, spec: TypeSpec) -> Legacy:
         path=reader.string("legacy.path", raw["path"]),
         cells=cells,
         superseded_by=reader.ids("legacy.superseded_by", raw["superseded_by"], (spec.prefix,)) if "superseded_by" in raw else (),
+        resolved_by=_resolvers(reader, raw["resolved_by"], spec) if "resolved_by" in raw else (),
         implied_status=reader.enum("legacy.implied_status", raw["implied_status"], IMPLIED) if "implied_status" in raw else None,
     )
+
+
+def _resolvers(reader: _Reader, value: object, spec: TypeSpec) -> tuple[str, ...]:
+    if spec.prefix not in ("U", "SL", "RP"):
+        reader.fail("legacy.resolved_by", "only an unknown, lead or report is resolved")
+    return reader.ids("legacy.resolved_by", value, ("F",))
 
 
 def _scope(reader: _Reader, value: object) -> Scope:
@@ -606,14 +620,16 @@ def _validate(reader: _Reader, record: Record) -> None:
     spec, migrated = record.spec, record.migrated
     known = {*spec.fields, "scope", "refs", "body", "supersedes", "resolves", "cites", "verified_on", "notes"}
     for gap in record.gaps:
+        name = gap_field(gap)
         if not migrated:
             reader.fail("gaps", "only a migrated record lists gaps")
-        if gap not in known:
+        if name not in known and not (name.startswith("scope.") and name[6:] in SCOPE_PARTS):
             reader.fail("gaps", f"{gap!r} is not a field of a {record.type}")
-        if _present(record, gap):
+        if _present(record, name):
             reader.fail("gaps", f"{gap!r} is listed as missing but present")
+    missing = {gap_field(gap) for gap in record.gaps}
     for name in spec.required:
-        if not _present(record, name) and name not in record.gaps:
+        if not _present(record, name) and name not in missing:
             reader.fail(name, "required field missing" + (" (list it in gaps if the legacy row lacks it)" if migrated else ""))
     if record.assigned_at_migration != (migrated and record.type in ("compatibility", "report")):
         reader.fail("assigned_at_migration", "is set exactly on migrated CP and RP records")
@@ -642,7 +658,18 @@ def _validate(reader: _Reader, record: Record) -> None:
             reader.fail("run", "present exactly on run evidence")
 
 
+def gap_field(gap: str) -> str:
+    """The field a gap names: ``<field>``, ``scope.<part>``, either optionally followed by ``: <detail>``."""
+    return gap.split(":", 1)[0]
+
+
 def _present(record: Record, name: str) -> bool:
+    if name.startswith("scope."):
+        scope = record.scope
+        if scope is None:
+            return False
+        part = name.removeprefix("scope.")
+        return bool(scope.commit) if part == "commit" else bool({"subjects": scope.subjects, "builds": scope.builds, "releases": scope.releases}.get(part))
     match name:
         case "scope":
             return record.scope is not None

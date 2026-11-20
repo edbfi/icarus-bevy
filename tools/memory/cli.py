@@ -26,6 +26,7 @@ from tools.memory.check import run_check
 from tools.memory import durability, mcp, online
 from tools.memory.gitio import GitError, descends, git
 from tools.memory.journal import JournalError, read_git, read_tree
+from tools.memory.migrate import register as register_migration
 from tools.memory.model import JSON, RecordError
 from tools.memory.paths import ProtectedPathsError, protected_paths
 from tools.memory.state import RELEASE_CONFIG, Entry, State, partition, pinned_build, replay
@@ -71,6 +72,7 @@ def parser() -> argparse.ArgumentParser:
     online.register(commands)
     durability.register(commands)
     mcp.register(commands)
+    register_migration(commands)
     return top
 
 
