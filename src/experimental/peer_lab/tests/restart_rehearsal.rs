@@ -221,7 +221,7 @@ impl Inputs {
                 quoted(&binding)
             );
         }
-        let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/release.toml");
+        let release = ReleaseProfile::fixture_path("3.0.36");
         // An ephemeral loopback game port, released for the server to bind;
         // the hosting query port is validated but never bound here.
         let port = UdpSocket::bind("127.0.0.1:0")

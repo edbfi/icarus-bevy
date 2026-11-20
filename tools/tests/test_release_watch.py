@@ -260,9 +260,13 @@ class ReleaseWatchTests(unittest.TestCase):
     def test_pin_refuses_a_rewrite_it_cannot_verify(self) -> None:
         tracked = TRACKED.read_text()
         before = _toml(tracked)
-        values = release_values(7, "9.9.9.1-rel-Test", 26613688)
+        old_build = integer_field(json_object(before["release"]), "build_id")
+        values = release_values(7, "9.9.9.1-rel-Test", old_build)
         verify_rewrite(before, rewrite_release(tracked, values), values)
-        changed = tracked.replace("ini_tag_count = 1929", "ini_tag_count = 1930")
+        ini_tag_count = integer_field(json_object(before["tags"]), "ini_tag_count")
+        changed = tracked.replace(
+            f"ini_tag_count = {ini_tag_count}", f"ini_tag_count = {ini_tag_count + 1}", 1
+        )
         partial = _without_table(tracked, "row_handles")
         cases: dict[str, tuple[JsonObject, str, JsonObject, str]] = {
             "other table changed": (before, rewrite_release(changed, values), values, "other than"),
