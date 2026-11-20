@@ -164,6 +164,12 @@ repos:
         language: system
         pass_filenames: false
         files: (\.md$|^evidence/|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
+      - id: evidence-catalog
+        name: Check evidence catalog authority and generated views
+        entry: python3 -m tools.evidence_catalog check
+        language: system
+        pass_filenames: false
+        files: ^(docs/ledgers/|evidence/|evidence-catalog/|tools/evidence_catalog.*\.py$)
       - id: cargo-fmt
         name: Check Rust formatting
         entry: cargo fmt --all -- --check
