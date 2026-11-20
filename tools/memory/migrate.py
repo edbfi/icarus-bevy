@@ -26,6 +26,7 @@ from tools.memory.journal import JournalError, split_change_set, write_change_se
 from tools.memory.legacy import commit_time, export, write
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import RecordError, id_key
+from tools.memory.paths import ProtectedPathsError
 
 
 
@@ -99,7 +100,7 @@ def run_parity(options: argparse.Namespace) -> int:
     try:
         started = time.monotonic()
         result = parity(repository_root(), text_option(options, "rev"), journal or Path())
-    except (CatalogError, GitError, JournalError, MigrationError, RecordError, OSError) as error:
+    except (CatalogError, GitError, JournalError, MigrationError, ProtectedPathsError, RecordError, OSError) as error:
         print(f"memory parity: {error}", file=sys.stderr)
         return 1
     for mismatch in result.mismatches:

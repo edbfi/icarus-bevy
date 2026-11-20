@@ -14,9 +14,13 @@ the server app in a release profile.
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
@@ -27,7 +31,9 @@ from tools.memory.legacy_rules import extract, standing
 from tools.memory.legacy_prose import account
 from tools.memory.legacy_report import inbound, render, residue
 from tools.memory.model import JSON, Legacy, Record, RecordError
+from tools.memory import migrate
 from tools.memory.parity import parity
+from tools.memory.paths import ProtectedPathsError
 from tools.memory.salvage import salvage
 from tools.memory.state import partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
@@ -490,6 +496,14 @@ class ParityTests(LegacyRepository):
         self.assertIn("F-102: claim", mismatches)
         self.assertIn("U-102: links", mismatches)
         self.assertIn("M-102: path", mismatches)
+
+    def test_an_unreadable_manifest_is_a_reported_failure_not_a_traceback(self) -> None:
+        options = argparse.Namespace(rev="HEAD", journal=self.top / "journal")
+        stderr = io.StringIO()
+        with (mock.patch("tools.memory.parity.parity", side_effect=ProtectedPathsError("M-101: unreadable sha256 manifest work/x/fixity.sha256")),
+              mock.patch("tools.memory.migrate.repository_root", return_value=self.root), contextlib.redirect_stderr(stderr)):
+            self.assertEqual(migrate.run_parity(options), 1)
+        self.assertIn("memory parity: M-101: unreadable sha256 manifest", stderr.getvalue())
 
 
 class SalvageTests(LegacyRepository):
