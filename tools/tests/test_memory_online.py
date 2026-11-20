@@ -22,7 +22,7 @@ from tools.memory.hindsight import (
 )
 from tools.memory.journal import Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, load_json, sha256_hex
-from tools.memory.online import Changes, Refused
+from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
     CREATED, MEMBER, NEW_CLIENT, NEW_SERVER, OTHER_MEMBER, chain, clean_git_environment, commit_all, evidence, finding, new_repository,
@@ -208,7 +208,8 @@ class PublicationTests(Online):
         self.assertEqual(
             ("area:listing", "basis:explicit", f"build:server:{NEW_SERVER}", "id:F-107", f"seg:{stem}", "state:proposed", "status:active",
              "subject:original-server", "type:finding"), document.tags)
-        self.assertEqual({"record", "sha256", "prev", "segment"}, set(document.metadata))
+        self.assertEqual({"record", "sha256", "rev", "prev", "segment"}, set(document.metadata))
+        self.assertEqual(read_tree(self.root)[-1].revisions[0].rev, document.metadata["rev"])
         self.assertEqual(sha256_hex(document.metadata["record"].encode()), document.metadata["sha256"])
         self.assertEqual("2026-11-20T00:00:00Z", document.event_date)
         self.assertIn("M-102", document.entities)
@@ -266,19 +267,95 @@ class PublicationTests(Online):
 
 
 class RevisionTests(Online):
-    def test_supersede_refreshes_the_old_document_without_revising_it(self) -> None:
+    def segments_of(self, identifier: str) -> list[str]:
+        return [item.path for item in read_tree(self.root) if any(revision.record.id == identifier for revision in item.revisions)]
+
+    def test_supersede_by_a_proposal_regenerates_it_and_flips_nothing_until_accepted(self) -> None:
         self.accepted_chain()
         new = self.new_finding("Invented: the lock follows the account, not the key")
-        before = sum(len(item.revisions) for item in read_tree(self.root) if any(revision.record.id == "F-106" for revision in item.revisions))
-        _ = online.supersede(self.bank, self.root, "F-106", new, now=self.tick())
-        after = sum(len(item.revisions) for item in read_tree(self.root) if any(revision.record.id == "F-106" for revision in item.revisions))
-        self.assertEqual(before, after)
+        before_old, before_new = self.segments_of("F-106"), self.segments_of(new)
+        output = online.supersede(self.bank, self.root, "F-106", new, now=self.tick())
+        self.assertEqual(before_old, self.segments_of("F-106"), "the old record gets no revision")
+        after_new = self.segments_of(new)
+        self.assertEqual(1, len(after_new))
+        self.assertNotEqual(before_new, after_new, "the never-accepted proposal's segment is regenerated")
+        self.assertFalse((self.root / before_new[0]).exists())
+        self.assertEqual(after_new[0], output.data["regenerated"] and self.doc(new).metadata["segment"])
+        regenerated = next(segment for segment in read_tree(self.root) if segment.path == after_new[0])
+        self.assertEqual(((), ("F-106",)), (regenerated.revisions[0].prev, regenerated.revisions[0].record.links.supersedes))
+        old = self.doc("F-106")
+        self.assertIn("status:active", old.tags, "a proposal never flips an accepted record in the bank")
+        self.assertTrue(old.text is not None and old.text.startswith("F-106 finding active\n"))
+        got = online.get(self.bank, self.root, "F-106")
+        self.assertEqual("active", got.data["status"])
+        self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", got.lines)
+        commit_all(self.root, "merge the superseder")
+        _ = online.status(self.bank, self.root)
         old = self.doc("F-106")
         self.assertIn("status:superseded", old.tags)
         self.assertTrue(old.text is not None and old.text.startswith("F-106 finding superseded\n"))
         self.assertIn('"status":"active"', old.metadata["record"])
-        with self.assertRaisesRegex(Refused, "is accepted"):
-            _ = online.supersede(self.bank, self.root, "F-104", "F-106", now=self.tick())
+        self.assertNotIn("proposed superseder", "\n".join(online.get(self.bank, self.root, "F-106").lines))
+        with self.assertRaisesRegex(Refused, "only a finding"):
+            _ = online.resolve(self.bank, self.root, "U-101", "U-101", now=self.tick())
+
+    def test_an_accepted_record_gains_a_link_by_an_appended_revision(self) -> None:
+        self.accepted_chain()
+        _ = online.supersede(self.bank, self.root, "F-104", "F-106", now=self.tick())
+        self.assertEqual(2, len(self.segments_of("F-106")), "accepted: the link is a new, pending revision")
+        pending = [name for name in self.bank.held if name.startswith("F-106@")]
+        self.assertEqual(1, len(pending))
+        self.assertIn("status:active", self.doc("F-104").tags)
+        self.assertIn("proposed superseder: F-106 (proposed, this worktree)", online.get(self.bank, self.root, "F-104").lines)
+        with self.assertRaisesRegex(Refused, "cites changed; it is not revisable"):
+            _ = online.revise(self.bank, self.root, "F-106", changes(cites=["M-101"]), now=self.tick())
+        commit_all(self.root, "merge the link")
+        _ = online.status(self.bank, self.root)
+        self.assertIn("status:superseded", self.doc("F-104").tags)
+        self.assertNotIn(pending[0], self.bank.held)
+
+    def test_a_proposal_shared_with_another_ref_gets_a_revision_not_a_regeneration(self) -> None:
+        self.accepted_chain()
+        new = self.new_finding("Invented: pushed before it was linked")
+        commit_all(self.root, "pushed")
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/feature", "HEAD")
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD~1")
+        before = self.segments_of(new)
+        output = online.supersede(self.bank, self.root, "F-106", new, now=self.tick())
+        self.assertNotIn("regenerated", output.data)
+        self.assertEqual(2, len(self.segments_of(new)))
+        self.assertTrue(all((self.root / path).exists() for path in before))
+
+    def test_an_interrupted_regeneration_is_finished_by_the_next_command(self) -> None:
+        self.accepted_chain()
+        new = self.new_finding("Invented: regenerated while killed")
+        old_path = self.segments_of(new)[0]
+        with patch.object(online, "remove_segment", side_effect=OSError("killed")), self.assertRaises(OSError):
+            _ = online.supersede(self.bank, self.root, "F-106", new, now=self.tick())
+        self.assertEqual(2, len(self.segments_of(new)))
+        _ = online.status(self.bank, self.root)
+        self.assertEqual(1, len(self.segments_of(new)))
+        self.assertFalse((self.root / old_path).exists())
+        self.assertIn("F-106", Record.from_json(load_json(self.doc(new).metadata["record"])).links.supersedes)
+
+    def test_worktree_proposals_never_show_in_another_worktree(self) -> None:
+        self.accepted_chain()
+        other = self.top / "other"
+        _ = run_git(self.root, "worktree", "add", "-q", "-b", "elsewhere", str(other))
+        new = self.new_finding("Invented: the lock follows the account after all")
+        _ = online.supersede(self.bank, self.root, "F-106", new, now=self.tick())
+        from_b = online.get(self.bank, other, "F-106")
+        self.assertEqual("active", from_b.data["status"])
+        self.assertNotIn("proposed", "\n".join(from_b.lines))
+        recall_b = "\n".join(online.recall(self.bank, other, "lock follows the key re-read").lines)
+        self.assertIn("F-106 [accepted, active;", recall_b)
+        self.assertNotIn(new, recall_b)
+        everything = online.get(self.bank, other, "F-106", all_proposals=True)
+        self.assertIn(f"proposed superseder: {new} (proposed, another worktree or branch)", everything.lines)
+        from_a = "\n".join(online.recall(self.bank, self.root, "lock follows the key re-read").lines)
+        self.assertIn("F-106 [accepted, active;", from_a)
+        self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", from_a)
+        self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", online.get(self.bank, self.root, "F-106").lines)
 
     def test_resolve_on_a_different_release(self) -> None:
         self.accepted_chain()
@@ -286,19 +363,24 @@ class RevisionTests(Online):
                                                                       next_probe="Diff the invented handlers", area="listing"), now=self.tick())
         fixer = self.new_finding("Invented: build two drops the lock", scope={"basis": "explicit", "subjects": ["original-server"],
                                                                               "builds": [f"server:{NEW_SERVER}", f"client:{NEW_CLIENT}"]})
-        _ = online.resolve(self.bank, self.root, "U-102", fixer, now=self.tick())
-        self.assertIn("status:resolved", self.doc("U-102").tags)
+        output = online.resolve(self.bank, self.root, "U-102", fixer, now=self.tick())
+        self.assertIn("regenerated", output.data)
+        self.assertIn("status:open", self.doc("U-102").tags)
         got = online.get(self.bank, self.root, "U-102")
         self.assertEqual(0, got.status)
-        self.assertEqual([fixer], got.data["resolved_by"])
+        self.assertIn(f"proposed resolver: {fixer} (proposed, this worktree)", got.lines)
+        commit_all(self.root, "merge the resolution")
+        _ = online.status(self.bank, self.root)
+        self.assertIn("status:resolved", self.doc("U-102").tags)
+        self.assertEqual([fixer], online.get(self.bank, self.root, "U-102").data["resolved_by"])
         with self.assertRaisesRegex(Refused, "only a finding"):
             _ = online.resolve(self.bank, self.root, "U-102", "U-101", now=self.tick())
 
     def test_revise_allow_list_pending_and_acceptance(self) -> None:
         self.accepted_chain()
-        with self.assertRaisesRegex(Refused, "claim is not revisable"):
+        with self.assertRaisesRegex(Refused, "claim changed; it is not revisable"):
             _ = online.revise(self.bank, self.root, "F-104", changes(claim="Invented: changed"), now=self.tick())
-        with self.assertRaisesRegex(Refused, "label is not revisable"):
+        with self.assertRaisesRegex(Refused, "label changed; it is not revisable"):
             _ = online.revise(self.bank, self.root, "M-102", changes(label="Changed"), now=self.tick())
         with self.assertRaisesRegex(Refused, "appends a note"):
             _ = online.revise(self.bank, self.root, "M-102", changes(status="retired"), now=self.tick())
@@ -329,14 +411,92 @@ class RevisionTests(Online):
         commit_all(self.root, "both PRs merged")
         _ = online.status(self.bank, self.root)
         self.assertIn("state:conflict", self.doc("U-101").tags)
-        output = online.revise(self.bank, self.root, "U-101", Changes({"status": "investigating"}, note="Reconciled"), now=self.tick())
+        output = online.revise(self.bank, self.root, "U-101", Changes({"status": "investigating"}), now=self.tick())
         merged = next(item for segment in read_tree(self.root) for item in segment.revisions
                       if item.record.id == "U-101" and len(item.prev) == 2)
         self.assertEqual(sorted([one.rev, two.rev]), list(merged.prev))
+        self.assertEqual((one.record, one.sha256), (merged.record, merged.sha256), "identical in content to one head")
+        self.assertNotEqual(one.rev, merged.rev)
         self.assertEqual(0, output.status)
+        self.assertEqual(merged.rev, self.doc(f"U-101@{merged.rev[:12]}").metadata["rev"])
         commit_all(self.root, "reconciled")
         _ = online.status(self.bank, self.root)
         self.assertIn("state:accepted", self.doc("U-101").tags)
+
+
+class QualificationTests(Online):
+    """CP proofs (rules, "Qualification"), enforced by ``propose`` and ``revise``."""
+
+    def compatibility(self, status: str, scope: JSON, **links: JSON) -> Output:
+        values: dict[str, JSON | None] = {"name": "Invented: listing round trip", "qualifier": "invented qualifier",
+                                          "required_proof": "an invented run", "scope": scope, "status": status, **links}
+        return online.propose(self.bank, self.root, "compatibility", Changes(values), now=self.tick())
+
+    def run_evidence(self, name: str, *, outcome: str = "pass", environment: str = "two hosts", targets: list[JSON] | None = None) -> str:
+        self.put(f"work/case/{name}.txt", f"invented run {name}")
+        run: dict[str, JSON] = {
+            "workload": "invented listing", "targets": targets or [f"server:{NEW_SERVER}", f"client:{NEW_CLIENT}"],
+            "matched_reference": "invented reference", "identities": ["invented identity"], "start": "2026-11-20T10:00:00Z",
+            "end": "2026-11-20T10:05:00Z", "environment": environment, "thresholds": ["invented threshold"], "outcome": outcome,
+        }
+        output = online.evidence_add(self.bank, self.root, f"work/case/{name}.txt", "run", f"Invented run {name}", run=run, now=self.tick())
+        ids = output.data["ids"]
+        assert isinstance(ids, list) and isinstance(ids[0], str)
+        return ids[0]
+
+    def test_specified_needs_accepted_active_findings_in_scope(self) -> None:
+        self.accepted_chain()
+        scope: JSON = {"basis": "explicit", "subjects": ["original-server"], "builds": [f"server:{NEW_SERVER}"]}
+        with self.assertRaisesRegex(Refused, "specified needs refs naming the accepted findings"):
+            _ = self.compatibility("specified", scope)
+        with self.assertRaisesRegex(Refused, "specified needs accepted active findings; F-101 is superseded"):
+            _ = self.compatibility("specified", scope, refs=["F-101"])
+        proposal = self.new_finding("Invented: not yet accepted")
+        with self.assertRaisesRegex(Refused, f"{proposal} is not accepted"):
+            _ = self.compatibility("specified", scope, refs=[proposal])
+        with self.assertRaisesRegex(Refused, "F-106 is scoped to server:90000001"):
+            _ = self.compatibility("specified", scope, refs=["F-106"])
+        self.assertEqual(0, self.compatibility("specified", scope, refs=["F-103"]).status)
+
+    def test_implemented_needs_a_commit_and_its_tests(self) -> None:
+        self.accepted_chain()
+        native: JSON = {"basis": "explicit", "subjects": ["native"], "commit": "c3d4e5f"}
+        with self.assertRaisesRegex(Refused, "implemented needs refs naming its tests"):
+            _ = self.compatibility("implemented", native, refs=["F-103"])
+        with self.assertRaisesRegex(Refused, "needs scope.commit naming the native code"):
+            _ = self.compatibility("implemented", {"basis": "explicit", "subjects": ["original-server"]}, refs=["F-104"])
+        measured = self.new_finding("Invented: the native listing round trip passes", kind="measured",
+                                    scope={"basis": "explicit", "subjects": ["native"], "commit": "c3d4e5f"})
+        self.assertEqual(0, self.compatibility("implemented", native, refs=[measured]).status)
+
+    def test_validated_needs_a_passing_verified_run_matching_the_scope(self) -> None:
+        self.accepted_chain()
+        stock: JSON = {"basis": "explicit", "subjects": ["original-client", "native"], "commit": "c3d4e5f",
+                       "builds": [f"server:{NEW_SERVER}", f"client:{NEW_CLIENT}"]}
+        failed = self.run_evidence("failed", outcome="fail")
+        loopback = self.run_evidence("loopback", environment="loopback on one host")
+        narrow = self.run_evidence("narrow", targets=[f"server:{NEW_SERVER}"])
+        with self.assertRaisesRegex(Refused, "validated needs cites naming a passing run"):
+            _ = self.compatibility("validated", stock, cites=["M-102"])
+        with self.assertRaisesRegex(Refused, f"{failed} outcome is fail"):
+            _ = self.compatibility("validated", stock, cites=[failed])
+        with self.assertRaisesRegex(Refused, f"{loopback} ran on loopback .*never validates stock-client interoperability"):
+            _ = self.compatibility("validated", stock, cites=[loopback])
+        with self.assertRaisesRegex(Refused, f"{narrow} does not name client:{NEW_CLIENT}"):
+            _ = self.compatibility("validated", stock, cites=[narrow])
+        good = self.run_evidence("good")
+        _ = (self.root / "work/case/good.txt").write_text("tampered", encoding="utf-8")
+        with self.assertRaisesRegex(Refused, f"{good} artifacts are mismatched"):
+            _ = self.compatibility("validated", stock, cites=[good])
+        _ = (self.root / "work/case/good.txt").write_text("invented run good", encoding="utf-8")
+        server_only: JSON = {"basis": "explicit", "subjects": ["native"], "commit": "c3d4e5f", "builds": [f"server:{NEW_SERVER}"]}
+        self.assertEqual(0, self.compatibility("validated", server_only, cites=[loopback]).status, "loopback validates a server-only claim")
+        identifier = self.compatibility("observed", stock, cites=[failed]).data["ids"]
+        assert isinstance(identifier, list) and isinstance(identifier[0], str)
+        with self.assertRaisesRegex(Refused, f"{identifier[0]}: validated needs a passing run .*outcome is fail"):
+            _ = online.revise(self.bank, self.root, identifier[0], changes(status="validated"), now=self.tick())
+        noted = online.revise(self.bank, self.root, "CP-001", Changes({}, note="Invented: re-read"), now=self.tick())
+        self.assertEqual(0, noted.status, "a revision that keeps a proven status is not re-qualified")
 
 
 class EvidenceTests(Online):

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -28,13 +29,13 @@ import tomllib
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    Applied, Bank, BankError, Desired, Universe, allocate, desired, diff, gather, read_back, reconcile,
+    Applied, Bank, BankError, Desired, Universe, allocate, derived_status, desired, diff, gather, read_back, reconcile, shared_elsewhere,
 )
 from tools.memory.canonical import render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
@@ -90,43 +91,82 @@ def now_utc() -> datetime:
 
 @contextmanager
 def session(bank: Bank, root: Path, *, now: datetime | None = None, orphan: bool = False, bulk: bool = False) -> Generator[Session]:
-    """Under the host lock: gather the journal and reconcile the bank with it (replay first)."""
+    """Under the host lock: gather the journal, finish an interrupted regeneration, and reconcile the bank with it (replay first)."""
     with host_lock():
         universe = gather(root)
+        if heal_regeneration(universe):
+            universe = gather(root)
         applied = reconcile(bank, universe, orphan=orphan, bulk=bulk)
         yield Session(root, bank, universe, applied, now or now_utc())
 
 
-def validate(universe: Universe, revisions: Sequence[Revision]) -> list[str]:
-    """Every problem the new revisions would add to this checkout's view (schema is checked by the model)."""
+def validate(universe: Universe, revisions: Sequence[Revision], *, replacing: str | None = None) -> list[str]:
+    """Every problem the new revisions would add to this checkout's view (schema is checked by the model);
+    ``replacing`` names the unmerged segment they regenerate."""
     pending = Segment("memory/journal/pending", "", tuple(revisions))
-    before, after = universe.view, replay([*universe.own, pending])
+    before = universe.view
+    after = replay([*(segment for segment in universe.own if segment.path != replacing), pending])
     names = {revision.record.id for revision in revisions}
 
     def mine(problems: Sequence[str]) -> list[str]:
         return [problem for problem in problems if problem.split(":", 1)[0] in names]
 
     problems = mine(after.problems) + mine(after.link_problems()) + mine(revision_problems(after))
-    problems += mine(confidence_problems(after, replay(universe.main)))
+    problems += mine(confidence_problems(after, universe.settled))
     problems += [f"supersession cycle: {cycle}" for cycle in after.supersession_cycles()
                  if names & set(cycle.split(" -> ")) and cycle not in before.supersession_cycles()]
     for identifier in sorted(names, key=id_key):
         entry, earlier = after.entries[identifier], before.entries.get(identifier)
         if entry.conflict and not (earlier is not None and earlier.conflict):
             problems.append(f"{identifier}: would fork the record; revise its current head")
+    problems += qualification_problems(universe, after, revisions)
     return problems
 
 
-def publish(current: Session, revisions: Sequence[Revision]) -> tuple[str, ...]:
-    """Validate, write and fsync the segment, apply it, read it back. Returns the segment paths."""
-    if problems := validate(current.universe, revisions):
+def publish(current: Session, revisions: Sequence[Revision], *, replacing: str | None = None) -> tuple[str, ...]:
+    """Validate, write and fsync the segment, apply it, read it back. Returns the segment paths.
+
+    With ``replacing`` (an unmerged segment of this worktree), the new segment regenerates it: it is
+    written first and the old one removed after, so an interruption leaves both, which the next
+    command's ``heal_regeneration`` resolves."""
+    if problems := validate(current.universe, revisions, replacing=replacing):
         raise Refused("; ".join(problems))
     written = write_change_set(current.root, current.now, revisions)
+    if replacing is not None:
+        remove_segment(current.root / replacing)
     current.universe = gather(current.root)
     current.applied = reconcile(current.bank, current.universe)
     if problems := read_back(current.bank, desired(current.universe), revisions):
         raise BankError("; ".join(problems))
     return tuple(path.relative_to(current.root).as_posix() for path in written)
+
+
+def remove_segment(path: Path) -> None:
+    path.unlink()
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def heal_regeneration(universe: Universe) -> list[str]:
+    """Finish a regeneration killed between writing the new segment and removing the old one: two
+    segments of this worktree, neither in ``origin/main``, holding the same revisions except one pair of
+    the same record and ``prev``, the newer created later. Removes the older; returns the removed paths."""
+    local = [segment for segment in universe.local if segment.path not in {item.path for item in universe.main}]
+    removed: list[str] = []
+    for old in local:
+        for new in local:
+            if new.created <= old.created or len(new.revisions) != len(old.revisions) or old.path in removed:
+                continue
+            gone = [item for item in old.revisions if item not in new.revisions]
+            added = [item for item in new.revisions if item not in old.revisions]
+            if (len(gone) == 1 and len(added) == 1 and gone[0].record.id == added[0].record.id and gone[0].prev == added[0].prev
+                    and not shared_elsewhere(universe.root, old.path)):
+                remove_segment(universe.root / old.path)
+                removed.append(old.path)
+    return removed
 
 
 def published(current: Session, revisions: Sequence[Revision], paths: Sequence[str]) -> Output:
@@ -140,6 +180,84 @@ def published(current: Session, revisions: Sequence[Revision], paths: Sequence[s
 
 
 # Writing commands.
+
+
+# Compatibility proofs (rules, "Qualification").
+
+PROVEN = ("specified", "implemented", "validated")
+
+
+def qualification_problems(universe: Universe, after: State, revisions: Sequence[Revision]) -> list[str]:
+    """A CP record entering ``specified``, ``implemented`` or ``validated`` must carry its proof:
+
+    - ``specified``: ``refs`` names findings, each accepted (in ``origin/main``) and active, and scoped to
+      a build of the claim when both name builds;
+    - ``implemented``: ``scope.commit`` (the native code) and ``refs`` naming its tests: an N record or a
+      ``measured`` finding with a commit scope;
+    - ``validated``: ``cites`` a ``run`` evidence record that is active, passed, verified on disk and
+      names every build of the claim among its targets or identities; a run whose environment is
+      loopback never validates a claim about the stock client (subject ``original-client``).
+    """
+    problems: list[str] = []
+    for revision in revisions:
+        record = revision.record
+        if record.type != "compatibility" or record.status not in PROVEN:
+            continue
+        entry = after.entries.get(record.id)
+        earlier = [entry.revisions[prev].revision.record.status for prev in revision.prev if entry is not None and prev in entry.revisions]
+        if earlier and all(status == record.status for status in earlier):
+            continue
+        problems.extend(f"{record.id}: {record.status} {problem}" for problem in proof_problems(universe, after, record))
+    return problems
+
+
+def proof_problems(universe: Universe, after: State, record: Record) -> list[str]:
+    scope = record.scope
+    builds = set(scope.builds) if scope is not None else set[str]()
+    if record.status == "specified":
+        findings = [name for name in record.links.refs if name.startswith("F-")]
+        if not findings:
+            return ["needs refs naming the accepted findings that state the behaviour"]
+        problems: list[str] = []
+        for name in findings:
+            accepted = universe.settled.record(name)
+            if accepted is None or universe.settled.status(name) != "active":
+                problems.append(f"needs accepted active findings; {name} is " + ("not accepted" if accepted is None else universe.settled.status(name)))
+            elif builds and accepted.scope is not None and accepted.scope.builds and not builds & set(accepted.scope.builds):
+                problems.append(f"needs findings in the claim's scope; {name} is scoped to {', '.join(accepted.scope.builds)}")
+        return problems
+    if record.status == "implemented":
+        problems = [] if scope is not None and scope.commit is not None else ["needs scope.commit naming the native code"]
+        tests = [name for name in record.links.refs if (found := after.record(name)) is not None and (
+            found.type == "bug" or (found.type == "finding" and found.text("kind") == "measured" and found.scope is not None and found.scope.commit))]
+        if not tests:
+            problems.append("needs refs naming its tests: an N record or a measured finding with a commit scope")
+        return problems
+    runs = [name for name in dict.fromkeys(item.split("/", 1)[0] for item in record.links.cites)
+            if (found := after.record(name)) is not None and found.text("kind") == "run"]
+    if not runs:
+        return ["needs cites naming a passing run evidence record"]
+    reasons: list[str] = []
+    primary = primary_checkout(universe.root)
+    for name in runs:
+        run = after.record(name)
+        assert run is not None and run.run is not None
+        values = run.run
+        listed = [item for key in ("targets", "identities") if isinstance(value := values.get(key), tuple) for item in value]
+        environment = str(values.get("environment", ""))
+        if run.status != "active":
+            reasons.append(f"{name} is {run.status}")
+        elif values.get("outcome") != "pass":
+            reasons.append(f"{name} outcome is {values.get('outcome')}")
+        elif scope is not None and "original-client" in scope.subjects and "loopback" in environment.casefold():
+            reasons.append(f"{name} ran on loopback ({environment}); a loopback run never validates stock-client interoperability")
+        elif missing := sorted(build for build in builds if not any(build in item for item in listed)):
+            reasons.append(f"{name} does not name {', '.join(missing)} among its targets or identities")
+        elif (verdict := verify_record(primary, run)).outcome != "verified":
+            reasons.append(f"{name} artifacts are {verdict.outcome} ({verdict.detail})")
+        else:
+            return []
+    return ["needs a passing run matching its scope: " + "; ".join(reasons)]
 
 
 @dataclass(frozen=True)
@@ -180,21 +298,6 @@ def propose(bank: Bank, root: Path, kind: str, changes: Changes, *, now: datetim
         return published(current, [revision], publish(current, [revision]))
 
 
-def allowed_changes(old: Record, new: Record) -> list[str]:
-    """Why ``new`` is not an in-place revision of ``old``: only REF body, unknown next_probe, any stored
-    status (evidence with an appended note), and appended notes and ``verified_on`` may change."""
-    before, after = old.to_json(), new.to_json()
-    allowed = {"status", "notes", "verified_on", *{"reference": ("body_sha256",), "unknown": ("next_probe",)}.get(old.type, ())}
-    problems = [f"{name} is not revisable in place; supersede with a new record"
-                for name in sorted(before.keys() | after.keys()) if before.get(name) != after.get(name) and name not in allowed]
-    for name, kept, now in (("notes", old.notes, new.notes), ("verified_on", old.links.verified_on, new.links.verified_on)):
-        if not set(kept) <= set(now):
-            problems.append(f"{name} may only be appended to")
-    if old.type == "evidence" and old.status != new.status and len(new.notes) <= len(old.notes):
-        problems.append("an evidence status change appends a note")
-    return problems
-
-
 def _revision_of(current: Session, identifier: str, edit: Mapping[str, JSON | None], note: str | None, body: str | None) -> tuple[Revision, list[Record]]:
     """A revision of ``identifier`` after this checkout's heads (all of them: a reconciling revision)."""
     entry = current.universe.view.entries.get(identifier)
@@ -225,33 +328,53 @@ def _revision_of(current: Session, identifier: str, edit: Mapping[str, JSON | No
 
 
 def revise(bank: Bank, root: Path, identifier: str, changes: Changes, *, now: datetime | None = None) -> Output:
-    """Publish an in-place revision; anything outside the revisable allow-list is refused before writing."""
+    """Publish an in-place revision after this checkout's heads (all of them: a reconciling revision, which
+    may equal one head in content). Anything outside the core's allow-list (``check.REVISABLE``) is refused
+    before writing."""
     with session(bank, root, now=now) as current:
         if "id" in changes.values or "type" in changes.values:
             raise Refused("id and type never change")
-        revision, heads = _revision_of(current, identifier, changes.values, changes.note, changes.body)
-        problems = [problem for head in heads for problem in allowed_changes(head, revision.record)]
-        if problems:
-            raise Refused(f"{identifier}: " + "; ".join(dict.fromkeys(problems)))
+        revision, _heads = _revision_of(current, identifier, changes.values, changes.note, changes.body)
         return published(current, [revision], publish(current, [revision]))
 
 
 def _link(bank: Bank, root: Path, newer: str, name: str, target: str, now: datetime | None) -> Output:
+    """Add ``target`` to the ``name`` links of ``newer``. A record never accepted has its unmerged segment
+    regenerated when no ref or other worktree holds it; otherwise (accepted, conflicted or shared) an
+    appended revision carries the link (``supersedes`` and ``resolves`` are append-only)."""
     with session(bank, root, now=now) as current:
-        view = current.universe.view
+        universe = current.universe
+        view = universe.view
         if target not in view.entries:
             raise Refused(f"no record {target} in this checkout")
         entry = view.entries.get(newer)
         if entry is None:
             raise Refused(f"no record {newer} in this checkout; propose it first")
-        if any(key in current.universe.accepted for key in entry.revisions):
-            raise Refused(f"{newer} is accepted; its links are fixed. Propose a new record that {name} {target}")
         links = list(entry.record.links.named(name))
         if target in links:
             raise Refused(f"{newer} already {name} {target}")
         linked: list[JSON] = [*sorted([*links, target], key=id_key)]
-        revision, _heads = _revision_of(current, newer, {name: linked}, None, None)
-        return published(current, [revision], publish(current, [revision]))
+        head = entry.head
+        union = universe.state.entries[newer]
+        regenerable = (
+            not entry.conflict and union.heads == entry.heads and not any(rev in universe.accepted for rev in entry.revisions)
+            and head.segment in {segment.path for segment in universe.local} and not shared_elsewhere(root, head.segment)
+        )
+        if not regenerable:
+            revision, _heads = _revision_of(current, newer, {name: linked}, None, None)
+            return published(current, [revision], publish(current, [revision]))
+        data = head.revision.record.to_json()
+        data[name] = linked
+        replacement = Revision.of(Record.from_json(data, head.revision.record.body), head.revision.prev)
+        segment = next(item for item in universe.local if item.path == head.segment)
+        revisions = [replacement if item.rev == head.revision.rev else item for item in segment.revisions]
+        created = datetime.fromisoformat(segment.created)
+        if current.now <= created:
+            current.now = created + timedelta(seconds=1)
+        output = published(current, [replacement], publish(current, revisions, replacing=head.segment))
+        output.lines.append(f"{newer} was never accepted: regenerated {head.segment}")
+        output.data["regenerated"] = head.segment
+        return output
 
 
 def supersede(bank: Bank, root: Path, old: str, new: str, *, now: datetime | None = None) -> Output:
@@ -456,6 +579,47 @@ def headline(text: str) -> str:
     return " | ".join(text.split("\n")[:2])[:200]
 
 
+@dataclass(frozen=True)
+class Proposal:
+    """A not-yet-accepted ``supersedes`` or ``resolves`` link naming a record: its ``source`` and whether
+    the source revision's segment is in this worktree."""
+
+    kind: str
+    source: str
+    mine: bool
+
+    def json(self) -> JSON:
+        return {"kind": self.kind, "id": self.source, "where": "this worktree" if self.mine else "elsewhere"}
+
+    def line(self) -> str:
+        return f"proposed {self.kind}: {self.source} (proposed, {'this worktree' if self.mine else 'another worktree or branch'})"
+
+
+def proposals(universe: Universe) -> dict[str, list[Proposal]]:
+    """Per target, the supersessions and resolutions proposed by heads that are not accepted (the bank's
+    status ignores them; read commands overlay them)."""
+    local = {segment.path for segment in universe.local}
+    settled = universe.settled
+    found: dict[str, list[Proposal]] = {}
+    for source in sorted(universe.state.entries, key=id_key):
+        entry = universe.state.entries[source]
+        for rev in entry.heads:
+            if rev in universe.accepted:
+                continue
+            located = entry.revisions[rev]
+            for name, kind, accepted in (("supersedes", "superseder", settled.superseded_by), ("resolves", "resolver", settled.resolved_by)):
+                for target in located.revision.record.links.named(name):
+                    item = Proposal(kind, source, located.segment in local)
+                    if source not in accepted.get(target, ()) and item not in found.get(target, []):
+                        found.setdefault(target, []).append(item)
+    return found
+
+
+def overlay(universe: Universe, identifier: str, *, every: bool, index: Mapping[str, list[Proposal]] | None = None) -> list[Proposal]:
+    """Proposed superseders and resolvers of ``identifier``: this worktree's, and with ``every`` all of them."""
+    return [item for item in (proposals(universe) if index is None else index).get(identifier, []) if every or item.mine]
+
+
 def summary(bank: Bank, wanted: Mapping[str, Desired], identifier: str) -> tuple[dict[str, JSON], str]:
     """A linked record by exact GET of its ``<ID>`` document: ID, state, first line."""
     target = wanted.get(identifier)
@@ -481,11 +645,12 @@ def check_document(bank: Bank, target: Desired) -> list[str]:
     return problems
 
 
-def get(bank: Bank, root: Path, citation: str, *, history: bool = False) -> Output:
-    """Exact document GET, verified against the replayed journal, with state, partition, derived links,
-    pending revisions, conflicts and evidence status."""
+def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_proposals: bool = False) -> Output:
+    """Exact document GET, verified against the replayed journal, with state, partition, derived links
+    (accepted ones; this worktree's proposals overlaid, every worktree's with ``all_proposals``), pending
+    revisions, conflicts and evidence status."""
     with session(bank, root) as current:
-        universe, state = current.universe, current.universe.state
+        universe, state, settled = current.universe, current.universe.state, current.universe.settled
         resolution = state.resolve(citation)
         if resolution.problem is not None:
             raise LookupError(resolution.problem)
@@ -500,29 +665,32 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False) -> Outp
         release, reason = release_for(universe, root, None)
         placed, phrase = place(root, record, release, reason)
         entry = state.entries[identifier]
+        proposed = overlay(universe, identifier, every=all_proposals)
         data: dict[str, JSON] = {
             "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
-            "sha256": target.revision.sha256, "segment": target.segment, "text": target.item.content, "record": record.to_json(),
-            "partition": placed, "superseded_by": list(state.superseded_by.get(identifier, ())), "successors": list(state.successors(identifier)),
-            "resolved_by": list(state.resolved_by.get(identifier, ())), "verified": not problems, "problems": list(problems),
-            "pending": [{"document": item.document_id, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
+            "sha256": target.revision.sha256, "rev": target.revision.rev, "segment": target.segment, "text": target.item.content,
+            "record": record.to_json(), "partition": placed, "superseded_by": list(settled.superseded_by.get(identifier, ())),
+            "successors": list(settled.successors(identifier)), "resolved_by": list(settled.resolved_by.get(identifier, ())),
+            "proposed": [item.json() for item in proposed], "verified": not problems, "problems": list(problems),
+            "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
         }
         lines = [target.item.content, "", f"state: {target.state}", f"status: {target.status}" + (f" (stored {record.status})" if target.status != record.status else ""),
-                 f"partition: {phrase}", f"document: {target.document_id} sha256 {target.revision.sha256} in {target.segment}"]
+                 f"partition: {phrase}", f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
         if "/" in citation:
             data["selector"], data["member"] = citation, resolution.member
             lines.insert(0, f"{citation}: " + (f"listed member {resolution.member}" if resolution.member else "legacy case note") + f" of {identifier}\n")
         for name in ("supersedes", "resolves", "refs"):
             if items := record.links.named(name):
                 lines.append(f"{name}: {', '.join(items)}")
-        if superseded := state.superseded_by.get(identifier):
-            lines.append(f"superseded by: {', '.join(superseded)} (terminal: {', '.join(state.successors(identifier))})")
-        if resolvers := state.resolved_by.get(identifier):
+        if superseded := settled.superseded_by.get(identifier):
+            lines.append(f"superseded by: {', '.join(superseded)} (terminal: {', '.join(settled.successors(identifier))})")
+        if resolvers := settled.resolved_by.get(identifier):
             lines.append(f"resolved by: {', '.join(resolvers)}")
-        lines.extend(f"pending revision: {item.document_id} sha256 {item.revision.sha256} in {item.segment}" for item in pending)
+        lines.extend(item.line() for item in proposed)
+        lines.extend(f"pending revision: {item.document_id} rev {item.revision.rev} in {item.segment}" for item in pending)
         if target.state == "conflict" or entry.conflict:
-            lines.extend(f"conflict head: {entry.revisions[key].revision.sha256} in {entry.revisions[key].segment}" for key in entry.heads)
-            data["heads"] = [entry.revisions[key].revision.sha256 for key in entry.heads]
+            lines.extend(f"conflict head: {key} in {entry.revisions[key].segment}" for key in entry.heads)
+            data["heads"] = list(entry.heads)
         primary = primary_checkout(root)
         if record.type == "evidence":
             verdict = verify_record(primary, record)
@@ -531,16 +699,16 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False) -> Outp
         cited: list[JSON] = []
         for name in sorted({item.split("/", 1)[0] for item in record.links.citations()}, key=id_key):
             evidence = state.record(name)
-            shown = state.status(name) if evidence is not None else "absent"
+            shown = derived_status(settled, evidence) if evidence is not None else "absent"
             cited.append({"id": name, "status": shown})
             lines.append(f"cites {name}: {shown}")
         data["cited_evidence"] = cited
         if history:
-            data["history"] = [{"sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev), "record": item.revision.record.to_json()}
-                               for item in entry.history()]
+            data["history"] = [{"rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev),
+                                "record": item.revision.record.to_json()} for item in entry.history()]
             lines.append("history:")
             for item in entry.history():
-                lines.extend(["", f"{item.revision.sha256} in {item.segment}", render_text(item.revision.record)])
+                lines.extend(["", f"{item.revision.rev} in {item.segment}", render_text(item.revision.record)])
         lines.extend(f"problem: {problem}" for problem in problems)
         return Output(data, lines, 1 if problems else 0)
 
@@ -588,10 +756,13 @@ class Shown:
 def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, text: str | None = None,
            all_proposals: bool = False, include_evidence: bool = False, limit: int = 10) -> Output:
     """The rules' Reading section: exact GET of named IDs first, strict-tag recall, partitions, retired
-    hits under their terminal successor, one hop of links and resolvers by exact GET."""
+    hits under their terminal successor, one hop of links and resolvers by exact GET. Retirement and
+    derived links are the accepted ones (as the bank shows them); this worktree's proposed superseders and
+    resolvers are overlaid, every worktree's with ``all_proposals``."""
     with session(bank, root) as current:
-        universe, state = current.universe, current.universe.state
+        universe, state, settled = current.universe, current.universe.state, current.universe.settled
         wanted = desired(universe)
+        index = proposals(universe)
         mine = universe.local_stems
         stamp = pinned_timestamp(state)
         rel, reason = release_for(universe, root, release)
@@ -621,7 +792,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             if identifier not in state.entries:
                 _ = shown.setdefault(identifier, Shown(identifier, document_id, rank))
                 continue
-            heads = state.successors(identifier) if state.retired(identifier) else ()
+            document = wanted.get(identifier)
+            heads = settled.successors(identifier) if document is not None and document.status in ("superseded", "retired") else ()
             for successor in heads or (identifier,):
                 item = shown.setdefault(successor, Shown(successor, successor, rank))
                 if heads:
@@ -639,19 +811,22 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             verified = document is not None and document.text == target.item.content
             placed, phrase = place(root, target.revision.record, rel, reason)
             name = str(placed["name"])
-            links = sorted({*target.revision.record.links.targets(), *state.superseded_by.get(item.identifier, ()),
-                            *state.resolved_by.get(item.identifier, ())} - listed - set(item.retired), key=id_key)
+            links = sorted({*target.revision.record.links.targets(), *settled.superseded_by.get(item.identifier, ()),
+                            *settled.resolved_by.get(item.identifier, ())} - listed - set(item.retired), key=id_key)
+            proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
             linked = [summary(bank, wanted, link) for link in links]
             retired = [summary(bank, wanted, old) for old in sorted(set(item.retired), key=id_key)]
             sections[name].append({
                 "id": item.identifier, "document": target.document_id, "state": target.state, "status": target.status, "partition": placed,
                 "text": target.item.content, "verified": verified, "retired": [data for data, _ in retired], "links": [data for data, _ in linked],
+                "proposed": [entry.json() for entry in proposed],
             })
             block = [f"{item.identifier} [{target.state}, {target.status}; {phrase}]" + ("" if verified else " (differs from the journal)"),
                      *(f"  {line}" for line in target.item.content.split("\n"))]
             derived = [f"  {label}: {', '.join(names)}" for label, names in (
-                ("superseded by", state.superseded_by.get(item.identifier, ())), ("resolved by", state.resolved_by.get(item.identifier, ()))) if names]
+                ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", settled.resolved_by.get(item.identifier, ()))) if names]
             block += derived
+            block += [f"  {entry.line()}" for entry in proposed]
             block += [f"  retired under it: {line}" for _, line in retired]
             block += [f"  link: {line}" for _, line in linked]
             texts[name].append("\n".join(block))
@@ -674,15 +849,20 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
 
 
 def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], release: Record | None, reason: str) -> tuple[list[JSON], list[str]]:
+    """One row per record: state, the accepted-link status the bank shows, partition, headline and this worktree's proposals."""
     view, states = universe.view, {item.record_id: item.state for item in desired(universe).values() if "@" not in item.document_id}
+    index = proposals(universe)
     rows: list[JSON] = []
     lines: list[str] = []
     for identifier in identifiers:
         record = view.entries[identifier].record
         placed, phrase = place(root, record, release, reason)
-        status = view.status(identifier)
-        rows.append({"id": identifier, "status": status, "state": states.get(identifier, "unknown"), "partition": placed, "line": headline(render_text(record))})
-        lines.append(f"  {identifier} [{states.get(identifier, 'unknown')}, {status}; {phrase}]: {headline(render_text(record)).split(' | ', 1)[-1]}")
+        status = derived_status(universe.settled, record)
+        proposed = overlay(universe, identifier, every=False, index=index)
+        rows.append({"id": identifier, "status": status, "state": states.get(identifier, "unknown"), "partition": placed, "line": headline(render_text(record)),
+                     "proposed": [item.json() for item in proposed]})
+        note = "".join(f"; {item.line()}" for item in proposed)
+        lines.append(f"  {identifier} [{states.get(identifier, 'unknown')}, {status}; {phrase}{note}]: {headline(render_text(record)).split(' | ', 1)[-1]}")
     return rows, lines
 
 
@@ -695,7 +875,7 @@ def area(bank: Bank, root: Path, name: str) -> Output:
         members = sorted((identifier for identifier, entry in view.entries.items() if entry.record.text("area") == name), key=id_key)
         by_status: dict[str, list[str]] = {}
         for identifier in members:
-            by_status.setdefault(view.status(identifier), []).append(identifier)
+            by_status.setdefault(derived_status(universe.settled, view.entries[identifier].record), []).append(identifier)
         data: dict[str, JSON] = {"area": name, "release": release.id if release is not None else None}
         lines = [f"area {name}: {len(members)} record(s); partitions against {release.id if release is not None else 'unknown (' + reason + ')'}"]
         statuses: dict[str, JSON] = {}
@@ -705,7 +885,7 @@ def area(bank: Bank, root: Path, name: str) -> Output:
             lines.append(f"{status}:")
             lines.extend(text)
         data["statuses"] = statuses
-        unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and view.status(identifier) in OPEN_UNKNOWN]
+        unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and derived_status(universe.settled, view.entries[identifier].record) in OPEN_UNKNOWN]
         data["open_unknowns"] = list[JSON](unknowns)
         lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
         closure: set[str] = set()
@@ -769,7 +949,7 @@ def status(bank: Bank, root: Path) -> Output:
         unverified: list[tuple[str, str]] = []
         for identifier in sorted(view.entries, key=id_key):
             record = view.entries[identifier].record
-            shown = view.status(identifier)
+            shown = derived_status(universe.settled, record)
             counts = by_type.setdefault(record.type, {})
             counts[shown] = counts.get(shown, 0) + 1
             if record.type == "evidence":
@@ -1054,7 +1234,7 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
                     raise Refused(f"--run: unknown fields {', '.join(extra)}")
             return evidence_add(bank, root, _string(values, "path") or "", _string(values, "kind") or "", _string(values, "label") or "", run=run)
         case "get":
-            return get(bank, root, _string(values, "id") or "", history=_flag(values, "history"))
+            return get(bank, root, _string(values, "id") or "", history=_flag(values, "history"), all_proposals=_flag(values, "all_proposals"))
         case "recall":
             return recall(bank, root, _string(values, "query") or "", release=_string(values, "release"), text=_string(values, "text"),
                           all_proposals=_flag(values, "all_proposals"), include_evidence=_flag(values, "include_evidence"))

@@ -3,9 +3,10 @@
 
 ``gather(root)`` collects every segment the host knows: ``origin/main`` (the acceptance ref), the
 working-tree journal of every linked worktree, and every local branch and remote-tracking ref, read
-without a checkout. A malformed segment outside the current worktree is skipped with a notice; one in
-the current worktree, or in ``origin/main``, is an error. Segments are content-named, so they are
-de-duplicated by name.
+without a checkout. A branch checked out in a worktree is read from that worktree's working tree only,
+so a regenerated unmerged segment is not resurrected from the commit it replaced. A malformed segment
+outside the current worktree is skipped with a notice; one in the current worktree, or in
+``origin/main``, is an error. Segments are content-named, so they are de-duplicated by name.
 
 ``desired(universe)`` maps every document the bank should hold to its retain item, per the rules'
 Storage section. Over the union replay, for each record ID:
@@ -17,15 +18,18 @@ Storage section. Over the union replay, for each record ID:
   revision's identity, the key of ``Entry.revisions``), ``state:pending``;
 - none accepted: ``<ID>`` holds the union head, ``state:proposed`` (``conflict`` on a fork).
 
-Tags carry the *derived* status, and the text renders it, so superseding or resolving a record
-refreshes the old record's document although no revision of it is written. Metadata: ``record``
-(canonical JSON), ``sha256``, ``prev`` (comma-separated) and ``segment`` (repository path).
+Tags carry the *derived* status, and the text renders it, so an accepted supersession or resolution
+refreshes the old record's document although no revision of it is written. The derived status comes
+from ACCEPTED links only (``Universe.settled``, the replay of ``origin/main``): a proposal anywhere never
+flips a record in the shared bank; read commands overlay proposals at display time. Metadata: ``record``
+(canonical JSON), ``sha256`` (its digest), ``rev`` (the revision identity), ``prev`` (comma-separated
+``rev`` values) and ``segment`` (repository path).
 
-*Applied* means the bank holds exactly the desired document: same metadata (so the same revision,
-``sha256`` and segment), the same text (``content_hash``), entities and tags. ``diff`` compares that;
+*Applied* means the bank holds exactly the desired document: same metadata (so the same ``rev`` and
+segment), the same text (``content_hash``), entities and tags. ``diff`` compares that;
 ``apply`` retains what differs, re-tags what differs only in tags and deletes documents of known
 revisions that are no longer desired (a pending revision since accepted, an older proposal). A
-document of a revision no gathered segment holds is *unexplained*: it is left alone, and only
+document whose ``rev`` no gathered segment holds is *unexplained*: it is left alone, and only
 ``memory sync`` after a successful fetch re-tags it ``state:orphaned``. The same diff is publication,
 the replay of a half-applied change set, ``rebuild`` and the repair path.
 """
@@ -82,9 +86,10 @@ class Universe:
     """Every known segment, the acceptance set and the two replays commands read.
 
     ``state`` replays every segment (the bank's function); ``view`` replays ``origin/main`` plus this
-    worktree, de-duplicated as ``own`` (what this checkout reads and revises). ``accepted`` holds the revision identities (the
-    keys of ``Entry.revisions``) of ``origin/main``; ``main_known`` is false when that ref is missing.
-    ``known`` holds ``(sha256, prev)`` of every gathered revision, as a bank document's metadata names it.
+    worktree, de-duplicated as ``own`` (what this checkout reads and revises); ``settled`` replays
+    ``origin/main`` alone (the links that derive status in the bank). ``accepted`` holds the revision
+    identities (the keys of ``Entry.revisions``) of ``origin/main``; ``main_known`` is false when that ref
+    is missing. ``known`` holds the ``rev`` of every gathered revision, as a bank document's metadata names it.
     """
 
     root: Path
@@ -96,6 +101,7 @@ class Universe:
     main_known: bool
     state: State
     view: State
+    settled: State
     notices: tuple[str, ...] = ()
 
     @property
@@ -103,28 +109,38 @@ class Universe:
         return frozenset(PurePosixPath(segment.path).stem for segment in self.local)
 
     @property
-    def known(self) -> frozenset[tuple[str, str]]:
-        return frozenset((located.revision.sha256, ",".join(located.revision.prev))
-                         for entry in self.state.entries.values() for located in entry.revisions.values())
+    def known(self) -> frozenset[str]:
+        return frozenset(rev for entry in self.state.entries.values() for rev in entry.revisions)
 
 
-def _batch_check(root: Path, names: Sequence[str]) -> list[str | None]:
-    """The tree object ID each ``<commit>:<path>`` names, or ``None``."""
+def _batch_check(root: Path, names: Sequence[str], kind: str = "tree") -> list[str | None]:
+    """The object ID of type ``kind`` each ``<commit>:<path>`` names, or ``None``."""
     if not names:
         return []
     output = git(root, "cat-file", "--batch-check", stdin="".join(f"{name}\n" for name in names).encode()).decode()
     found: list[str | None] = []
     for line in output.splitlines():
         parts = line.split()
-        found.append(parts[0] if len(parts) == 3 and parts[1] == "tree" else None)
+        found.append(parts[0] if len(parts) == 3 and parts[1] == kind else None)
     if len(found) != len(names):
         raise GitError("cat-file --batch-check answered an unexpected number of lines")
     return found
 
 
-def ref_commits(root: Path) -> tuple[str, ...]:
-    output = git(root, "for-each-ref", "--format=%(objectname) %(objecttype)", *REF_NAMESPACES).decode()
-    return tuple(sorted({line.split()[0] for line in output.splitlines() if line.endswith(" commit")}))
+def refs(root: Path) -> tuple[tuple[str, str, str], ...]:
+    """``(refname, commit, worktree path or "")`` of every local branch and remote-tracking ref that names a commit."""
+    output = git(root, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(worktreepath)", *REF_NAMESPACES).decode()
+    found: list[tuple[str, str, str]] = []
+    for line in output.splitlines():
+        name, commit, kind, checkout = line.split("\0")
+        if kind == "commit":
+            found.append((name, commit, checkout))
+    return tuple(found)
+
+
+def ref_commits(root: Path, *, checked_out: bool = True) -> tuple[str, ...]:
+    """Commits of every ref; without ``checked_out``, not of branches checked out in a worktree (read from its working tree)."""
+    return tuple(sorted({commit for _name, commit, checkout in refs(root) if checked_out or not checkout}))
 
 
 def gather(root: Path, base: str = ACCEPTANCE_REF) -> Universe:
@@ -153,7 +169,7 @@ def gather(root: Path, base: str = ACCEPTANCE_REF) -> Universe:
             continue
         for segment in segments:
             _ = by_name.setdefault(segment.name, segment)
-    commits = ref_commits(root)
+    commits = ref_commits(root, checked_out=False)
     trees = _batch_check(root, [f"{commit}:{JOURNAL}" for commit in commits])
     for tree in sorted({tree for tree in trees if tree is not None}):
         files = {f"{JOURNAL}/{path}": oid for path, oid in tree_files(root, tree, ".").items()}
@@ -170,7 +186,22 @@ def gather(root: Path, base: str = ACCEPTANCE_REF) -> Universe:
     segments = tuple(sorted(by_name.values(), key=lambda item: item.path))
     accepted = frozenset(key for entry in replay(main).entries.values() for key in entry.revisions)
     own = tuple(sorted({segment.name: segment for segment in (*main, *local)}.values(), key=lambda item: item.path))
-    return Universe(root, segments, main, local, own, accepted, main_known, replay(segments), replay(own), tuple(notices))
+    return Universe(root, segments, main, local, own, accepted, main_known, replay(segments), replay(own), replay(main), tuple(notices))
+
+
+def shared_elsewhere(root: Path, path: str) -> bool:
+    """Whether segment ``path`` of this worktree is also in a ref other than the branch checked out here
+    (``origin/main``, a pushed branch, another branch) or in another worktree's working tree: then it
+    cannot be regenerated, only revised."""
+    own = root.resolve()
+    commits = sorted({commit for _name, commit, checkout in refs(root) if not checkout or Path(checkout).resolve() != own})
+    if any(found is not None for found in _batch_check(root, [f"{commit}:{path}" for commit in commits], kind="blob")):
+        return True
+    try:
+        checkouts, _skipped = worktrees(root)
+    except ProtectedPathsError:
+        return True
+    return any(checkout.resolve() != own and (checkout / path).exists() for checkout in checkouts)
 
 
 @dataclass(frozen=True)
@@ -186,12 +217,16 @@ class Desired:
     item: Item
 
 
-def derived_status(state: State, record: Record) -> str:
-    """The status ``record`` (a revision of a known ID) shows: superseded, resolved, an implied legacy
-    retirement, or its stored status."""
-    shown = state.status(record.id)
-    head = state.entries[record.id].record
-    return record.status if shown == head.status else shown
+def derived_status(settled: State, record: Record) -> str:
+    """The status a revision shows in the bank: superseded or resolved by ACCEPTED links (``settled``, the
+    replay of ``origin/main``) or by its own legacy row, an implied legacy retirement, or its stored status."""
+    legacy = record.legacy
+    implied = legacy.implied_status if legacy is not None else None
+    if settled.superseded_by.get(record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
+        return "superseded"
+    if settled.resolved_by.get(record.id) or implied == "resolved":
+        return "resolved"
+    return "retired" if implied == "retired" else record.status
 
 
 def document_text(record: Record, status: str) -> str:
@@ -217,7 +252,7 @@ def item_for(document_id: str, revision: Revision, segment: str, state: str, sta
         document_id=document_id,
         content=document_text(record, status),
         tags=tags(record, state=state, status=status, segment=PurePosixPath(segment).stem),
-        metadata={"record": canonical_json(record.to_json()).decode(), "sha256": revision.sha256,
+        metadata={"record": canonical_json(record.to_json()).decode(), "sha256": revision.sha256, "rev": revision.rev,
                   "prev": ",".join(revision.prev), "segment": segment},
         timestamp=f"{date}T00:00:00Z" if date else "unset",
         entities=names,
@@ -227,8 +262,8 @@ def item_for(document_id: str, revision: Revision, segment: str, state: str, sta
 
 def accepted_heads(entry: Entry, accepted: frozenset[str]) -> tuple[str, ...]:
     """Heads among the accepted revisions of ``entry``: accepted identities no accepted revision names as ``prev``."""
-    mine = {sha for sha in entry.revisions if sha in accepted}
-    named = {prev for sha in mine for prev in entry.revisions[sha].revision.prev}
+    mine = {rev for rev in entry.revisions if rev in accepted}
+    named = {prev for rev in mine for prev in entry.revisions[rev].revision.prev}
     return tuple(sorted(mine - named))
 
 
@@ -237,9 +272,9 @@ def desired(universe: Universe) -> dict[str, Desired]:
     state = universe.state
     found: dict[str, Desired] = {}
 
-    def add(document_id: str, entry: Entry, sha: str, document_state: str) -> None:
-        located = entry.revisions[sha]
-        status = derived_status(state, located.revision.record)
+    def add(document_id: str, entry: Entry, rev: str, document_state: str) -> None:
+        located = entry.revisions[rev]
+        status = derived_status(universe.settled, located.revision.record)
         item = item_for(document_id, located.revision, located.segment, document_state, status)
         found[document_id] = Desired(document_id, entry.id, document_state, status, located.revision, located.segment, item)
 
@@ -248,9 +283,9 @@ def desired(universe: Universe) -> dict[str, Desired]:
         heads = accepted_heads(entry, universe.accepted)
         if heads:
             add(identifier, entry, heads[0], "conflict" if len(heads) > 1 else "accepted")
-            for sha in entry.heads:
-                if sha not in universe.accepted:
-                    add(f"{identifier}@{sha[:12]}", entry, sha, "pending")
+            for rev in entry.heads:
+                if rev not in universe.accepted:
+                    add(f"{identifier}@{rev[:12]}", entry, rev, "pending")
         else:
             add(identifier, entry, entry.heads[0], "conflict" if entry.conflict else "proposed")
     return found
@@ -281,7 +316,7 @@ def matches(have: Document, want: Item) -> tuple[bool, bool]:
     return content, have.tags == tuple(sorted(want.tags))
 
 
-def diff(wanted: Mapping[str, Desired], held: Sequence[Document], known: frozenset[tuple[str, str]]) -> Plan:
+def diff(wanted: Mapping[str, Desired], held: Sequence[Document], known: frozenset[str]) -> Plan:
     by_id = {document.id: document for document in held}
     retain: list[Item] = []
     retag: list[tuple[str, tuple[str, ...]]] = []
@@ -301,7 +336,7 @@ def diff(wanted: Mapping[str, Desired], held: Sequence[Document], known: frozens
     for document in sorted(held, key=lambda item: id_key(item.id)):
         if document.id in wanted:
             continue
-        if (document.metadata.get("sha256", ""), document.metadata.get("prev", "")) in known:
+        if document.metadata.get("rev", "") in known:
             delete.append(document.id)
         else:
             unexplained.append(document)
@@ -337,7 +372,7 @@ def apply(bank: Bank, plan: Plan, *, bulk: bool = False) -> None:
 
 def orphan_tags(document: Document) -> tuple[str, ...] | None:
     """The tags of ``document`` with ``state:orphaned``, or ``None`` when it has no record metadata or is orphaned already."""
-    if "sha256" not in document.metadata or "record" not in document.metadata or "state:orphaned" in document.tags:
+    if not {"record", "sha256", "rev"} <= document.metadata.keys() or "state:orphaned" in document.tags:
         return None
     return tuple(sorted({*(tag for tag in document.tags if not tag.startswith("state:")), "state:orphaned"}))
 
@@ -379,7 +414,7 @@ def read_back(bank: Bank, wanted: Mapping[str, Desired], revisions: Sequence[Rev
         if document.text != target.item.content or document.content_hash != sha256_hex(target.item.content.encode()):
             problems.append(f"{target.document_id}: text differs after publication")
         if document.metadata != dict(target.item.metadata):
-            problems.append(f"{target.document_id}: metadata (sha256 {revision.sha256[:12]}) differs after publication")
+            problems.append(f"{target.document_id}: metadata (rev {revision.rev[:12]}) differs after publication")
     return problems
 
 

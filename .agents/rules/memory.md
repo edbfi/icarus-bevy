@@ -100,8 +100,8 @@ Supersession is acyclic.
 ## Revisions
 
 - Revisable in place: REF body; unknown status and next probe; evidence status
-  with note; appended `verified_on` and notes; stored status not derivable from
-  links.
+  with note; appended `verified_on`, notes, `supersedes` and `resolves`; stored
+  status not derivable from links.
 - Not revisable (supersede with a new record): a finding's claim, kind,
   standing, scope; evidence path, sha256, size, class, kind, date, members.
 - Each revision has an identity `rev`, the sha256 of the canonical JSON of its

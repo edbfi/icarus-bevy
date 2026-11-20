@@ -230,6 +230,15 @@ class RevisabilityTests(unittest.TestCase):
         self.assertEqual(["an evidence status change appends a note"], revised(chain()[7], {"status": "missing"}))
         self.assertEqual(["notes may only be appended to"], revised(dict(chain()[7], notes=["a", "b"]), {"notes": ["b", "a"]}))
 
+    def test_supersedes_and_resolves_are_append_only_cites_and_refs_immutable(self) -> None:
+        accepted = chain()[4]
+        self.assertEqual([], revised(accepted, {"supersedes": ["F-101", "F-102"]}))
+        self.assertEqual([], revised(accepted, {"resolves": ["U-101"]}))
+        self.assertEqual(["supersedes may only be appended to"], revised(accepted, {"supersedes": ["F-101"]}))
+        self.assertEqual(["resolves may only be appended to"], revised(chain()[2], {"resolves": ["U-102"]}))
+        self.assertEqual(["cites changed; it is not revisable (supersede with a new record)"], revised(accepted, {"cites": ["M-101"]}))
+        self.assertEqual(["refs changed; it is not revisable (supersede with a new record)"], revised(accepted, {"refs": ["F-104"]}))
+
     def test_reference_body_is_revisable_and_its_title_is_not(self) -> None:
         header: dict[str, JSON] = {"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
                                    "scope": explicit(subjects=("tooling",)), "body_sha256": body_digest("one\n")}
