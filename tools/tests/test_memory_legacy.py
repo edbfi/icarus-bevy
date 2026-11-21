@@ -1002,7 +1002,38 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
         status, stdout, stderr = self.run_salvage("quiet")
         self.assertEqual((0, ""), (status, stdout))
-        self.assertIn("changes no legacy rows; nothing to salvage", stderr)
+        self.assertIn("leaves nothing to salvage", stderr)
+
+    def test_a_merged_tip_whose_pre_merge_parent_changed_only_a_document_is_refused(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "spec-edit")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit a spec")
+        tip = run_git(self.root, "rev-parse", "HEAD").strip()
+        _ = self.journal_on_main(remove_legacy=True)
+        _ = run_git(self.root, "checkout", "-q", "spec-edit")
+        _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        status, stdout, stderr = self.run_salvage("spec-edit")
+        self.assertEqual((salvage_command.EXIT_PREMERGE, ""), (status, stdout))
+        self.assertIn(f"run memory salvage {tip}", stderr)
+
+    def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text() + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "add a row")
+        _ = self.journal_on_main(remove_legacy=True)
+        first = salvage(self.root, "runbook")
+        self.assertEqual(["F-111"], [item.record.id for item in first.proposals])
+        self.accept(first)
+        _ = run_git(self.root, "checkout", "-q", "runbook")
+        with self.assertRaises(subprocess.CalledProcessError):
+            _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        _ = run_git(self.root, "rm", "-r", "-q", "--ignore-unmatch", "docs/ledgers", "evidence")
+        _ = run_git(self.root, "commit", "-q", "--no-edit")
+        status, stdout, stderr = self.run_salvage("runbook")
+        self.assertEqual((0, ""), (status, stdout), stderr)
+        self.assertIn("leaves nothing to salvage", stderr)
 
     def test_a_branch_without_legacy_trees_has_nothing_to_salvage(self) -> None:
         _ = self.journal_on_main(remove_legacy=True)

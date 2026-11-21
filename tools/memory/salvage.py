@@ -36,8 +36,10 @@ branch's row would silently undo main's change; rules, "Revisions"). One row nev
 Salvage must run on the branch's pre-merge tip. A branch that merged the cut-over (a merge commit in its
 first-parent history since the merge base, one of whose parents is an ancestor of the accepted commit without
 legacy trees) has a merge base with no legacy trees: resolving the modify/delete conflicts by deleting leaves
-nothing to export, and keeping the files makes every row look changed. When the merge's other parent holds
-changed legacy rows, ``premerge`` names that parent and nothing is classified: run ``memory salvage <premerge>``.
+nothing to export, and keeping the files makes every row look changed. The merge's other parent is salvaged
+against the accepted commit as the normal path does: if anything is left (a proposal, a held or conflicting row,
+a changed document), ``premerge`` names that parent and nothing is classified: run ``memory salvage <premerge>``;
+if all of it is accepted (its salvage merged first, as the runbook does), nothing is left to salvage.
 
 New compatibility and campaign rows get positional IDs at export, so their IDs are only provisional.
 A document the branch changed (a spec, digest, ledger prose, the status file) is listed by path with
@@ -94,6 +96,7 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
     premerge: str | None = None
     merge: str | None = None
+    documents: list[str] = field(default_factory=list[str])
 
 
 @dataclass(frozen=True)
@@ -289,14 +292,6 @@ def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     return run_git(root, "merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant, ok=(0, 1))[0] == 0
 
 
-def changed_rows(root: Path, head: str, main: str) -> dict[str, Record]:
-    """The salvaged-type rows ``head``'s legacy trees add or modify against its merge-base with ``main``."""
-    after = export(root, head).records()
-    base = merge_base(root, main, head)
-    before = export(root, base).records() if has_legacy(root, base) else {}
-    return {identifier: record for identifier, record in after.items() if record.type in SALVAGED and before.get(identifier) != record}
-
-
 def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, str] | None:
     """The first merge commit in ``head``'s first-parent history since ``base`` that merged the cut-over (a parent
     that is an ancestor of ``main`` and has no legacy trees) with a parent holding legacy trees: ``(merge, that parent)``."""
@@ -346,12 +341,15 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     result = Salvage(ref, head, base, accepted_commit)
     if (merged := cut_over_merge(root, head, base, accepted_commit)) is not None:
         merge, parent = merged
-        if changed_rows(root, parent, accepted_commit):
+        # The pre-merge tip, salvaged against the accepted commit as the normal path does: anything left to do
+        # (a proposal, a row held or in conflict, a changed document) refuses; all of it accepted means done.
+        left = salvage(root, parent, main)
+        if left.proposals or left.conflicts or left.unrevisable or left.undecided or left.documents or left.premerge:
             result.merge, result.premerge = merge, parent
             result.notices.append(f"{ref} merged the cut-over in {merge[:12]}; its legacy rows are on the pre-merge tip {parent}: "
                                   + f"salvage must run there (memory salvage {parent})")
         else:
-            result.notices.append(f"{ref} merged the cut-over in {merge[:12]}; its pre-merge tip {parent[:12]} changes no legacy rows; nothing to salvage")
+            result.notices.append(f"{ref} merged the cut-over in {merge[:12]}; its pre-merge tip {parent[:12]} leaves nothing to salvage")
         return result
     if not has_legacy(root, head):
         result.notices.append(f"{ref} has no legacy ledgers or evidence index at its tip; nothing to salvage")
@@ -482,8 +480,10 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     for path, record in sorted(documents(after).items()):
         on_main = main_refs.get(path)
         if on_main is None:
+            result.documents.append(path)
             result.notices.append(f"{path}: new document; propose a REF for it by hand")
         elif record.body not in (on_main.body, base_bodies.get(path)):
+            result.documents.append(path)
             result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
