@@ -56,7 +56,7 @@ from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, load_
 from tools.memory.model import BUILD, ID, SELECTOR, Record, RecordError, as_mapping, id_key, is_array, load_json, sha256_hex
 from tools.memory.service import home, write_private
 from tools.memory.paths import ProtectedPathsError, worktrees
-from tools.memory.state import Entry, State, legacy_holds, replay
+from tools.memory.state import Entry, State, replay
 
 ACCEPTANCE_REF = "origin/main"
 REF_NAMESPACES = ("refs/heads", "refs/remotes")
@@ -268,17 +268,31 @@ def stated_superseders(settled: State, identifier: str) -> tuple[str, ...]:
                  if (record := settled.record(name)) is not None and identifier in record.links.supersedes)
 
 
-def legacy_in_force(settled: State, record: Record) -> bool:
-    """Whether a revision's legacy status holds (``state.legacy_holds``) against the accepted migration revision."""
+def legacy_in_force(settled: State, record: Record, history: Entry | None = None, rev: str | None = None) -> bool:
+    """Whether a revision's legacy status holds (``Entry.legacy_holds``). With ``history`` and ``rev`` (the entry
+    holding the revision and its identity) that decides; else the accepted entry's revisions with this content,
+    heads first; a revision ``origin/main`` does not hold holds only if it stores the migration status and
+    every accepted head still holds."""
+    if record.legacy is None:
+        return False
+    if history is not None and rev is not None:
+        return history.legacy_holds(rev)
     entry = settled.entries.get(record.id)
-    return legacy_holds(record, entry.origin if entry is not None else None)
+    if entry is None:
+        return True
+    same = [key for key in entry.heads if entry.revisions[key].revision.record == record]
+    same = same or [key for key, located in entry.revisions.items() if located.revision.record == record]
+    if same:
+        return all(entry.legacy_holds(key) for key in same)
+    return (entry.origin is None or record.status == entry.origin) and all(entry.legacy_holds(key) for key in entry.heads)
 
 
-def derived_status(settled: State, record: Record) -> str:
+def derived_status(settled: State, record: Record, history: Entry | None = None, rev: str | None = None) -> str:
     """The status a revision shows in the bank: superseded or resolved by ACCEPTED links (``settled``, the
     replay of ``origin/main``), or by its own legacy row while that holds (``legacy_in_force``: the latest
-    stored status wins), an implied legacy retirement likewise, or its stored status."""
-    legacy = record.legacy if legacy_in_force(settled, record) else None
+    stored status wins; ``history`` and ``rev`` name the revision exactly), an implied legacy retirement
+    likewise, or its stored status."""
+    legacy = record.legacy if legacy_in_force(settled, record, history, rev) else None
     implied = legacy.implied_status if legacy is not None else None
     if stated_superseders(settled, record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
         return "superseded"
@@ -332,7 +346,7 @@ def desired_for(universe: Universe, identifier: str) -> list[Desired]:
 
     def add(document_id: str, rev: str, document_state: str) -> None:
         located = entry.revisions[rev]
-        status = derived_status(universe.settled, located.revision.record)
+        status = derived_status(universe.settled, located.revision.record, entry, rev)
         item = item_for(document_id, located.revision, located.segment, document_state, status)
         found.append(Desired(document_id, entry.id, document_state, status, located.revision, located.segment, item))
 
