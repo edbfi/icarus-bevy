@@ -115,7 +115,8 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    - `needs a decision by hand: …`: settle it with the record's owner; one
      that says `it cites … (a provisional number), whose record must be
      accepted first` waits for that new document or CP/RP row: get it
-     accepted, then run salvage again;
+     accepted, then run salvage again; one that names `one of N records
+     sharing the …` is settled by hand, as is any row citing it;
    - `conflict: …: origin/main holds other content under this ID`: when both
      sides allocated the number (as M-1623 to M-1625 on one existing branch), add the
      branch's record under a new ID (`memory evidence add`, `memory propose`)
