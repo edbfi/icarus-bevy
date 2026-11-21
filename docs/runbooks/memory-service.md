@@ -100,8 +100,11 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    convert the rows of the branch's pre-merge tip:
    `memory salvage <branch> --check`, then
    `memory salvage <branch> --out work/<case>/salvage`.
-   Salvage resolves `origin/main` (`--main REF` names another); a tip that
-   already merged the cut-over is refused with the pre-merge tip to use.
+   `--out` writes the proposals under `<out>/memory/journal/` and each pending
+   document's body under `<out>/documents/<path>`. Salvage resolves
+   `origin/main` (`--main REF` names another); REF, CP and RP numbers in the
+   report are `origin/main`'s. A tip that already merged the cut-over is
+   refused with the pre-merge tip to use.
    `memory salvage: internal error, nothing written: …` is a defect in salvage
    itself: report it and do not work around it.
 3. Act on each line of the report (exit 4 means some row needs a hand):
@@ -109,15 +112,21 @@ stops being protected as soon as its `evidence/` leaves the working tree.
      output segments;
    - `needs a superseding record: …`: `memory propose` the branch's content as
      a new record, then `memory supersede <old> --by <new>`;
-   - `needs a decision by hand: …`: settle it with the record's owner;
+   - `needs a decision by hand: …`: settle it with the record's owner; one
+     that says `it cites … (a provisional number), whose record must be
+     accepted first` waits for that new document or CP/RP row: get it
+     accepted, then run salvage again;
    - `conflict: …: origin/main holds other content under this ID`: when both
      sides allocated the number (as M-1623 to M-1625 on one existing branch), add the
      branch's record under a new ID (`memory evidence add`, `memory propose`)
      and rewrite the branch's citations; when `main` took an earlier draft,
      reconcile by hand with `memory revise` or a superseding record;
-   - a changed document (`--check` prints `changed document; memory revise
-     REF-N --body FILE`): run that command; a new document (`new document;
-     propose a REF for it`): propose a REF.
+   - a pending document: `--out` prints the command that uses the body it
+     wrote, `memory revise REF-N --body <out>/documents/<path>` for a changed
+     document or `memory propose reference --set 'title=…' --set-json
+     'scope={"basis": "explicit"}' --body <out>/documents/<path>` for a new
+     one; run it as printed. Without `--out` the line names only the REF
+     (`changed document; revise REF-N with the body salvage --out writes`).
 4. On a new branch from `main`, copy the output's `memory/journal/` segments
    into `memory/journal/`, add the records from step 3, run
    `memory check --ci`, commit and open the pull request. After it merges, the
@@ -132,8 +141,9 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    While anything is left it exits 5 and names the pre-merge parent;
    `memory salvage <parent> --check` lists what is left, the rows and the
    pending documents (each with the REF to revise), and exits non-zero while
-   either remains. A document is done when the REF body on `origin/main`
-   equals the branch's file. A row resolved by hand in step 3 (a superseding
+   either remains. A changed document is done when the REF body on
+   `origin/main` equals the branch's file, a new one when an accepted REF
+   holds its body. A row resolved by hand in step 3 (a superseding
    record, a conflict added again under a new ID, a decision by hand) never
    becomes accepted under its old ID, and a body merged by hand into other
    text never equals the file, so both stay listed and the exit stays
