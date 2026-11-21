@@ -953,8 +953,20 @@ class SalvageTests(LegacyRepository):
         result = self.forced("pair", "F-111")
         self.assertEqual([], result.proposals)
         self.assertEqual("undecided", result.kinds["F-107"])
-        self.assertIn("its successor F-111 is not proposed (invented failure)", result.undecided["F-107"])
+        self.assertIn("names successor F-111, which cannot carry the link (invented failure)", result.undecided["F-107"])
         self.assertIn("F-107", result.unsalvaged)
+
+    def test_a_row_held_for_its_second_successor_leaves_no_link_on_its_first(self) -> None:
+        # F-107 names the new F-111 (status cell) and the accepted F-105 (prose); F-105's link fails replay.
+        ledger = "docs/ledgers/findings/widgets.md"
+        self.edited("two", (ledger, "Last reconciled", "F-107 superseded-by F-105.\n\nLast reconciled"),
+                    (ledger, "owner said so | | active |", "owner said so | | superseded-by F-111 |\n| F-111 | Replacement claim | observed | review | high; x | | active |"))
+        result = self.forced("two", "F-105")
+        self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
+        self.assertEqual("undecided", result.kinds["F-107"])
+        self.assertIn("names successor F-105, which cannot carry the link (invented failure)", result.undecided["F-107"])
+        self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
+        self.assertIn("F-107: F-105 would supersede it, but F-107 is undecided; F-105 is not revised", result.notices)
 
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
