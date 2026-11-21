@@ -175,7 +175,9 @@ repos:
         entry: python3 -m tools.memory verify --staged
         language: system
         pass_filenames: false
-        files: ^memory/journal/
+        # Always: it reads the affected records from the index itself, and a commit that only deletes
+        # journal files has no staged file names for a files: filter to match.
+        always_run: true
         stages: [pre-commit]
       - id: docs-check
         name: Check links and document paths of the documents in Git
