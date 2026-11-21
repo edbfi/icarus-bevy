@@ -1022,6 +1022,20 @@ class SalvageTests(LegacyRepository):
         with self.assertRaisesRegex(salvage_command.SalvageError, "F-111: a notice says it is not revised"):
             salvage_command.invariants(result, ["F-107", "F-111"], salvage_command.accepted_on(self.root, "origin/main"))
 
+    def test_compatibility_rows_sharing_a_name_are_each_held_and_none_is_lost(self) -> None:
+        table = "docs/ledgers/compatibility.md"
+        for case, added, shared in (("new names", "| Dup | Unknown | One |\n| Dup | Unknown | Two |\n", "compatibility row 'Dup'"),
+                                    ("an accepted name", "| Discovery | Unknown | Again |\n", "compatibility row 'Discovery'")):
+            with self.subTest(case):
+                self.setUp()
+                self.edited("dup", (table, "| Discovery | Unknown | Browser behavior |\n", "| Discovery | Unknown | Browser behavior |\n" + added))
+                result = salvage(self.root, "dup")
+                held = sorted(name for name, reason in result.undecided.items() if f"records sharing the {shared}" in reason)
+                self.assertEqual(2, len(held), result.undecided)
+                self.assertEqual(2, len(set(held)), "each row under its own number")
+                self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
+                self.assertFalse(any("removed on dup" in notice for notice in result.notices), result.notices)
+
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
         self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",

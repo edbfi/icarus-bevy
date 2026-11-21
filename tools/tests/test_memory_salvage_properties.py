@@ -17,7 +17,7 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.model import JSON, Record
 from tools.memory.legacy import TRACKED_NOTE
-from tools.memory.salvage import Accepted, Salvage, SalvageError, classify, renumber
+from tools.memory.salvage import SALVAGED, Accepted, Salvage, SalvageError, classify, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -57,9 +57,15 @@ def tracked(identifier: str, path: str, ref: str) -> Record:
 
 
 def numbered(paths: list[str], names: list[str]) -> tuple[dict[str, str], dict[str, str]]:
-    """An export's positional numbers: REF-N by path order, CP-N by table order."""
-    return ({path: f"REF-{number:03d}" for number, path in enumerate(sorted(paths), 1)},
-            {name: f"CP-{number:03d}" for number, name in enumerate(names, 1)})
+    """An export's positional numbers: REF-N by path order, CP-N by table order (a repeated name: its first row)."""
+    cps: dict[str, str] = {}
+    for number, name in enumerate(names, 1):
+        _ = cps.setdefault(name, f"CP-{number:03d}")
+    return {path: f"REF-{number:03d}" for number, path in enumerate(sorted(paths), 1)}, cps
+
+
+def base_ids(before: dict[str, Record]) -> list[str]:
+    return sorted(name for name, record in before.items() if record.type == "finding")
 
 
 def problems(state: State) -> set[str]:
@@ -98,10 +104,13 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     branch_names = ["Alpha", "Beta", "Gamma"] if rng.random() < 0.5 else main_names
+    # A repeated name: two new rows of one name, or a second row of an accepted name.
+    repeated = rng.choice([[], [], ["Dup", "Dup"], ["Gamma"]])
+    branch_names = [*branch_names, *repeated]
     for paths, names, export in ((main_paths, main_names, before), (branch_paths, branch_names, after)):
         refs, cps = numbered(paths, names)
         export.update({refs[path]: document(refs[path], path) for path in paths})
-        export.update({cps[name]: surface(cps[name], name) for name in names})
+        export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
         export["M-500"] = tracked("M-500", "docs/specs/e.md", refs["docs/specs/e.md"])
         cited = export[base_ids[0]].to_json() | {"refs": [cps["Gamma"]]}
         export[base_ids[0]] = Record.from_json(cited)
@@ -130,23 +139,32 @@ class GeneratedSalvageTests(unittest.TestCase):
         for seed in SEEDS:
             raw_after, raw_before, accepted = case(seed)
             after, before = raw_after, raw_before
-            (after, before), unmapped = renumber((after, before), accepted.records)
+            (after, before), unmapped, shared = renumber((after, before), accepted.records)
             result = Salvage("generated", "a" * 40, "b" * 40, "c" * 40)
             try:
-                _ = classify(result, after, before, accepted, unmapped)
+                _ = classify(result, after, before, accepted, unmapped, shared)
             except SalvageError as error:
                 self.fail(f"seed {seed}: {error}")
             base = replay(accepted.segments)
             proposed = replay([*accepted.segments, Segment("memory/journal/proposals.jsonl", "", tuple(result.proposals))])
             self.assertEqual(set[str](), problems(proposed) - problems(base), f"seed {seed}")
             # Another spelling of the ref and another tip (an unrelated commit): byte-identical proposals, same classes.
+            # No record is lost: the translated export holds every record, and every changed one is reported.
+            self.assertEqual(len(raw_after), len(after), f"seed {seed}: renumbering lost a record")
+            changed = {name for name, record in after.items() if record.type in SALVAGED and before.get(name) != record}
+            self.assertEqual(set[str](), changed - set(result.kinds), f"seed {seed}: changed rows not reported")
+            for name in shared:
+                if name in changed:
+                    self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
+            if sum(1 for record in raw_after.values() if record.text("name") == "Gamma") > 1:
+                self.assertEqual("undecided", result.kinds[base_ids(raw_before)[0]], f"seed {seed}: a row citing a shared name")
             if "M-501" in after:
                 self.assertEqual("undecided", result.kinds["M-501"], f"seed {seed}: a row citing a new document")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)
-            _ = classify(other, after, before, accepted, unmapped)
+            _ = classify(other, after, before, accepted, unmapped, shared)
             self.assertEqual(([revision.line() for revision in result.proposals], result.kinds),
                              ([revision.line() for revision in other.proposals], other.kinds), f"seed {seed}")
             # Once the first output is accepted, nothing is proposed again and nothing held changes class.
@@ -155,9 +173,9 @@ class GeneratedSalvageTests(unittest.TestCase):
             now = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
                            {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", merged)
             again = Salvage("generated", "e" * 40, "b" * 40, "c" * 40)
-            (after_again, before_again), unmapped_again = renumber((raw_after, raw_before), now.records)
+            (after_again, before_again), unmapped_again, shared_again = renumber((raw_after, raw_before), now.records)
             try:
-                _ = classify(again, after_again, before_again, now, unmapped_again)
+                _ = classify(again, after_again, before_again, now, unmapped_again, shared_again)
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
             self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
