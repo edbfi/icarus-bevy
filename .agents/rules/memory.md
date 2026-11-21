@@ -162,7 +162,7 @@ Supersession is acyclic.
 | `sync` | Fetch, then reconcile states with `origin/main`; idempotent. |
 | `check [--ci] [--bank] [--pin]` | Journal, citations, forks, notices; `--bank` as above; `--pin` lists cited records not current. |
 | `protected-paths` | Paths to keep; fails closed. |
-| `salvage BRANCH [--check]` | Turns a branch's added legacy rows into proposals. |
+| `salvage BRANCH [--check] [--main REF]` | Turns a branch's added legacy rows into proposals against `origin/main`, never one needing a superseding record; run on the pre-merge tip. |
 | `backup`, `restore FILE [--drill]`, `rebuild` | Durability. |
 
 ## Reading
