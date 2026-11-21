@@ -306,7 +306,7 @@ class Units(Scratch):
         self.assertEqual((TOMBSTONE, new), (legacy.read_bytes(), read_settings(where)))
         _ = legacy.write_text("anything", encoding="utf-8")
         legacy.chmod(0o600)
-        with self.assertRaisesRegex(ServiceError, "malformed or repeated line"):
+        with self.assertRaisesRegex(ServiceError, "^connection.env:1: malformed or repeated line$"):
             _ = rotate_connection(where)
         self.assertEqual("anything", legacy.read_text(encoding="utf-8"))
 

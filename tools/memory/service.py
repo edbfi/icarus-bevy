@@ -286,42 +286,43 @@ def render_settings(settings: Settings) -> str:
     return "\n".join(lines) + "\n"
 
 
-def file_variables(text: str) -> dict[str, str]:
-    """The variables of a connection file as written (``NAME=value`` lines; comments and blank lines skipped)."""
+def file_variables(text: str, label: str = CONNECTION_FILE) -> dict[str, str]:
+    """The variables of a connection file as written (``NAME=value`` lines; comments and blank lines skipped);
+    errors name the file ``label``."""
     values: dict[str, str] = {}
     for number, line in enumerate(text.splitlines(), 1):
         if not line or line.startswith("#"):
             continue
         name, separator, value = line.partition("=")
         if not separator or name in values:
-            raise ServiceError(f"{CONNECTION_FILE}:{number}: malformed or repeated line")
+            raise ServiceError(f"{label}:{number}: malformed or repeated line")
         values[name] = value
     return values
 
 
-def parse_settings(text: str) -> Settings:
+def parse_settings(text: str, label: str = CONNECTION_FILE) -> Settings:
     """Strict parse of the connection file; only the exact generated shape is accepted."""
-    values = file_variables(text)
+    values = file_variables(text, label)
     expected = ("HINDSIGHT_API_HOST", "HINDSIGHT_API_PORT", "HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_DATABASE_URL", "ICARUS_MEMORY_BANK")
     # A file written before the reranker setting existed holds only the five; it means the default, which
     # ``install`` then writes out (Hindsight's own default is on).
     reranker = reranker_setting(values.get(RERANKER_VARIABLE, RERANKER_DEFAULT))
     implied = reranker_environment(reranker) if RERANKER_VARIABLE in values else {}
     if sorted(values) != sorted((*expected, *implied)) or any(values[name] != value for name, value in implied.items()):
-        raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
+        raise ServiceError(f"{label}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
     database = _DATABASE_URL.fullmatch(values["HINDSIGHT_API_DATABASE_URL"])
     port = values["HINDSIGHT_API_PORT"]
     if values["HINDSIGHT_API_HOST"] != "127.0.0.1" or not port.isdigit() or not 1024 <= int(port) <= 65535:
-        raise ServiceError(f"{CONNECTION_FILE}: the service must listen on a loopback port between 1024 and 65535")
+        raise ServiceError(f"{label}: the service must listen on a loopback port between 1024 and 65535")
     if not _KEY.fullmatch(values["HINDSIGHT_API_TENANT_API_KEY"]):
-        raise ServiceError(f"{CONNECTION_FILE}: the API key must be 64 lowercase hex digits")
+        raise ServiceError(f"{label}: the API key must be 64 lowercase hex digits")
     if database is None:
-        raise ServiceError(f"{CONNECTION_FILE}: the database URL must be pg0://hindsight:<64 hex>@hindsight:<port>?{DATABASE_QUERY}")
+        raise ServiceError(f"{label}: the database URL must be pg0://hindsight:<64 hex>@hindsight:<port>?{DATABASE_QUERY}")
     pg_port = int(database.group(2))
     if not 1024 <= pg_port <= 65535 or pg_port == int(port):
-        raise ServiceError(f"{CONNECTION_FILE}: the database port must be distinct and between 1024 and 65535")
+        raise ServiceError(f"{label}: the database port must be distinct and between 1024 and 65535")
     if values["ICARUS_MEMORY_BANK"] != BANK:
-        raise ServiceError(f"{CONNECTION_FILE}: the bank must be {BANK}")
+        raise ServiceError(f"{label}: the bank must be {BANK}")
     return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK, reranker)
 
 
@@ -340,7 +341,7 @@ def read_settings(where: Home, path: Path | None = None) -> Settings:
             raise ServiceError(f"{path}: mode {stat.S_IMODE(info.st_mode):04o} gives group or world access; it must be 0600")
         data = handle.read(65536)
     try:
-        return parse_settings(data.decode("utf-8"))
+        return parse_settings(data.decode("utf-8"), path.name)
     except UnicodeDecodeError as error:
         raise ServiceError(f"{path}: not UTF-8") from error
 
