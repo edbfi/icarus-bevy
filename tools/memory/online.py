@@ -644,29 +644,43 @@ def verify_record(primary: Path, record: Record, status: str, state: State | Non
     return verdict("verified", path)
 
 
-def staged_evidence(root: Path) -> list[Record]:
-    """Every evidence revision in the segments staged in Git's index (added or modified); an unreadable
-    segment raises, so the pre-commit hook fails closed."""
+def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revision, Entry]]:
+    """Every evidence revision in the segments staged in Git's index (added or modified), each with its history
+    in what the commit holds: ``accepted`` (``origin/main``) plus every journal segment in the index, never the
+    working tree; only revisions that are a head there. An unreadable segment raises, so the pre-commit hook
+    fails closed."""
     listed = git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=AM", "--", JOURNAL).decode().split("\0")
-    paths = sorted(path for path in listed if path)
-    found: list[Record] = []
-    for path, data in zip(paths, read_blobs(root, [f":{path}" for path in paths]), strict=True):
+    staged = {path for path in listed if path}
+    indexed = sorted(path for path in git(root, "ls-files", "-z", "--", JOURNAL).decode().split("\0") if path.endswith(".jsonl"))
+    committed = {segment.path: segment for segment in accepted}
+    for path, data in zip(indexed, read_blobs(root, [f":{path}" for path in indexed]), strict=True):
         if data is None:
-            raise JournalError(f"{path}: staged but unreadable from the index")
-        found += [revision.record for revision in parse_segment(path, data).revisions if revision.record.type == "evidence"]
-    return found
+            raise JournalError(f"{path}: in the index but unreadable from it")
+        committed[path] = parse_segment(path, data)
+    history = replay(committed.values())
+    # A staged revision that a later revision in the same commit replaces is not judged on its own: the
+    # record's head(s) in what is committed decide.
+    return [(revision, history.entries[revision.record.id]) for path in sorted(staged)
+            for revision in committed[path].revisions
+            if revision.record.type == "evidence" and revision.rev in history.entries[revision.record.id].heads]
 
 
 def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, staged: bool = False) -> Output:
     """``verified``, ``unavailable``, ``mismatched`` or ``legacy-unverifiable`` per evidence record; exit 1 on
     ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``).
-    ``staged``: every evidence revision in the staged segments (the prek hook), whatever the replayed journal holds."""
+    ``staged``: every evidence revision in the staged segments (the prek hook), each judged as committed, whatever the
+    working tree holds."""
     universe = gather(root)
     view = universe.view
     primary = primary_checkout(root)
     records: list[Record] = []
+    judged: list[str] = []
     if staged:
-        records = staged_evidence(root)
+        # The revision being committed is judged on its own history against the accepted links, as the bank
+        # derives status: an unstaged later revision, or a superseder not yet accepted, releases nothing.
+        for revision, entry in staged_evidence(root, universe.main):
+            records.append(revision.record)
+            judged.append(universe.settled.status_at(entry, revision.rev))
     else:
         names = (sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key) if every
                  else [name.split("/", 1)[0] for name in identifiers])
@@ -675,10 +689,8 @@ def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, stage
             if record is None or record.type != "evidence":
                 raise Refused(f"{name}: no evidence record in this checkout")
             records.append(record)
-    known = universe.state.entries
-    # A staged revision the replay does not hold (none should exist) falls back to its stored status.
-    verdicts = [verify_record(primary, record, view_status(universe, record.id) if record.id in known else record.status, view)
-                for record in records]
+            judged.append(view_status(universe, name))
+    verdicts = [verify_record(primary, record, status, view) for record, status in zip(records, judged, strict=True)]
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
     failing = sum(1 for item in verdicts if item.failing)

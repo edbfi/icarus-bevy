@@ -616,6 +616,22 @@ class EvidenceTests(Online):
         with self.assertRaises(JournalError):
             _ = online.verify(self.root, (), staged=True)
 
+    def test_staged_judges_the_revision_being_committed_not_a_later_unstaged_one(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        _ = run_git(self.root, "add", "memory/journal")
+        (self.root / "work/case/receipt.txt").unlink()
+        _ = online.revise(self.bank, self.root, "M-001", Changes({"status": "retired"}, note="Invented: retired, not staged"), now=self.tick())
+        self.assertEqual(0, online.verify(self.root, ["M-001"]).status, "the working tree's head is retired")
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (staged.status, staged.lines[0]))
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented replacing record", now=self.tick())
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        self.assertEqual(1, online.verify(self.root, (), staged=True).status, "an unstaged superseder releases nothing")
+        _ = run_git(self.root, "add", "memory/journal")
+        self.assertEqual(0, online.verify(self.root, (), staged=True).status, "the staged retirement is the revision committed")
+
     def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
         self.put("work/case/receipt.txt", "invented receipt")
         _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
