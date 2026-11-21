@@ -394,9 +394,10 @@ def rotate_connection(where: Home) -> bool:
     key, keeping ports, database password and reranker setting, and leave ``TOMBSTONE`` in its place; True when it
     rotated. The tombstone is not a settings file, so such a tool's every command, its ``service install``
     included, stops at "connection.env:1: malformed or repeated line" before writing anything. It prints only the
-    file and line; the sentence is there for whoever opens the file. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
-    never the one to create ``connection.env``. An old file beside the new one is tombstoned once it reads as
-    settings; a file that is neither is refused (``read_settings``), never overwritten."""
+    file and line; the sentence is there for whoever opens the file. Already tombstoned: nothing to do. No old
+    file (a fresh host): the tombstone alone, so an old checkout is never the one to create ``connection.env``.
+    An old file beside the new one is tombstoned once it reads as settings; a file that is neither is refused
+    (``read_settings``), never overwritten."""
     legacy = where.config / LEGACY_CONNECTION_FILE
     if tombstoned(legacy):
         return False
