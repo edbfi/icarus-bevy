@@ -17,8 +17,9 @@ State lives outside every checkout. ``home()`` gives three directories, each own
   moves an old ``connection.env`` to the new name with a NEW API key (``rotate_connection``; ports,
   database password and reranker setting kept) and restarts the unit, and leaves a tombstone named
   ``connection.env`` (on a fresh host too) that such a tool cannot parse: its every command, ``service
-  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything, and
-  a process still holding the old key is refused by the service. A second ``install`` rotates nothing.
+  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything (the
+  tool names only the file and line; the sentence in the file is for whoever opens it), and a process still
+  holding the old key is refused by the service. A second ``install`` rotates nothing.
 - ``data``: ``$XDG_DATA_HOME/icarus-memory`` with ``pg0/`` (``PG0_HOME``) and the service's private
   ``home/`` and ``tmp/``.
 - ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/`` and ``memory.lock``, the host lock every
@@ -74,7 +75,8 @@ BACKUP_UNIT = "icarus-memory-backup.service"
 BACKUP_TIMER = "icarus-memory-backup.timer"
 CONNECTION_FILE = "connection-v2.env"
 # The connection file of tools without the bank rendering guard (released before it); never read, only retired to
-# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse, saying what to do.
+# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse (naming only the file and line); the
+# sentence tells whoever opens the file what to do.
 LEGACY_CONNECTION_FILE = "connection.env"
 TOMBSTONE = (b"retired: this checkout's memory tool is older than the bank. Merge main, then run"
              + b" python3 -m tools.memory service install from it.\n")
@@ -390,8 +392,8 @@ def rotate_connection(where: Home) -> bool:
     """Retire ``connection.env`` (tools without the rendering guard read it) for ``CONNECTION_FILE`` with a new API
     key, keeping ports, database password and reranker setting, and leave ``TOMBSTONE`` in its place; True when it
     rotated. The tombstone is not a settings file, so such a tool's every command, its ``service install``
-    included, stops at "connection.env:1: malformed or repeated line" before writing anything, and the line says
-    why. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
+    included, stops at "connection.env:1: malformed or repeated line" before writing anything. It prints only the
+    file and line; the sentence is there for whoever opens the file. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
     never the one to create ``connection.env``. An old file beside the new one is tombstoned once it reads as
     settings; a file that is neither is refused (``read_settings``), never overwritten."""
     legacy = where.config / LEGACY_CONNECTION_FILE
