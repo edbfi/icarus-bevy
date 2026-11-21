@@ -55,6 +55,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast
 
+from tools.memory.gitio import GitError, git
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 
 BANK = "icarus"
@@ -82,6 +83,9 @@ PG_VERSION = "18.1.0"
 RERANKER_DEFAULT = "off"
 RERANKER_THREADS = "4"
 RERANKER_VARIABLE = "ICARUS_MEMORY_RERANKER"
+# Hindsight's own reranking switch. Its 1.2.3 default is on (``DEFAULT_ENABLE_RERANKING = True``), so "off" is
+# always written, never assumed.
+RERANKING_VARIABLE = "HINDSIGHT_API_ENABLE_RERANKING"
 # Every Hindsight setting the instance depends on; values are checked against config.py of 1.2.3.
 SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_LLM_PROVIDER": "none",
@@ -100,6 +104,9 @@ SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
     "HINDSIGHT_API_EMBEDDINGS_ONNX_DEVICE": "cpu",
     "HINDSIGHT_API_RERANKER_PROVIDER": "onnx",
+    # The floor: the connection file overrides it (``EnvironmentFile=`` wins over ``Environment=``, systemd.exec(5)),
+    # so only a file that turns reranking on turns it on.
+    RERANKING_VARIABLE: "false",
     "HINDSIGHT_API_LOG_LEVEL": "WARNING",
     "HF_HUB_OFFLINE": "1",
     "HF_HUB_DISABLE_TELEMETRY": "1",
@@ -244,7 +251,7 @@ def reranker_setting(value: str) -> str:
     """``off`` or a cap from 1 to 500, normalised; anything else is a ``ServiceError``."""
     if value == "off":
         return value
-    if not value.isdigit() or not 1 <= int(value) <= 500:
+    if not (value.isascii() and value.isdigit()) or not 1 <= int(value) <= 500:
         raise ServiceError(f"{RERANKER_VARIABLE} must be off or a candidate cap from 1 to 500, not {value!r}")
     return str(int(value))
 
@@ -253,8 +260,8 @@ def reranker_environment(setting: str) -> dict[str, str]:
     """The setting and the Hindsight variables it implies (the unit's EnvironmentFile passes them): reranking on
     also takes the cap and 4 ONNX threads (cap 10: p50 2.5 s on 2 threads, 1.7 s on 4)."""
     if setting == "off":
-        return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "false"}
-    return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "true", "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": setting,
+        return {RERANKER_VARIABLE: setting, RERANKING_VARIABLE: "false"}
+    return {RERANKER_VARIABLE: setting, RERANKING_VARIABLE: "true", "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": setting,
             "HINDSIGHT_API_RERANKER_ONNX_THREADS": RERANKER_THREADS}
 
 
@@ -264,8 +271,8 @@ def render_settings(settings: Settings) -> str:
     return "\n".join(lines) + "\n"
 
 
-def parse_settings(text: str) -> Settings:
-    """Strict parse of the connection file; only the exact generated shape is accepted."""
+def file_variables(text: str) -> dict[str, str]:
+    """The variables of a connection file as written (``NAME=value`` lines; comments and blank lines skipped)."""
     values: dict[str, str] = {}
     for number, line in enumerate(text.splitlines(), 1):
         if not line or line.startswith("#"):
@@ -274,8 +281,15 @@ def parse_settings(text: str) -> Settings:
         if not separator or name in values:
             raise ServiceError(f"{CONNECTION_FILE}:{number}: malformed or repeated line")
         values[name] = value
+    return values
+
+
+def parse_settings(text: str) -> Settings:
+    """Strict parse of the connection file; only the exact generated shape is accepted."""
+    values = file_variables(text)
     expected = ("HINDSIGHT_API_HOST", "HINDSIGHT_API_PORT", "HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_DATABASE_URL", "ICARUS_MEMORY_BANK")
-    # A file written before the reranker setting existed holds only the five; it means the default.
+    # A file written before the reranker setting existed holds only the five; it means the default, which
+    # ``install`` then writes out (Hindsight's own default is on).
     reranker = reranker_setting(values.get(RERANKER_VARIABLE, RERANKER_DEFAULT))
     implied = reranker_environment(reranker) if RERANKER_VARIABLE in values else {}
     if sorted(values) != sorted((*expected, *implied)) or any(values[name] != value for name, value in implied.items()):
@@ -360,7 +374,8 @@ def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT
 
 
 def set_reranker(where: Home, value: str) -> tuple[Settings, bool]:
-    """Write ``value`` as the reranker setting (key, ports and password kept); True when the file changed."""
+    """Write ``value`` as the reranker setting (key, ports and password kept) in the generated shape, so a file
+    that predates the setting gains its explicit variables; True when the file changed."""
     current = read_settings(where)
     wanted = replace(current, reranker=reranker_setting(value))
     text = render_settings(wanted)
@@ -744,14 +759,35 @@ def health(settings: Settings, runtime: Assets) -> list[Check]:
         config = api.get(f"/v1/default/banks/{settings.bank}/config")
         effective = config.get("config")
         reranking = cast(dict[object, object], effective).get("enable_reranking") if isinstance(effective, dict) else None
-        wanted = settings.reranker_cap is not None
-        checks.append(Check("reranker", reranking is wanted,
-                            f"{RERANKER_VARIABLE}={settings.reranker}; bank enable_reranking={reranking}" + (f", at most {settings.reranker_cap} candidates" if wanted else "")))
+        checks.append(reranker_check(settings, reranking))
         problems = bank_config_problems(config)
         checks.append(Check("bank config", not problems, "; ".join(problems) or f"{settings.bank}: no overrides; " + ", ".join(f"{name}={value}" for name, value in EXPECTED_BANK_CONFIG.items())))
     except ServiceError as error:
         checks.append(Check("authenticated", False, str(error)))
     return checks
+
+
+def reranker_check(settings: Settings, reranking: object) -> Check:
+    """Whether the service's effective reranking (the bank config's ``enable_reranking``) is what the settings say."""
+    wanted = settings.reranker_cap is not None
+    detail = f"{RERANKER_VARIABLE}={settings.reranker}; bank enable_reranking={reranking}" + (f", at most {settings.reranker_cap} candidates" if wanted else "")
+    if reranking is not wanted:
+        effective = "on" if reranking is True else "off" if reranking is False else f"unreported ({reranking!r})"
+        detail = f"reranking is {effective} in the service but the settings say {'on' if wanted else 'off'}; run memory service install ({detail})"
+    return Check("reranker", reranking is wanted, detail)
+
+
+def settings_check(where: Home) -> Check:
+    """Whether the connection file is in the generated shape; a file written before the reranker setting existed
+    leaves Hindsight's own default (reranking on) to the service until ``install`` rewrites it."""
+    try:
+        text = where.connection_file.read_text(encoding="utf-8")
+        settings = parse_settings(text)
+    except (OSError, UnicodeDecodeError, ServiceError) as error:
+        return Check("settings", False, str(error))
+    if text != render_settings(settings):
+        return Check("settings", False, f"{CONNECTION_FILE} predates the reranker setting (no {RERANKING_VARIABLE}); run memory service install")
+    return Check("settings", True, f"{RERANKER_VARIABLE}={settings.reranker}, {RERANKING_VARIABLE}={settings.environment()[RERANKING_VARIABLE]}")
 
 
 def wait_ready(api: Api, *, alive: Callable[[], bool], seconds: float = READY_SECONDS) -> float:
@@ -803,6 +839,7 @@ def status_lines(where: Home, settings: Settings, runtime: Assets, checkout: Pat
     expected = unit_files(where, runtime, primary_checkout_of(checkout), installed_interpreter(backup_unit) or backup_interpreter())
     stale = [name for name, path in installed.items() if not path.is_file() or path.read_text(encoding="utf-8") != expected[name]]
     checks.append(Check("unit files", not stale, f"stale or missing: {', '.join(stale)}" if stale else "current"))
+    checks.append(settings_check(where))
     active = unit_property("ActiveState")
     checks.append(Check("unit", active == "active", f"{UNIT} {active}, restarts {unit_property('NRestarts') or '?'}"))
     timer = systemctl("is-active", BACKUP_TIMER, check=False).stdout.strip()
@@ -841,14 +878,14 @@ def backup_interpreter(environ: Mapping[str, str] | None = None) -> str:
 
 
 def install(where: Home, runtime: Assets, checkout: Path, reranker: str | None = None) -> float:
-    """Write the connection file (once) and the units, enable them, start the service; returns seconds to ready.
-    ``reranker`` (``off`` or a cap) rewrites that setting in the connection file and restarts the service."""
+    """Write the connection file (key, ports and password once) and the units, enable them, start the service;
+    returns seconds to ready. The connection file is rewritten in the generated shape every time, with
+    ``reranker`` (``off`` or a cap) or else the setting it holds (``off`` when it predates the setting), so
+    the service's reranking is always set explicitly; any change restarts the service."""
+    wanted = None if reranker is None else reranker_setting(reranker)
     if where.scratch:
         raise ServiceError(f"{HOME_VARIABLE} is set: a scratch home is never managed by systemd")
-    settings = ensure_settings(where)
-    changed = False
-    if reranker is not None:
-        settings, changed = set_reranker(where, reranker)
+    settings, changed = set_reranker(where, ensure_settings(where).reranker if wanted is None else wanted)
     prepare_runtime_directories(where)
     make_directory(where.pg0_home)
     directory = unit_directory()
@@ -884,10 +921,10 @@ def uninstall() -> list[Path]:
 
 
 def repository_root() -> Path:
-    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise ServiceError("run the memory tool inside a checkout")
-    return Path(result.stdout.strip())
+    try:
+        return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
+    except GitError as error:
+        raise ServiceError("run the memory tool inside a checkout") from error
 
 
 def checked_assets(root: Path) -> Assets:

@@ -745,6 +745,18 @@ class CompactReadTests(Online):
         assert isinstance(first, list)
         self.assertEqual("REF-004", first[0], "substring hits rank first")
 
+    def test_recall_names_the_ranking_and_never_an_unset_cap(self) -> None:
+        self.accepted_chain()
+        self.bank.settings["enable_reranking"] = True
+        with patch.object(online, "reranker_cap", return_value=None):
+            text = "\n".join(online.recall(self.bank, self.root, "listing lock").lines)
+        self.assertIn("ranking: reranker on although the service settings say off (Hindsight's own default candidate count); run memory service install", text)
+        self.assertNotIn("None", text)
+        with patch.object(online, "reranker_cap", return_value=10):
+            self.assertIn("ranking: reranker on, at most 10 candidates", "\n".join(online.recall(self.bank, self.root, "listing lock").lines))
+        self.bank.settings["enable_reranking"] = False
+        self.assertIn("ranking: reranker off (bank config); fused ranking only", "\n".join(online.recall(self.bank, self.root, "listing lock").lines))
+
     def test_evidence_is_not_partitioned(self) -> None:
         self.accepted_chain()
         got = online.get(self.bank, self.root, "M-102")
