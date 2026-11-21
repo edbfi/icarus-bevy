@@ -22,7 +22,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 import tomllib
@@ -1290,10 +1289,10 @@ def status(bank: Bank, root: Path) -> Output:
 def fetch(root: Path) -> str | None:
     """``git fetch origin main``; ``None`` on success, else why it failed."""
     try:
-        result = subprocess.run(["git", "-C", str(root), "fetch", "--quiet", "origin", "main"], capture_output=True, check=False, timeout=FETCH_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        _ = git(root, "fetch", "--quiet", "origin", "main", timeout=FETCH_TIMEOUT)
+    except GitError as error:
         return str(error)
-    return None if result.returncode == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.returncode}"
+    return None
 
 
 def sync(bank: Bank, root: Path) -> Output:

@@ -5,9 +5,9 @@ generation, configuration assertions, the floor, watermarks, rotation, backup wi
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
-import hashlib
 import os
 import shutil
 import socket
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import NamedTuple, cast, override
 from unittest.mock import patch
 
-from tools.memory import durability, service
+from tools.memory import durability, gitio, online, service
 from tools.memory.bank import BankError
 from tools.memory.cli import main
 from tools.memory.gitio import GitError
@@ -367,6 +367,15 @@ class GitCalls(Scratch):
                                                    durability.descends_from(repository, "f" * 40, second)))
             with patch("tools.memory.service.Path.cwd", return_value=outside), self.assertRaisesRegex(ServiceError, "inside a checkout"):
                 _ = service.repository_root()
+
+    def test_a_git_timeout_is_a_git_error_and_fetch_reports_it(self) -> None:
+        def slow(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            raise subprocess.TimeoutExpired(["git"], float(cast(float, kwargs["timeout"])))
+
+        with patch("tools.memory.gitio.subprocess.run", side_effect=slow):
+            with self.assertRaisesRegex(GitError, r"^git fetch: no answer within 120 s$"):
+                _ = gitio.git(self.root, "fetch", "--quiet", "origin", "main", timeout=120)
+            self.assertEqual("git fetch: no answer within 120 s", online.fetch(self.root))
 
 
 def stamp(day: int, hour: int = 3) -> datetime:
