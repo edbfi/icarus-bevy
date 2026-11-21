@@ -36,10 +36,10 @@ from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    MARKER, Applied, Bank, BankError, Desired, Universe, Wanted, allocate, derived_status, desired, diff, gather, read_back, reconcile,
-    shared_elsewhere, unchanged,
+    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, marker_rendering, read_back,
+    reconcile, shared_elsewhere, unchanged,
 )
-from tools.memory.canonical import render_text
+from tools.memory.canonical import RENDERING, render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
 from tools.memory.gitio import GitError, descends, git, listed_files
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags
@@ -49,7 +49,7 @@ from tools.memory.model import (
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor, reranker_cap
-from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, partition, pinned_build, replay
+from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, legacy_listed, partition, pinned_build, replay
 
 FETCH_TIMEOUT = 120
 BUNDLE_PARSE_CAP = 64 * 1024 * 1024
@@ -85,7 +85,9 @@ class Output:
 
 @dataclass
 class Session:
-    """``trusted``: the bank diff was skipped on the reconcile stamp; ``reconcile_now`` drops that trust."""
+    """``trusted``: the bank diff was skipped on the reconcile stamp; ``reconcile_now`` drops that trust.
+    ``older``: the ``OlderTool`` message when a newer tool rendered the bank: the read neither reconciled nor
+    repairs, and exact GET accepts a document whose ``sha256`` and ``rev`` match the journal (``same``)."""
 
     root: Path
     bank: Bank
@@ -93,10 +95,11 @@ class Session:
     applied: Applied
     now: datetime
     trusted: bool = False
+    older: str | None = None
 
     def reconcile_now(self) -> bool:
         """A read whose verification failed on a trusted stamp reconciles in full once; True if it did."""
-        if not self.trusted:
+        if not self.trusted or self.older is not None:
             return False
         self.trusted = False
         self.applied = reconcile(self.bank, self.universe)
@@ -112,14 +115,25 @@ def session(bank: Bank, root: Path, *, now: datetime | None = None, orphan: bool
             read: bool = False) -> Generator[Session]:
     """Under the host lock: gather the journal, finish an interrupted regeneration, and reconcile the bank with
     it (replay first). A ``read`` skips the bank diff when the reconcile stamp shows nothing new (``unchanged``);
-    a write always reconciles in full."""
+    a write always reconciles in full. A bank a newer tool rendered (``OlderTool``) refuses every write; a read
+    goes on without reconciling, its message a notice (``Session.older``)."""
     with host_lock():
         universe = gather(root)
         if heal_regeneration(universe):
             universe = gather(root)
         trusted = read and unchanged(bank, universe)
-        applied = Applied(notices=list(universe.notices)) if trusted else reconcile(bank, universe, orphan=orphan, bulk=bulk)
-        yield Session(root, bank, universe, applied, now or now_utc(), trusted)
+        older: str | None = None
+        if trusted:
+            applied = Applied(notices=list(universe.notices))
+        else:
+            try:
+                applied = reconcile(bank, universe, orphan=orphan, bulk=bulk)
+            except OlderTool as error:
+                if not read:
+                    raise
+                older = str(error)
+                applied = Applied(notices=[*universe.notices, older])
+        yield Session(root, bank, universe, applied, now or now_utc(), trusted, older)
 
 
 def validate(universe: Universe, revisions: Sequence[Revision], *, replacing: str | None = None) -> list[str]:
@@ -760,21 +774,34 @@ class Fetched:
         return self.found[document_id]
 
 
-def summary(bank: Reader, wanted: Wanted, identifier: str) -> tuple[dict[str, JSON], str]:
+def same(document: Document | None, target: Desired, *, older: bool = False) -> bool:
+    """Whether a fetched document holds the journal's revision: its text is this tool's rendering, or, when a newer
+    tool rendered the bank (``older``), its ``sha256`` and ``rev`` metadata name the journal's revision."""
+    if document is None:
+        return False
+    if document.text == target.item.content:
+        return True
+    return older and document.metadata.get("sha256") == target.revision.sha256 and document.metadata.get("rev") == target.revision.rev
+
+
+def summary(bank: Reader, wanted: Wanted, identifier: str, *, older: bool = False) -> tuple[dict[str, JSON], str]:
     """A linked record by exact GET of its ``<ID>`` document: ID, state, first line."""
     target = wanted.get(identifier)
     document = bank.document(identifier)
     if target is None or document is None or document.text is None:
         return {"id": identifier, "state": "absent"}, f"{identifier}: not in the bank"
-    ok = document.text == target.item.content
+    ok = same(document, target, older=older)
     data: dict[str, JSON] = {"id": identifier, "state": target.state, "status": target.status, "line": headline(document.text), "verified": ok}
     return data, f"{identifier} [{target.state}, {target.status}]{'' if ok else ' (differs from the journal)'}: {headline(document.text)}"
 
 
-def check_document(bank: Bank, target: Desired) -> list[str]:
+def check_document(bank: Bank, target: Desired, *, older: bool = False) -> list[str]:
+    """Why the bank's document differs from the journal's; nothing when it matches (``same`` when ``older``)."""
     document = bank.document(target.document_id)
     if document is None:
         return [f"{target.document_id}: missing from the bank"]
+    if older and same(document, target, older=True):
+        return []
     problems: list[str] = []
     if document.text != target.item.content or document.content_hash != sha256_hex(target.item.content.encode()):
         problems.append(f"{target.document_id}: text differs from the journal")
@@ -810,8 +837,10 @@ def status_text(settled: State, record: Record, status: str) -> str:
 
 
 def listed_findings(settled: State, record: Record, status: str) -> tuple[str, ...]:
-    """A migrated unknown resolved by its legacy status: the findings its row listed (its ``refs``)."""
-    return record.links.refs if record.type == "unknown" and status == "resolved" and from_legacy(settled, record, status) else ()
+    """A migrated unknown resolved by its legacy status: the findings its Findings cell lists (``state.legacy_listed``)."""
+    if record.type != "unknown" or record.legacy is None or record.legacy.implied_status != "resolved" or not from_legacy(settled, record, status):
+        return ()
+    return legacy_listed(record, "findings")
 
 
 @dataclass(frozen=True)
@@ -862,7 +891,8 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
         data["selector"], data["member"] = citation, resolution.member
         lines.insert(0, f"{citation}: " + (f"listed member {resolution.member}" if resolution.member else "legacy case note") + f" of {identifier}\n")
     for name in ("supersedes", "resolves", "refs"):
-        if (items := record.links.named(name)) and not (name == "refs" and listed):
+        # The findings a legacy-resolved unknown lists get their own line; its other refs stay refs.
+        if items := tuple(item for item in record.links.named(name) if not (name == "refs" and item in listed)):
             lines.append(f"{name}: {', '.join(items)}")
     if listed:
         lines.append(f"findings listed: {', '.join(listed)}")
@@ -901,14 +931,15 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
     """Exact document GET: ``describe``, with every document of the record verified against the bank."""
     with session(bank, root, read=True) as current:
         described = describe(current.universe, root, citation, history=history, all_proposals=all_proposals, full=full)
-        problems = [problem for item in described.documents for problem in check_document(bank, item)]
+        older = current.older is not None
+        problems = [problem for item in described.documents for problem in check_document(bank, item, older=older)]
         # A document that differs although the stamp said the bank was current was written outside the tool:
         # the full reconciliation rewrites it from the journal, and the read reports what it repaired.
         repaired: list[str] = []
         if problems and current.reconcile_now():
             repaired, problems = problems, [problem for item in described.documents for problem in check_document(bank, item)]
         data: dict[str, JSON] = {**described.data, "verified": not problems, "problems": list[JSON](problems), "repaired": list[JSON](repaired)}
-        lines = [*described.lines]
+        lines = [*described.lines, *([f"notice: {current.older}"] if current.older is not None else [])]
         lines.extend(f"repaired: {problem}; rewritten from the journal (something wrote to the bank outside the tool)" for problem in repaired)
         lines.extend(f"problem: {problem}" for problem in problems)
         return Output(data, lines, 1 if problems else 0)
@@ -1074,7 +1105,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             for value in shown.values():
                 if (want := wanted.get(value.document)) is not None:
                     held = fetched.document(want.document_id)
-                    found[value.document] = held is not None and held.text == want.item.content
+                    found[value.document] = same(held, want, older=current.older is not None)
             return fetched, found
 
         fetched, checked = verify_hits()
@@ -1084,7 +1115,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         else:
             repaired = []
         for identifier in named:
-            data, line = summary(fetched, wanted, identifier)
+            data, line = summary(fetched, wanted, identifier, older=current.older is not None)
             exact.append(data)
             lines.append(f"named: {line}")
         for item in sorted(shown.values(), key=lambda value: value.rank):
@@ -1099,7 +1130,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             placed, phrase = place(root, record, rel, reason)
             name = str(placed["name"])
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
-            retired = [summary(fetched, wanted, old) for old in sorted(set(item.retired), key=id_key)]
+            retired = [summary(fetched, wanted, old, older=current.older is not None) for old in sorted(set(item.retired), key=id_key)]
             shown_status = f"{target.status} (legacy status)" if from_legacy(settled, record, target.status) else target.status
             header = f"{item.identifier} [{record.type}; {target.state}, {shown_status}{f'; {phrase}' if phrase else ''}]" + ("" if verified else " (differs from the journal)")
             findings = listed_findings(settled, record, target.status)
@@ -1107,7 +1138,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", stated_resolvers(settled, item.identifier)), ("findings listed", findings)) if names]
             if full:
                 links = links_of(item, target)
-                linked = [summary(fetched, wanted, link) for link in links]
+                linked = [summary(fetched, wanted, link, older=current.older is not None) for link in links]
                 sections[name].append({
                     "id": item.identifier, "document": target.document_id, "state": target.state, "status": target.status, "partition": placed,
                     "text": target.item.content, "verified": verified, "retired": [data for data, _ in retired],
@@ -1134,7 +1165,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                     entry_json["passage"], entry_json["heading"] = excerpt, heading
                     block.append(f"  passage{f' (under {heading!r})' if heading else ''}: {excerpt}")
                 kinds: dict[str, JSON] = {}
-                stored = [(link, list(record.links.named(link))) for link in ("supersedes", "resolves", "cites", "refs") if not (link == "refs" and findings)]
+                stored = [(link, [item for item in record.links.named(link) if not (link == "refs" and item in findings)])
+                          for link in ("supersedes", "resolves", "cites", "refs")]
                 for label, names in [*stored, *derived]:
                     if names:
                         kinds[label] = list[JSON](names[:LINK_CAP])
@@ -1184,6 +1216,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         if len(documents) >= limit:
             lines.append(f"hits limited to {limit}; --limit N shows more")
         lines.append(f"ranking: {ranker}")
+        if current.older is not None:
+            lines.append(f"notice: {current.older}")
         data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact, "ranking": {
             "reranking": reranking, "candidates": cap if reranking else None, "scope": "instance"},
                                  "partitions": {name: items for name, items in sections.items() if items}, "repaired": list[JSON](repaired),
@@ -1191,7 +1225,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                                  "more_references": list[JSON](extra_refs), "full": full, "refs": refs}
         if all_proposals:
             others = ranked(True)[:limit]
-            listing = [summary(bank, wanted, document_id.split("@", 1)[0]) for document_id in others]
+            listing = [summary(bank, wanted, document_id.split("@", 1)[0], older=current.older is not None) for document_id in others]
             data["other_proposals"] = [item for item, _ in listing]
             if listing:
                 lines.append("== proposals of other worktrees ==")
@@ -1236,6 +1270,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         universe = current.universe
         view = universe.view
         release, reason = release_for(universe, root, None)
+        older = [f"notice: {current.older}"] if current.older is not None else []
         members = sorted((identifier for identifier, entry in view.entries.items() if entry.record.text("area") == name), key=id_key)
         by_status: dict[str, list[str]] = {}
         for identifier in members:
@@ -1284,7 +1319,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
             data["closure"] = rows
             lines.append(f"linked records outside the area ({len(outside)}):")
             lines.extend(text)
-            return Output(data, lines)
+            return Output(data, [*lines, *older])
         data["closure"] = list[JSON](outside)
         lines.append("by status: " + ", ".join(f"{len(by_status[status])} {status}" for status in texts))
         lines.append("by partition: " + ", ".join(f"{partitions.get(part, 0)} {part}" for part in PARTITIONS))
@@ -1308,7 +1343,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         if shown < len(rows_text):
             lines.append(f"... {len(rows_text) - shown} more record(s) not shown; memory area {name} --full lists every one, memory get ID reads one")
         lines.append(f"linked records outside the area: {len(outside)}" + (f": {capped(outside, 12)} (--full lists them)" if outside else ""))
-        return Output(data, lines)
+        return Output(data, [*lines, *older])
 
 
 def claim_bearing(record: Record) -> bool:
@@ -1461,6 +1496,8 @@ def check_bank(bank: Bank, root: Path) -> Output:
 def compare_bank(bank: Bank, root: Path) -> Output:
     """``check --bank`` without the host lock (the caller holds it). Always the full comparison: the reconcile
     stamp is never trusted, and its marker document is only checked for its own shape."""
+    if (held_rendering := marker_rendering(bank)) is not None and held_rendering > RENDERING:
+        raise OlderTool(held_rendering)
     universe = gather(root)
     problems: list[str] = []
     notices: list[str] = list(universe.notices)

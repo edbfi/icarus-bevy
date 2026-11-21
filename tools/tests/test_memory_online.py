@@ -24,6 +24,7 @@ from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
+from tools.memory.canonical import RENDERING
 from tools.memory.journal import Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
 from tools.memory.online import Changes, Output, Refused
@@ -719,8 +720,9 @@ class SharedFormatterTests(Online):
         anchored = evidence("M-152", "docs/live.md#wire-format", kind="report", **tracked, gaps=["sha256"],
                             legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
         lost = evidence("M-153", "docs/gone.md", kind="report", **tracked, gaps=["sha256"], legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
-        old = unknown("U-151", "Which invented field wins?", status="open", refs=["F-103", "F-104"],
-                      legacy={"path": "docs/ledgers/unknowns.md", "cells": {"Status": "resolved"}, "implied_status": "resolved"})
+        old = unknown("U-151", "Which invented field wins?", status="open", refs=["F-103", "F-104", "F-106"],
+                      legacy={"path": "docs/ledgers/unknowns.md", "cells": {"status": "resolved", "findings": "F-103..F-104"},
+                              "implied_status": "resolved"})
         for item in (moved, anchored, lost):
             del item["sha256"]
         _ = write(self.root, chain())
@@ -768,7 +770,8 @@ class SharedFormatterTests(Online):
         lines = online.get(self.bank, self.root, "U-151").lines
         self.assertIn("status: resolved (legacy status)", lines)
         self.assertIn("findings listed: F-103, F-104", lines)
-        self.assertFalse(any(line.startswith(("resolved by:", "refs:")) for line in lines))
+        self.assertIn("refs: F-106", lines, "a ref the Findings cell does not list stays a ref")
+        self.assertFalse(any(line.startswith("resolved by:") for line in lines))
         recalled = "\n".join(online.recall(self.bank, self.root, "which invented field wins").lines)
         self.assertIn("U-151 [unknown; accepted, resolved (legacy status);", recalled)
         self.assertIn("  findings listed: F-103, F-104", recalled)
@@ -1079,6 +1082,50 @@ class DurabilitySeamTests(Online):
         self.bank.settings["retain_chunk_size"] = 3000
         self.assertEqual(["journal: config retain_chunk_size is 3000, expected 1800"], check(Connection("http://127.0.0.1:1", "k" * 64, "icarus"), mark))
         self.assertIn("no origin/main", durability.watermark_problems(self.top, Watermark("a" * 40, ()))[0])
+
+
+class OlderToolTests(Online):
+    """A bank a newer tool rendered: reads go on by exact GET of the journal's revision, writes and check --bank refuse."""
+
+    def newer_bank(self) -> None:
+        self.accepted_chain()
+        _ = online.get(self.bank, self.root, "F-101")
+        marker = self.doc(bank_module.MARKER)
+        self.bank.held[bank_module.MARKER] = Document(marker.id, f"memory stamp {'1' * 64} rendering {RENDERING + 1}", marker.content_hash,
+                                                      marker.tags, {"stamp": "1" * 64}, marker.entities, marker.event_date)
+        held = self.doc("F-102")
+        text = (held.text or "") + "\nrendered by a newer tool"
+        self.bank.held["F-102"] = Document(held.id, text, sha256_hex(text.encode()), held.tags, held.metadata, held.entities, held.event_date)
+
+    def test_reads_accept_the_journal_s_revision_and_say_the_tool_is_older(self) -> None:
+        self.newer_bank()
+        got = online.get(self.bank, self.root, "F-102")
+        self.assertEqual((0, True, []), (got.status, got.data["verified"], got.data["problems"]))
+        self.assertRegex(got.lines[-1], r"^notice: this tool renders records at version [0-9]+, older than the bank's [0-9]+: .*merge main")
+        self.assertIn("rendered by a newer tool", self.doc("F-102").text or "", "a read never rewrites the newer document")
+        recalled = online.recall(self.bank, self.root, "any listing locked")
+        self.assertNotIn("(differs from the journal)", "\n".join(recalled.lines))
+        self.assertTrue(recalled.lines[-1].startswith("notice: this tool renders records"))
+        self.assertIn("notice: this tool renders records", "\n".join(online.status(self.bank, self.root).lines))
+        tampered = self.doc("F-101")
+        self.bank.held["F-101"] = Document(tampered.id, "tampered", sha256_hex(b"tampered"), tampered.tags, {**tampered.metadata, "rev": "0" * 64},
+                                           tampered.entities, tampered.event_date)
+        self.assertEqual(1, online.get(self.bank, self.root, "F-101").status, "other metadata is still a problem")
+
+    def test_writes_sync_and_check_bank_refuse(self) -> None:
+        self.newer_bank()
+        def no_floor(_path: Path) -> None:
+            return None
+
+        _ = self.enterContext(patch.object(online, "require_floor", no_floor))
+        for name, command in (("propose", lambda: self.new_finding("Invented: written by an older tool")),
+                              ("sync", lambda: online.sync(self.bank, self.root)),
+                              ("rebuild", lambda: online.rebuild(self.bank, self.root)),
+                              ("check --bank", lambda: online.check_bank(self.bank, self.root))):
+            with self.subTest(name), self.assertRaisesRegex(bank_module.OlderTool, "merge main"):
+                _ = command()
+        self.assertNotIn("F-107", self.bank.held)
+        self.assertEqual((), tuple(path for path in read_tree(self.root) if "F-107" in path.path), "nothing was written")
 
 
 class StampTests(Online):
