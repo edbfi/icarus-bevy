@@ -46,8 +46,9 @@ until their case is deliberately retired.
      (`memory supersede M-OLD --by M-NEW`), and prune only after that
      supersession is accepted on `origin/main` (merged, then `memory sync`),
      never while it is only proposed: until then the directory record still
-     protects the whole directory. The manifest pins every kept file; `memory verify` checks and `memory protected-paths` lists each
-     one for backup;
+     protects the whole directory. The manifest pins every kept file;
+     `memory verify` checks and `memory protected-paths` lists each one for
+     backup;
    - cases no evidence record covers and no tracked or untracked, non-ignored
      file mentions: retire the ones no longer needed with
      `python3 tools/work_gc.py --retire <name>...`, which refuses any name a
