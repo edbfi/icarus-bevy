@@ -955,11 +955,11 @@ class OfflineTests(Online):
         self.accepted_chain()
 
         def no_service() -> Bank:
-            raise ServiceError("/invented/connection.env: cannot open (No such file or directory); run memory service install")
+            raise ServiceError("/invented/connection-v2.env: cannot open (No such file or directory); run memory service install")
 
         offline = online.status_anywhere(self.root, no_service)
         self.assertEqual(0, offline.status)
-        self.assertTrue(offline.lines[0].startswith("memory status: the memory service is unavailable (/invented/connection.env: cannot open"))
+        self.assertTrue(offline.lines[0].startswith("memory status: the memory service is unavailable (/invented/connection-v2.env: cannot open"))
         self.assertIn("OFFLINE summary of the journal alone", offline.lines[0])
         text = "\n".join(offline.lines)
         self.assertIn("pin: REL-9.0.2", text)
