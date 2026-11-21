@@ -18,7 +18,7 @@ it (with any ``supersedes`` links salvage adds), else a ``conflict`` (both sides
 the merge base held is planned cell by cell against that base row (``plan``), the plan applied to the
 ACCEPTED record (``apply``: its ``legacy``, ``gaps`` and every immutable field are kept; ``gaps`` follow a
 next probe filled or cleared), and checked by replay (``honoured``). The latest stored status wins over a
-migrated record's legacy status (``state.legacy_holds``), so a status revision always shows.
+migrated record's legacy status (``Entry.legacy_holds``), so a status revision always shows.
 
 | Changed in the row | Becomes |
 | --- | --- |
@@ -238,7 +238,7 @@ def plan(origin: Record, record: Record, ref: str) -> Edit:
             return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
         if status is not None:
             notes.append(f"status cell on {ref}: {cell}")
-    # A legacy edge holds while the stored status is the migrated one (``state.legacy_holds``): only a new stored status withdraws it.
+    # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
         return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
                     + "a revision cannot withdraw a legacy edge")

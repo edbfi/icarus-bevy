@@ -80,5 +80,39 @@ class LatestStatementTests(unittest.TestCase):
         self.check((newer, start, revised(receipt, start, status="active", notes=["Invented: back in use"])), "M-201", "active")
 
 
+class WithdrawnForGoodTests(unittest.TestCase):
+    """Once a revision stores another status, storing the migration status again does not bring the legacy status back."""
+
+    newer: Revision = Revision.of(Record.from_json(evidence("M-202", "work/b.txt")))
+    receipt: Record = migrated(evidence("M-201", "work/a.txt"), "retired", superseded_by=("M-202",))
+    start: Revision = Revision.of(receipt)
+
+    def test_active_then_retired_replays_to_plain_retired(self) -> None:
+        active = revised(self.receipt, self.start, status="active", notes=["Invented: back in use"])
+        again = Revision.of(Record.from_json({**active.record.to_json(), "status": "retired", "notes": ["Invented: back in use", "Invented: done"]}),
+                            [active.rev])
+        steps = [(self.newer, self.start), (self.newer, self.start, active), (self.newer, self.start, active, again)]
+        self.assertEqual(["superseded", "active", "retired"], [state_of(*step).status("M-201") for step in steps])
+        state = state_of(*steps[-1])
+        self.assertEqual(([], (), "retired"), (revision_problems(state), state.successors("M-201"), derived_status(state, again.record)))
+
+    def test_a_note_only_chain_keeps_the_legacy_status(self) -> None:
+        one = revised(self.receipt, self.start, notes=["Invented: one"])
+        two = Revision.of(Record.from_json({**one.record.to_json(), "notes": ["Invented: one", "Invented: two"]}), [one.rev])
+        state = state_of(self.newer, self.start, one, two)
+        self.assertEqual(("superseded", ("M-202",)), (state.status("M-201"), state.successors("M-201")))
+
+    def test_each_head_of_a_fork_is_judged_on_its_path_and_a_reconciliation_on_both(self) -> None:
+        withdrew = revised(self.receipt, self.start, status="active", notes=["Invented: withdrew"])
+        kept = revised(self.receipt, self.start, notes=["Invented: kept"])
+        forked = state_of(self.newer, self.start, withdrew, kept)
+        entry = forked.entries["M-201"]
+        self.assertEqual({withdrew.rev: False, kept.rev: True}, {rev: entry.legacy_holds(rev) for rev in entry.heads})
+        reconciled = Revision.of(Record.from_json({**self.receipt.to_json(), "notes": ["Invented: withdrew", "Invented: kept"]}),
+                                 [withdrew.rev, kept.rev])
+        state = state_of(self.newer, self.start, withdrew, kept, reconciled)
+        self.assertEqual(("retired", ()), (state.status("M-201"), state.successors("M-201")), "the withdrawing path wins")
+
+
 if __name__ == "__main__":
     _ = unittest.main()
