@@ -137,6 +137,18 @@ class ConnectionFile(Scratch):
         with self.assertRaises(ServiceError):
             _ = set_reranker(self.where, "many")
 
+    def test_a_cap_takes_ascii_digits_only(self) -> None:
+        _ = ensure_settings(self.where)
+        for value in ("\u00b2", "\u0665", "\uff11\uff10", "1\u00b2"):
+            with self.assertRaisesRegex(ServiceError, "candidate cap from 1 to 500"):
+                _ = set_reranker(self.where, value)
+        self.assertIsNone(reranker_cap(self.where), "a refused value is never written")
+        stderr = io.StringIO()
+        with (patch("tools.memory.service.home", return_value=self.where), patch("tools.memory.service.repository_root", return_value=self.root),
+              patch("tools.memory.service.checked_assets", return_value=Assets(self.root / "runtime")), redirect_stderr(stderr)):
+            self.assertEqual(1, main(["service", "install", "--reranker", "\u00b2"]))
+        self.assertIn("memory service install: ICARUS_MEMORY_RERANKER must be off or a candidate cap from 1 to 500", stderr.getvalue())
+
 
 class Units(Scratch):
     def test_service_unit_carries_the_instance_settings_and_no_secret(self) -> None:

@@ -250,7 +250,7 @@ def reranker_setting(value: str) -> str:
     """``off`` or a cap from 1 to 500, normalised; anything else is a ``ServiceError``."""
     if value == "off":
         return value
-    if not value.isdigit() or not 1 <= int(value) <= 500:
+    if not (value.isascii() and value.isdigit()) or not 1 <= int(value) <= 500:
         raise ServiceError(f"{RERANKER_VARIABLE} must be off or a candidate cap from 1 to 500, not {value!r}")
     return str(int(value))
 
