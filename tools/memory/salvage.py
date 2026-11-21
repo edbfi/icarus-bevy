@@ -53,9 +53,9 @@ is not yet in ``ref``'s own journal.
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
 unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
-branch's) and exits 1 if there is any. ``--out`` also
+branch's, or for a new document when an accepted REF holds its body) and exits 1 if there is any. ``--out`` also
 writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
-``DIR/documents/<legacy path>``, and prints the ``memory revise`` command that uses it. Exit status: 0 success; 1 a conflict or an error; 2 usage;
+``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that uses it. Exit status: 0 success; 1 a conflict or an error; 2 usage;
 ``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
 still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
 parent instead (nothing is printed or written).
@@ -64,6 +64,7 @@ parent instead (nothing is printed or written).
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -124,14 +125,15 @@ class Pending:
         """What the operator runs once ``--out`` wrote the body to ``file``."""
         if self.target is not None:
             return f"memory revise {self.target} --body {shlex.quote(file)}"
-        return f"propose a REF for it by hand with the body in {shlex.quote(file)}"
+        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + json.dumps({'basis': 'explicit'}))}"
+                + f" --body {shlex.quote(file)}")
 
     def line(self) -> str:
         """The pending document without ``--out``: no path is named that does not exist."""
         if self.target is not None:
             return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
                     + " branch's; a body merged by hand into other text stays listed)")
-        return "new document; propose a REF for it by hand"
+        return "new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF holds that body)"
 
 
 @dataclass(frozen=True)
@@ -521,13 +523,15 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     superseding = classify(result, after, before, on_accepted)
     accepted = on_accepted.records
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
+    # A new document is done once some accepted REF holds its body (a REF proposed by hand has no legacy path).
+    held_bodies = {record.body for record in accepted.values() if record.type == "reference" and record.body is not None}
     for path, record in sorted(documents(after).items()):
         on_main = main_refs.get(path)
         body, title = record.body or "", record.text("title") or path
-        if on_main is None:
+        if on_main is None and body not in held_bodies:
             result.documents.append(Pending(path, None, body, title))
             result.notices.append(f"{path}: {result.documents[-1].line()}")
-        elif record.body not in (on_main.body, base_bodies.get(path)):
+        elif on_main is not None and record.body not in (on_main.body, base_bodies.get(path)):
             result.documents.append(Pending(path, on_main.id, body, title))
             result.notices.append(f"{path}: {result.documents[-1].line()}")
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}

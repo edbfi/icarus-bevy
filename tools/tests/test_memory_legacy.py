@@ -21,6 +21,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shlex
 import re
 import subprocess
 import tempfile
@@ -40,7 +41,7 @@ from tools.memory.model import JSON, Record, RecordError
 from tools.memory import migrate
 from tools.memory.parity import parity
 from tools.memory.paths import ProtectedPathsError
-from tools.memory import salvage as salvage_command
+from tools.memory import cli, online, salvage as salvage_command
 from tools.memory.check import revision_problems
 from tools.memory.journal import read_git
 from tools.memory.salvage import Salvage, salvage
@@ -1186,6 +1187,35 @@ class SalvageTests(LegacyRepository):
         self.revise_spec_on_main(written.read_text(encoding="utf-8"))
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout))
+
+    def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
+        _ = (self.root / "docs/specs/net/zeta.md").write_text("# Third spec\n\n## Scope\n\nInvented: new.\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "add a spec")
+        _ = self.journal_on_main(remove_legacy=True)
+        status, stdout, _stderr = self.run_salvage("new-doc", check=True)
+        self.assertEqual(1, status)
+        self.assertIn("new-doc: docs/specs/net/zeta.md: new document; salvage --out writes its body", stdout)
+        out = self.top / "out"
+        _, _stdout, stderr = self.run_salvage("new-doc", out=out)
+        written = out / "documents/docs/specs/net/zeta.md"
+        self.assertEqual(self.ref_body("new-doc", "docs/specs/net/zeta.md").encode(), written.read_bytes())
+        command = next(line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/zeta.md: "))
+        words = shlex.split(command)
+        self.assertEqual(["memory", "propose", "reference"], words[:3])
+        options = cli.parse_options(words[1:])
+        changes = online.changes_from(vars(options))
+        data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
+        assert changes.body is not None
+        data |= {"id": "REF-900", "type": "reference", "status": "current", "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest()}
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = write_change_set(self.root, datetime(2026, 4, 2, tzinfo=UTC), [Revision.of(Record.from_json(data, changes.body))])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "propose the new spec as a REF")
+        self.publish()
+        status, stdout, _stderr = self.run_salvage("new-doc", check=True)
+        self.assertEqual((0, True), (status, "0 pending document(s)" in stdout), stdout)
 
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
