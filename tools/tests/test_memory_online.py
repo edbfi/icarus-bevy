@@ -1298,6 +1298,18 @@ class StatusWordingTests(Online):
         self.assertIn("superseded by: F-301 (terminal: F-301)", online.get(self.bank, self.root, "F-302").lines)
 
 
+class TerminalTests(Online):
+    def test_terminal_successors_follow_the_superseders_shown(self) -> None:
+        self.accepted_chain()
+        old = Record.from_json({**finding("F-401", "Invented proposed old"), "status": "legacy:superseded-by F-402",
+                                "legacy": legacy_of("superseded-by F-402", implied="superseded", superseded_by=("F-402",))})
+        _ = write_change_set(self.root, CREATED.replace(second=40), [Revision.of(old), Revision.of(Record.from_json(finding("F-402", "Invented proposed new")))])
+        got = online.get(self.bank, self.root, "F-401")
+        self.assertIn("superseded by: F-402 (terminal: F-402)", got.lines)
+        self.assertEqual(["F-402"], got.data["successors"])
+        self.assertFalse(any("(terminal: )" in line for line in got.lines))
+
+
 class StampTests(Online):
     """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
 

@@ -850,6 +850,24 @@ def superseders(universe: Universe, entry: Entry, rev: str) -> tuple[str, ...]:
     return tuple(sorted({*universe.settled.stated_superseders(record.id), *own}, key=id_key))
 
 
+def terminal(universe: Universe, entry: Entry, rev: str) -> tuple[str, ...]:
+    """Terminal successors along the edges ``superseders`` shows (each successor at its head in the union)."""
+    found: set[str] = set()
+    seen = {entry.id}
+    pending = list(superseders(universe, entry, rev))
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        following = superseders(universe, held, held.heads[0]) if (held := universe.state.entries.get(current)) is not None else ()
+        if following:
+            pending.extend(following)
+        else:
+            found.add(current)
+    return tuple(sorted(found, key=id_key))
+
+
 def status_label(universe: Universe, entry: Entry, rev: str, proposed: Sequence[Proposal] = ()) -> str:
     """The one wording of a derived status (``State.status_at`` against the accepted links), saying where it comes
     from, as ``get``, ``recall`` and ``area`` print it: ``(stored)``, ``(stored; legacy status withdrawn)`` after a
@@ -911,13 +929,14 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     proposed = overlay(universe, identifier, every=all_proposals)
     holds = entry.legacy_holds(target.revision.rev)
     shown_superseders = superseders(universe, entry, target.revision.rev)
+    shown_terminal = terminal(universe, entry, target.revision.rev)
     resolvers, listed = stated_resolvers(settled, identifier), listed_findings(settled, record, target.status, holds)
     moved = migrated_to(state, record)
     data: dict[str, JSON] = {
         "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
         "legacy_status": from_legacy(settled, record, target.status, holds), "sha256": target.revision.sha256, "rev": target.revision.rev,
         "segment": target.segment, "text": target.item.content, "record": record.to_json(), "partition": placed,
-        "superseded_by": list(shown_superseders), "successors": list(settled.successors(identifier)),
+        "superseded_by": list(shown_superseders), "successors": list(shown_terminal),
         "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved, "proposed": [item.json() for item in proposed],
         "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
     }
@@ -935,7 +954,7 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     if listed:
         lines.append(f"findings listed: {', '.join(listed)}")
     if superseded := shown_superseders:
-        lines.append(f"superseded by: {', '.join(superseded)} (terminal: {', '.join(settled.successors(identifier))})")
+        lines.append(f"superseded by: {', '.join(superseded)}" + (f" (terminal: {', '.join(shown_terminal)})" if shown_terminal else ""))
     if resolvers:
         lines.append(f"resolved by: {', '.join(resolvers)}")
     lines.extend(item.line() for item in proposed)
