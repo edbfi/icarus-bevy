@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import hashlib
 import os
 import shutil
 import socket
@@ -136,6 +137,18 @@ class ConnectionFile(Scratch):
         self.assertEqual(20, reranker_cap(self.where))
         with self.assertRaises(ServiceError):
             _ = set_reranker(self.where, "many")
+
+
+    def test_a_missing_postgresql_build_names_the_install_command(self) -> None:
+        requirements = self.root / "requirements.txt"
+        _ = requirements.write_text("invented==1\n", encoding="utf-8")
+        runtime = Assets(self.root / "runtime")
+        runtime.root.mkdir()
+        _ = (runtime.root / "wheels.sha256").write_text(hashlib.sha256(requirements.read_bytes()).hexdigest() + "\n", encoding="utf-8")
+        problems = runtime.problems(requirements)
+        self.assertIn(f"missing {runtime.pg_bin / 'postgres'}; run tools/hindsight_runtime install (it provisions the Python environment, the models and PostgreSQL)",
+                      problems)
+        self.assertFalse(any("does not match" in problem for problem in problems))
 
 
 class Units(Scratch):

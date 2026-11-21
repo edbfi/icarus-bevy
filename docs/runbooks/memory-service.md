@@ -11,9 +11,13 @@ repository; the service is shared by all of them.
 
 1. Provision the pinned runtime once per host, and again when
    `tools/hindsight_runtime.requirements.txt` changes (stop the service first):
-   `tools/hindsight_runtime install`. It shares a Python 3.14 environment,
-   the pg0 PostgreSQL 18.1.0 build and pinned CPU ONNX models in the primary
-   checkout's `work/hindsight-runtime/`, and needs more than 31 GiB free.
+   `tools/hindsight_runtime install`. In the primary checkout's
+   `work/hindsight-runtime/` it installs the Python 3.14 environment from
+   hash-pinned wheels, downloads the pinned CPU ONNX models, and extracts the
+   PostgreSQL 18.1.0 build bundled in the pinned `pg0` wheel by one throwaway
+   start that it stops and drops, then verifies the build against a pinned
+   digest. It needs more than 31 GiB free; a missing build makes
+   `memory service install` name this command.
 2. `memory service install` writes the owner-only connection file (key, ports,
    database password) under `$XDG_CONFIG_HOME/icarus-memory/`, the systemd user
    units `icarus-memory.service`, `icarus-memory-backup.service` and
@@ -60,8 +64,9 @@ the journal and asserts the instance; it changes nothing.
 ## Rebuild on a fresh clone
 
 The journal is the off-host copy. On a new host or after losing the data:
-clone, `tools/hindsight_runtime install`, `memory service install`,
-`memory rebuild`, `memory sync`, `memory check --bank`. This is the drill's
+clone, `tools/hindsight_runtime install` (Python environment, models and
+PostgreSQL, about 2 GB), `memory service install`, `memory rebuild`,
+`memory sync`, `memory check --bank`. This is the drill's
 second path; it needs no dump. Evidence bytes have no off-host copy:
 `memory verify --all` then reports them `unavailable`.
 

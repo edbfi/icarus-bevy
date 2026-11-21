@@ -1,11 +1,22 @@
 Hindsight runtime for the memory service
 
 tools/hindsight_runtime install provisions what the always-on memory service
-(.agents/rules/memory.md, docs/runbooks/memory-service.md) runs: a Python 3.14
-environment with hindsight-api-slim[local-onnx,embedded-db] 1.2.3, the pg0
-PostgreSQL 18.1.0 build and pinned public CPU ONNX snapshots, in the primary
-checkout's work/hindsight-runtime/. Every linked checkout shares it; never
-install per worktree.
+(.agents/rules/memory.md, docs/runbooks/memory-service.md) runs, in the primary
+checkout's work/hindsight-runtime/; every linked checkout shares it, never
+install per worktree:
+
+1. a Python 3.14 environment with hindsight-api-slim[local-onnx,embedded-db]
+   1.2.3, from SHA-256-pinned PyPI wheels;
+2. the pinned public CPU ONNX snapshots (embedding and reranker models);
+3. PostgreSQL 18.1.0 with pgvector 0.8.5 in pg0-install/. The build is bundled
+   inside the pg0 binary of the hash-pinned pg0-embedded wheel, so nothing more
+   is downloaded: install starts a throwaway pg0 instance once, which extracts
+   it, stops and drops that instance (no database or server is left), and
+   checks the extracted tree against the digest pinned in the launcher, plus
+   the four binaries the service needs and the version. Later installs only
+   verify it.
+
+The install stamp (wheels.sha256) is written only after all three verify.
 
 The lock records one SHA-256-verified PyPI wheel per dependency and supports
 Linux x86_64, glibc 2.35 or later and CPython at /usr/bin/python3.14; uv

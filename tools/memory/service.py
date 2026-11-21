@@ -442,7 +442,8 @@ class Assets:
             found.append(f"{stamp} does not match {requirements.name}; run tools/hindsight_runtime install")
         required = [self.python, self.pg0, self.lock, self.pg_bin / "postgres", self.pg_bin / "pg_dump", self.pg_bin / "pg_restore",
                     self.pg_bin / "psql", self.embedding / "onnx/model.onnx", self.reranker / "onnx/model.onnx"]
-        found.extend(f"missing {path}" for path in required if not path.exists())
+        found.extend(f"missing {path}; run tools/hindsight_runtime install (it provisions the Python environment, the models and PostgreSQL)"
+                     for path in required if not path.exists())
         return found
 
 

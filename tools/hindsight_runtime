@@ -62,6 +62,14 @@ embedding_repo=intfloat/multilingual-e5-small
 embedding_revision=614241f622f53c4eeff9890bdc4f31cfecc418b3
 reranker_repo=hindsight-ai/hs-rerank-1
 reranker_revision=927f5be31280298a51cf29af8a29cb111ed812c5
+# PostgreSQL 18.1.0 (with pgvector 0.8.5) is bundled inside the pg0 binary of the hash-pinned pg0-embedded
+# wheel; pg0 extracts it into PG0_INSTALLATION_DIR on its first start and downloads nothing. install runs
+# that first start on a throwaway instance and checks the extracted tree against this digest (sha256 of the
+# sorted "<sha256> <path>" and "link <path> <target>" lines of every file and symlink under 18.1.0/).
+pg_version=18.1.0
+pg_install=$assets_root/pg0-install
+pg_tree_sha256=4eb5d2bf0cdb32f7bc8c4cb887860d599a04fca7b494ff13f9441d1df64f12dc
+pg0_bin=$venv/lib/python3.14/site-packages/pg0/bin/pg0
 embedding=$model_cache/hub/models--${embedding_repo/\//--}/snapshots/$embedding_revision
 reranker=$model_cache/hub/models--${reranker_repo/\//--}/snapshots/$reranker_revision
 # Reserve a margin above the repository's 30 GiB floor.
@@ -84,6 +92,52 @@ models_present() {
         "$reranker"/{config.json,tokenizer.json,tokenizer_config.json,onnx/model.onnx}; do
         [[ -s $file ]] || return 1
     done
+}
+
+pg_tree_digest() {
+    (cd -- "$pg_install/$pg_version" && find . \( -type f -o -type l \) -print0 | LC_ALL=C sort -z |
+        while IFS= read -r -d '' file; do
+            if [[ -L $file ]]; then
+                printf 'link %s %s\n' "$file" "$(readlink -- "$file")"
+            else
+                printf '%s %s\n' "$(sha256sum < "$file" | cut -d ' ' -f 1)" "$file"
+            fi
+        done) | sha256sum | cut -d ' ' -f 1
+}
+
+postgres_verified() {
+    local bin=$pg_install/$pg_version/bin name
+    for name in postgres pg_dump pg_restore psql; do
+        [[ -x $bin/$name ]] || return 1
+    done
+    # The project numbers its builds major.minor.release; PostgreSQL reports major.minor.
+    [[ $(LD_LIBRARY_PATH=$pg_install/$pg_version/lib "$bin/postgres" --version) == "postgres (PostgreSQL) ${pg_version%.*}" ]] || return 1
+    [[ $(pg_tree_digest) == "$pg_tree_sha256" ]]
+}
+
+# The first pg0 start on a throwaway instance extracts the bundled build; the instance is then stopped and
+# dropped, so no database and no running PostgreSQL remain.
+provision_postgres() {
+    postgres_verified && return 0
+    [[ -x $pg0_bin ]] || fail 'The pinned pg0 executable is missing.'
+    rm -rf -- "${pg_install:?}/$pg_version"
+    local probe port candidate password
+    probe=$(mktemp -d -- "$TMPDIR/pg0-provision.XXXXXXXX")
+    for candidate in $(shuf -i 20000-60000 -n 50); do
+        if ! (exec 3<>"/dev/tcp/127.0.0.1/$candidate") 2>/dev/null; then
+            port=$candidate
+            break
+        fi
+    done
+    [[ -n ${port:-} ]] || fail 'No free loopback port to provision PostgreSQL.'
+    password=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    local -a pg0=(env PG0_HOME="$probe/home" PG0_INSTALLATION_DIR="$pg_install" HOME="$probe" TMPDIR="$probe" "$pg0_bin")
+    "${pg0[@]}" start --name provision --port "$port" --username provision --password "$password" --database provision \
+        -c listen_addresses=127.0.0.1 >/dev/null 2>&1 || { rm -rf -- "$probe"; fail 'pg0 could not extract and start PostgreSQL.'; }
+    "${pg0[@]}" stop --name provision >/dev/null 2>&1 || true
+    "${pg0[@]}" drop --name provision --force >/dev/null 2>&1 || true
+    rm -rf -- "$probe"
+    postgres_verified || fail "The extracted PostgreSQL $pg_version does not match the pinned build."
 }
 
 clean_environment() {
@@ -130,6 +184,7 @@ install_runtime() {
             config.json tokenizer.json tokenizer_config.json onnx/model.onnx
     fi
     models_present || fail 'Pinned CPU model snapshots are incomplete.'
+    provision_postgres
     local stamp
     stamp=$(mktemp -- "$install_stamp.XXXXXXXX")
     printf '%s\n' "$lock_digest" > "$stamp"
@@ -143,8 +198,8 @@ if [[ $command == install ]]; then
     # The installer inherits no provider keys, shell startup files or user package configuration.
     clean_environment
     export assets_root model_cache embedding reranker embedding_repo embedding_revision reranker_repo reranker_revision
-    export venv requirements lock_digest install_stamp
-    export -f install_runtime models_present wheels_verified fail
+    export venv requirements lock_digest install_stamp pg_version pg_install pg_tree_sha256 pg0_bin
+    export -f install_runtime models_present wheels_verified fail pg_tree_digest postgres_verified provision_postgres
     timeout --kill-after=5s 900s bash -euo pipefail -c install_runtime 9>&- &
     install_pid=$!
     trap 'kill -TERM "$install_pid" 2>/dev/null || true; wait "$install_pid" 2>/dev/null || true' EXIT
@@ -155,6 +210,6 @@ if [[ $command == install ]]; then
     done
     wait "$install_pid"
     trap - EXIT INT TERM HUP
-    printf 'Hindsight packages and CPU models ready in %s\n' "$assets_root"
+    printf 'Hindsight packages, CPU models and PostgreSQL %s ready in %s\n' "$pg_version" "$assets_root"
     exit 0
 fi
