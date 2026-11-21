@@ -1350,6 +1350,50 @@ class SalvageTests(LegacyRepository):
         self.edited("same-tokens", ("docs/specs/net/widget.md", "Candidate; observed", "Candidate, still; observed"))
         self.assertEqual(["revise"], [item.kind for item in salvage(self.root, "same-tokens").documents])
 
+    def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
+        self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
+                                "Candidate; observed with client build 29990003 only."))
+        (document,) = salvage(self.root, "retoken").documents
+        old = document.target
+        assert old is not None
+        body = self.ref_body("retoken", "docs/specs/net/widget.md")
+        changes = online.Changes({"title": "Widget framing", "scope": {"basis": "explicit", "builds": ["client:29990003"]}},
+                                 salvage_command.DOCUMENT_NOTE.format("docs/specs/net/widget.md"), body)
+        self.accept_reference(changes, "REF-900")
+        # The new REF accepted, the old one not superseded: two REFs in force for one document is not done.
+        _ = run_git(self.root, "checkout", "-q", "retoken")
+        (listed,) = salvage(self.root, "retoken").documents
+        self.assertEqual(("ambiguous", "REF-900"), (listed.kind, listed.target))
+        self.assertIn(f"holds {old}, REF-900 for this path, REF-900 with this body: supersede {old} by it (memory supersede {old} --by REF-900)",
+                      listed.line())
+        self.assertEqual([f"memory supersede {old} --by REF-900"], listed.commands("FILE"))
+        self.assertEqual(1, self.run_salvage("retoken", check=True)[0])
+        # The supersession accepted (a revision of REF-900 appending supersedes): done.
+        _ = run_git(self.root, "checkout", "-q", "main")
+        entry = replay(read_tree(self.root)).entries["REF-900"]
+        revised = Record.from_json({**entry.record.to_json(), "supersedes": [old]}, entry.record.body)
+        _ = write_change_set(self.root, datetime(2026, 4, 3, tzinfo=UTC), [Revision.of(revised, entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "REF-900 supersedes the old widget REF")
+        self.publish()
+        status, stdout, _stderr = self.run_salvage("retoken", check=True)
+        self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout), stdout)
+
+    def test_a_document_whose_only_ref_is_retired_is_new(self) -> None:
+        records = self.journal_on_main(remove_legacy=False)
+        ref = next(record for record in records.values() if record.type == "reference" and record.legacy is not None
+                   and record.legacy.path == "docs/specs/net/another.md")
+        retired = Record.from_json({**ref.to_json(), "status": "retired", "notes": ["Invented: retired"]}, ref.body)
+        _ = write_change_set(self.root, datetime(2026, 4, 4, tzinfo=UTC), [Revision.of(retired, [Revision.of(ref).rev])])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "retire the REF")
+        self.publish()
+        _ = run_git(self.root, "checkout", "-q", "-b", "after-retire", "main~1")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: more.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit the spec")
+        self.assertEqual(["new"], [item.kind for item in salvage(self.root, "after-retire").documents])
+
     def test_a_hand_proposed_ref_takes_a_body_revision_only_under_the_same_tokens(self) -> None:
         scopes: list[tuple[JSON, str]] = [({"basis": "explicit", "builds": ["server:29990001"]}, "revise"), ({"basis": "explicit"}, "supersede")]
         for scope, kind in scopes:

@@ -153,7 +153,7 @@ class Pending:
         if self.kind == "revise":
             return [f"memory revise {self.target} --body {shlex.quote(file)}"]
         if self.kind == "ambiguous":
-            return []
+            return [f"memory supersede {other} --by {self.target}" for other in self.holders if other != self.target] if self.target is not None else []
         propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                    + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
         return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
@@ -173,6 +173,11 @@ class Pending:
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
                     + " (salvage --out writes its body and the commands)")
         if self.kind == "ambiguous":
+            if self.target is not None:
+                others = ", ".join(other for other in self.holders if other != self.target)
+                return (f"changed document; the accepted journal holds {', '.join(self.holders)} for this path, {self.target} with this body:"
+                        + f" supersede {others} by it (" + "; ".join(f"memory supersede {other} --by {self.target}" for other in self.holders
+                                                                    if other != self.target) + ") or decide by hand")
             return f"changed document; the accepted journal holds {', '.join(self.holders)} for this path: decide by hand (no command)"
         return ("new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
                 + " path, by legacy path or that command's note, with this body)")
@@ -184,9 +189,10 @@ def spoken(tokens: Sequence[str], subject: str) -> str:
 
 def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted) -> list[Pending]:
     """The documents the branch changed or added, matched by identity only (``document_path``; never by body) against
-    the accepted REFs still in force. Done when the accepted REF of that path holds the branch's body; a changed body
-    is a body revision only when the text's tokens equal that REF's scope tokens, else a superseding REF; a path two
-    accepted REFs name gets no command."""
+    the accepted REFs still in force (not superseded or retired). More than one: ambiguous, listed with their IDs
+    (and, when one holds the branch's body, the supersession that would leave it alone). Exactly one: done when it
+    holds the branch's body, else a body revision when the text's tokens equal its scope tokens, else a superseding
+    REF. None: a new document."""
     holders: dict[str, list[Record]] = {}
     for record in on_accepted.records.values():
         if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
@@ -197,12 +203,15 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         body, title = record.body or "", record.text("title") or path
         names = record.scope.tokens if record.scope is not None else ()
         on_main = holders.get(path, [])
+        if record.body == base_bodies.get(path):
+            continue  # the branch did not change it
         if not on_main:
             found.append(Pending(path, "new", body, title, names))
         elif len(on_main) > 1:
-            if body not in {other.body for other in on_main}:
-                found.append(Pending(path, "ambiguous", body, title, names, holders=tuple(sorted((other.id for other in on_main), key=id_key))))
-        elif record.body not in (on_main[0].body, base_bodies.get(path)):
+            # Ambiguity before done: two REFs in force for one document is never done, even if one holds this body.
+            current = next((other.id for other in on_main if other.body == record.body), None)
+            found.append(Pending(path, "ambiguous", body, title, names, target=current, holders=tuple(sorted((other.id for other in on_main), key=id_key))))
+        elif record.body != on_main[0].body:
             held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
             kind = "revise" if sorted(names) == sorted(held) else "supersede"
             found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held))

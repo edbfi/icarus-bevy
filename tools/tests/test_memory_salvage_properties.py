@@ -17,7 +17,7 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, identity, pending_documents, renumber
+from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, document_path, identity, pending_documents, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -73,6 +73,10 @@ def numbered(paths: list[str], names: list[str]) -> tuple[dict[str, str], dict[s
 
 def base_ids(before: dict[str, Record]) -> list[str]:
     return sorted(name for name, record in before.items() if record.type == "finding")
+
+
+def rewrite_case(after: dict[str, Record]) -> bool:
+    return any(record.body == "# c.md, rewritten\n" and record.legacy is not None for record in after.values())
 
 
 def retoken_case(after: dict[str, Record]) -> bool:
@@ -166,11 +170,14 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
     if two_holders:
-        # A second accepted REF naming c.md by note: the path is ambiguous on main.
-        body = "# c.md, by hand\n"
-        revisions["REF-951"] = Revision.of(Record.from_json({"id": "REF-951", "type": "reference", "status": "current", "title": "c.md",
-                                                             "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
-                                                             "notes": [DOCUMENT_NOTE.format("docs/specs/c.md")]}, body))
+        # A second accepted REF naming c.md by note, maybe with the branch's new body (a superseding REF accepted), and
+        # maybe superseding the first (the supersession accepted too: then it alone is in force).
+        body = "# c.md, rewritten\n" if rng.random() < 0.5 else "# c.md, by hand\n"
+        hand: dict[str, JSON] = {"id": "REF-951", "type": "reference", "status": "current", "title": "c.md", "scope": {"basis": "explicit"},
+                                 "body_sha256": hashlib.sha256(body.encode()).hexdigest(), "notes": [DOCUMENT_NOTE.format("docs/specs/c.md")]}
+        if rng.random() < 0.5:
+            hand["supersedes"] = [numbered(main_paths, main_names)[0]["docs/specs/c.md"]]
+        revisions["REF-951"] = Revision.of(Record.from_json(hand, body))
     if omega:
         revisions["CP-900"] = Revision.of(Record.from_json({"id": "CP-900", "type": "compatibility", "status": "unknown", "name": "Omega",
                                                             "qualifier": "Generated", "required_proof": "Generated proof",
@@ -191,7 +198,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     segments = (Segment("memory/journal/generated.jsonl", "", (*revisions.values(), *later)),)
     state = replay(segments)
     accepted = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                        {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments)
+                        {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments,
+                        frozenset(identifier for identifier in state.entries if state.retired(identifier)))
     return after, before, accepted
 
 
@@ -200,7 +208,7 @@ class GeneratedSalvageTests(unittest.TestCase):
         for seed in SEEDS:
             raw_after, raw_before, accepted = case(seed)
             after, before = raw_after, raw_before
-            (after, before), unmapped, shared = renumber((after, before), accepted.records)
+            (after, before), unmapped, shared = renumber((after, before), accepted.records, accepted.retired)
             result = Salvage("generated", "a" * 40, "b" * 40, "c" * 40)
             try:
                 _ = classify(result, after, before, accepted, unmapped, shared)
@@ -224,11 +232,19 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if pending.kind == "revise":
                     self.assertEqual(sorted(pending.names), sorted(pending.scope), f"seed {seed}: {pending.path}")
                 if pending.kind == "ambiguous":
-                    self.assertEqual([], pending.commands("FILE"), f"seed {seed}: {pending.path}")
+                    # No command, or (one REF holds this body) only the supersession of the others by it.
+                    expected = [f"memory supersede {other} --by {pending.target}" for other in pending.holders if other != pending.target]
+                    self.assertEqual(expected if pending.target is not None else [], pending.commands("FILE"), f"seed {seed}: {pending.path}")
                 if pending.path == "docs/specs/e.md" and retoken_case(raw_after):
                     self.assertEqual("supersede", pending.kind, f"seed {seed}: e.md names a build its REF's scope lacks")
-                if pending.path == "docs/specs/c.md" and "REF-951" in accepted.records:
-                    self.assertEqual("ambiguous", pending.kind, f"seed {seed}: c.md is named by two accepted REFs")
+            # Ambiguity before done: c.md changed on the branch with two REFs in force is listed, never done.
+            in_force = [name for name, record in accepted.records.items()
+                        if record.type == "reference" and name not in accepted.retired and document_path(record) == "docs/specs/c.md"]
+            c_listed = [pending for pending in pending_documents(after, before, accepted) if pending.path == "docs/specs/c.md"]
+            if len(in_force) > 1 and rewrite_case(raw_after):
+                self.assertEqual(["ambiguous"], [pending.kind for pending in c_listed], f"seed {seed}: c.md with {in_force} in force")
+            if len(in_force) == 1 and rewrite_case(raw_after) and accepted.records[in_force[0]].body == "# c.md, rewritten\n":
+                self.assertEqual([], c_listed, f"seed {seed}: c.md done once the superseding REF alone is in force")
             self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
                              f"seed {seed}: a cosmetic row refused as a successor")
             def counted(export: dict[str, Record]) -> dict[str | None, int]:
@@ -264,7 +280,7 @@ class GeneratedSalvageTests(unittest.TestCase):
             now = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
                            {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", merged)
             again = Salvage("generated", "e" * 40, "b" * 40, "c" * 40)
-            (after_again, before_again), unmapped_again, shared_again = renumber((raw_after, raw_before), now.records)
+            (after_again, before_again), unmapped_again, shared_again = renumber((raw_after, raw_before), now.records, now.retired)
             try:
                 _ = classify(again, after_again, before_again, now, unmapped_again, shared_again)
             except SalvageError as error:
@@ -293,7 +309,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                 state = replay(with_hand)
                 later = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
                                  {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", with_hand)
-                (after_hand, before_hand), unmapped_hand, shared_hand = renumber((raw_after, raw_before), later.records)
+                (after_hand, before_hand), unmapped_hand, shared_hand = renumber((raw_after, raw_before), later.records, later.retired)
                 third = Salvage("generated", "f" * 40, "b" * 40, "c" * 40)
                 _ = classify(third, after_hand, before_hand, later, unmapped_hand, shared_hand)
                 self.assertEqual("new", third.kinds["M-501"], f"seed {seed}: run after the document is accepted")
