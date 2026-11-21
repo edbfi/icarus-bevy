@@ -876,6 +876,32 @@ class SalvageTests(LegacyRepository):
         self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
         self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
 
+    def test_a_row_the_accepted_journal_does_not_hold_is_never_revised(self) -> None:
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = run_git(self.root, "checkout", "-q", "-b", "retire")
+        _ = ledger.write_text(ledger.read_text().replace("owner said so | | active |", "owner said so | | retired: dropped |"))
+        _ = run_git(self.root, "commit", "-q", "-am", "retire F-107")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = ledger.write_text("".join(line + "\n" for line in ledger.read_text().splitlines() if not line.startswith(("| F-107 ", "F-106 is retired"))))
+        _ = run_git(self.root, "commit", "-q", "-am", "main drops F-107")
+        self.publish()
+        result = salvage(self.root, "retire")
+        self.assertEqual(([], "undecided"), (result.proposals, result.kinds["F-107"]))
+        self.assertIn("the accepted journal has no record F-107 to revise", result.undecided["F-107"])
+
+    def test_a_proposal_that_does_not_replay_cleanly_is_never_returned(self) -> None:
+        self.status_branch("dangling", "retired: dropped")
+        real = salvage_command.apply
+
+        def dangling(edit: salvage_command.Edit, base: Record) -> Record | None:
+            built = real(edit, base)
+            return None if built is None else Record.from_json({**built.to_json(), "refs": ["F-999"]})
+
+        with mock.patch.object(salvage_command, "apply", dangling):
+            result = salvage(self.root, "dangling")
+        self.assertEqual([], result.proposals)
+        self.assertIn("would not replay cleanly: F-107: revision ", result.undecided["F-107"])
+
     def test_one_bad_row_never_aborts_the_run(self) -> None:
         self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")
 

@@ -64,7 +64,7 @@ from typing import Protocol
 
 from tools.evidence_catalog_model import CatalogError
 from tools.evidence_catalog_store import LEGACY_ROOTS
-from tools.memory.check import APPEND_ONLY, REVISABLE
+from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
 from tools.memory.legacy import commit_time, export
@@ -311,12 +311,18 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
 
 
 def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit]) -> dict[str, str]:
-    """Replay the accepted journal with and without ``proposals``: every edit must show. A status edit must
-    derive its status, a successor must derive ``superseded`` on the old row, and every proposal must change
-    its record's head. Returns the IDs that would replay to no change, with why (never expected: a guard)."""
+    """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly (no replay,
+    revision or link problem the accepted journal alone does not have, ``check --ci``'s tests) and every edit must
+    show. A status edit must derive its status, a successor must derive ``superseded`` on the old row, and every
+    proposal must change its record's head. Returns the IDs that fail, with why (never expected: a guard)."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
     found: dict[str, str] = {}
+    known = {*accepted_state.problems, *revision_problems(accepted_state), *accepted_state.link_problems()}
+    for problem in (*proposed.problems, *revision_problems(proposed), *proposed.link_problems()):
+        identifier = problem.split(":", 1)[0]
+        if problem not in known and any(revision.record.id == identifier for revision in proposals):
+            _ = found.setdefault(identifier, f"it would not replay cleanly: {problem}")
     for revision in proposals:
         identifier = revision.record.id
         before = accepted_state.entries.get(identifier)
@@ -365,7 +371,8 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             result.unrevisable[identifier] = reason
         else:
             result.undecided[identifier] = reason
-        superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
+        if identifier in after:
+            superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
 
     for identifier in sorted(after, key=id_key):
         record = after[identifier]
@@ -418,8 +425,11 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     linking: list[tuple[str, list[str]]] = []
     for identifier, edit in edits.items():
         record, origin, on_main = after[identifier], before[identifier], accepted.get(identifier)
-        # A row main's legacy export lost names the first revision the cut-over would have journalled.
-        base, heads = (on_main, on_accepted.heads[identifier]) if on_main is not None else (origin, (Revision.of(origin).rev,))
+        if on_main is None:
+            # A revision must name a head the accepted journal holds; with no record there is nothing to revise.
+            hold(identifier, "undecided", f"the accepted journal has no record {identifier} to revise (main removed or never journalled it)")
+            continue
+        base, heads = on_main, on_accepted.heads[identifier]
         try:
             revision = apply(edit, base)
         except RecordError as error:
@@ -432,7 +442,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             result.notices.append(f"{identifier}: only verbatim legacy text changed on {ref}; nothing to propose")
         elif revision is None and not pending:
             result.kinds[identifier] = "accepted"
-        elif on_main is not None and on_main != origin and on_main != apply(edit, origin):
+        elif on_main != origin and on_main != apply(edit, origin):
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
         else:
