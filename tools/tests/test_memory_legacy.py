@@ -1190,18 +1190,18 @@ class SalvageTests(LegacyRepository):
 
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
-        _ = (self.root / "docs/specs/net/zeta.md").write_text("# Third spec\n\n## Scope\n\nInvented: new.\n", encoding="utf-8")
+        _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Scope\n\nInvented: new.\n", encoding="utf-8")
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "add a spec")
         _ = self.journal_on_main(remove_legacy=True)
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
-        self.assertIn("new-doc: docs/specs/net/zeta.md: new document; salvage --out writes its body", stdout)
+        self.assertIn("new-doc: docs/specs/net/third.md: new document; salvage --out writes its body", stdout)
         out = self.top / "out"
         _, _stdout, stderr = self.run_salvage("new-doc", out=out)
-        written = out / "documents/docs/specs/net/zeta.md"
-        self.assertEqual(self.ref_body("new-doc", "docs/specs/net/zeta.md").encode(), written.read_bytes())
-        command = next(line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/zeta.md: "))
+        written = out / "documents/docs/specs/net/third.md"
+        self.assertEqual(self.ref_body("new-doc", "docs/specs/net/third.md").encode(), written.read_bytes())
+        command = next(line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: "))
         words = shlex.split(command)
         self.assertEqual(["memory", "propose", "reference"], words[:3])
         options = cli.parse_options(words[1:])
