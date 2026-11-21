@@ -443,7 +443,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         proposals[target] = linked
                     else:
                         carriers[target] = linked
-                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "revision", "superseded"):
+                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "cosmetic", "revision", "superseded"):
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
@@ -456,7 +456,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
         failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing})
         if not failing:
             for target in carriers:
-                if result.kinds.get(target) in (None, "accepted", "superseded"):
+                if result.kinds.get(target) in (None, "accepted", "cosmetic", "superseded"):
                     result.kinds[target] = "revision"
             return everything, unlinkable
         for identifier, reason in failing.items():
@@ -816,7 +816,6 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                    if (held := accepted.get(target)) is None or identifier not in held.links.supersedes]
         if edit.empty:
             result.kinds[identifier] = "cosmetic"
-            result.notices.append(f"{identifier}: only verbatim legacy text changed on {ref}; nothing to propose")
         elif revision is None and not pending:
             result.kinds[identifier] = "accepted"
         elif on_main != origin and on_main != apply(edit, origin):
@@ -843,6 +842,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {outcome}")
     for target, reason in sorted(unlinkable.items()):
         result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
+    # A cosmetic row that ends up carrying a link is a revision now; the notice is for rows still cosmetic.
+    result.notices.extend(f"{identifier}: only verbatim legacy text changed on {ref}; nothing to propose"
+                          for identifier in changed if result.kinds.get(identifier) == "cosmetic")
     shared_keys = {identity(after[name]) for name in shared if name in after}
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
                           if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys and identifier not in renamed)

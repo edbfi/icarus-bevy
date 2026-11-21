@@ -24,11 +24,14 @@ from tools.tests.memory_fixtures import evidence, finding
 SEEDS = range(300)
 
 
-def row(identifier: str, cell: str, claim: str = "Invented claim", successors: tuple[str, ...] = ()) -> Record:
+def row(identifier: str, cell: str, claim: str = "Invented claim", successors: tuple[str, ...] = (), original: str | None = None) -> Record:
     """A migrated finding as the exporter writes one: stored status from the cell, implied status and successors."""
     lowered = cell.lower()
     implied = "superseded" if "superseded" in lowered else "retired" if lowered.startswith("retired") and lowered != "retired" else None
-    legacy: dict[str, JSON] = {"path": "docs/ledgers/findings/generated.md", "cells": {"claim": f"{claim} {identifier}", "status": cell}}
+    cells: dict[str, JSON] = {"claim": f"{claim} {identifier}", "status": cell}
+    if original is not None:
+        cells["original"] = original  # the raw line: a change to it alone is cosmetic
+    legacy: dict[str, JSON] = {"path": "docs/ledgers/findings/generated.md", "cells": cells}
     if implied is not None:
         legacy["implied_status"] = implied
     if successors:
@@ -93,6 +96,13 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
             after[identifier] = row(identifier, rng.choice(["active", "retired", "retired: replaced", "parked"]))
         else:
             after[identifier] = row(identifier, "active", claim="Changed claim")
+    if rng.random() < 0.25 and len(base_ids) >= 2:
+        # A cosmetic-only successor of a superseded row: the raw line changed, nothing else.
+        successor, old = base_ids[-1], base_ids[-2]
+        held = before[successor].legacy
+        before_cell = held.cells["status"] if held is not None else "active"
+        after[successor] = row(successor, str(before_cell), original=f"|  {successor}  | spaced |")
+        after[old] = row(old, f"superseded-by {successor}", successors=(successor,))
     for identifier in fresh_ids:
         if rng.random() < 0.4:
             other = rng.choice([item for item in candidates if item != identifier])
@@ -169,6 +179,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
+            self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
+                             f"seed {seed}: a cosmetic row refused as a successor")
             lost = {identity(record) for record in accepted.records.values() if record.type in ("compatibility", "report")} \
                 - {identity(record) for record in raw_after.values()}
             if lost:
@@ -208,7 +220,8 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertEqual(held_new, again_new, f"seed {seed}: second run, provisional rows")
             changed = {name for name, record in after.items() if before.get(name) != record}
             proposed = {revision.record.id for revision in result.proposals} & changed
-            self.assertEqual({name: "accepted" for name in proposed}, {name: again.kinds.get(name) for name in proposed},
+            # Accepted, or (a cosmetic row that carried a link in run 1, now accepted) cosmetic: nothing left to propose either way.
+            self.assertEqual(set[str](), {name for name in proposed if again.kinds.get(name) not in ("accepted", "cosmetic")},
                              f"seed {seed}: what run 1 proposed is accepted in run 2")
             self.assertEqual(set[str](), {name for name, kind in again.kinds.items() if kind == "conflict"} - set(held), f"seed {seed}: new conflicts")
             if "M-501" in raw_after:

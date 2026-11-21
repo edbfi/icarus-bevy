@@ -1066,6 +1066,16 @@ class SalvageTests(LegacyRepository):
         self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
         self.assertFalse(any("CP-001: removed" in notice for notice in result.notices), result.notices)
 
+    def test_a_successor_with_only_a_cosmetic_change_carries_the_link(self) -> None:
+        ledger = "docs/ledgers/findings/widgets.md"
+        self.edited("cosmetic", (ledger, "| F-105 | Gadget", "|  F-105  | Gadget"), (ledger, "owner said so | | active |", "owner said so | | superseded-by F-105 |"))
+        result = salvage(self.root, "cosmetic")
+        self.assertEqual({"F-105": "revision", "F-107": "superseded"}, {name: kind for name, kind in result.kinds.items() if name in ("F-105", "F-107")})
+        self.assertEqual(("F-107",), next(item.record for item in result.proposals if item.record.id == "F-105").links.supersedes)
+        self.assertEqual({}, result.undecided)
+        self.assertFalse(any(notice.startswith("F-105: only verbatim") for notice in result.notices), result.notices)
+        _ = self.legal(result)
+
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
         self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",
