@@ -81,9 +81,10 @@ the rows it added there exist nowhere else. A worktree whose memory tool is
 older than the bank's rendering guard (it contains `8592948e` but not the
 cut-over) parses `main`'s journal, and its scratch guards (`tools/work_gc.py`,
 `tools/cargo_guard.py`) keep working, but its online `memory` commands stop at
-`connection.env:1: malformed or repeated line`: the service's connection file
-was retired for `connection-v2.env`, and the tombstone left under the old name
-says to merge `main`. A worktree older than the memory tool keeps its own
+`connection.env:1: malformed or repeated line`, because the service's
+connection file was retired for `connection-v2.env`. That error is all it
+prints. It means: merge `main` (salvaging first, below), never repair the
+config directory. A worktree older than the memory tool keeps its own
 legacy hooks and notices nothing until it merges `main`. On `main`,
 `memory check --ci` on such a branch says `this branch predates the cut-over`
 and lists its rows, but its own hooks are old and CI checks the merge commit,
@@ -122,6 +123,16 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    the modify/delete conflicts and citing any new IDs), or retire the branch.
    Keep its worktree until its evidence records are accepted on `origin/main`:
    until then its legacy shards are what protects its branch-only artifacts.
+6. Confirm it is done, from the up-to-date checkout of `main`:
+   `memory salvage <branch>` on the merged tip exits 0 when every row is
+   accepted. While anything is left it exits 5 and names the pre-merge parent;
+   `memory salvage <parent> --check` lists what is left. A row resolved by hand
+   in step 3 (a superseding record, a conflict added again under a new ID, a
+   decision by hand) never becomes accepted under its old ID, so it stays
+   listed and the exit stays 5. That is expected for those rows only: the
+   branch is done when every row still listed is one you resolved by hand and
+   its superseding record, new record or recorded decision is accepted on
+   `origin/main`. Any other listed row is not salvaged yet: go back to step 2.
 
 ## When the service is down
 
