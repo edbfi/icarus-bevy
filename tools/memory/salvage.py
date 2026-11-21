@@ -23,7 +23,7 @@ migrated record's legacy status (``Entry.legacy_holds``), so a status revision a
 | Changed in the row | Becomes |
 | --- | --- |
 | status cell naming a new successor (``superseded-by F-N``; an evidence row's ``superseded_by``) | a ``supersedes`` link on the successor: its proposal here, or a revision of its accepted record; the old row: ``superseded`` |
-| status cell ``retired ...``, or a value of the type's vocabulary | a revision storing that status, with a note quoting the cell |
+| status cell ``retired ...``, or a value of the type's vocabulary | a revision storing that status, with a note quoting the cell (``STATUS_NOTE``) |
 | status cell saying the same legacy status in other words; the raw line; the table framing; prose line numbers | ``cosmetic``: nothing to propose |
 | an unknown's next probe (changed, cleared or filled); appended notes; appended ``verified_on``/``supersedes``/``resolves`` | a revision taking it |
 | any other field or legacy cell (a claim, a cited ID, a label) | ``supersede``: needs a new record superseding the old one; never proposed |
@@ -81,6 +81,8 @@ from tools.memory.state import State, replay
 ACCEPTANCE_REF = "origin/main"
 SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 EXIT_SUPERSEDE = 4
+# The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.
+STATUS_NOTE = "status cell (salvaged legacy row): {}"
 EXIT_PREMERGE = 5
 
 
@@ -207,10 +209,10 @@ def changed_cells(old: Record, new: Record) -> tuple[str, ...]:
     return tuple(found)
 
 
-def plan(origin: Record, record: Record, ref: str, tip: str = "") -> Edit:
+def plan(origin: Record, record: Record, ref: str) -> Edit:
     """The branch's edit of the migrated row ``origin`` (as of the merge base), cell by cell (module docstring table).
-    ``ref`` (as typed) names the branch in reasons; a note stored in the record names ``tip``, the salvaged commit's
-    short SHA, so the revision is the same however the ref was spelled (a branch name, the pre-merge SHA)."""
+    ``ref`` (as typed) names the branch in reasons only: nothing stored in a record depends on how the ref was
+    spelled or which commit was the tip (``STATUS_NOTE``), so a salvaged revision is the same on every run."""
     fields = tuple(name for name in unrevisable_fields(origin, record) if name not in ("legacy", "gaps"))
     if blocked := fields or changed_cells(origin, record):
         return Edit(blocked=blocked)
@@ -246,7 +248,7 @@ def plan(origin: Record, record: Record, ref: str, tip: str = "") -> Edit:
         else:
             return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
         if status is not None:
-            notes.append(f"status cell on {tip or ref}: {cell}")
+            notes.append(STATUS_NOTE.format(cell))
     # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
         return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
@@ -389,7 +391,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         proposals[target] = linked
                     else:
                         carriers[target] = linked
-                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "revision"):
+                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "revision", "superseded"):
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
@@ -402,7 +404,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
         failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing})
         if not failing:
             for target in carriers:
-                if result.kinds.get(target) in (None, "accepted"):
+                if result.kinds.get(target) in (None, "accepted", "superseded"):
                     result.kinds[target] = "revision"
             return everything, unlinkable
         for identifier, reason in failing.items():
@@ -531,7 +533,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             hold(identifier, "supersede", unrevisable_fields(origin, record) or ("content",))
         else:
             try:
-                edit = plan(origin, record, ref, result.head[:12])
+                edit = plan(origin, record, ref)
             except RecordError as error:
                 hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
                 continue

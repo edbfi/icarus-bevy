@@ -93,6 +93,24 @@ class GeneratedSalvageTests(unittest.TestCase):
             base = replay(accepted.segments)
             proposed = replay([*accepted.segments, Segment("memory/journal/proposals.jsonl", "", tuple(result.proposals))])
             self.assertEqual(set[str](), problems(proposed) - problems(base), f"seed {seed}")
+            # Another spelling of the ref and another tip (an unrelated commit): byte-identical proposals, same classes.
+            other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)
+            _ = classify(other, after, before, accepted)
+            self.assertEqual(([revision.line() for revision in result.proposals], result.kinds),
+                             ([revision.line() for revision in other.proposals], other.kinds), f"seed {seed}")
+            # Once the first output is accepted, nothing is proposed again and nothing held changes class.
+            merged = (*accepted.segments, Segment("memory/journal/accepted-proposals.jsonl", "", tuple(result.proposals)))
+            state = replay(merged)
+            now = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
+                           {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", merged)
+            again = Salvage("generated", "e" * 40, "b" * 40, "c" * 40)
+            try:
+                _ = classify(again, after, before, now)
+            except SalvageError as error:
+                self.fail(f"seed {seed}, second run: {error}")
+            self.assertEqual([], again.proposals, f"seed {seed}: second run")
+            held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict")}
+            self.assertEqual(held, {name: kind for name, kind in again.kinds.items() if name in held}, f"seed {seed}: second run")
 
 
 if __name__ == "__main__":

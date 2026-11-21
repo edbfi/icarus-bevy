@@ -740,8 +740,7 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "retire")
         (revision,) = result.proposals
         self.assertEqual(("F-107", "retired"), (revision.record.id, revision.record.status))
-        tip = run_git(self.root, "rev-parse", "retire").strip()[:12]
-        self.assertEqual(f"status cell on {tip}: retired: replaced by the invented design", revision.record.notes[-1])
+        self.assertEqual("status cell (salvaged legacy row): retired: replaced by the invented design", revision.record.notes[-1])
         self.assertEqual(self.records["F-107"].legacy, revision.record.legacy, "main's verbatim cells are kept")
         _ = self.legal(result)
 
@@ -941,6 +940,23 @@ class SalvageTests(LegacyRepository):
         self.assertEqual((0, ""), (status, stdout), stderr)
         self.assertIn("leaves nothing to salvage", stderr)
 
+    def test_a_status_revision_is_the_same_by_name_by_sha_and_after_an_unrelated_commit(self) -> None:
+        self.status_branch("spelled", "retired: dropped")
+        by_name = salvage(self.root, "spelled")
+        sha = run_git(self.root, "rev-parse", "spelled").strip()
+        by_sha = salvage(self.root, sha)
+        _ = run_git(self.root, "checkout", "-q", "spelled")
+        _ = run_git(self.root, "commit", "-q", "--allow-empty", "-m", "unrelated")
+        later = salvage(self.root, "spelled")
+        lines = [[revision.line() for revision in result.proposals] for result in (by_name, by_sha, later)]
+        self.assertEqual(lines[0], lines[1])
+        self.assertEqual(lines[0], lines[2])
+        self.accept(by_name)
+        _ = run_git(self.root, "checkout", "-q", "spelled")
+        _ = run_git(self.root, "commit", "-q", "--allow-empty", "-m", "another unrelated")
+        again = salvage(self.root, "spelled")
+        self.assertEqual(([], "accepted"), (again.proposals, again.kinds["F-107"]))
+
     def test_a_dropped_old_row_strips_its_link_from_the_successor(self) -> None:
         self.superseded_by_new_row()
         result = self.forced("pair", "F-107")
@@ -981,8 +997,8 @@ class SalvageTests(LegacyRepository):
     def test_one_bad_row_never_aborts_the_run(self) -> None:
         self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")
 
-        def failing(origin: Record, record: Record, ref: str, tip: str) -> salvage_command.Edit:
-            raise RecordError(f"{record.id}: invented failure on {ref} at {tip} ({origin.id})")
+        def failing(origin: Record, record: Record, ref: str) -> salvage_command.Edit:
+            raise RecordError(f"{record.id}: invented failure on {ref} ({origin.id})")
 
         with mock.patch.object(salvage_command, "plan", failing):
             result = salvage(self.root, "two")
