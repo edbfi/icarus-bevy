@@ -1282,6 +1282,31 @@ class SalvageTests(LegacyRepository):
         self.assertEqual("new", second.kinds["M-105"])
         self.assertEqual(("REF-900",), next(item.record for item in second.proposals if item.record.id == "M-105").links.refs)
 
+    def test_out_never_overwrites_a_file_with_other_content(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "outs")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text() + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "a spec and a row")
+        _ = self.journal_on_main(remove_legacy=True)
+        out = self.top / "out"
+        first = self.run_salvage("outs", out=out)
+        files = {path: path.read_bytes() for path in out.rglob("*") if path.is_file()}
+        self.assertEqual(2, len(files), "one document body and one segment")
+        stamps = {path: path.stat().st_mtime_ns for path in files}
+        self.assertEqual(first[0], self.run_salvage("outs", out=out)[0], "a rerun with identical files succeeds")
+        self.assertEqual(stamps, {path: path.stat().st_mtime_ns for path in files}, "identical files are left alone")
+        document = out / "documents/docs/specs/net/another.md"
+        segment = next(path for path in files if path != document)
+        _ = document.write_text("edited by the operator\n", encoding="utf-8")
+        segment.unlink()
+        status, stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual((1, ""), (status, stdout))
+        self.assertIn(f"memory salvage: {document} exists with other content; nothing written", stderr)
+        self.assertEqual("edited by the operator\n", document.read_text(encoding="utf-8"))
+        self.assertFalse(segment.exists(), "nothing written when one file differs")
+
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
         ledger = self.root / "docs/ledgers/findings/widgets.md"

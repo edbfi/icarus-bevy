@@ -86,10 +86,11 @@ from tools.evidence_catalog_model import CatalogError
 from tools.evidence_catalog_store import LEGACY_ROOTS
 from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
-from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
+from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set
 from tools.memory.legacy import TRACKED_NOTE, commit_time, export
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
+from tools.memory.service import write_private
 from tools.memory.state import State, replay
 
 ACCEPTANCE_REF = "origin/main"
@@ -911,23 +912,30 @@ def run(options: argparse.Namespace) -> int:
               + f"{len(result.undecided)} needing a decision by hand, "
               + f"{len(result.conflicts)} conflict(s), {len(accepted)} row(s) already accepted "
               + f"(against {main} {result.main[:12]}'s {'journal' if result.source == 'journal' else 'legacy export'})", file=sys.stderr)
+        segments = split_change_set(commit_time(root, result.head), result.proposals) if result.proposals else []
         if out is not None:
+            planned = [(out / "documents" / document.path, document.body.encode()) for document in result.documents]
+            planned += [(out / path, data) for path, data in segments]
+            # Never overwrite: an existing file with the same bytes is left alone; one with other bytes (an operator's
+            # edit, an earlier run's other output) refuses the whole run before anything is written.
+            if differing := [target for target, data in planned if target.exists() and target.read_bytes() != data]:
+                print(f"memory salvage: {differing[0]} exists with other content; nothing written (move it away or use another --out)", file=sys.stderr)
+                return 1
+            for target, data in planned:
+                if not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    write_private(target, data)
             for document in result.documents:
                 target = out / "documents" / document.path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _ = target.write_bytes(document.body.encode())
                 print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)
                 if document.target is None:
                     print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
-        if result.proposals:
-            created = commit_time(root, result.head)
-            if out is not None:
-                written = write_change_set(out, created, result.proposals)
-                print(f"memory salvage: wrote {len(written)} segment(s) under {out}", file=sys.stderr)
-            else:
-                for path, data in split_change_set(created, result.proposals):
-                    print(f"# {path}")
-                    print(data.decode(), end="")
+            if segments:
+                print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)
+        else:
+            for path, data in segments:
+                print(f"# {path}")
+                print(data.decode(), end="")
     except SalvageError as error:
         print(f"memory salvage: internal error, nothing written: {error}", file=sys.stderr)
         return 1
