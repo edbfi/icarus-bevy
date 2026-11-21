@@ -390,12 +390,12 @@ class RevisionTests(Online):
         self.assertEqual("active", from_b.data["status"])
         self.assertNotIn("proposed", "\n".join(from_b.lines))
         recall_b = "\n".join(online.recall(self.bank, other, "lock follows the key re-read").lines)
-        self.assertIn("F-106 [finding; accepted, active;", recall_b)
+        self.assertIn("F-106 [finding; accepted, active (stored);", recall_b)
         self.assertNotIn(new, recall_b)
         everything = online.get(self.bank, other, "F-106", all_proposals=True)
         self.assertIn(f"proposed superseder: {new} (proposed, another worktree or branch)", everything.lines)
         from_a = "\n".join(online.recall(self.bank, self.root, "lock follows the key re-read").lines)
-        self.assertIn("F-106 [finding; accepted, active;", from_a)
+        self.assertIn(f"F-106 [finding; accepted, active (stored; proposed link from {new} in this worktree);", from_a)
         self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", from_a)
         self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", online.get(self.bank, self.root, "F-106").lines)
 
@@ -676,16 +676,16 @@ class ReadingTests(Online):
         _ = online.revise(self.bank, self.root, "U-101", changes(status="investigating"), now=self.tick())
         output = online.recall(self.bank, self.root, "listing lock key F-104", all_proposals=True)
         text = "\n".join(output.lines)
-        self.assertTrue(output.lines[0].startswith("named: F-104 [accepted, active]"))
+        self.assertTrue(output.lines[0].startswith("named: F-104 [accepted, active (stored)]"))
         self.assertIn("== current ==", text)
-        self.assertIn(f"{mine} [finding; proposed, active; current against REL-9.0.2", text)
-        self.assertIn("F-106 [finding; accepted, active; other-build against REL-9.0.2", text)
-        self.assertIn("retired under it: F-101 [accepted, superseded]", text)
-        self.assertIn("retired under it: F-102 [accepted, superseded]", text)
+        self.assertIn(f"{mine} [finding; proposed, active (stored); current against REL-9.0.2", text)
+        self.assertIn("F-106 [finding; accepted, active (stored); other-build against REL-9.0.2", text)
+        self.assertIn("retired under it: F-101 [accepted, superseded (link from F-102)]", text)
+        self.assertIn("retired under it: F-102 [accepted, superseded (link from F-106)]", text)
         self.assertNotRegex(text, r"(?m)^F-10[12] \[")
         self.assertNotIn("M-102 [evidence; accepted, active;", text)
         self.assertNotIn("U-101@", text)
-        self.assertIn("== proposals of other worktrees ==\nF-150 [proposed, active]", text)
+        self.assertIn("== proposals of other worktrees ==\nF-150 [proposed, active (stored)]", text)
         partitions = output.data["partitions"]
         assert isinstance(partitions, dict)
         self.assertEqual({"current", "other-build"}, set(partitions) - {"native", "unscoped"})
@@ -792,7 +792,7 @@ class SharedFormatterTests(Online):
         self.assertIn("  findings listed: F-103, F-104", recalled)
         stated = online.get(self.bank, self.root, "U-101").lines
         self.assertIn("resolved by: F-103", stated)
-        self.assertIn("status: resolved (stored open)", stated)
+        self.assertIn("status: resolved (link from F-103)", stated)
 
 
 class AreaUnknownTests(Online):
@@ -831,8 +831,8 @@ class CompactReadTests(Online):
         body = self.reference()
         compact = online.recall(self.bank, self.root, "listing lock key")
         text = "\n".join(compact.lines)
-        self.assertIn("REF-001 [reference; proposed, current;", text)
-        self.assertIn("REF-001 [reference; proposed, current; unscoped against REL-9.0.2]\n  Invented long reference\n  passage (under 'Lock rules'):", text)
+        self.assertIn("REF-001 [reference; proposed, current (stored);", text)
+        self.assertIn("REF-001 [reference; proposed, current (stored); unscoped against REL-9.0.2]\n  Invented long reference\n  passage (under 'Lock rules'):", text)
         self.assertIn("passage", text)
         self.assertIn("listing lock key", text)
         self.assertNotIn("Invented filler paragraph 30", text, "a REF hit never prints its body")
@@ -909,7 +909,7 @@ class CompactReadTests(Online):
         self.accepted_chain()
         got = online.get(self.bank, self.root, "M-102")
         self.assertFalse(any(line.startswith("partition:") for line in got.lines))
-        self.assertIn("M-102 [evidence; accepted, active]", "\n".join(online.recall(self.bank, self.root, "invented report receipt", include_evidence=True).lines))
+        self.assertIn("M-102 [evidence; accepted, active (stored)]", "\n".join(online.recall(self.bank, self.root, "invented report receipt", include_evidence=True).lines))
 
     def test_the_passage_is_trimmed_around_the_query_under_its_heading(self) -> None:
         unit = "x " * 1000 + "the listing lock key is here " + "y " * 1000
@@ -1248,7 +1248,7 @@ class OneDerivedStatusTests(Online):
                         self.assertIn(f"status {shown}", next(line for line in lines if line.startswith(f"pending revision: {holding.document_id}")))
                 recalled = "\n".join(online.recall(self.bank, self.root, "invented gadget receipt", include_evidence=True).lines)
                 # Recall shows the M-201 document (retired ones under their successor), never a pending revision.
-                self.assertRegex(recalled, rf"M-201 \[(evidence; )?{documents['M-201'].state}, {documents['M-201'].status}[];]")
+                self.assertRegex(recalled, rf"M-201 \[(evidence; )?{documents['M-201'].state}, {documents['M-201'].status} \(")
                 listing = online.area(self.bank, self.root, "listing").data["statuses"]
                 assert isinstance(listing, dict)
                 self.assertIn("M-201", [row.get("id") for row in cast(list[dict[str, JSON]], listing[shown])])
@@ -1256,6 +1256,101 @@ class OneDerivedStatusTests(Online):
                 assert isinstance(counts, dict)
                 expected_counts = {"active": 2} if shown == "active" else {"active": 1, shown: 1}
                 self.assertEqual(expected_counts, counts["evidence"])
+
+
+def legacy_of(status_cell: str, *, implied: str | None = None, superseded_by: tuple[str, ...] = ()) -> dict[str, JSON]:
+    legacy: dict[str, JSON] = {"path": "docs/ledgers/invented.md", "cells": {"status": status_cell}}
+    if implied is not None:
+        legacy["implied_status"] = implied
+    if superseded_by:
+        legacy["superseded_by"] = list(superseded_by)
+    return legacy
+
+
+# How each status reads in get, recall and area: the derived status, then where it comes from.
+WORDING: tuple[tuple[str, str, str], ...] = (
+    # (ID, how the status arises, the exact wording)
+    ("F-301", "finding, stored", "active (stored)"),
+    ("F-302", "finding, legacy cell superseded-by F-301", "superseded (legacy status)"),
+    ("F-303", "finding, legacy cell retired: receipt", "retired (legacy status)"),
+    ("F-304", "finding, accepted F-305 states supersedes", "superseded (link from F-305)"),
+    ("F-306", "finding, F-307 proposes supersedes in this worktree", "active (stored; proposed link from F-307 in this worktree)"),
+    ("F-307", "finding, proposed in this worktree", "active (stored)"),
+    ("F-308", "finding, legacy retired, then a revision stores active", "active (stored; legacy status withdrawn)"),
+    ("F-309", "finding, fork of two heads", "active (stored)"),
+    ("U-301", "unknown, stored", "open (stored)"),
+    ("U-302", "unknown, legacy cell resolved", "resolved (legacy status)"),
+    ("U-303", "unknown, accepted F-310 states resolves", "resolved (link from F-310)"),
+    ("U-304", "unknown, legacy resolved, then a revision stores open", "open (stored; legacy status withdrawn)"),
+    ("M-301", "evidence, stored", "active (stored)"),
+    ("M-302", "evidence, legacy row superseded_by M-301", "superseded (legacy status)"),
+    ("M-303", "evidence, stored retired", "retired (stored)"),
+)
+LABEL = r"\[(?:[a-z]+; )?[a-z]+, ([a-z]+ \([^()]*\))"
+
+
+class StatusWordingTests(Online):
+    """One wording of every status origin, identical in online and offline get, recall and area (``WORDING``)."""
+
+    def histories(self) -> None:
+        def migrated(data: dict[str, JSON], status: str, legacy: dict[str, JSON]) -> Record:
+            return Record.from_json({**data, "status": status, "legacy": legacy})
+
+        def again(record: Record, prev: Revision, **changes: JSON) -> Revision:
+            return Revision.of(Record.from_json({**record.to_json(), **changes}), [prev.rev])
+
+        f303 = migrated(finding("F-303", "Invented gadget three"), "legacy:retired: receipt", legacy_of("retired: receipt", implied="retired"))
+        f308 = migrated(finding("F-308", "Invented gadget eight"), "legacy:retired: old", legacy_of("retired: old", implied="retired"))
+        f309 = Record.from_json(finding("F-309", "Invented gadget nine"))
+        u304 = migrated(unknown("U-304", "Invented gadget question four?"), "legacy:resolved", legacy_of("resolved", implied="resolved"))
+        first = {record.id: Revision.of(record) for record in (f308, f309, u304)}
+        accepted = [
+            Revision.of(Record.from_json(finding("F-301", "Invented gadget one"))),
+            Revision.of(migrated(finding("F-302", "Invented gadget two"), "legacy:superseded-by F-301",
+                                 legacy_of("superseded-by F-301", implied="superseded", superseded_by=("F-301",)))),
+            Revision.of(f303),
+            Revision.of(Record.from_json(finding("F-304", "Invented gadget four"))),
+            Revision.of(Record.from_json(finding("F-305", "Invented gadget five", supersedes=["F-304"]))),
+            Revision.of(Record.from_json(finding("F-306", "Invented gadget six"))),
+            *first.values(),
+            again(f308, first["F-308"], status="active"),
+            again(f309, first["F-309"], notes=["Invented: one side"]),
+            again(f309, first["F-309"], notes=["Invented: other side"]),
+            Revision.of(Record.from_json(finding("F-310", "Invented gadget ten", resolves=["U-303"]))),
+            Revision.of(Record.from_json(unknown("U-301", "Invented gadget question one?"))),
+            Revision.of(migrated(unknown("U-302", "Invented gadget question two?"), "legacy:resolved", legacy_of("resolved", implied="resolved"))),
+            Revision.of(Record.from_json(unknown("U-303", "Invented gadget question three?"))),
+            again(u304, first["U-304"], status="open"),
+            Revision.of(Record.from_json(evidence("M-301", "work/case/one.txt", area="listing", label="Invented gadget receipt one"))),
+            Revision.of(migrated(evidence("M-302", "work/case/two.txt", area="listing", label="Invented gadget receipt two"), "retired",
+                                 {"path": "evidence/x.jsonl", "cells": {"row": "{}"}, "superseded_by": ["M-301"]})),
+            Revision.of(Record.from_json(evidence("M-303", "work/case/three.txt", status="retired", area="listing", label="Invented gadget receipt three"))),
+        ]
+        for number, revision in enumerate(accepted):
+            _ = write_change_set(self.root, CREATED.replace(second=number), [revision])
+        commit_all(self.root)
+        _ = write_change_set(self.root, CREATED.replace(second=50), [Revision.of(Record.from_json(finding("F-307", "Invented gadget seven", supersedes=["F-306"])))])
+
+    def offline(self, identifier: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(0, cli.main(["get", identifier, "--offline"]))
+        return output.getvalue().split("\n")
+
+    def test_every_status_origin_reads_the_same_in_get_recall_and_area(self) -> None:
+        self.histories()
+        recalled = "\n".join(online.recall(self.bank, self.root, "invented gadget question receipt", include_evidence=True, limit=50, full=True).lines)
+        area = "\n".join(online.area(self.bank, self.root, "listing", full=True).lines)
+        for identifier, origin, wording in WORDING:
+            with self.subTest(identifier=identifier, origin=origin):
+                for lines in (online.get(self.bank, self.root, identifier).lines, self.offline(identifier)):
+                    self.assertIn(f"status: {wording}", lines)
+                for name, text in (("recall", recalled), ("area", area)):
+                    found = re.findall(rf"(?<![\w-]){identifier} {LABEL}", text)
+                    self.assertTrue(found, f"{identifier} not in {name}")
+                    self.assertEqual({wording}, set(found), name)
+        self.assertIn("state: conflict", online.get(self.bank, self.root, "F-309").lines)
+        self.assertIn("superseded by: F-301 (terminal: F-301)", online.get(self.bank, self.root, "F-302").lines)
 
 
 class StampTests(Online):
