@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple, cast, override
 from unittest.mock import patch
 
-from tools.memory import durability
+from tools.memory import durability, service
 from tools.memory.bank import BankError
 from tools.memory.cli import main
 from tools.memory.gitio import GitError
@@ -31,6 +31,8 @@ from tools.memory.service import (
     backup_interpreter, connection, ensure_settings, feature_problems, file_variables, home, install, installed_interpreter, parse_settings, read_settings, render_settings,
     require_floor, reranker_cap, reranker_check, set_reranker, settings_check, unit_files, unit_word,
 )
+
+from tools.tests.memory_fixtures import clean_git_environment, commit_all, new_repository, run_git
 
 KEY, PASSWORD = "1" * 64, "2" * 64
 
@@ -331,6 +333,27 @@ class Watermarks(unittest.TestCase):
         for data in (b'{"segments":[],"origin_main":null}\n', b'{"origin_main":null}\n', b'{"origin_main":null,"segments":[1]}\n', b"[]\n", b"{"):
             with self.assertRaises(ServiceError):
                 _ = Watermark.decode(data)
+
+
+class GitCalls(Scratch):
+    def test_git_failures_degrade_cleanly(self) -> None:
+        outside = self.root / "not-a-checkout"
+        outside.mkdir()
+        with clean_git_environment():
+            self.assertIsNone(durability.descends_from(outside, "a" * 40, "b" * 40))
+            repository = self.root / "repository"
+            repository.mkdir()
+            new_repository(repository)
+            _ = (repository / "file").write_text("one\n", encoding="utf-8")
+            commit_all(repository)
+            first = run_git(repository, "rev-parse", "HEAD").strip()
+            _ = (repository / "file").write_text("two\n", encoding="utf-8")
+            commit_all(repository)
+            second = run_git(repository, "rev-parse", "HEAD").strip()
+            self.assertEqual((True, False, None), (durability.descends_from(repository, first, second), durability.descends_from(repository, second, first),
+                                                   durability.descends_from(repository, "f" * 40, second)))
+            with patch("tools.memory.service.Path.cwd", return_value=outside), self.assertRaisesRegex(ServiceError, "inside a checkout"):
+                _ = service.repository_root()
 
 
 def stamp(day: int, hour: int = 3) -> datetime:

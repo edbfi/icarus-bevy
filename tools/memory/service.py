@@ -55,6 +55,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast
 
+from tools.memory.gitio import GitError, git
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 
 BANK = "icarus"
@@ -919,10 +920,10 @@ def uninstall() -> list[Path]:
 
 
 def repository_root() -> Path:
-    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise ServiceError("run the memory tool inside a checkout")
-    return Path(result.stdout.strip())
+    try:
+        return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
+    except GitError as error:
+        raise ServiceError("run the memory tool inside a checkout") from error
 
 
 def checked_assets(root: Path) -> Assets:

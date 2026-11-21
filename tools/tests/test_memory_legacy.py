@@ -506,6 +506,17 @@ class ParityTests(LegacyRepository):
             self.assertEqual(migrate.run_parity(options), 1)
         self.assertIn("memory parity: M-101: unreadable sha256 manifest", stderr.getvalue())
 
+    def test_a_failing_clone_is_a_reported_failure_not_a_traceback(self) -> None:
+        out = self.top / "journal"
+        _ = write(self.result, out)
+        options = argparse.Namespace(rev="HEAD", journal=out)
+        stderr = io.StringIO()
+        with (mock.patch("tools.memory.parity.primary_checkout", return_value=self.top / "no-such-repository"),
+              mock.patch("tools.memory.migrate.repository_root", return_value=self.root), contextlib.redirect_stderr(stderr)):
+            self.assertEqual(migrate.run_parity(options), 1)
+        self.assertRegex(stderr.getvalue(), r"^memory parity: git clone: exit status [0-9]+: .*no-such-repository")
+        self.assertNotIn("Traceback", stderr.getvalue())
+
 
 class SalvageTests(LegacyRepository):
     def test_branch_rows_become_proposals_and_conflicts_are_kept_apart(self) -> None:

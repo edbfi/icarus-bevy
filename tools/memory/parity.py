@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -40,7 +39,7 @@ from tools.evidence_catalog_model import Entry, Index, references
 from tools.evidence_catalog_publish import resolved_catalog
 from tools.evidence_catalog_store import commit_id
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, run_check
-from tools.memory.gitio import GitError, listed_files, read_blobs, tree_files
+from tools.memory.gitio import GitError, git, listed_files, read_blobs, tree_files
 from tools.memory.journal import JOURNAL, read_tree
 from tools.memory.legacy_prose import account
 from tools.memory.legacy_rules import PROSE_SUPERSESSION, SELECTORS, vocabulary
@@ -258,13 +257,10 @@ def census(root: Path, state: State) -> dict[str, set[str]]:
 
 
 def scratch_clone(primary: Path, revision: str, journal: Path, directory: Path) -> Path:
-    """A shared, detached clone of ``revision`` with the journal copied in (untracked)."""
+    """A shared, detached clone of ``revision`` with the journal copied in (untracked); a Git failure is ``GitError``."""
     tree = directory / "tree"
-    for command in (
-        ["git", "clone", "-q", "--shared", "--no-checkout", str(primary), str(tree)],
-        ["git", "-C", str(tree), "checkout", "-q", "--detach", revision],
-    ):
-        _ = subprocess.run(command, check=True, capture_output=True)
+    _ = git(directory, "clone", "-q", "--shared", "--no-checkout", "--", str(primary), str(tree))
+    _ = git(tree, "checkout", "-q", "--detach", revision)
     _ = shutil.copytree(journal / JOURNAL, tree / JOURNAL)
     return tree
 
