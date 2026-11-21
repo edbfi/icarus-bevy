@@ -66,7 +66,18 @@ def prose(text: str) -> Iterable[tuple[int, str]]:
 
 
 def anchors(text: str) -> set[str]:
-    return {slug(match[2]) for _number, line in prose(text) if (match := HEADING.match(line))}
+    """GitHub's heading anchors: the slug of the raw heading text (inline code kept), ``-1``, ``-2`` for repeats."""
+    found: set[str] = set()
+    seen: dict[str, int] = {}
+    fenced = False
+    for line in text.split("\n"):
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and (match := HEADING.match(line)):
+            base = slug(match[2])
+            found.add(f"{base}-{seen[base]}" if seen.get(base) else base)
+            seen[base] = seen.get(base, 0) + 1
+    return found
 
 
 def check(root: Path) -> list[str]:

@@ -46,6 +46,12 @@ class DocsCheckTests(unittest.TestCase):
             "docs/runbooks/b.md:1: link ../../../outside.md leaves the repository",
         ], docs_check.check(self.root))
 
+    def test_anchors_follow_github_for_inline_code_and_repeated_headings(self) -> None:
+        self.put("docs/runbooks/c.md", "# C\n\n## The `memory get` command\n\n## Notes\n\n## Notes\n\n```\n## Not a heading\n```\n")
+        self.put("docs/runbooks/d.md", "[a](c.md#the-memory-get-command) [b](c.md#notes) [c](c.md#notes-1) [d](c.md#notes-2) [e](c.md#not-a-heading)\n")
+        self.assertEqual(["docs/runbooks/d.md:1: link c.md#notes-2 has no heading #notes-2",
+                          "docs/runbooks/d.md:1: link c.md#not-a-heading has no heading #not-a-heading"], docs_check.check(self.root))
+
     def test_document_paths_named_in_code_and_instructions_must_exist(self) -> None:
         self.put("tools/x.py", "# docs/specs/old.md and docs/plan.md#nowhere\n")
         self.put(".agents/rules/r.md", "Read docs/research/digest.md.\n")
