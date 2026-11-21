@@ -99,14 +99,15 @@ stops being protected as soon as its `evidence/` leaves the working tree.
 2. From an up-to-date checkout of `main` in the same repository, list and
    convert the rows of the branch's pre-merge tip:
    `memory salvage <branch> --check`, then
-   `memory salvage <branch> --out work/<case>/salvage`.
-   `--out` writes the proposals under `<out>/memory/journal/` and each pending
-   document's body under `<out>/documents/<path>`; it leaves an identical file
-   alone and refuses a file with other content (`… exists with other content;
-   nothing written (move it away or use another --out)`). Salvage resolves
-   `origin/main` (`--main REF` names another); REF, CP and RP numbers in the
-   report are `origin/main`'s. A tip that already merged the cut-over is
-   refused with the pre-merge tip to use.
+   `memory salvage <branch> --out work/<case>/salvage-<n>`, a NEW directory
+   for each run. `--out` writes the proposals under `<out>/memory/journal/`
+   and each pending document's body under `<out>/documents/<path>`; it
+   refuses a directory holding anything else there (`… was left by an earlier
+   run: use a new --out or remove it; nothing written`, or `… exists and is
+   not a regular file with this content (symlinks are never followed)`).
+   Salvage resolves `origin/main` (`--main REF` names another); REF, CP and
+   RP numbers in the report are `origin/main`'s. A tip that already merged
+   the cut-over is refused with the pre-merge tip to use.
    `memory salvage: internal error, nothing written: …` is a defect in salvage
    itself: report it and do not work around it.
 3. Act on each line of the report (exit 4 means some row needs a hand):
@@ -117,11 +118,11 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    - `needs a decision by hand: …`: settle it with the record's owner. One
      that says `it cites the new document <path> (REF-N, a provisional
      number), whose record must be accepted first` (or a new CP/RP row) waits:
-     get that record accepted, then run salvage again, which finds the
-     accepted REF by its body and proposes the row with its ID. Rows that say
-     `one of N records sharing the …`, `which the accepted journal holds N
-     times` or `a rename needs a superseding record; decide by hand` are
-     settled by hand, as is any row citing one;
+     get that record accepted, then run salvage again, which then proposes
+     the row with the accepted ID. Rows that say `one of N records sharing
+     the …`, `which the accepted journal holds N times` or `a rename needs a
+     superseding record; decide by hand` are settled by hand, as is any row
+     citing one;
    - `conflict: …: origin/main holds other content under this ID`: when both
      sides allocated the number (as M-1623 to M-1625 on one existing branch), add the
      branch's record under a new ID (`memory evidence add`, `memory propose`)
@@ -130,15 +131,18 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    - a pending document: `--out` prints the command that uses the body it
      wrote. A changed document: `memory revise REF-N --body
      <out>/documents/<path>`, run as printed. A new one: `memory propose
-     reference --set 'title=…' --set-json 'scope=<STATE THE SCOPE>' --body
-     <out>/documents/<path>`, which is refused until `<STATE THE SCOPE>` is
-     replaced by a JSON scope you state; the line under it (`the scope must
-     be stated by whoever proposes it: … the text names: …`) lists the build,
-     release and commit tokens in the text, which salvage neither keeps nor
-     upgrades. Without `--out` a line names only the REF (`changed document;
-     revise REF-N with the body salvage --out writes`).
-4. On a new branch from `main`, copy the output's `memory/journal/` segments
-   into `memory/journal/`, add the records from step 3, run
+     reference --set 'title=…' --set-json 'scope=<STATE THE SCOPE>' --note
+     'salvaged document: <path>' --body <out>/documents/<path>`, refused until
+     `<STATE THE SCOPE>` is replaced by a JSON scope you state. Keep the note:
+     it is how salvage recognises that REF on the next run; without it the
+     document and the rows citing it stay listed. The line under it (`the
+     scope must be stated by whoever proposes it: … the text names: …`) lists
+     the build, release and commit tokens in the text, which salvage neither
+     keeps nor upgrades. Without `--out` a line names only the REF
+     (`changed document; revise REF-N with the body salvage --out writes`).
+4. On a new branch from `main`, copy every segment of the run's
+   `<out>/memory/journal/` (a new directory holds only that run's) into
+   `memory/journal/`, add the records from step 3, run
    `memory check --ci`, commit and open the pull request. After it merges, the
    lead runs `memory sync`; salvage then counts those rows as accepted, never as
    conflicts.
@@ -151,11 +155,11 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    While anything is left it exits 5 and names the pre-merge parent;
    `memory salvage <parent> --check` lists what is left, the rows and the
    pending documents (each with the REF to revise), and exits non-zero while
-   either remains. A changed document is done when the REF body on
-   `origin/main` equals the branch's file, a new one when an accepted REF
-   holds its body. A row resolved by hand in step 3 (a superseding
-   record, a conflict added again under a new ID, a decision by hand) never
-   becomes accepted under its old ID, and a body merged by hand into other
+   either remains. A document is done once the accepted REF of its path (by
+   legacy path, or by the `salvaged document: <path>` note) has the branch's
+   body. A row resolved by hand in step 3 (a superseding record, a conflict
+   added again under a new ID, a decision by hand) never becomes accepted
+   under its old ID, and a body merged by hand into other
    text never equals the file, so both stay listed and the exit stays
    non-zero. That is expected for those only: the branch is done when
    everything still listed is one you resolved by hand and its superseding
