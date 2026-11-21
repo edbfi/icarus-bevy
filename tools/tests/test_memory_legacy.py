@@ -16,28 +16,27 @@ the server app in a release profile.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
 import contextlib
 import hashlib
 import io
 import json
-import shlex
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
-from unittest import mock
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
+from unittest import mock
 
-from tools.memory.journal import Revision, Segment, read_tree, write_change_set
+from tools.memory import cli, online, salvage as salvage_command
+from tools.memory.check import revision_problems
+from tools.memory.journal import Revision, Segment, read_git, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
 from tools.memory.legacy_rules import extract, standing
 from tools.memory.model import JSON, Record, RecordError
-from tools.memory import cli, online, salvage as salvage_command
-from tools.memory.check import revision_problems
-from tools.memory.journal import read_git
 from tools.memory.salvage import Salvage, salvage
 from tools.memory.state import State, legacy_listed, partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
@@ -901,6 +900,20 @@ class SalvageTests(LegacyRepository):
         result.notices.append("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is not revised")
         with self.assertRaisesRegex(salvage_command.SalvageError, "F-111: a notice says it is not revised"):
             salvage_command.invariants(result, ["F-107", "F-111"], salvage_command.accepted_on(self.root, "origin/main"))
+
+    def test_compatibility_rows_sharing_a_name_are_each_held_and_none_is_lost(self) -> None:
+        table = "docs/ledgers/compatibility.md"
+        for case, added, shared in (("new names", "| Dup | Unknown | One |\n| Dup | Unknown | Two |\n", "compatibility row 'Dup'"),
+                                    ("an accepted name", "| Discovery | Unknown | Again |\n", "compatibility row 'Discovery'")):
+            with self.subTest(case):
+                self.setUp()
+                self.edited("dup", (table, "| Discovery | Unknown | Browser behavior |\n", "| Discovery | Unknown | Browser behavior |\n" + added))
+                result = salvage(self.root, "dup")
+                held = sorted(name for name, reason in result.undecided.items() if f"records sharing the {shared}" in reason)
+                self.assertEqual(2, len(held), result.undecided)
+                self.assertEqual(2, len(set(held)), "each row under its own number")
+                self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
+                self.assertFalse(any("removed on dup" in notice for notice in result.notices), result.notices)
 
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.

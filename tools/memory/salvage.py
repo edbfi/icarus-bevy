@@ -49,7 +49,9 @@ table row numbers the rest differently from the accepted journal. Before anythin
 translated to the accepted journal's IDs by identity (``renumber``: a REF by its legacy path, a CP row by its name,
 an RP row by its reported problem), in record IDs, links and citations. A record with no accepted counterpart gets a
 provisional number above every accepted one: a row citing it is held until that record is accepted, and a new CP or
-RP row is proposed (its number provisional) only if nothing on the branch cites it.
+RP row is proposed (its number provisional) only if nothing on the branch cites it. Records sharing an identity in
+one export (two CP rows of one name) are never mapped: each gets its own provisional number and is held, with every
+row citing one.
 A document the branch changed (a spec, digest, ledger prose, the status file) is listed by path with
 the accepted REF whose body to revise, since a REF's ``legacy`` never changes and its body is revised by hand.
 ``unsalvaged`` holds every proposal, conflict, ``supersede`` or ``undecided`` row whose content (ID and sha256)
@@ -60,22 +62,25 @@ The command prints the proposal change set as segment lines, or writes it under 
 unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
 branch's, or for a new document when an accepted REF holds its body) and exits 1 if there is any. ``--out`` also
 writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
-``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that uses it. Exit status: 0 success; 1 a conflict or an error; 2 usage;
-``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
-still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
-parent instead (nothing is printed or written).
+``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that
+uses it.
+
+Exit status: 0 success; 1 a conflict or an error; 2 usage; ``EXIT_SUPERSEDE`` (4) some row needs a superseding
+record or a decision by hand (and none conflicts; the other proposals are still printed or written);
+``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge parent instead (nothing is printed
+or written).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import sys
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
-from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
@@ -527,8 +532,8 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     after = export(root, head).records()
     before = export(root, base).records() if has_legacy(root, base) else {}
     on_accepted = accepted_on(root, accepted_commit)
-    (after, before), unmapped = renumber((after, before), on_accepted.records)
-    superseding = classify(result, after, before, on_accepted, unmapped)
+    (after, before), unmapped, shared = renumber((after, before), on_accepted.records)
+    superseding = classify(result, after, before, on_accepted, unmapped, shared)
     accepted = on_accepted.records
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
     # A new document is done once some accepted REF holds its body (a REF proposed by hand has no legacy path).
@@ -588,18 +593,25 @@ def relink(record: Record, mapping: Mapping[str, str]) -> Record:
     return Record.from_json(data, record.body)
 
 
-def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record]) -> tuple[list[dict[str, Record]], dict[str, str]]:
-    """Each export with its migration-assigned IDs translated to the accepted journal's, by ``identity``. A record
-    with no accepted counterpart (or an identity that is not unique) gets a provisional number above every accepted
-    one, the same in every export; returns the exports and the provisional IDs, each with what it is."""
+def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record]) -> tuple[list[dict[str, Record]], dict[str, str], set[str]]:
+    """Each export with its migration-assigned IDs translated to the accepted journal's, by ``identity``.
+
+    A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID. A record
+    with no accepted counterpart gets a provisional number above every accepted one, the same in every export. Records
+    that share an identity within one export cannot be told apart, so none of them is mapped: EACH gets its own
+    provisional number (the k-th record of that identity, in the export's order, the same in every export) and is
+    returned in the third set, so that it and every row citing it are held. Every record survives under a distinct
+    ID; a collision raises ``SalvageError`` naming the two IDs. Returns the exports, the provisional IDs with what
+    each is, and the provisional IDs of records sharing an identity."""
     counts: dict[str, int] = {}
     for record in accepted.values():
         if (key := identity(record)) is not None:
             counts[key] = counts.get(key, 0) + 1
     known = {key: record.id for record in accepted.values() if (key := identity(record)) is not None and counts[key] == 1}
     top = {prefix: max((int(name.split("-", 1)[1]) for name in accepted if name.split("-", 1)[0] == prefix), default=0) for prefix in ASSIGNED}
-    provisional: dict[str, str] = {}
+    provisional: dict[tuple[str, int], str] = {}
     unmapped: dict[str, str] = {}
+    shared: set[str] = set()
     result: list[dict[str, Record]] = []
     for export in exports:
         seen: dict[str, int] = {}
@@ -607,6 +619,7 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
             if (key := identity(record)) is not None:
                 seen[key] = seen.get(key, 0) + 1
         mapping: dict[str, str] = {}
+        ordinal: dict[str, int] = {}
         for record in export.values():
             key = identity(record)
             if key is None or record.id.split("-", 1)[0] not in ASSIGNED:
@@ -614,25 +627,37 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
             if key in known and seen[key] == 1:
                 target = known[key]
             else:
-                if key not in provisional:
+                place = (key, ordinal.get(key, 0) if seen[key] > 1 else -1)
+                ordinal[key] = ordinal.get(key, 0) + 1
+                if place not in provisional:
                     prefix = record.id.split("-", 1)[0]
                     top[prefix] += 1
-                    provisional[key] = f"{prefix}-{top[prefix]:03d}"
-                    unmapped[provisional[key]] = f"the new {key}"
-                target = provisional[key]
+                    provisional[place] = f"{prefix}-{top[prefix]:03d}"
+                    unmapped[provisional[place]] = f"one of {seen[key]} records sharing the {key}" if seen[key] > 1 else f"the new {key}"
+                target = provisional[place]
+                if seen[key] > 1:
+                    shared.add(target)
             if target != record.id:
                 mapping[record.id] = target
-        translated = {relink(record, mapping).id: relink(record, mapping) for record in export.values()}
+        translated: dict[str, Record] = {}
+        for record in export.values():
+            moved = relink(record, mapping)
+            if (other := translated.get(moved.id)) is not None:
+                raise SalvageError(f"{record.id} and {other.id if other.id != moved.id else 'another record'} would both be {moved.id}")
+            translated[moved.id] = moved
+        if len(translated) != len(export):
+            raise SalvageError("renumbering lost a record")
         result.append(translated)
-    return result, unmapped
+    return result, unmapped, shared
 
 
 def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
-             unmapped: Mapping[str, str] | None = None) -> list[Revision]:
+             unmapped: Mapping[str, str] | None = None, shared: Collection[str] = ()) -> list[Revision]:
     """Classify every row ``after`` (the branch's export) changes against ``before`` (the merge base's) and the
     accepted journal, filling ``result``; checked by ``invariants`` before it returns. Returns the revisions of the
     rows held or in conflict (for ``unsalvaged``). Pure: no Git, no files. ``unmapped``: the provisional numbers
-    ``renumber`` gave records with no accepted counterpart; a row linking to one is held until that record is accepted."""
+    ``renumber`` gave records with no accepted counterpart; a row linking to one is held until that record is accepted.
+    ``shared``: those of records sharing an identity, each held with every row citing it."""
     ref = result.ref
     unmapped = unmapped or {}
     result.source, accepted = on_accepted.source, on_accepted.records
@@ -658,6 +683,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         changed.append(identifier)
         on_main, origin = accepted.get(identifier), before.get(identifier)
         named = {*record.links.targets(), *(record.legacy.superseded_by if record.legacy is not None else ())}
+        if identifier in shared:
+            hold(identifier, "undecided", f"it is {unmapped[identifier]}, which cannot be told apart ({identifier} is a provisional number)")
+            continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
             hold(identifier, "undecided", "it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in cited)
                  + ", whose record must be accepted first")
@@ -755,8 +783,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {outcome}")
     for target, reason in sorted(unlinkable.items()):
         result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
+    shared_keys = {identity(after[name]) for name in shared if name in after}
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
-                          if before[identifier].type in SALVAGED)
+                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys)
     result.proposals.sort(key=lambda revision: (revision.record.type, id_key(revision.record.id)))
     invariants(result, changed, on_accepted)
     return superseding
