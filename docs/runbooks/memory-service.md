@@ -158,10 +158,13 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    While anything is left it exits 5 and names the pre-merge parent;
    `memory salvage <parent> --check` lists what is left, the rows and the
    pending documents (each with the REF to revise), and exits non-zero while
-   either remains. A document is done once an accepted REF of its path (by
-   legacy path, or by the `salvaged document: <path>` note) holds the
-   branch's body; salvage does not check the `memory supersede` of a
-   superseding REF, so confirm `memory get REF-N` shows it superseded. A row
+   either remains. A document is done once exactly one accepted REF in force
+   names its path (by legacy path, or by the `salvaged document: <path>`
+   note) and holds the branch's body. A superseding REF therefore clears it
+   only once both the new REF and the supersession are accepted; until then
+   it stays listed as `changed document; the accepted journal holds REF-N,
+   REF-M for this path, REF-M with this body: supersede REF-N by it (memory
+   supersede REF-N --by REF-M) or decide by hand`. A row
    resolved by hand in step 3 (a superseding record, a conflict added again
    under a new ID, a decision by hand) never becomes accepted under its old
    ID, and a body merged by hand into other text never equals the file, so
