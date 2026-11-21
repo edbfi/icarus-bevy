@@ -1095,6 +1095,8 @@ class SalvageTests(LegacyRepository):
         renamed = [reason for reason in result.undecided.values() if "new compatibility row 'Discovery renamed'" in reason]
         self.assertEqual(1, len(renamed), result.undecided)
         self.assertIn("CP-001, CP-002 is gone from the branch", renamed[0])
+        # Only real IDs are reported: the accepted twins and the branch's row, never a merge-base provisional number.
+        self.assertEqual({"CP-001", "CP-002"}, {name for name, reason in result.undecided.items() if reason.startswith("it is gone from the branch")})
 
     def test_a_rename_to_a_name_main_added_meanwhile_is_held(self) -> None:
         _ = self.journal_on_main(remove_legacy=False)

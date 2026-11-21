@@ -781,6 +781,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     # cell edited): salvage cannot tell a rename from a delete and an add, so it proposes neither and holds both.
     # Lost and gained are decided on the untranslated exports (merge base against branch), before any numbering.
     renamed: dict[str, str] = {}
+    lost_identities: set[str] = set()
     raw_after, raw_before = raw if raw is not None else (after, before)
     for kind in ("compatibility", "report"):
         def counted(export: Mapping[str, Record]) -> dict[str, int]:
@@ -798,10 +799,10 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         if not (lost_keys and gained_keys):
             continue
         lost = sorted((name for name, other in accepted.items() if identity(other) in lost_keys), key=id_key)
-        gone = sorted((name for name, other in before.items() if identity(other) in lost_keys and name not in after), key=id_key)
         gained = sorted((name for name, other in after.items() if identity(other) in gained_keys), key=id_key)
         appeared = ", ".join(f"{name_of(after[item])!r} as {item}" for item in gained)
-        for name in sorted({*lost, *gone}, key=id_key):
+        lost_identities.update(lost_keys)
+        for name in lost:
             renamed[name] = (f"it is gone from the branch (accepted as {', '.join(lost)}) and new {kind} rows appeared ({appeared}): "
                              + "a rename needs a superseding record; decide by hand")
         for name in gained:
@@ -925,7 +926,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                           for identifier in changed if result.kinds.get(identifier) == "cosmetic")
     shared_keys = {identity(after[name]) for name in shared if name in after}
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
-                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys and identifier not in renamed)
+                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys and identity(before[identifier]) not in lost_identities and identifier not in renamed)
     result.proposals.sort(key=lambda revision: (revision.record.type, id_key(revision.record.id)))
     invariants(result, changed, on_accepted, after)
     return superseding
