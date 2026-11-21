@@ -13,27 +13,25 @@ adds or modifies are found by exporting its legacy trees and those of its merge-
 is then classified against what the accepted commit holds: its replayed journal when it has one (it wins over
 any legacy trees still there), else its legacy export, whose records the cut-over journal holds as first revisions.
 
-- ``accepted``: the accepted head of the ID is the same record (for example through a squash merge); no proposal.
-- ``new``: nothing accepted has the ID; a first revision.
-- ``revision``: the accepted record is unchanged since the merge-base and the row changes only what may change
-  in place (``in_place``): the revision is built from the ACCEPTED record, keeping its ``legacy``, ``gaps`` and
-  every immutable field, and takes appended notes, an unknown's next probe and a new status cell (stored
-  ``retired`` for a ``retired ...`` cell, else the cell's vocabulary value, with a note quoting the cell
-  verbatim). It names the accepted head (its ``rev``, every head of a fork) as ``prev``.
-- ``superseded``: the only change is a status cell ``superseded-by F-N``: superseding writes no revision of the
-  old record, so the successor carries the link, appended to its proposal in this change set or to a revision
-  of its accepted record (that record is then a ``revision``).
-- ``cosmetic``: only verbatim cells a revision follows changed, to no effect; nothing to propose.
-- ``supersede``: the row changes a field or a legacy cell no revision may change (a claim, a cited ID).
-  Never proposed, since ``check --ci`` would refuse it: ``unrevisable`` lists them, and the row needs a new
-  record that supersedes the accepted one.
-- ``undecided``: the rules give no clean answer, and ``undecided`` says why: a status cell outside the type's
-  vocabulary, a supersession naming no successor or one neither proposable here nor accepted, or an
-  unknown's ``resolved`` (resolving needs a finding stating ``resolves``; the row does not say which). Never proposed.
-- ``conflict``: the accepted commit holds the ID with other content, and either the merge-base did not hold it
-  (both sides allocated the number, or main took an earlier draft) or main changed it since the merge-base
-  (by a journal revision or a legacy edit). Never proposed: a revision built from the branch's row would
-  silently undo main's change, so it needs a new ID or a reconciling revision by hand (rules, "Revisions").
+A row the merge base did not hold is ``new`` (a first revision), ``accepted`` when the accepted commit holds
+it (with any ``supersedes`` links salvage adds), else a ``conflict`` (both sides allocated the number). A row
+the merge base held is planned cell by cell against that base row (``plan``), the plan applied to the
+ACCEPTED record (``apply``: its ``legacy``, ``gaps`` and every immutable field are kept; ``gaps`` follow a
+next probe filled or cleared), and checked by replay (``honoured``). The latest stored status wins over a
+migrated record's legacy status (``state.legacy_holds``), so a status revision always shows.
+
+| Changed in the row | Becomes |
+| --- | --- |
+| status cell naming a new successor (``superseded-by F-N``; an evidence row's ``superseded_by``) | a ``supersedes`` link on the successor: its proposal here, or a revision of its accepted record; the old row: ``superseded`` |
+| status cell ``retired ...``, or a value of the type's vocabulary | a revision storing that status, with a note quoting the cell |
+| status cell saying the same legacy status in other words; the raw line; the table framing; prose line numbers | ``cosmetic``: nothing to propose |
+| an unknown's next probe (changed, cleared or filled); appended notes; appended ``verified_on``/``supersedes``/``resolves`` | a revision taking it |
+| any other field or legacy cell (a claim, a cited ID, a label) | ``supersede``: needs a new record superseding the old one; never proposed |
+| status cell outside the vocabulary; ``superseded`` with no new successor; an unknown's ``resolved`` (no finding states ``resolves``); a successor neither proposable here nor accepted; a legacy successor withdrawn without a new stored status; a row that cannot be read; an edit the replay would not show | ``undecided``: needs a decision by hand, with the reason; never proposed |
+
+A plan the accepted record already holds (salvage's own output, merged) is ``accepted``; a plan whose base row
+main changed otherwise since the merge base is a ``conflict`` (never proposed: a revision built from the
+branch's row would silently undo main's change; rules, "Revisions"). One row never aborts the run.
 
 Salvage must run on the branch's pre-merge tip. A branch that merged the cut-over (a merge commit in its
 first-parent history since the merge base, one of whose parents is an ancestor of the accepted commit without
@@ -44,8 +42,8 @@ changed legacy rows, ``premerge`` names that parent and nothing is classified: r
 New compatibility and campaign rows get positional IDs at export, so their IDs are only provisional.
 A document the branch changed (a spec, digest, ledger prose, the status file) is listed by path with
 the accepted REF whose body to revise, since a REF's ``legacy`` never changes and its body is revised by hand.
-``unsalvaged`` holds every proposal, conflict or row needing a superseding record whose content (ID and
-sha256) is not yet in ``ref``'s own journal.
+``unsalvaged`` holds every proposal, conflict, ``supersede`` or ``undecided`` row whose content (ID and sha256)
+is not yet in ``ref``'s own journal.
 
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
@@ -61,15 +59,16 @@ import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from tools.memory.check import APPEND_ONLY, REVISABLE
 from tools.memory.gitio import GitError, git, run_git
-from tools.memory.journal import JournalError, Revision, read_git, split_change_set, write_change_set
+from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
 from tools.memory.legacy import SALVAGED, commit_time, export
 from tools.memory.legacy_reader import CatalogError, has_legacy
 from tools.memory.legacy_rules import MigrationError
-from tools.memory.model import TYPES, Record, RecordError, as_mapping, id_key, load_json
+from tools.memory.model import JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
 from tools.memory.state import replay
 
 ACCEPTANCE_REF = "origin/main"
@@ -103,6 +102,7 @@ class Accepted:
     records: dict[str, Record]
     heads: dict[str, tuple[str, ...]]
     source: str
+    segments: tuple[Segment, ...] = ()
 
 
 def accepted_on(root: Path, main: str) -> Accepted:
@@ -110,9 +110,11 @@ def accepted_on(root: Path, main: str) -> Accepted:
     if segments := read_git(root, main):
         state = replay(segments)
         return Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                        {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal")
+                        {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments)
     records = export(root, main).records()
-    return Accepted(records, {identifier: (Revision.of(record).rev,) for identifier, record in records.items()}, "legacy")
+    revisions = tuple(Revision.of(record) for record in records.values())
+    return Accepted(records, {revision.record.id: (revision.rev,) for revision in revisions}, "legacy",
+                    (Segment("memory/journal/accepted-legacy-export.jsonl", "", revisions),))
 
 
 def documents(records: dict[str, Record]) -> dict[str, Record]:
@@ -127,22 +129,32 @@ def unrevisable_fields(old: Record, new: Record) -> tuple[str, ...]:
     return tuple(name for name in sorted(before.keys() | after.keys()) if name not in allowed and before.get(name) != after.get(name))
 
 
-# Legacy cells a revision may follow: the status cell (and the raw line holding it), an unknown's next probe.
-IN_PLACE_CELLS = {"status", "original"}
-# Keys of an evidence row (its ``row`` cell) a revision may follow: status, its note, its successor.
-IN_PLACE_ROW_KEYS = {"status", "note", "superseded_by"}
+# Legacy cells whose change is not a change of the row: the raw line holding the cells, the table's framing
+# (heading and preamble, a document change), and prose supersession cells, whose key carries a line number
+# and whose effect is ``legacy.superseded_by`` (compared as successors).
+FOLLOWED_CELLS = {"original", "table"}
+# Evidence row keys a plan follows: status, its note, its successor.
+FOLLOWED_ROW_KEYS = {"status", "note", "superseded_by"}
 
 
 @dataclass(frozen=True)
-class InPlace:
-    """What a branch's edit of an accepted migrated row comes to (``in_place``): the revision of the accepted record
-    (``None`` when nothing in it changes), the successors its new status cell names, or why it cannot be proposed:
-    ``unrevisable`` (fields or cells no revision may change: supersede) or ``undecided`` (the rules give no clean answer)."""
+class Edit:
+    """What a branch's edit of a migrated row says, relative to the row at the merge base (``plan``): a stored
+    status to write, notes to append, an unknown's next probe (``probe`` set; ``None`` clears it), appended
+    links, successors to link, or why it cannot be proposed (``blocked``: supersede; ``undecided``: by hand)."""
 
-    revision: Record | None = None
+    status: str | None = None
+    notes: tuple[str, ...] = ()
+    probe: bool = False
+    next_probe: str | None = None
+    appended: tuple[tuple[str, tuple[str, ...]], ...] = ()
     successors: tuple[str, ...] = ()
-    unrevisable: tuple[str, ...] = ()
+    blocked: tuple[str, ...] = ()
     undecided: str | None = None
+
+    @property
+    def empty(self) -> bool:
+        return not (self.status or self.notes or self.probe or self.appended or self.successors)
 
 
 def status_cell(record: Record) -> str | None:
@@ -167,69 +179,86 @@ def row_of(record: Record) -> dict[str, object] | None:
 
 
 def changed_cells(old: Record, new: Record) -> tuple[str, ...]:
-    """Legacy cells (and other ``legacy`` parts) that differ beyond what a revision may follow."""
+    """Legacy cells and row keys that differ beyond what a plan follows (``FOLLOWED_CELLS``, prose cells, the
+    status cell, an unknown's next probe, ``FOLLOWED_ROW_KEYS``)."""
     if old.legacy is None or new.legacy is None:
         return ("legacy",) if old.legacy != new.legacy else ()
-    allowed = IN_PLACE_CELLS | ({"next_probe"} if new.type == "unknown" else set[str]())
+    followed = FOLLOWED_CELLS | {"status", "row"} | ({"next_probe"} if new.type == "unknown" else set[str]())
     found = [f"legacy cell {name}" for name in sorted(old.legacy.cells.keys() | new.legacy.cells.keys())
-             if name not in allowed and name != "row" and old.legacy.cells.get(name) != new.legacy.cells.get(name)]
-    before, after = row_of(old), row_of(new)
-    if before is not None or after is not None:
-        keys = (before or {}).keys() | (after or {}).keys()
-        found += [f"legacy row {key}" for key in sorted(keys) if key not in IN_PLACE_ROW_KEYS and (before or {}).get(key) != (after or {}).get(key)]
+             if name not in followed and not name.startswith("prose ") and old.legacy.cells.get(name) != new.legacy.cells.get(name)]
+    before, after = row_of(old) or {}, row_of(new) or {}
+    found += [f"legacy row {key}" for key in sorted(before.keys() | after.keys()) if key not in FOLLOWED_ROW_KEYS and before.get(key) != after.get(key)]
     if old.legacy.path != new.legacy.path:
         found.append("legacy path")
     return tuple(found)
 
 
-def in_place(prev: Record, record: Record, ref: str) -> InPlace:
-    """A branch's edit of the accepted migrated row ``prev`` as the rules allow it (``Revisions``): the revision keeps
-    ``prev``'s ``legacy``, ``gaps`` and every immutable field and takes only what may change in place.
-
-    - Any other field or legacy cell changed: ``unrevisable`` (a superseding record).
-    - Appended notes, an unknown's next probe: taken.
-    - A new status cell: ``superseded`` (by the IDs it names) is a successor's ``supersedes`` link, never a
-      stored status (the caller decides whether the successor can carry it); ``retired ...`` is stored
-      ``retired``; any other cell that maps to the type's vocabulary is that status. Either way a note quotes
-      the cell verbatim. A cell outside the vocabulary, a supersession naming no ID and an unknown's
-      ``resolved`` (which needs a finding stating ``resolves``, and the row does not say which) are ``undecided``."""
-    fields = tuple(name for name in unrevisable_fields(prev, record) if name not in ("legacy", "gaps"))
-    if blocked := fields or changed_cells(prev, record):
-        return InPlace(unrevisable=blocked)
-    data = prev.to_json()
-    added = [note for note in record.notes if note not in prev.notes]
+def plan(origin: Record, record: Record, ref: str) -> Edit:
+    """The branch's edit of the migrated row ``origin`` (as of the merge base), cell by cell (module docstring table)."""
+    fields = tuple(name for name in unrevisable_fields(origin, record) if name not in ("legacy", "gaps"))
+    if blocked := fields or changed_cells(origin, record):
+        return Edit(blocked=blocked)
+    appended: list[tuple[str, tuple[str, ...]]] = []
     for name in ("verified_on", "supersedes", "resolves"):
-        before, after = prev.to_json().get(name), record.to_json().get(name)
+        before, after = origin.to_json().get(name), record.to_json().get(name)
         if before != after:
             if not isinstance(after, list) or (isinstance(before, list) and after[:len(before)] != before):
-                return InPlace(unrevisable=(name,))
-            data[name] = after
-    if record.type == "unknown" and record.text("next_probe") != prev.text("next_probe"):
-        data["next_probe"] = record.to_json().get("next_probe")
-    successors: tuple[str, ...] = ()
+                return Edit(blocked=(name,))
+            appended.append((name, tuple(str(item) for item in after[len(before) if isinstance(before, list) else 0:])))
+    notes = [note for note in record.notes if note not in origin.notes]
+    probe = record.type == "unknown" and record.text("next_probe") != origin.text("next_probe")
+    old_edges = origin.legacy.superseded_by if origin.legacy is not None else ()
+    new_edges = record.legacy.superseded_by if record.legacy is not None else ()
+    withdrawn = [item for item in old_edges if item not in new_edges]
+    successors = tuple(item for item in new_edges if item not in old_edges)
+    status: str | None = None
     cell = status_cell(record)
-    if cell is not None and cell != status_cell(prev):
+    if cell is not None and cell != status_cell(origin) and not successors:
         implied = record.legacy.implied_status if record.legacy is not None else None
-        named = tuple(item for item in (record.legacy.superseded_by if record.legacy is not None else ()) if prev.legacy is None or item not in prev.legacy.superseded_by)
         statuses = TYPES[record.type].statuses
-        if implied == "superseded":
-            if not named:
-                return InPlace(undecided=f"its status cell on {ref} says superseded but names no successor: {cell!r}")
-            successors = named
+        was = origin.legacy.implied_status if origin.legacy is not None else None
+        if implied in ("superseded", "resolved") and implied == was:
+            pass  # the same legacy status in other words
+        elif implied == "superseded":
+            return Edit(undecided=f"its status cell on {ref} says superseded but names no new successor: {cell!r}")
         elif implied == "resolved":
-            return InPlace(undecided=f"its status cell on {ref} says resolved; resolving needs a finding that states resolves, and the row does not say which")
+            return Edit(undecided=f"its status cell on {ref} says resolved; resolving needs a finding that states resolves, and the row does not say which")
         elif implied == "retired" and "retired" in statuses:
-            data["status"] = "retired"
+            status = "retired"
         elif record.status in statuses:
-            data["status"] = record.status
+            status = record.status
         else:
-            return InPlace(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
-        if not successors:
-            added.append(f"status cell on {ref}: {cell}")
-    if added:
-        data["notes"] = [*prev.notes, *added]
-    revision = Record.from_json(data, prev.body) if data != prev.to_json() else None
-    return InPlace(revision, successors)
+            return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
+        if status is not None:
+            notes.append(f"status cell on {ref}: {cell}")
+    # A legacy edge holds while the stored status is the migrated one (``state.legacy_holds``): only a new stored status withdraws it.
+    if withdrawn and (status is None or status == origin.status):
+        return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
+                    + "a revision cannot withdraw a legacy edge")
+    return Edit(status, tuple(notes), probe, record.text("next_probe") if probe else None, tuple(appended), successors)
+
+
+def apply(edit: Edit, base: Record) -> Record | None:
+    """``base`` with ``edit`` applied (only what may change in place; ``gaps`` follow a filled or cleared next
+    probe); ``None`` when ``base`` already holds all of it."""
+    data = base.to_json()
+    if edit.status is not None:
+        data["status"] = edit.status
+    if missing := [note for note in edit.notes if note not in base.notes]:
+        data["notes"] = [*base.notes, *missing]
+    if edit.probe:
+        if edit.next_probe is None:
+            _ = data.pop("next_probe", None)
+        else:
+            data["next_probe"] = edit.next_probe
+        regap(data, "next_probe")
+    for name, items in edit.appended:
+        held = data.get(name)
+        current = [item for item in held if isinstance(item, (str, dict))] if isinstance(held, list) else list[JSON]()
+        added = [item for item in items if item not in current]
+        if added:
+            data[name] = [*current, *added]
+    return None if data == base.to_json() else Record.from_json(data, base.body)
 
 
 def with_supersedes(record: Record, old: str) -> Record:
@@ -274,6 +303,29 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
     return None
 
 
+def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit]) -> dict[str, str]:
+    """Replay the accepted journal with and without ``proposals``: every edit must show. A status edit must
+    derive its status, a successor must derive ``superseded`` on the old row, and every proposal must change
+    its record's head. Returns the IDs that would replay to no change, with why (never expected: a guard)."""
+    accepted_state = replay(on_accepted.segments)
+    proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
+    found: dict[str, str] = {}
+    for revision in proposals:
+        identifier = revision.record.id
+        before = accepted_state.entries.get(identifier)
+        if before is not None and before.record == proposed.entries[identifier].record:
+            found[identifier] = "its revision would replay to no change"
+    for identifier, edit in edits.items():
+        if identifier not in proposed.entries:
+            continue
+        shown = proposed.status(identifier)
+        if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
+            found[identifier] = f"its status {edit.status} would replay as {shown}"
+        if edit.successors and shown != "superseded" and any(revision.record.id in edit.successors for revision in proposals):
+            found[identifier] = f"its successors {', '.join(edit.successors)} would not supersede it on replay"
+    return found
+
+
 def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     head = commit(root, ref)
     accepted_commit = commit(root, main)
@@ -296,60 +348,110 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     on_accepted = accepted_on(root, accepted_commit)
     result.source, accepted = on_accepted.source, on_accepted.records
     superseding: list[Revision] = []
-    successors: list[tuple[str, str]] = []
+    edits: dict[str, Edit] = {}
+    fresh: list[str] = []
+
+    def hold(identifier: str, kind: str, reason: str | tuple[str, ...]) -> None:
+        """A row salvage does not propose: ``supersede`` with the fields, or ``undecided`` with the reason."""
+        result.kinds[identifier] = kind
+        if isinstance(reason, tuple):
+            result.unrevisable[identifier] = reason
+        else:
+            result.undecided[identifier] = reason
+        superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
+
     for identifier in sorted(after, key=id_key):
         record = after[identifier]
         if record.type not in SALVAGED or before.get(identifier) == record:
             continue
-        on_main = accepted.get(identifier)
+        on_main, origin = accepted.get(identifier), before.get(identifier)
         if on_main == record:
             result.kinds[identifier] = "accepted"
-            continue
-        if on_main is not None and on_main != before.get(identifier):
+        elif origin is None:
+            fresh.append(identifier)
+        elif origin.legacy is None:
+            hold(identifier, "supersede", unrevisable_fields(origin, record) or ("content",))
+        else:
+            try:
+                edit = plan(origin, record, ref)
+            except RecordError as error:
+                hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
+                continue
+            if (edit.blocked or edit.undecided is not None) and on_main is not None and on_main != origin:
+                # Main changed the row since the merge base too: reconcile by hand before anything else.
+                result.kinds[identifier] = "conflict"
+                result.conflicts.append((on_main, record))
+            elif edit.blocked:
+                hold(identifier, "supersede", edit.blocked)
+            elif edit.undecided is not None:
+                hold(identifier, "undecided", edit.undecided)
+            else:
+                edits[identifier] = edit
+    # The successors each edit links: target -> the old rows it supersedes.
+    links: dict[str, list[str]] = {}
+    for identifier, edit in edits.items():
+        for target in edit.successors:
+            links.setdefault(target, []).append(identifier)
+    for identifier in fresh:
+        record, on_main = after[identifier], accepted.get(identifier)
+        linked = record
+        for old in links.get(identifier, ()):
+            linked = with_supersedes(linked, old)
+        if on_main is None:
+            result.kinds[identifier] = "new"
+            if record.type in ("compatibility", "report"):
+                result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
+            result.proposals.append(Revision.of(linked))
+        elif on_main in (record, linked):
+            result.kinds[identifier] = "accepted"
+        else:
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
+    linking: list[tuple[str, list[str]]] = []
+    for identifier, edit in edits.items():
+        record, origin, on_main = after[identifier], before[identifier], accepted.get(identifier)
+        # A row main's legacy export lost names the first revision the cut-over would have journalled.
+        base, heads = (on_main, on_accepted.heads[identifier]) if on_main is not None else (origin, (Revision.of(origin).rev,))
+        try:
+            revision = apply(edit, base)
+        except RecordError as error:
+            hold(identifier, "undecided", f"its edit on {ref} does not make a valid revision: {error}")
             continue
-        prev = on_main if on_main is not None else before.get(identifier) if on_accepted.source == "legacy" else None
-        # The accepted heads; a row the accepted legacy export lost names the first revision the cut-over would have journalled.
-        heads = on_accepted.heads[identifier] if on_main is not None else (Revision.of(prev).rev,) if prev is not None else ()
-        if prev is not None:
-            edit = in_place(prev, record, ref) if prev.legacy is not None else InPlace(
-                record, unrevisable=unrevisable_fields(prev, record))
-            if edit.unrevisable or edit.undecided is not None:
-                result.kinds[identifier] = "supersede" if edit.unrevisable else "undecided"
-                if edit.unrevisable:
-                    result.unrevisable[identifier] = edit.unrevisable
-                else:
-                    result.undecided[identifier] = edit.undecided or ""
-                superseding.append(Revision.of(record, heads))
-                continue
-            successors.extend((identifier, target) for target in edit.successors)
-            if edit.revision is None:
-                result.kinds[identifier] = "superseded" if edit.successors else "cosmetic"
-                if not edit.successors:
-                    result.notices.append(f"{identifier}: only its verbatim legacy cells changed on {ref}; nothing to propose")
-                continue
-            result.kinds[identifier] = "revision"
-            result.proposals.append(Revision.of(edit.revision, heads))
-            continue
-        result.kinds[identifier] = "new"
-        if record.type in ("compatibility", "report"):
-            result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
-        result.proposals.append(Revision.of(record, heads))
-    # A status cell's "superseded-by F-N" is a supersedes link on the successor: on its proposal, or on a revision
-    # of its accepted record; a successor neither proposed nor accepted (or itself not proposable) is undecided.
-    for old, target in successors:
-        index = next((number for number, revision in enumerate(result.proposals) if revision.record.id == target), None)
-        if index is not None:
-            proposal = result.proposals[index]
-            result.proposals[index] = Revision.of(with_supersedes(proposal.record, old), proposal.prev)
-        elif (held := accepted.get(target)) is not None and result.kinds.get(target) in (None, "accepted"):
-            result.proposals.append(Revision.of(with_supersedes(held, old), on_accepted.heads[target]))
-            result.kinds[target] = "revision"
+        pending = [target for target in edit.successors
+                   if (held := accepted.get(target)) is None or identifier not in held.links.supersedes]
+        if edit.empty:
+            result.kinds[identifier] = "cosmetic"
+            result.notices.append(f"{identifier}: only verbatim legacy text changed on {ref}; nothing to propose")
+        elif revision is None and not pending:
+            result.kinds[identifier] = "accepted"
+        elif on_main is not None and on_main != origin and on_main != apply(edit, origin):
+            result.kinds[identifier] = "conflict"
+            result.conflicts.append((on_main, record))
         else:
-            result.kinds[old] = "undecided"
-            result.undecided[old] = f"its status cell on {ref} names successor {target}, which is neither proposable here nor accepted"
-            superseding.append(Revision.of(after[old], on_accepted.heads.get(old, ())))
+            result.kinds[identifier] = "revision" if revision is not None else "superseded"
+            if revision is not None:
+                result.proposals.append(Revision.of(revision, heads))
+            if pending:
+                linking.append((identifier, pending))
+    # The successor carries the link: on its proposal here, or on a revision of its accepted record.
+    for identifier, pending in linking:
+        if stuck := [target for target in pending if not any(item.record.id == target for item in result.proposals)
+                     and (target not in accepted or result.kinds.get(target) not in (None, "accepted"))]:
+            result.proposals = [item for item in result.proposals if item.record.id != identifier]
+            hold(identifier, "undecided", f"its row on {ref} names successor {', '.join(stuck)}, neither proposable here nor accepted")
+            continue
+        for target in pending:
+            index = next((number for number, item in enumerate(result.proposals) if item.record.id == target), None)
+            if index is not None:
+                proposal = result.proposals[index]
+                result.proposals[index] = Revision.of(with_supersedes(proposal.record, identifier), proposal.prev)
+            else:
+                result.proposals.append(Revision.of(with_supersedes(accepted[target], identifier), on_accepted.heads[target]))
+                result.kinds[target] = "revision"
+    no_op = honoured(on_accepted, result.proposals, edits)
+    for identifier, reason in no_op.items():
+        result.proposals = [item for item in result.proposals if item.record.id != identifier]
+        hold(identifier, "undecided", reason)
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
                           if before[identifier].type in SALVAGED)
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}

@@ -240,7 +240,7 @@ def tracked_references(migrated: list[Migrated]) -> None:
     sources = {item.record.legacy.path: item.record.id for item in migrated if item.record.type == "reference" and item.record.legacy}
     for position, item in enumerate(migrated):
         record = item.record
-        target = sources.get(record.text("path") or "")
+        target = sources.get((record.text("path") or "").partition("#")[0])
         if record.type != "evidence" or record.text("class") != "tracked" or target is None:
             continue
         data = record.to_json()

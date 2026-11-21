@@ -56,7 +56,7 @@ from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, load_
 from tools.memory.model import BUILD, ID, SELECTOR, Record, RecordError, as_mapping, id_key, is_array, load_json, sha256_hex
 from tools.memory.service import home, write_private
 from tools.memory.paths import ProtectedPathsError, worktrees
-from tools.memory.state import Entry, State, replay
+from tools.memory.state import Entry, State, legacy_holds, replay
 
 ACCEPTANCE_REF = "origin/main"
 REF_NAMESPACES = ("refs/heads", "refs/remotes")
@@ -261,12 +261,26 @@ class Desired:
     item: Item
 
 
+def stated_superseders(settled: State, identifier: str) -> tuple[str, ...]:
+    """Accepted records whose own ``supersedes`` names ``identifier`` (``settled.superseded_by`` also holds the
+    accepted head's legacy edges)."""
+    return tuple(name for name in settled.superseded_by.get(identifier, ())
+                 if (record := settled.record(name)) is not None and identifier in record.links.supersedes)
+
+
+def legacy_in_force(settled: State, record: Record) -> bool:
+    """Whether a revision's legacy status holds (``state.legacy_holds``) against the accepted migration revision."""
+    entry = settled.entries.get(record.id)
+    return legacy_holds(record, entry.origin if entry is not None else None)
+
+
 def derived_status(settled: State, record: Record) -> str:
     """The status a revision shows in the bank: superseded or resolved by ACCEPTED links (``settled``, the
-    replay of ``origin/main``) or by its own legacy row, an implied legacy retirement, or its stored status."""
-    legacy = record.legacy
+    replay of ``origin/main``), or by its own legacy row while that holds (``legacy_in_force``: the latest
+    stored status wins), an implied legacy retirement likewise, or its stored status."""
+    legacy = record.legacy if legacy_in_force(settled, record) else None
     implied = legacy.implied_status if legacy is not None else None
-    if settled.superseded_by.get(record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
+    if stated_superseders(settled, record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
         return "superseded"
     if settled.resolved_by.get(record.id) or implied == "resolved":
         return "resolved"

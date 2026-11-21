@@ -471,6 +471,18 @@ class ExportTests(LegacyRepository):
         return read_tree(out)
 
 
+class AnchoredTrackedTests(LegacyRepository):
+    def test_an_anchored_tracked_row_links_the_ref_of_its_file(self) -> None:
+        shard = self.root / "evidence/widgets/001.jsonl"
+        row = {"id": "M-105", "path": "docs/specs/net/widget.md#scope", "sha256": None, "class": "tracked", "kind": "report",
+               "date": None, "label": "Anchored", "status": "active"}
+        _ = shard.write_text(shard.read_text() + json.dumps(row, separators=(",", ":")) + "\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "anchored tracked row")
+        anchored = export(self.root, "HEAD").records()["M-105"]
+        self.assertEqual((("REF-002",), ("tracked file migrated to REF-002 at cut-over (link assigned at migration)",)),
+                         (anchored.links.refs, anchored.notes))
+
+
 class SalvageTests(LegacyRepository):
     def publish(self) -> None:
         """Point ``origin/main``, the acceptance ref salvage classifies against, at ``main``."""
@@ -618,6 +630,111 @@ class SalvageTests(LegacyRepository):
         status, _stdout, stderr = self.run_salvage("odd")
         self.assertEqual(salvage_command.EXIT_SUPERSEDE, status)
         self.assertIn("needs a decision by hand: F-107:", stderr)
+
+    def edited(self, name: str, *edits: tuple[str, str, str]) -> None:
+        """After the cut-over journalled main (legacy trees kept), a branch whose only change is each (path, old, new) replacement."""
+        _ = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", name, "main")
+        for path, old, new in edits:
+            target = self.root / path
+            text = target.read_text()
+            self.assertIn(old, text)
+            _ = target.write_text(text.replace(old, new, 1))
+        _ = run_git(self.root, "commit", "-q", "-am", "edit")
+
+    def accept(self, result: Salvage) -> None:
+        """Accept salvage's proposals on main, as merging them would."""
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = write_change_set(self.root, datetime(2026, 3, 1, tzinfo=UTC), result.proposals)
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "accept the salvaged proposals")
+        self.publish()
+
+    def salvaged_twice(self, name: str) -> Salvage:
+        """Salvage, check the change set replays legally, accept it on main, salvage again: nothing left."""
+        first = salvage(self.root, name)
+        self.assertTrue(first.proposals)
+        _ = self.legal(first)
+        self.accept(first)
+        again = salvage(self.root, name)
+        self.assertEqual(([], [], {}, {}, []), (again.proposals, again.conflicts, again.unrevisable, again.undecided, again.unsalvaged))
+        status, stdout, _stderr = self.run_salvage(name)
+        self.assertEqual((0, ""), (status, stdout), "the second run is clean")
+        return first
+
+    def test_a_stored_status_overrides_a_legacy_status_and_the_second_run_is_clean(self) -> None:
+        retired = "docs/ledgers/findings/retired/widgets.md"
+        cases = [
+            ("F-103", (retired, "receipt | | retired: receipt |", "receipt | | active |"), "active"),
+            ("F-101", (retired, "| U-101 | superseded-by F-102 |", "| U-101 | retired: replaced |"), "retired"),
+            ("U-101", ("docs/ledgers/unknowns.md", "| medium | resolved |", "| medium | open |"), "open"),
+            ("F-107", ("docs/ledgers/findings/widgets.md", "owner said so | | active |", "owner said so | | retired: dropped |"), "retired"),
+        ]
+        for identifier, edit, status in cases:
+            with self.subTest(identifier):
+                self.setUp()
+                self.edited("status", edit)
+                first = salvage(self.root, "status")
+                self.assertEqual([(identifier, status)], [(item.record.id, item.record.status) for item in first.proposals])
+                self.assertEqual(status, self.legal(first).status(identifier), "the replay honours the edit")
+                self.assertEqual(self.records[identifier].legacy, first.proposals[0].record.legacy, "main's verbatim cells are kept")
+                _ = self.salvaged_twice("status")
+
+    def test_an_evidence_row_s_new_successor_is_a_link_and_a_withdrawn_one_is_undecided(self) -> None:
+        shard = "evidence/widgets/001.jsonl"
+        self.edited("evidence", (shard, '"kind":"input","status":"active","legacy":true}',
+                                 '"kind":"input","status":"retired","legacy":true,"superseded_by":"M-104","note":"replaced by M-104"}'))
+        result = salvage(self.root, "evidence")
+        proposed = {item.record.id: item.record for item in result.proposals}
+        self.assertEqual(("M-102",), proposed["M-104"].links.supersedes)
+        self.assertEqual("superseded", self.legal(result).status("M-102"))
+        _ = self.salvaged_twice("evidence")
+        self.setUp()
+        self.edited("retarget", (shard, '"superseded_by":"M-104"', '"superseded_by":"M-101"'))
+        retarget = salvage(self.root, "retarget")
+        self.assertEqual([], retarget.proposals)
+        self.assertIn("withdraws the legacy successor M-104", retarget.undecided["M-103"])
+
+    def test_a_next_probe_cleared_or_filled_is_a_revision_with_its_gap(self) -> None:
+        self.edited("probe", ("docs/ledgers/unknowns.md", "| open | Probe F-105 |", "| open |  |"))
+        cleared = salvage(self.root, "probe")
+        (revision,) = cleared.proposals
+        self.assertEqual((None, ("area", "next_probe")), (revision.record.text("next_probe"), revision.record.gaps))
+        _ = self.salvaged_twice("probe")
+        # The reverse: a probe the accepted row lacks, filled on a branch, fills the gap.
+        self.setUp()
+        unknowns = self.root / "docs/ledgers/unknowns.md"
+        _ = unknowns.write_text(unknowns.read_text().replace("| open | Probe F-105 |", "| open |  |"))
+        _ = run_git(self.root, "commit", "-q", "-am", "no probe on main")
+        self.edited("fill", ("docs/ledgers/unknowns.md", "| open |  |", "| open | Probe again |"))
+        filled = salvage(self.root, "fill")
+        self.assertEqual([("U-102", "Probe again", ("area",))], [(item.record.id, item.record.text("next_probe"), item.record.gaps) for item in filled.proposals])
+        _ = self.salvaged_twice("fill")
+
+    def test_a_line_above_a_prose_supersession_changes_no_row(self) -> None:
+        self.edited("prose", ("docs/ledgers/findings/widgets.md", "Active rows.", "Intro line.\n\nActive rows."))
+        result = salvage(self.root, "prose")
+        self.assertEqual(([], {}, {}), (result.proposals, result.unrevisable, result.undecided))
+        self.assertTrue(all(kind == "cosmetic" for kind in result.kinds.values()), result.kinds)
+
+    def test_a_successor_main_already_links_is_accepted(self) -> None:
+        self.edited("linked", ("docs/ledgers/findings/widgets.md", "owner said so | | active |", "owner said so | | superseded-by F-105 |"))
+        first = salvage(self.root, "linked")
+        self.assertEqual({"F-107": "superseded", "F-105": "revision"}, first.kinds)
+        self.accept(first)
+        again = salvage(self.root, "linked")
+        self.assertEqual(([], {"F-107": "accepted"}, []), (again.proposals, again.kinds, again.unsalvaged))
+
+    def test_one_bad_row_never_aborts_the_run(self) -> None:
+        self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")
+
+        def failing(origin: Record, record: Record, ref: str) -> salvage_command.Edit:
+            raise RecordError(f"{record.id}: invented failure on {ref} ({origin.id})")
+
+        with mock.patch.object(salvage_command, "plan", failing):
+            result = salvage(self.root, "two")
+        self.assertEqual(["F-111"], [item.record.id for item in result.proposals])
+        self.assertIn("invented failure", result.undecided["F-107"])
 
     def test_the_accepted_ref_is_origin_main_whatever_local_main_says(self) -> None:
         self.branch_and_main()

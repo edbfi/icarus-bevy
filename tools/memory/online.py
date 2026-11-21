@@ -35,7 +35,7 @@ from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, marker_rendering, read_back,
+    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, legacy_in_force, marker_rendering, read_back,
     reconcile, shared_elsewhere, unchanged,
 )
 from tools.memory.canonical import RENDERING, render_text
@@ -44,7 +44,7 @@ from tools.memory.gitio import GitError, descends, git, listed_files, read_blobs
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags, Unavailable
 from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, write_change_set
 from tools.memory.model import (
-    ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, sha256_hex,
+    ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, regap, sha256_hex,
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor, reranker_cap
@@ -349,6 +349,7 @@ def _revision_of(current: Session, identifier: str, edit: Mapping[str, JSON | No
             _ = data.pop(name, None)
         else:
             data[name] = value
+        regap(data, name)
     if note is not None:
         notes.append(note)
     if notes:
@@ -835,8 +836,9 @@ def stated_resolvers(settled: State, identifier: str) -> tuple[str, ...]:
 
 
 def from_legacy(settled: State, record: Record, status: str) -> bool:
-    """Whether the derived ``status`` rests only on a migrated record's legacy status cell (no accepted link implies it)."""
-    if record.legacy is None or record.legacy.implied_status != status:
+    """Whether the derived ``status`` rests only on a migrated record's legacy status cell, still in force
+    (``legacy_in_force``), with no accepted link implying it."""
+    if record.legacy is None or record.legacy.implied_status != status or not legacy_in_force(settled, record):
         return False
     if status == "superseded":
         return not settled.superseded_by.get(record.id)

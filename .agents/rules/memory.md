@@ -46,7 +46,7 @@ document.
 | evidence | `M-N` | active, retired, missing | path, sha256, size, class, kind, date, label |
 
 - `superseded` and `resolved` are derived from links, or on a migrated record
-  from its legacy status; never written as a new revision.
+  from its legacy status until a revision stores another; never written as a revision.
 - Finding `kind`: observed, measured, derived, inferred, reported, decision;
   `confidence`: high, medium, low; `standing`: confirmed, candidate, refuted;
   `negative: true` marks a negative result. A receipt is evidence. Derived and
@@ -55,7 +55,7 @@ document.
   owner's instruction verbatim with its date and where it was given.
 - Evidence `class`: local-private, tracked, external; `kind`: receipt,
   rea-bundle, report, review, revision, input, build, manifest, run. A bundle
-  carries `records` and `members` exactly as listed; members are omitted from
+  carries `records` and `members` exactly as listed; members are not in
   rendered text. A `run` carries workload, targets, matched reference,
   identities, start, end, environment, thresholds, outcome (pass, fail,
   aborted), deviations.
@@ -103,7 +103,7 @@ Supersession is acyclic.
   standing, scope; evidence path, sha256, size, class, kind, date, members.
 - Each revision has an identity `rev`, the sha256 of the canonical JSON of its
   `prev` and record; `prev` names revision identities, so returning a record to
-  earlier content is a new revision. `memory check --ci` fails a PR that forks a
+  earlier content is a new revision. `check --ci` fails a PR that forks a
   record against its base. A fork that reaches `origin/main` shows as two
   heads labelled `conflict`; the next change must be a reconciling revision
   naming both as `prev`, and CI reports unreconciled forks.
@@ -114,15 +114,15 @@ Supersession is acyclic.
 
 - Canonical JSON: keys sorted, no insignificant whitespace, UTF-8, NFC; `sha256`
   is its digest. Text: the tool's deterministic rendering, LF only, no other
-  control characters but TAB, at most 1,800 characters (a REF body is exempt),
-  ID, type, status and claim first (ranking sees only a unit's first 512 tokens).
+  control character but TAB, at most 1,800 characters (a REF body is exempt),
+  ID, type, status and claim first (ranking reads a unit's first 512 tokens).
 - A REF's text is its body; its canonical JSON holds header fields and the
   body's sha256, never the body.
-- The bank marker holds the rendering version: an older tool refuses to
-  reconcile or write that bank (merge `main`); a newer one re-renders it.
+- The bank marker holds the rendering version: an older tool never reconciles
+  or writes (merge `main`); a newer one re-renders all and raises it.
 - One retain item per document. `<ID>` holds the accepted head (or the proposal
   if never accepted); `<ID>@<12 hex>` exists only for a pending revision of an
-  accepted record. Prior revisions live in the journal.
+  accepted record. Prior revisions are in the journal.
 - Metadata: `record` (canonical JSON), `sha256`, `rev`, `prev`, `segment`.
 - Tags on every document: `type:`, `id:`, `state:` (accepted, proposed, pending,
   orphaned, conflict), derived `status:`, `area:`, `basis:`, `seg:`, and each
@@ -195,9 +195,9 @@ Engineering loop:
    rely on; check `docs/gates.md`.
 2. Only `current` records are established for the pinned release. Another
    partition may guide native work, but what is built on it is recorded as
-   carried from that scope, names its tokens, and is never claimed for the pin
+   carried from that scope, names its tokens and is never claimed for the pin
    or used as a CP proof until re-verified.
-3. Cite the ID where code depends on it, for example `(F-1162)`. New citations
+3. Cite the ID where code depends on it, e.g. `(F-1162)`. New citations
    name accepted or same-branch records, never retired ones.
 4. Record test results: receipts as evidence, native properties as `measured`
    findings with commit scope, fixed defects as N records naming the test.
