@@ -17,7 +17,7 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import SALVAGED, Accepted, Salvage, SalvageError, classify, renumber
+from tools.memory.salvage import SALVAGED, Accepted, Salvage, SalvageError, classify, identity, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -101,9 +101,13 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
             after[identifier] = row(identifier, "active")
     # Migration-assigned records: the branch may insert a document sorting first and a compatibility row in the middle,
     # renumbering the rest in its export; an unchanged tracked row and a finding cite later ones by those numbers.
-    main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma"]
+    # Main may itself hold one name twice (two accepted rows of one identity).
+    twins = rng.random() < 0.2
+    main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
-    branch_names = ["Alpha", "Beta", "Gamma"] if rng.random() < 0.5 else main_names
+    branch_names = ["Alpha", "Beta", *main_names[1:]] if rng.random() < 0.5 else list(main_names)
+    if twins and rng.random() < 0.4:
+        branch_names.remove("Gamma")  # the branch drops one of main's twins: the other is still ambiguous on main
     # A repeated name: two new rows of one name, or a second row of an accepted name.
     repeated = rng.choice([[], [], ["Dup", "Dup"], ["Gamma"]])
     branch_names = [*branch_names, *repeated]
@@ -111,8 +115,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         refs, cps = numbered(paths, names)
         export.update({refs[path]: document(refs[path], path) for path in paths})
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
+        if twins and export is after and rng.random() < 0.5:
+            # The branch changes one of main's twin rows.
+            last = max(f"CP-{number:03d}" for number, name in enumerate(names, 1) if name == "Gamma")
+            export[last] = Record.from_json(export[last].to_json() | {"status": "observed"})
         export["M-500"] = tracked("M-500", "docs/specs/e.md", refs["docs/specs/e.md"])
-        cited = export[base_ids[0]].to_json() | {"refs": [cps["Gamma"]]}
+        cited = export[base_ids[0]].to_json() | {"refs": [cps["Alpha" if twins else "Gamma"]]}
         export[base_ids[0]] = Record.from_json(cited)
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.5:
         after["M-501"] = tracked("M-501", "docs/specs/a.md", numbered(branch_paths, branch_names)[0]["docs/specs/a.md"])
@@ -157,7 +165,11 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
-            if sum(1 for record in raw_after.values() if record.text("name") == "Gamma") > 1:
+            held_identities = {identity(record) for record in accepted.records.values()} - {None}
+            self.assertEqual([], [item.record.id for item in result.proposals
+                                  if result.kinds.get(item.record.id) == "new" and identity(item.record) in held_identities],
+                             f"seed {seed}: a new record whose identity the accepted journal already has")
+            if sum(1 for record in raw_after.values() if record.text("name") == "Gamma") > 1 == sum(1 for record in raw_before.values() if record.text("name") == "Gamma"):
                 self.assertEqual("undecided", result.kinds[base_ids(raw_before)[0]], f"seed {seed}: a row citing a shared name")
             if "M-501" in after:
                 self.assertEqual("undecided", result.kinds["M-501"], f"seed {seed}: a row citing a new document")

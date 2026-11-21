@@ -606,9 +606,10 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
     A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID. A REF with
     no accepted counterpart by path takes the ID of the one accepted REF without ``legacy`` (proposed by hand with the
     command salvage prints) whose body equals its body, when exactly one does. A record with no accepted counterpart gets a provisional number above every accepted one, the same in every export. Records
-    that share an identity within one export cannot be told apart, so none of them is mapped: EACH gets its own
-    provisional number (the k-th record of that identity, in the export's order, the same in every export) and is
-    returned in the third set, so that it and every row citing it are held. Every record survives under a distinct
+    that share an identity within one export, or whose identity the accepted journal holds more than once, cannot be
+    told apart, so none of them is mapped: EACH gets its own provisional number (the k-th record of that identity,
+    in the export's order, the same in every export) and is returned in the third set, so that it and every row
+    citing it are held. Every record survives under a distinct
     ID; a collision raises ``SalvageError`` naming the two IDs. Returns the exports, the provisional IDs with what
     each is, and the provisional IDs of records sharing an identity."""
     counts: dict[str, int] = {}
@@ -642,15 +643,23 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
             elif record.type == "reference" and key not in counts and seen[key] == 1 and len(found := by_body.get(record.body or "", [])) == 1:
                 target = found[0]
             else:
-                place = (key, ordinal.get(key, 0) if seen[key] > 1 else -1)
+                # Ambiguity on either side is ambiguity: the export or the accepted journal holding the identity twice.
+                ambiguous = seen[key] > 1 or counts.get(key, 0) > 1
+                place = (key, ordinal.get(key, 0) if ambiguous else -1)
                 ordinal[key] = ordinal.get(key, 0) + 1
                 if place not in provisional:
                     prefix = record.id.split("-", 1)[0]
                     top[prefix] += 1
                     provisional[place] = f"{prefix}-{top[prefix]:03d}"
-                    unmapped[provisional[place]] = f"one of {seen[key]} records sharing the {key}" if seen[key] > 1 else f"the new {key}"
+                    if counts.get(key, 0) > 1:
+                        holders = sorted((name for name, other in accepted.items() if identity(other) == key), key=id_key)
+                        unmapped[provisional[place]] = f"a record of the {key}, which the accepted journal holds {len(holders)} times ({', '.join(holders)})"
+                    elif seen[key] > 1:
+                        unmapped[provisional[place]] = f"one of {seen[key]} records sharing the {key}"
+                    else:
+                        unmapped[provisional[place]] = f"the new {key}"
                 target = provisional[place]
-                if seen[key] > 1:
+                if ambiguous:
                     shared.add(target)
             if target != record.id:
                 mapping[record.id] = target

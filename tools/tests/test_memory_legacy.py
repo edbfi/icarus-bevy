@@ -1034,6 +1034,25 @@ class SalvageTests(LegacyRepository):
                 self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
                 self.assertFalse(any("removed on dup" in notice for notice in result.notices), result.notices)
 
+    def test_a_row_whose_identity_main_holds_twice_is_held_never_new(self) -> None:
+        twin = "| Discovery | Unknown | Twin |\n"
+        cases = (("changed", "docs/ledgers/compatibility.md", twin, "| Discovery | Observed | Twin |\n"),
+                 ("one dropped", "docs/ledgers/compatibility.md", twin, ""),
+                 ("both kept", "docs/ledgers/findings/widgets.md", "owner said so | | active |", "owner said so | | retired: dropped |"))
+        for case, path, old, replacement in cases:
+            with self.subTest(case):
+                self.setUp()
+                table = self.root / "docs/ledgers/compatibility.md"
+                _ = table.write_text(table.read_text().replace("| Discovery | Unknown | Browser behavior |\n", "| Discovery | Unknown | Browser behavior |\n" + twin))
+                _ = run_git(self.root, "commit", "-q", "-am", "main holds Discovery twice")
+                self.edited("twin", (path, old, replacement))
+                result = salvage(self.root, "twin")
+                self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"], result.kinds)
+                self.assertFalse([name for name, kind in result.kinds.items() if name.startswith("CP-") and kind == "new"], result.kinds)
+                held = [name for name, reason in result.undecided.items() if "which the accepted journal holds 2 times (CP-001, CP-002)" in reason]
+                # A changed twin is held; the twin left as it was when the other is dropped is unchanged (the other a removal).
+                self.assertEqual(1 if case == "changed" else 0, len(held), result.undecided)
+
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
         self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",
