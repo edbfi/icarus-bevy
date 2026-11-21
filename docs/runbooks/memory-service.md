@@ -23,9 +23,12 @@ repository; the service is shared by all of them.
 3. A new instance is empty: `memory rebuild` (needs the 30 GiB free-disk floor),
    then `memory sync` and `memory check --bank`.
 
-Reranking is instance-wide: `memory service install --reranker off|N` writes
-`ICARUS_MEMORY_RERANKER` (default 50 candidates per recall) into the connection
-file and restarts the service; `service status` and `check --bank` assert it.
+Ranking is fused (semantic, keyword, graph, temporal); the cross-encoder
+reranker is off by default. `memory service install --reranker N` turns it on
+for the whole instance with N candidates and 4 ONNX threads, `--reranker off`
+turns it off again; the setting (`ICARUS_MEMORY_RERANKER`) lives in the
+connection file and `service status` and `check --bank` assert it. Measured on
+the real corpus: recall p50 0.37 s off, 1.7 s at 10 candidates, 12 s at 50.
 
 `memory service start|stop|status|uninstall` manage the unit; `uninstall` keeps
 data, connection file and backups. `memory service status` must show every
