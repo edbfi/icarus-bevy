@@ -876,8 +876,11 @@ def passage(query: str, units: Sequence[str], body: str | None) -> tuple[str, st
     begin = max(0, min(first - PASSAGE_CAP // 3, len(best) - PASSAGE_CAP))
     excerpt = " ".join(best[begin:begin + PASSAGE_CAP].split())
     excerpt = ("…" if begin else "") + excerpt + ("…" if begin + PASSAGE_CAP < len(best) else "")
-    heading = None
-    if body is not None and (at := body.find(best.strip()[:80])) >= 0:
+    # The heading the match falls under: the last one before it inside the unit, else the last one before the unit in the body.
+    line_end = best.find("\n", first)
+    heading = next((line.lstrip("#").strip() for line in reversed(best[:line_end if line_end >= 0 else len(best)].split("\n"))
+                    if line.startswith("#") and line.lstrip("#").strip()), None)
+    if heading is None and body is not None and (at := body.find(best.strip()[:80])) >= 0:
         heading = next((line.lstrip("#").strip() for line in reversed(body[:at].split("\n")) if line.startswith("#")), None)
     return excerpt, heading
 
@@ -994,7 +997,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 block += [f"  link: {line}" for _, line in linked]
             else:
                 rendered = target.item.content.split("\n")
-                line = rendered[1][:LINE_CAP] if len(rendered) > 1 else ""
+                # A REF's text is its body; its title is the headline. Every other rendering puts the headline field second.
+                line = (record.text("title") or "")[:LINE_CAP] if record.type == "reference" else rendered[1][:LINE_CAP] if len(rendered) > 1 else ""
                 entry_json: dict[str, JSON] = {
                     "id": item.identifier, "document": target.document_id, "type": record.type, "state": target.state, "status": target.status,
                     "partition": placed, "line": line, "verified": verified,

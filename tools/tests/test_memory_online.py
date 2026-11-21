@@ -707,6 +707,7 @@ class CompactReadTests(Online):
         compact = online.recall(self.bank, self.root, "listing lock key")
         text = "\n".join(compact.lines)
         self.assertIn("REF-001 [reference; proposed, current;", text)
+        self.assertIn("REF-001 [reference; proposed, current; unscoped against REL-9.0.2]\n  Invented long reference\n  passage (under 'Lock rules'):", text)
         self.assertIn("passage", text)
         self.assertIn("listing lock key", text)
         self.assertNotIn("Invented filler paragraph 30", text, "a REF hit never prints its body")
