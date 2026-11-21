@@ -35,7 +35,7 @@ from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, legacy_in_force, marker_rendering, read_back,
+    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, desired, diff, gather, marker_rendering, read_back,
     reconcile, shared_elsewhere, unchanged,
 )
 from tools.memory.canonical import RENDERING, render_text
@@ -280,7 +280,7 @@ def proof_problems(universe: Universe, after: State, record: Record) -> list[str
         values = run.run
         listed = [item for key in ("targets", "identities") if isinstance(value := values.get(key), tuple) for item in value]
         environment = str(values.get("environment", ""))
-        if (run_status := derived_status(universe.settled, run)) != "active":
+        if (run_status := universe.settled.status_at(after.entries[name], after.entries[name].heads[0])) != "active":
             reasons.append(f"{name} is {run_status}")
         elif values.get("outcome") != "pass":
             reasons.append(f"{name} outcome is {values.get('outcome')}")
@@ -514,7 +514,7 @@ def evidence_add(bank: Bank, root: Path, path: str, kind: str, label: str, *, ru
         for entry in current.universe.view.entries.values():
             record = entry.record
             if (record.type == "evidence" and record.text("path") == relative and record.text("sha256") == digest
-                    and derived_status(current.universe.settled, record) == "active"):
+                    and view_status(current.universe, entry.id) == "active"):
                 raise Refused(f"{relative} with these bytes is {record.id} already")
         notices: list[str] = []
         data["id"] = allocate(current.universe, bank.documents(), "M", notices)
@@ -580,7 +580,7 @@ def locator_found(primary: Path, locator: str) -> bool:
 def verify_record(primary: Path, record: Record, status: str, state: State | None = None) -> Verdict:
     """One evidence record against the bytes under the primary checkout, as the legacy ``--local`` lint reads them.
 
-    ``status`` is the record's DERIVED status (``derived_status``: accepted supersession, legacy retirement, else
+    ``status`` is the record's DERIVED status (``State.status_at``: accepted supersession, legacy retirement, else
     stored): superseding writes no revision of the old record, so its stored status stays ``active`` although
     the scratch routine may prune its bytes once the supersession is accepted.
 
@@ -662,7 +662,7 @@ def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, stage
     ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``).
     ``staged``: every evidence revision in the staged segments (the prek hook), whatever the replayed journal holds."""
     universe = gather(root)
-    view, settled = universe.view, universe.settled
+    view = universe.view
     primary = primary_checkout(root)
     records: list[Record] = []
     if staged:
@@ -675,7 +675,10 @@ def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, stage
             if record is None or record.type != "evidence":
                 raise Refused(f"{name}: no evidence record in this checkout")
             records.append(record)
-    verdicts = [verify_record(primary, record, derived_status(settled, record), view) for record in records]
+    known = universe.state.entries
+    # A staged revision the replay does not hold (none should exist) falls back to its stored status.
+    verdicts = [verify_record(primary, record, view_status(universe, record.id) if record.id in known else record.status, view)
+                for record in records]
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
     failing = sum(1 for item in verdicts if item.failing)
@@ -828,6 +831,14 @@ def check_document(bank: Bank, target: Desired, *, older: bool = False) -> list[
     return problems
 
 
+def view_status(universe: Universe, identifier: str) -> str:
+    """A record's derived status as this checkout reads it: ``State.status_at`` of its head in the view
+    (``origin/main`` plus this worktree; the union for a record only another worktree holds) against the
+    accepted links, as the bank derives every document's status."""
+    entry = universe.view.entries.get(identifier) or universe.state.entries[identifier]
+    return universe.settled.status_at(entry, entry.heads[0])
+
+
 def stated_resolvers(settled: State, identifier: str) -> tuple[str, ...]:
     """Accepted records whose own ``resolves`` names ``identifier``. Only these are resolver links: a migrated
     unknown's legacy "Findings" are listed findings (its ``refs``), not a statement that they resolve it."""
@@ -835,27 +846,27 @@ def stated_resolvers(settled: State, identifier: str) -> tuple[str, ...]:
                  if (record := settled.record(name)) is not None and identifier in record.links.resolves)
 
 
-def from_legacy(settled: State, record: Record, status: str) -> bool:
-    """Whether the derived ``status`` rests only on a migrated record's legacy status cell, still in force
-    (``legacy_in_force``), with no accepted link implying it."""
-    if record.legacy is None or record.legacy.implied_status != status or not legacy_in_force(settled, record):
+def from_legacy(settled: State, record: Record, status: str, holds: bool) -> bool:
+    """Whether the derived ``status`` rests only on a migrated record's legacy status cell, still in force at
+    the revision shown (``holds``: ``Entry.legacy_holds``), with no accepted link implying it."""
+    if record.legacy is None or record.legacy.implied_status != status or not holds:
         return False
     if status == "superseded":
         return not settled.superseded_by.get(record.id)
     return not stated_resolvers(settled, record.id) if status == "resolved" else True
 
 
-def status_text(settled: State, record: Record, status: str) -> str:
+def status_text(settled: State, record: Record, status: str, holds: bool) -> str:
     """The derived status as ``get`` and ``recall`` print it: ``(legacy status)`` when only the migrated row's cell
     implies it, ``(stored X)`` when links make it differ from the stored status."""
-    if from_legacy(settled, record, status):
+    if from_legacy(settled, record, status, holds):
         return f"{status} (legacy status)"
     return status + (f" (stored {record.status})" if status != record.status else "")
 
 
-def listed_findings(settled: State, record: Record, status: str) -> tuple[str, ...]:
+def listed_findings(settled: State, record: Record, status: str, holds: bool) -> tuple[str, ...]:
     """A migrated unknown resolved by its legacy status: the findings its Findings cell lists (``state.legacy_listed``)."""
-    if record.type != "unknown" or record.legacy is None or record.legacy.implied_status != "resolved" or not from_legacy(settled, record, status):
+    if record.type != "unknown" or record.legacy is None or record.legacy.implied_status != "resolved" or not from_legacy(settled, record, status, holds):
         return ()
     return legacy_listed(record, "findings")
 
@@ -889,11 +900,12 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     placed, phrase = place(root, record, release, reason)
     entry = state.entries[identifier]
     proposed = overlay(universe, identifier, every=all_proposals)
-    resolvers, listed = stated_resolvers(settled, identifier), listed_findings(settled, record, target.status)
+    holds = entry.legacy_holds(target.revision.rev)
+    resolvers, listed = stated_resolvers(settled, identifier), listed_findings(settled, record, target.status, holds)
     moved = migrated_to(state, record)
     data: dict[str, JSON] = {
         "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
-        "legacy_status": from_legacy(settled, record, target.status), "sha256": target.revision.sha256, "rev": target.revision.rev,
+        "legacy_status": from_legacy(settled, record, target.status, holds), "sha256": target.revision.sha256, "rev": target.revision.rev,
         "segment": target.segment, "text": target.item.content, "record": record.to_json(), "partition": placed,
         "superseded_by": list(settled.superseded_by.get(identifier, ())), "successors": list(settled.successors(identifier)),
         "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved, "proposed": [item.json() for item in proposed],
@@ -901,7 +913,7 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     }
     # A tracked file migrated into a REF: where its content now is comes first.
     lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, ""]
-    lines += [f"state: {target.state}", f"status: {status_text(settled, record, target.status)}", *([f"partition: {phrase}"] if phrase else []),
+    lines += [f"state: {target.state}", f"status: {status_text(settled, record, target.status, holds)}", *([f"partition: {phrase}"] if phrase else []),
               f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
     if "/" in citation:
         data["selector"], data["member"] = citation, resolution.member
@@ -917,7 +929,7 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     if resolvers:
         lines.append(f"resolved by: {', '.join(resolvers)}")
     lines.extend(item.line() for item in proposed)
-    lines.extend(f"pending revision: {item.document_id} rev {item.revision.rev} in {item.segment}" for item in pending)
+    lines.extend(f"pending revision: {item.document_id} rev {item.revision.rev} in {item.segment}; status {item.status}" for item in pending)
     if target.state == "conflict" or entry.conflict:
         lines.extend(f"conflict head: {key} in {entry.revisions[key].segment}" for key in entry.heads)
         data["heads"] = list(entry.heads)
@@ -928,7 +940,7 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     cited: list[JSON] = []
     for name in sorted({item.split("/", 1)[0] for item in record.links.citations()}, key=id_key):
         evidence = state.record(name)
-        shown = derived_status(settled, evidence) if evidence is not None else "absent"
+        shown = view_status(universe, name) if evidence is not None else "absent"
         cited.append({"id": name, "status": shown})
         lines.append(f"cites {name}: {shown}")
     data["cited_evidence"] = cited
@@ -1147,9 +1159,10 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             name = str(placed["name"])
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
             retired = [summary(fetched, wanted, old, older=current.older is not None) for old in sorted(set(item.retired), key=id_key)]
-            shown_status = f"{target.status} (legacy status)" if from_legacy(settled, record, target.status) else target.status
+            holds = state.entries[item.identifier].legacy_holds(target.revision.rev)
+            shown_status = f"{target.status} (legacy status)" if from_legacy(settled, record, target.status, holds) else target.status
             header = f"{item.identifier} [{record.type}; {target.state}, {shown_status}{f'; {phrase}' if phrase else ''}]" + ("" if verified else " (differs from the journal)")
-            findings = listed_findings(settled, record, target.status)
+            findings = listed_findings(settled, record, target.status, holds)
             derived = [(label, list(names)) for label, names in (
                 ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", stated_resolvers(settled, item.identifier)), ("findings listed", findings)) if names]
             if full:
@@ -1261,7 +1274,7 @@ def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], rele
     for identifier in identifiers:
         record = view.entries[identifier].record
         placed, phrase = place(root, record, release, reason)
-        status = derived_status(universe.settled, record)
+        status = view_status(universe, identifier)
         proposed = overlay(universe, identifier, every=False, index=index)
         rows.append({"id": identifier, "status": status, "state": states.get(identifier, "unknown"), "partition": placed, "line": headline(render_text(record)),
                      "proposed": [item.json() for item in proposed]})
@@ -1290,7 +1303,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         members = sorted((identifier for identifier, entry in view.entries.items() if entry.record.text("area") == name), key=id_key)
         by_status: dict[str, list[str]] = {}
         for identifier in members:
-            by_status.setdefault(derived_status(universe.settled, view.entries[identifier].record), []).append(identifier)
+            by_status.setdefault(view_status(universe, identifier), []).append(identifier)
         data: dict[str, JSON] = {"area": name, "release": release.id if release is not None else None, "full": full}
         lines = [f"area {name}: {len(members)} record(s); partitions against {release.id if release is not None else 'unknown (' + reason + ')'}"]
         statuses: dict[str, JSON] = {}
@@ -1304,12 +1317,12 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
                 if is_object(row) and is_object(placed := row.get("partition")):
                     partitions[str(placed.get("name"))] = partitions.get(str(placed.get("name")), 0) + 1
         data["statuses"] = statuses
-        unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and derived_status(universe.settled, view.entries[identifier].record) in OPEN_UNKNOWN]
+        unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and view_status(universe, identifier) in OPEN_UNKNOWN]
         data["open_unknowns"] = list[JSON](unknowns)
         # Derived, not stored: migrated unknowns carry no area, so the area names the open ones its records' refs point at.
         referenced = sorted({target for identifier in members for target in view.entries[identifier].record.links.refs
                              if target not in unknowns and (linked := view.record(target)) is not None and linked.type == "unknown"
-                             and derived_status(universe.settled, linked) in OPEN_UNKNOWN}, key=id_key)
+                             and view_status(universe, target) in OPEN_UNKNOWN}, key=id_key)
         data["open_unknowns_referenced"] = list[JSON](referenced)
         derived_line = ("open unknowns referenced by this area's records (derived from their refs; not an area of the unknowns): "
                         + (", ".join(referenced) or "none"))
@@ -1426,7 +1439,7 @@ def summarize(universe: Universe, root: Path, applied: Applied | None, unavailab
     unverified: list[tuple[str, str]] = []
     for identifier in sorted(view.entries, key=id_key):
         record = view.entries[identifier].record
-        shown = derived_status(universe.settled, record)
+        shown = view_status(universe, identifier)
         counts = by_type.setdefault(record.type, {})
         counts[shown] = counts.get(shown, 0) + 1
         if record.type == "evidence":

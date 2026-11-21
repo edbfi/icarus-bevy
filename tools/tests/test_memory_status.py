@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import unittest
 
-from tools.memory.bank import derived_status
 from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.model import JSON, Record
@@ -36,7 +35,7 @@ class LatestStatementTests(unittest.TestCase):
         state = state_of(*revisions)
         self.assertEqual([], revision_problems(state))
         self.assertEqual(expected, state.status(identifier))
-        self.assertEqual(expected, derived_status(state, state.entries[identifier].record), "the bank's status agrees")
+        self.assertEqual(expected, state.status_at(state.entries[identifier], state.entries[identifier].heads[0]), "the bank's status agrees")
 
     def test_a_legacy_retirement_is_overridden_by_a_stored_active(self) -> None:
         old = migrated(finding("F-201", "Invented"), "legacy:retired: receipt", implied="retired")
@@ -94,7 +93,7 @@ class WithdrawnForGoodTests(unittest.TestCase):
         steps = [(self.newer, self.start), (self.newer, self.start, active), (self.newer, self.start, active, again)]
         self.assertEqual(["superseded", "active", "retired"], [state_of(*step).status("M-201") for step in steps])
         state = state_of(*steps[-1])
-        self.assertEqual(([], (), "retired"), (revision_problems(state), state.successors("M-201"), derived_status(state, again.record)))
+        self.assertEqual(([], (), "retired"), (revision_problems(state), state.successors("M-201"), state.status_at(state.entries["M-201"], again.rev)))
 
     def test_a_note_only_chain_keeps_the_legacy_status(self) -> None:
         one = revised(self.receipt, self.start, notes=["Invented: one"])
