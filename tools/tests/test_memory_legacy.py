@@ -1534,6 +1534,31 @@ class SalvageTests(LegacyRepository):
                 self.assertIn(f"removed {out}, which this run had created", stderr)
                 self.assertFalse(os.path.lexists(out))
 
+    def test_out_is_removed_on_an_interrupt_and_a_failed_removal_is_reported(self) -> None:
+        self.outs_branch()
+        out = self.top / "interrupted"
+
+        def interrupted(_descriptor: int) -> None:
+            raise KeyboardInterrupt
+
+        with mock.patch("tools.memory.salvage.os.fsync", interrupted), self.assertRaises(KeyboardInterrupt):
+            _ = self.run_salvage("outs", out=out)
+        self.assertFalse(os.path.lexists(out), "the directory is gone and the interrupt propagates")
+
+        def no_space(_descriptor: int) -> None:
+            raise OSError(28, "No space left on device")
+
+        def stuck(path: str | os.PathLike[str]) -> None:
+            raise PermissionError(13, "Permission denied", str(path))
+
+        out = self.top / "stuck"
+        with mock.patch("tools.memory.salvage.os.fsync", no_space), mock.patch("tools.memory.salvage.shutil.rmtree", stuck):
+            status, _stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual(1, status)
+        self.assertIn(f"could not remove {out}: [Errno 13] Permission denied", stderr)
+        self.assertIn("remove it by hand", stderr)
+        self.assertNotIn(f"removed {out}", stderr)
+
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
         ledger = self.root / "docs/ledgers/findings/widgets.md"

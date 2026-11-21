@@ -948,8 +948,8 @@ class PublishError(RuntimeError):
 def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
     """Write ``planned`` (paths relative to ``out``) into ``out``, a directory that must not exist: one ``os.mkdir`` creates
     it (its parent must exist; anything at the path, a dangling symlink included, refuses), and every subdirectory and
-    file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure after the mkdir the whole
-    tree is removed. A concurrent process of the same user changing that directory during the run, and symlinks in the
+    file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure or interrupt after the mkdir
+    the whole tree is removed (and the message says whether that worked; an interrupt is re-raised). A concurrent process of the same user changing that directory during the run, and symlinks in the
     path leading to its parent, are outside what this guards against. Raises ``PublishError``."""
     try:
         os.mkdir(out, 0o700)
@@ -968,9 +968,17 @@ def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
                 _ = handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-    except OSError as error:
-        shutil.rmtree(out, ignore_errors=True)
-        raise PublishError(f"{error}; removed {out}, which this run had created") from error
+    except BaseException as error:
+        # Any failure or interrupt after the mkdir: remove the tree, and say truthfully whether that worked.
+        try:
+            shutil.rmtree(out)
+            outcome = f"removed {out}, which this run had created"
+        except OSError as cleanup:
+            outcome = f"could not remove {out}: {cleanup}; remove it by hand"
+        if not isinstance(error, OSError):
+            print(f"memory salvage: {outcome}", file=sys.stderr)
+            raise
+        raise PublishError(f"{error}; {outcome}") from error
 
 
 class Subparsers(Protocol):
