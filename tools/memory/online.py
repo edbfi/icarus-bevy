@@ -36,7 +36,7 @@ from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, marker_rendering, read_back,
+    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, legacy_in_force, marker_rendering, read_back,
     reconcile, shared_elsewhere, unchanged,
 )
 from tools.memory.canonical import RENDERING, render_text
@@ -820,8 +820,9 @@ def stated_resolvers(settled: State, identifier: str) -> tuple[str, ...]:
 
 
 def from_legacy(settled: State, record: Record, status: str) -> bool:
-    """Whether the derived ``status`` rests only on a migrated record's legacy status cell (no accepted link implies it)."""
-    if record.legacy is None or record.legacy.implied_status != status:
+    """Whether the derived ``status`` rests only on a migrated record's legacy status cell, still in force
+    (``legacy_in_force``), with no accepted link implying it."""
+    if record.legacy is None or record.legacy.implied_status != status or not legacy_in_force(settled, record):
         return False
     if status == "superseded":
         return not settled.superseded_by.get(record.id)

@@ -11,6 +11,16 @@ Links are stored once, on the newer record; ``State`` derives the inverses from 
 about itself) and ``resolved_by``. ``State.status`` is the derived status: ``superseded``,
 ``resolved``, a migrated record's implied ``retired``, else the stored status.
 
+*The latest statement wins.* A migrated record's legacy status (``legacy.implied_status`` and the
+``legacy.superseded_by`` edges its row stated) is its status as of migration. It holds while the record's
+stored status is the one it was migrated with (``Entry.origin``, the stored status of its first revision;
+a revision may only store a vocabulary value, and every legacy-implied status was migrated beside a
+``legacy:`` stored status, so a revision that changes the stored status always states something new). A
+later revision that stores another status overrides it (``legacy_holds``); a ``supersedes`` or
+``resolves`` link naming the record derives ``superseded`` or ``resolved`` whatever its revisions say.
+A revision that leaves the stored status alone (a note, a ``verified_on``) keeps the legacy status. Every
+record as migrated is at its first revision, so this changes nothing for the migration itself.
+
 A migrated unknown whose legacy status was ``resolved`` derives ``resolved`` from that status alone: the
 legacy table never said which finding resolved it, so no resolver edge exists. ``legacy_listed`` names
 the linked records one of its legacy cells lists (its Findings column: ``legacy_listed(record,
@@ -63,6 +73,13 @@ class Entry:
     def record(self) -> Record:
         return self.head.revision.record
 
+    @property
+    def origin(self) -> str | None:
+        """The stored status of the migration revision (a migrated first revision; ``None`` when there is none)."""
+        found = sorted(located.revision.record.status for located in self.revisions.values()
+                       if not located.revision.prev and located.revision.record.legacy is not None)
+        return found[0] if found else None
+
     def history(self) -> tuple[Located, ...]:
         """Every revision, each after all of its ``prev`` (ties by ``rev``)."""
         depth: dict[str, int] = {}
@@ -97,9 +114,11 @@ class State:
         return entry.record if entry is not None else None
 
     def status(self, identifier: str) -> str:
-        """Derived status of a known ID: superseded, resolved, an implied legacy retirement, or the stored status."""
-        record = self.entries[identifier].record
-        implied = record.legacy.implied_status if record.legacy is not None else None
+        """Derived status of a known ID: superseded, resolved, an implied legacy retirement while ``legacy_holds``,
+        or the stored status. ``superseded_by`` holds a head's legacy edges only while they hold."""
+        entry = self.entries[identifier]
+        record = entry.record
+        implied = record.legacy.implied_status if record.legacy is not None and legacy_holds(record, entry.origin) else None
         if self.superseded_by.get(identifier) or implied == "superseded":
             return "superseded"
         if self.resolved_by.get(identifier) or implied == "resolved":
@@ -222,7 +241,7 @@ def replay(segments: Iterable[Segment]) -> State:
                 superseded_by[target].add(identifier)
             for target in record.links.resolves:
                 resolved_by[target].add(identifier)
-            if record.legacy is not None:
+            if record.legacy is not None and legacy_holds(record, entry.origin):
                 superseded_by[identifier].update(record.legacy.superseded_by)
     return State(
         entries,
@@ -230,6 +249,12 @@ def replay(segments: Iterable[Segment]) -> State:
         {key: tuple(sorted(value, key=id_key)) for key, value in sorted(resolved_by.items())},
         tuple(problems),
     )
+
+
+def legacy_holds(record: Record, origin: str | None) -> bool:
+    """Whether a migrated record's legacy status still holds at this revision: its stored status is the one it
+    was migrated with (``origin``; ``None`` when the migration revision is not known, which holds)."""
+    return record.legacy is not None and (origin is None or record.status == origin)
 
 
 def legacy_listed(record: Record, cell: str) -> tuple[str, ...]:
