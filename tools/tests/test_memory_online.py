@@ -1324,6 +1324,22 @@ class NamedDocumentTests(Online):
         self.assertFalse(any(line.startswith("content:") for line in online.get(self.bank, self.root, "F-502").lines))
 
 
+class PendingTerminalTests(Online):
+    def test_terminal_successors_walk_the_revision_get_shows(self) -> None:
+        def chained(identifier: str, successor: str) -> Record:
+            return Record.from_json({**finding(identifier, f"Invented chain {identifier}"), "status": f"legacy:superseded-by {successor}",
+                                     "legacy": legacy_of(f"superseded-by {successor}", implied="superseded", superseded_by=(successor,))})
+
+        b_record = chained("F-602", "F-603")
+        first_b = Revision.of(b_record)
+        _ = write_change_set(self.root, CREATED, [Revision.of(chained("F-601", "F-602")), first_b, Revision.of(Record.from_json(finding("F-603", "Invented chain end")))])
+        commit_all(self.root)
+        # Pending here only: a revision of F-602 storing retired withdraws its legacy edge to F-603.
+        _ = write_change_set(self.root, CREATED.replace(second=30), [Revision.of(Record.from_json({**b_record.to_json(), "status": "retired"}), [first_b.rev])])
+        self.assertIn("superseded by: F-602 (terminal: F-603)", online.get(self.bank, self.root, "F-601").lines)
+        self.assertIn("superseded by: F-603 (terminal: F-603)", online.get(self.bank, self.root, "F-602").lines)
+
+
 class StampTests(Online):
     """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
 

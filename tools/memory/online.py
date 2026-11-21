@@ -871,16 +871,19 @@ def superseders(universe: Universe, entry: Entry, rev: str) -> tuple[str, ...]:
 
 
 def terminal(universe: Universe, entry: Entry, rev: str) -> tuple[str, ...]:
-    """Terminal successors along the edges ``superseders`` shows (each successor at its head in the union)."""
+    """Terminal successors along the edges ``superseders`` shows, each successor at the revision ``get`` shows for it
+    (its ``<ID>`` document: the accepted head while a newer revision is only pending), so the two reads agree."""
     found: set[str] = set()
     seen = {entry.id}
     pending = list(superseders(universe, entry, rev))
+    wanted = Wanted(universe)
     while pending:
         current = pending.pop()
         if current in seen:
             continue
         seen.add(current)
-        following = superseders(universe, held, held.heads[0]) if (held := universe.state.entries.get(current)) is not None else ()
+        shown = wanted.of(current)
+        following = superseders(universe, universe.state.entries[current], shown[0].revision.rev) if shown else ()
         if following:
             pending.extend(following)
         else:
