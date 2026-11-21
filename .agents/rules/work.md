@@ -43,8 +43,10 @@ until their case is deliberately retired.
      directory's manifest with `python3 tools/work_gc.py --fixity <dir>`,
      record it with `python3 -m tools.memory evidence add <dir>/fixity.sha256
      --kind manifest --label ...`, supersede the directory record with it
-     (`memory supersede M-OLD --by M-NEW`), then prune. The manifest pins every
-     kept file; `memory verify` checks and `memory protected-paths` lists each
+     (`memory supersede M-OLD --by M-NEW`), and prune only after that
+     supersession is accepted on `origin/main` (merged, then `memory sync`),
+     never while it is only proposed: until then the directory record still
+     protects the whole directory. The manifest pins every kept file; `memory verify` checks and `memory protected-paths` lists each
      one for backup;
    - cases no evidence record covers and no tracked or untracked, non-ignored
      file mentions: retire the ones no longer needed with
