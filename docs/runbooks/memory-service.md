@@ -102,6 +102,8 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    `memory salvage <branch> --out work/<case>/salvage`.
    Salvage resolves `origin/main` (`--main REF` names another); a tip that
    already merged the cut-over is refused with the pre-merge tip to use.
+   `memory salvage: internal error, nothing written: …` is a defect in salvage
+   itself: report it and do not work around it.
 3. Act on each line of the report (exit 4 means some row needs a hand):
    - a proposal (`new`, or a revision of `origin/main`'s record): kept in the
      output segments;
@@ -113,7 +115,9 @@ stops being protected as soon as its `evidence/` leaves the working tree.
      branch's record under a new ID (`memory evidence add`, `memory propose`)
      and rewrite the branch's citations; when `main` took an earlier draft,
      reconcile by hand with `memory revise` or a superseding record;
-   - a changed document: `memory revise REF-N --body FILE`.
+   - a changed document (`--check` prints `changed document; memory revise
+     REF-N --body FILE`): run that command; a new document (`new document;
+     propose a REF for it`): propose a REF.
 4. On a new branch from `main`, copy the output's `memory/journal/` segments
    into `memory/journal/`, add the records from step 3, run
    `memory check --ci`, commit and open the pull request. After it merges, the
@@ -124,15 +128,20 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    Keep its worktree until its evidence records are accepted on `origin/main`:
    until then its legacy shards are what protects its branch-only artifacts.
 6. Confirm it is done, from the up-to-date checkout of `main`:
-   `memory salvage <branch>` on the merged tip exits 0 when every row is
-   accepted. While anything is left it exits 5 and names the pre-merge parent;
-   `memory salvage <parent> --check` lists what is left. A row resolved by hand
-   in step 3 (a superseding record, a conflict added again under a new ID, a
-   decision by hand) never becomes accepted under its old ID, so it stays
-   listed and the exit stays 5. That is expected for those rows only: the
-   branch is done when every row still listed is one you resolved by hand and
-   its superseding record, new record or recorded decision is accepted on
-   `origin/main`. Any other listed row is not salvaged yet: go back to step 2.
+   `memory salvage <branch>` on the merged tip exits 0 when nothing is left.
+   While anything is left it exits 5 and names the pre-merge parent;
+   `memory salvage <parent> --check` lists what is left, the rows and the
+   pending documents (each with the REF to revise), and exits non-zero while
+   either remains. A document is done when the REF body on `origin/main`
+   equals the branch's file. A row resolved by hand in step 3 (a superseding
+   record, a conflict added again under a new ID, a decision by hand) never
+   becomes accepted under its old ID, and a body merged by hand into other
+   text never equals the file, so both stay listed and the exit stays
+   non-zero. That is expected for those only: the branch is done when
+   everything still listed is one you resolved by hand and its superseding
+   record, new record, recorded decision or REF revision is accepted on
+   `origin/main`. Anything else still listed is not salvaged yet: go back to
+   step 2.
 
 ## When the service is down
 
