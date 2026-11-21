@@ -798,9 +798,10 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
         return Output(data, lines, 1 if problems else 0)
 
 
-def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = False) -> list[Group]:
-    """Strict tag groups of default recall (accepted plus this worktree's proposals) or of other worktrees' proposals."""
-    groups: list[Group] = []
+def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = False, refs: bool = False) -> list[Group]:
+    """Strict tag groups of default recall (accepted plus this worktree's proposals) or of other worktrees' proposals;
+    ``refs`` keeps only reference documents (``type:reference``), so the hit limit counts references alone."""
+    groups: list[Group] = [Tags(("type:reference",))] if refs else []
     own = Tags(tuple(f"seg:{stem}" for stem in sorted(mine)), every=False) if mine else None
     if others:
         groups.append(Tags(("state:proposed",)))
@@ -816,9 +817,11 @@ def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = F
     return groups
 
 
-def visible(labels: Sequence[str], mine: frozenset[str], *, include_evidence: bool, others: bool = False) -> bool:
+def visible(labels: Sequence[str], mine: frozenset[str], *, include_evidence: bool, others: bool = False, refs: bool = False) -> bool:
     """``visibility`` evaluated on one document's tags (for substring hits, which the API cannot filter by group)."""
     found = set(labels)
+    if refs and "type:reference" not in found:
+        return False
     if "type:evidence" in found and not include_evidence:
         return False
     if others:
@@ -890,7 +893,9 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
     question, label or title, for a REF the returned passage, capped link lines) and the text stops at
     ``RECALL_BUDGET`` bytes, naming the hits it did not show. Within a partition claim-bearing records come
     before reference documents, and at most ``REF_HITS`` references are shown (passages of ``PASSAGE_CAP``);
-    ``refs`` lists only references, with passages of ``REFS_PASSAGE_CAP``. ``text`` hits rank first.
+    ``refs`` lists only references, with passages of ``REFS_PASSAGE_CAP``: the tag filter itself holds only
+    ``type:reference`` documents (``visibility``), so the limit counts references and ``full`` shows nothing else.
+    ``text`` hits rank first.
     ``full`` prints every record's whole text and every link, as ``--full``."""
     limit = RECALL_LIMIT if limit is None else max(1, limit)
     with session(bank, root, read=True) as current:
@@ -906,12 +911,12 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         units: dict[str, list[str]] = {}
 
         def ranked(others: bool) -> list[str]:
-            groups = visibility(mine, include_evidence=include_evidence, others=others)
+            groups = visibility(mine, include_evidence=include_evidence, others=others, refs=refs)
             order: list[str] = []
             if text is not None:
                 # Substring hits first: an exact phrase is the strongest signal a caller can give.
                 for unit in sorted(bank.units(text=text), key=lambda found: id_key(found.document_id or "")):
-                    if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others):
+                    if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others, refs=refs):
                         units.setdefault(unit.document_id, []).append(unit.text)
                         if unit.document_id not in order:
                             order.append(unit.document_id)
@@ -974,8 +979,6 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                     blocks.append((False, item.rank, "not-in-journal", item.identifier, f"{item.document}: in the bank but not in any gathered journal"))
                 continue
             record = target.revision.record
-            if refs and not full and record.type != "reference":
-                continue
             verified = checked.get(item.document, False)
             placed, phrase = place(root, record, rel, reason)
             name = str(placed["name"])

@@ -730,6 +730,29 @@ class CompactReadTests(Online):
         assert isinstance(first, list)
         self.assertEqual("REF-004", first[0], "substring hits rank first")
 
+    def test_refs_filters_by_tag_before_the_limit_in_both_modes(self) -> None:
+        self.accepted_chain()
+        for number in range(online.RECALL_LIMIT + 2):
+            _ = self.new_finding(f"Invented: listing lock gadget widget sprocket number {number}")
+        _ = online.propose(self.bank, self.root, "reference", Changes({"title": "Invented sprocket reference", "scope": {
+            "basis": "explicit", "subjects": ["tooling"]}}, body="# Invented\n\nThe sprocket is described here.\n"), now=self.tick())
+        query = "listing lock gadget widget sprocket"
+        crowded = online.recall(self.bank, self.root, query).data["documents"]
+        assert isinstance(crowded, list)
+        self.assertNotIn("REF-001", crowded, "the fixture's top hits are all records")
+        for full in (False, True):
+            with self.subTest(full=full):
+                found = online.recall(self.bank, self.root, query, refs=True, full=full)
+                text = "\n".join(found.lines)
+                self.assertEqual(["REF-001"], found.data["documents"])
+                self.assertIn("REF-001 [reference;", text)
+                self.assertNotIn("[finding;", text)
+        none = online.recall(self.bank, self.root, "gadget widget", refs=True)
+        self.assertEqual([], none.data["documents"])
+        self.assertIn("no hits", none.lines)
+        texts = online.recall(self.bank, self.root, "nothing ranks this", text="sprocket", refs=True).data["documents"]
+        self.assertEqual(["REF-001"], texts, "substring hits are filtered the same way")
+
     def test_recall_names_the_ranking_and_never_an_unset_cap(self) -> None:
         self.accepted_chain()
         self.bank.settings["enable_reranking"] = True
