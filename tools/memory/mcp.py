@@ -127,7 +127,7 @@ def check(context: Context, argument: Arguments) -> online.Output:
                                  f"memory check: {len(report.problems)} problem(s), {len(report.notices)} notice(s)"])
             merged.status = 1 if report.problems else 0
         merged.data["ci"] = {"problems": list[JSON](report.problems), "notices": list[JSON](report.notices), "no_journal": report.no_journal}
-    for wanted, produce in ((pin, lambda: online.check_pin(context.root)), (bank or plain, lambda: online.check_bank(context.bank(), context.root))):
+    for wanted, produce in ((pin, lambda: online.check_pin(context.root)), (bank or plain, lambda: online.check_bank_or_skip(context.root, context.bank, explicit=bank))):
         if wanted:
             output = produce()
             merged.data.update(output.data)
@@ -162,7 +162,7 @@ TOOLS: tuple[Tool, ...] = (
          "full lists every record.", {"area": STRING, "full": BOOLEAN}, ("area",),
          lambda c, a: online.area(c.bank(), c.root, text(a, "area"), full=flag(a, "full"))),
     Tool("status", "The pin; counts by type, status and partition; cited records not current; open unknowns; evidence not known good on disk.",
-         {}, (), lambda c, _a: online.status(c.bank(), c.root)),
+         {}, (), lambda c, _a: online.status_anywhere(c.root, c.bank)),
     Tool("propose", "Propose a new record of a type; the tool allocates the ID (a release names its REL-x.y.z in fields.id). Schema, scope, " +
          "link targets, selectors and CP proofs are checked before the segment is written.",
          {"type": {"type": "string", "enum": list[JSON](TYPES)}, "fields": FIELDS, "note": NOTE, "body": BODY}, ("type",),

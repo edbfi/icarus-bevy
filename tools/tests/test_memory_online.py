@@ -786,6 +786,46 @@ class CompactReadTests(Online):
         self.assertGreater(len("\n".join(online.get(self.bank, self.root, "U-101", history=True, full=True).lines)), len("\n".join(history.lines)))
 
 
+class OfflineTests(Online):
+    def test_status_degrades_to_a_journal_only_summary_when_the_service_is_unreachable(self) -> None:
+        self.accepted_chain()
+
+        def no_service() -> Bank:
+            raise ServiceError("/invented/connection.env: cannot open (No such file or directory); run memory service install")
+
+        offline = online.status_anywhere(self.root, no_service)
+        self.assertEqual(0, offline.status)
+        self.assertTrue(offline.lines[0].startswith("memory status: the memory service is unavailable (/invented/connection.env: cannot open"))
+        self.assertIn("OFFLINE summary of the journal alone", offline.lines[0])
+        text = "\n".join(offline.lines)
+        self.assertIn("pin: REL-9.0.2", text)
+        self.assertIn("forks: none", text)
+        self.assertNotIn("bank:", text)
+        self.assertNotIn("evidence not known good", text)
+        self.assertEqual((True, False), (offline.data["offline"], online.status(self.bank, self.root).data["offline"]))
+        self.assertEqual(offline.data["by_type"], online.status(self.bank, self.root).data["by_type"])
+
+        def down() -> Bank:
+            raise Unavailable("GET /v1/default/banks: service unavailable (Connection refused)")
+
+        self.assertIn("Connection refused", online.status_anywhere(self.root, down).lines[0])
+
+    def test_a_bare_check_skips_the_bank_comparison_but_an_explicit_one_fails(self) -> None:
+        self.accepted_chain()
+
+        def down() -> Bank:
+            raise Unavailable("GET /v1/default/banks: service unavailable (Connection refused)")
+
+        skipped = online.check_bank_or_skip(self.root, down, explicit=False)
+        self.assertEqual(0, skipped.status)
+        self.assertEqual(["memory check: bank comparison skipped: the memory service is unreachable "
+                          + "(GET /v1/default/banks: service unavailable (Connection refused)); memory check --bank compares it"], skipped.lines)
+        with self.assertRaises(Unavailable):
+            _ = online.check_bank_or_skip(self.root, down, explicit=True)
+        _ = online.status(self.bank, self.root)
+        self.assertEqual(0, online.check_bank_or_skip(self.root, lambda: self.bank, explicit=False).status, "a reachable bank is compared")
+
+
 class SyncAndRebuildTests(Online):
     def remote(self) -> None:
         origin = self.top / "origin.git"

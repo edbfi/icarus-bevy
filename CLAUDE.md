@@ -10,7 +10,8 @@ and connected-client experiments retain their separate current-scope gates.
 ## Read first
 
 Every session: this file, `docs/linux-dedicated-server-plan.md` (goals,
-milestone state, ordered next tasks) and `python3 -m tools.memory status`.
+milestone state, ordered next tasks) and `python3 -m tools.memory status`
+(without the service it prints a journal-only summary and says so).
 Rules in `.agents/rules/` are authoritative; this file summarizes them. Then
 load the entry set for the task and check `docs/gates.md` before acting.
 

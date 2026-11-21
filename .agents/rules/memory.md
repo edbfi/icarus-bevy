@@ -226,8 +226,9 @@ work-rules milestone routine.
   client and checkout, else the CLI.
 - Every agent may propose; the lead commits. No agent calls Hindsight's API.
 - No automatic capture (agent plugins, transcripts, git ingestion).
-- A fresh clone has `check --ci` and `get --offline`; `rebuild` creates the
-  instance from the journal.
+- A fresh clone has `check --ci`, `get --offline` and `status` (a journal-only
+  summary without the service; bare `check` then skips the bank); `rebuild`
+  creates the instance from the journal.
 
 ## Stays in Git
 

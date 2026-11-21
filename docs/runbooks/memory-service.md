@@ -73,7 +73,8 @@ second path; it needs no dump. Evidence bytes have no off-host copy:
 ## When the service is down
 
 `memory get --offline ID` and `memory check --ci` read the journal and need no
-service; `memory verify` and `memory protected-paths` read only the journal and
+service; `memory status` prints a journal-only summary (its first line says the
+service is unavailable) and a bare `memory check` skips the bank comparison; `memory verify` and `memory protected-paths` read only the journal and
 the evidence bytes. Writes (`propose`, `revise`, `supersede`, `resolve`,
 `evidence add`) need the service: wait, or restart it.
 
