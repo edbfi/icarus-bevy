@@ -23,6 +23,10 @@ repository; the service is shared by all of them.
 3. A new instance is empty: `memory rebuild` (needs the 30 GiB free-disk floor),
    then `memory sync` and `memory check --bank`.
 
+Reranking is instance-wide: `memory service install --reranker off|N` writes
+`ICARUS_MEMORY_RERANKER` (default 50 candidates per recall) into the connection
+file and restarts the service; `service status` and `check --bank` assert it.
+
 `memory service start|stop|status|uninstall` manage the unit; `uninstall` keeps
 data, connection file and backups. `memory service status` must show every
 line `ok`: unit files current, unit active, backup timer active, database
