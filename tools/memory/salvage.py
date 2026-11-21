@@ -913,8 +913,9 @@ def publish(out: Path, planned: Sequence[tuple[Path, bytes]]) -> list[Path]:
     """Write ``planned`` under ``out`` without ever replacing anything. Preflight: each target must be absent or a
     regular file with identical bytes (a symlink, even to identical bytes, refuses), and nothing else may be under
     ``out``'s ``memory/journal`` or ``documents`` (an earlier run's segment would be copied with the new ones). Then
-    each new file is created exclusively (``O_CREAT | O_EXCL | O_NOFOLLOW``), written and closed; if a create fails,
-    the files this run created are removed. Raises ``PublishError``; returns the files created."""
+    each new file is created exclusively (``O_CREAT | O_EXCL | O_NOFOLLOW``), written and closed; if a create or a
+    write fails, the files this run created (the one being written included) are removed. Raises ``PublishError``;
+    returns the files created."""
     wanted = {target: data for target, data in planned}
     for target, data in wanted.items():
         if same_regular_file(target, data) is False:
@@ -938,15 +939,16 @@ def publish(out: Path, planned: Sequence[tuple[Path, bytes]]) -> list[Path]:
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            # Ours from here on: a failed write must not leave a partial file for the next run to refuse.
+            created.append(target)
+            with os.fdopen(descriptor, "wb") as handle:
+                _ = handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
         except OSError as error:
             for path in created:
-                path.unlink()
+                path.unlink(missing_ok=True)
             raise PublishError(f"{target}: {error.strerror or error}; removed the {len(created)} file(s) this run had created") from error
-        with os.fdopen(descriptor, "wb") as handle:
-            _ = handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        created.append(target)
     return created
 
 
