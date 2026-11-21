@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import re
 import sys
 import time
@@ -30,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
@@ -563,6 +564,25 @@ def migrated_to(state: State | None, record: Record) -> str | None:
     return None
 
 
+DOCUMENT_PATH = re.compile(r"(?<![\w./-])((?:\.\./|docs/)[\w./-]+\.md)")
+
+
+def named_documents(state: State, record: Record) -> tuple[tuple[str, str], ...]:
+    """``(REF, path)`` for each document a migrated record's legacy cells name by path (relative to its ledger, or
+    from ``docs/``) that a REF of ``state`` now holds: read-time routes, no journal link."""
+    if record.legacy is None or record.type in ("reference", "evidence"):
+        return ()
+    held = {entry.record.legacy.path: name for name, entry in state.entries.items() if entry.record.type == "reference" and entry.record.legacy is not None}
+    base = PurePosixPath(record.legacy.path).parent
+    found: dict[str, str] = {}
+    for cell in (value for name, value in record.legacy.cells.items() if name != "original"):
+        for match in DOCUMENT_PATH.finditer(cell):
+            path = match[1] if match[1].startswith("docs/") else posixpath.normpath(str(base / match[1]))
+            if (name := held.get(path)) is not None:
+                found[name] = path
+    return tuple(sorted(found.items(), key=lambda item: id_key(item[0])))
+
+
 def locator_found(primary: Path, locator: str) -> bool:
     """Whether a tracked locator's path exists under the primary checkout and, when it names one, its ``#anchor`` is defined there."""
     path, _, anchor = locator.partition("#")
@@ -880,6 +900,24 @@ def superseders(universe: Universe, entry: Entry, rev: str) -> tuple[str, ...]:
     return tuple(sorted({*universe.settled.stated_superseders(record.id), *own}, key=id_key))
 
 
+def terminal(universe: Universe, entry: Entry, rev: str) -> tuple[str, ...]:
+    """Terminal successors along the edges ``superseders`` shows (each successor at its head in the union)."""
+    found: set[str] = set()
+    seen = {entry.id}
+    pending = list(superseders(universe, entry, rev))
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        following = superseders(universe, held, held.heads[0]) if (held := universe.state.entries.get(current)) is not None else ()
+        if following:
+            pending.extend(following)
+        else:
+            found.add(current)
+    return tuple(sorted(found, key=id_key))
+
+
 def status_label(universe: Universe, entry: Entry, rev: str, proposed: Sequence[Proposal] = ()) -> str:
     """The one wording of a derived status (``State.status_at`` against the accepted links), saying where it comes
     from, as ``get``, ``recall`` and ``area`` print it: ``(stored)``, ``(stored; legacy status withdrawn)`` after a
@@ -941,18 +979,20 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     proposed = overlay(universe, identifier, every=all_proposals)
     holds = entry.legacy_holds(target.revision.rev)
     shown_superseders = superseders(universe, entry, target.revision.rev)
+    shown_terminal = terminal(universe, entry, target.revision.rev)
     resolvers, listed = stated_resolvers(settled, identifier), listed_findings(settled, record, target.status, holds)
     moved = migrated_to(state, record)
     data: dict[str, JSON] = {
         "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
         "legacy_status": from_legacy(settled, record, target.status, holds), "sha256": target.revision.sha256, "rev": target.revision.rev,
         "segment": target.segment, "text": target.item.content, "record": record.to_json(), "partition": placed,
-        "superseded_by": list(shown_superseders), "successors": list(settled.successors(identifier)),
+        "superseded_by": list(shown_superseders), "successors": list(shown_terminal),
         "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved, "proposed": [item.json() for item in proposed],
         "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
     }
     # A tracked file migrated into a REF: where its content now is comes first.
-    lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, ""]
+    routes = [f"content: {name} (holds {path}, which its legacy cells name)" for name, path in named_documents(state, record)]
+    lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, "", *routes]
     lines += [f"state: {target.state}", f"status: {status_label(universe, entry, target.revision.rev, proposed)}", *([f"partition: {phrase}"] if phrase else []),
               f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
     if "/" in citation:
@@ -965,7 +1005,7 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     if listed:
         lines.append(f"findings listed: {', '.join(listed)}")
     if superseded := shown_superseders:
-        lines.append(f"superseded by: {', '.join(superseded)} (terminal: {', '.join(settled.successors(identifier))})")
+        lines.append(f"superseded by: {', '.join(superseded)}" + (f" (terminal: {', '.join(shown_terminal)})" if shown_terminal else ""))
     if resolvers:
         lines.append(f"resolved by: {', '.join(resolvers)}")
     lines.extend(item.line() for item in proposed)

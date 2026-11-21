@@ -237,7 +237,7 @@ class StdioSession(unittest.TestCase):
         # Without the service, status is the journal-only summary, not an error; a bare check skips the bank comparison.
         self.assertFalse(status["isError"])
         self.assertTrue(str(content[0]["text"]).startswith("memory status: the memory service is unavailable ("))
-        self.assertIn("connection.env", str(content[0]["text"]))
+        self.assertIn("connection-v2.env", str(content[0]["text"]))
         bare = result(responses[4])
         bare_content = bare["content"]
         assert isinstance(bare_content, list) and isinstance(bare_content[0], dict)

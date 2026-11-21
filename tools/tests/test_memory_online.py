@@ -1089,7 +1089,7 @@ class ClientTests(unittest.TestCase):
     def test_the_client_reads_the_service_connection_file(self) -> None:
         """One connection file (the service's, 0600 enforced), found through ``ICARUS_MEMORY_HOME``."""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": directory}):
-            path = Path(directory) / "config" / "connection.env"
+            path = Path(directory) / "config" / "connection-v2.env"
             with self.assertRaisesRegex(ServiceError, "install"):
                 _ = connection()
             settings = service.ensure_settings(service.home())
@@ -1367,6 +1367,32 @@ class StatusWordingTests(Online):
                     self.assertEqual({wording}, set(found), name)
         self.assertIn("state: conflict", online.get(self.bank, self.root, "F-309").lines)
         self.assertIn("superseded by: F-301 (terminal: F-301)", online.get(self.bank, self.root, "F-302").lines)
+
+
+class TerminalTests(Online):
+    def test_terminal_successors_follow_the_superseders_shown(self) -> None:
+        self.accepted_chain()
+        old = Record.from_json({**finding("F-401", "Invented proposed old"), "status": "legacy:superseded-by F-402",
+                                "legacy": legacy_of("superseded-by F-402", implied="superseded", superseded_by=("F-402",))})
+        _ = write_change_set(self.root, CREATED.replace(second=40), [Revision.of(old), Revision.of(Record.from_json(finding("F-402", "Invented proposed new")))])
+        got = online.get(self.bank, self.root, "F-401")
+        self.assertIn("superseded by: F-402 (terminal: F-402)", got.lines)
+        self.assertEqual(["F-402"], got.data["successors"])
+        self.assertFalse(any("(terminal: )" in line for line in got.lines))
+
+
+class NamedDocumentTests(Online):
+    def test_get_routes_a_document_a_legacy_cell_names_to_the_ref_holding_it(self) -> None:
+        body = "# Invented spec\n"
+        ref = Record.from_json({"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                "scope": {"basis": "explicit", "subjects": ["tooling"]}, "body_sha256": sha256_hex(body.encode()),
+                                "legacy": {"path": "docs/specs/net/invented.md", "cells": {"document": "docs/specs/net/invented.md"}}}, body)
+        row = Record.from_json({**finding("F-501", "Invented row naming a spec"), "legacy": {
+            "path": "docs/ledgers/findings/invented.md", "cells": {"evidence": "spec; [spec](../../specs/net/invented.md)", "status": "active"}}})
+        _ = write_change_set(self.root, CREATED, [Revision.of(ref), Revision.of(row), Revision.of(Record.from_json(finding("F-502", "Invented plain row")))])
+        commit_all(self.root)
+        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", online.get(self.bank, self.root, "F-501").lines)
+        self.assertFalse(any(line.startswith("content:") for line in online.get(self.bank, self.root, "F-502").lines))
 
 
 class StampTests(Online):

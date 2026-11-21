@@ -725,6 +725,63 @@ class SalvageTests(LegacyRepository):
         again = salvage(self.root, "linked")
         self.assertEqual(([], {"F-107": "accepted"}, []), (again.proposals, again.kinds, again.unsalvaged))
 
+    def test_a_link_from_a_conflicting_row_is_never_attached(self) -> None:
+        records = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", "supersede", "main")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("owner said so | | active |", "owner said so | | superseded-by F-111 |")
+                              + "| F-111 | Replacement claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "supersede F-107")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        f107 = records["F-107"]
+        retired = Revision.of(Record.from_json({**f107.to_json(), "status": "retired", "notes": ["Invented: retired on main"]}), [Revision.of(f107).rev])
+        _ = write_change_set(self.root, datetime(2026, 2, 2, tzinfo=UTC), [retired])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main retires F-107")
+        self.publish()
+        result = salvage(self.root, "supersede")
+        self.assertEqual({"F-107": "conflict", "F-111": "new"}, result.kinds)
+        self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
+        self.assertIn("F-107: F-111 would supersede it, but F-107 is conflict; F-111 is proposed without that link", result.notices)
+
+    def test_a_link_from_a_row_held_for_a_stuck_successor_is_never_attached(self) -> None:
+        # F-107's legacy row names F-105 (prose) and the new F-111 (status cell); F-105's claim edit holds it, so F-107 is stuck.
+        ledger = "docs/ledgers/findings/widgets.md"
+        self.edited("stuck", (ledger, "Last reconciled", "F-107 superseded-by F-105.\n\nLast reconciled"),
+                    (ledger, "owner said so | | active |", "owner said so | | superseded-by F-111 |\n| F-111 | Replacement claim | observed | review | high; x | | active |"),
+                    (ledger, "| F-105 | Gadget 3.0.91 run ends;", "| F-105 | Gadget 3.0.91 run ended;"))
+        result = salvage(self.root, "stuck")
+        self.assertEqual(("supersede", "undecided", "new"), (result.kinds["F-105"], result.kinds["F-107"], result.kinds["F-111"]))
+        self.assertIn("names successor F-105", result.undecided["F-107"])
+        self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
+        self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
+
+    def test_a_row_the_accepted_journal_does_not_hold_is_never_revised(self) -> None:
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = run_git(self.root, "checkout", "-q", "-b", "retire")
+        _ = ledger.write_text(ledger.read_text().replace("owner said so | | active |", "owner said so | | retired: dropped |"))
+        _ = run_git(self.root, "commit", "-q", "-am", "retire F-107")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = ledger.write_text("".join(line + "\n" for line in ledger.read_text().splitlines() if not line.startswith(("| F-107 ", "F-106 is retired"))))
+        _ = run_git(self.root, "commit", "-q", "-am", "main drops F-107")
+        self.publish()
+        result = salvage(self.root, "retire")
+        self.assertEqual(([], "undecided"), (result.proposals, result.kinds["F-107"]))
+        self.assertIn("the accepted journal has no record F-107 to revise", result.undecided["F-107"])
+
+    def test_a_proposal_that_does_not_replay_cleanly_is_never_returned(self) -> None:
+        self.status_branch("dangling", "retired: dropped")
+        real = salvage_command.apply
+
+        def dangling(edit: salvage_command.Edit, base: Record) -> Record | None:
+            built = real(edit, base)
+            return None if built is None else Record.from_json({**built.to_json(), "refs": ["F-999"]})
+
+        with mock.patch.object(salvage_command, "apply", dangling):
+            result = salvage(self.root, "dangling")
+        self.assertEqual([], result.proposals)
+        self.assertIn("would not replay cleanly: F-107: revision ", result.undecided["F-107"])
+
     def test_one_bad_row_never_aborts_the_run(self) -> None:
         self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")
 
@@ -825,7 +882,38 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
         status, stdout, stderr = self.run_salvage("quiet")
         self.assertEqual((0, ""), (status, stdout))
-        self.assertIn("changes no legacy rows; nothing to salvage", stderr)
+        self.assertIn("leaves nothing to salvage", stderr)
+
+    def test_a_merged_tip_whose_pre_merge_parent_changed_only_a_document_is_refused(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "spec-edit")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit a spec")
+        tip = run_git(self.root, "rev-parse", "HEAD").strip()
+        _ = self.journal_on_main(remove_legacy=True)
+        _ = run_git(self.root, "checkout", "-q", "spec-edit")
+        _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        status, stdout, stderr = self.run_salvage("spec-edit")
+        self.assertEqual((salvage_command.EXIT_PREMERGE, ""), (status, stdout))
+        self.assertIn(f"run memory salvage {tip}", stderr)
+
+    def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text() + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "add a row")
+        _ = self.journal_on_main(remove_legacy=True)
+        first = salvage(self.root, "runbook")
+        self.assertEqual(["F-111"], [item.record.id for item in first.proposals])
+        self.accept(first)
+        _ = run_git(self.root, "checkout", "-q", "runbook")
+        with self.assertRaises(subprocess.CalledProcessError):
+            _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        _ = run_git(self.root, "rm", "-r", "-q", "--ignore-unmatch", "docs/ledgers", "evidence")
+        _ = run_git(self.root, "commit", "-q", "--no-edit")
+        status, stdout, stderr = self.run_salvage("runbook")
+        self.assertEqual((0, ""), (status, stdout), stderr)
+        self.assertIn("leaves nothing to salvage", stderr)
 
     def test_a_branch_without_legacy_trees_has_nothing_to_salvage(self) -> None:
         _ = self.journal_on_main(remove_legacy=True)

@@ -7,10 +7,18 @@ else reads the key or knows where state lives.
 
 State lives outside every checkout. ``home()`` gives three directories, each owner-only (0700):
 
-- ``config``: ``$XDG_CONFIG_HOME/icarus-memory`` with ``connection.env``, the ONE file holding the
+- ``config``: ``$XDG_CONFIG_HOME/icarus-memory`` with ``connection-v2.env``, the ONE file holding the
   service's API key, its loopback port and the pg0 database URL (with its password). It is 0600, in
   systemd ``EnvironmentFile`` syntax, read by the unit and by ``connection()``; any group or world
   permission makes it unreadable to the tool.
+
+  The name carries the bank rendering guard (``bank.OlderTool``): a tool released before the guard reads
+  ``connection.env`` and would re-render every document in its older rendering. ``install`` therefore
+  moves an old ``connection.env`` to the new name with a NEW API key (``rotate_connection``; ports,
+  database password and reranker setting kept) and restarts the unit, and leaves a tombstone named
+  ``connection.env`` (on a fresh host too) that such a tool cannot parse: its every command, ``service
+  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything, and
+  a process still holding the old key is refused by the service. A second ``install`` rotates nothing.
 - ``data``: ``$XDG_DATA_HOME/icarus-memory`` with ``pg0/`` (``PG0_HOME``) and the service's private
   ``home/`` and ``tmp/``.
 - ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/`` and ``memory.lock``, the host lock every
@@ -64,7 +72,12 @@ FLOOR = 30 * 1024**3
 UNIT = "icarus-memory.service"
 BACKUP_UNIT = "icarus-memory-backup.service"
 BACKUP_TIMER = "icarus-memory-backup.timer"
-CONNECTION_FILE = "connection.env"
+CONNECTION_FILE = "connection-v2.env"
+# The connection file of tools without the bank rendering guard (released before it); never read, only retired to
+# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse, saying what to do.
+LEGACY_CONNECTION_FILE = "connection.env"
+TOMBSTONE = (b"retired: this checkout's memory tool is older than the bank. Merge main, then run"
+             + b" python3 -m tools.memory service install from it.\n")
 HOME_VARIABLE = "ICARUS_MEMORY_HOME"
 READY_SECONDS = 300.0
 LOCK_FILE = "memory.lock"
@@ -310,9 +323,9 @@ def parse_settings(text: str) -> Settings:
     return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK, reranker)
 
 
-def read_settings(where: Home) -> Settings:
-    """The connection file, refused unless it is a regular file owned by this user with no group or world bits."""
-    path = where.connection_file
+def read_settings(where: Home, path: Path | None = None) -> Settings:
+    """The connection file (or ``path``), refused unless it is a regular file owned by this user with no group or world bits."""
+    path = where.connection_file if path is None else path
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as error:
@@ -360,6 +373,38 @@ def write_private(path: Path, data: bytes) -> None:
         os.fsync(directory)
     finally:
         os.close(directory)
+
+
+def tombstoned(path: Path) -> bool:
+    """Whether ``path`` is exactly ``TOMBSTONE``: a regular file of this user's, read without following a link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        return stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and handle.read(len(TOMBSTONE) + 1) == TOMBSTONE
+
+
+def rotate_connection(where: Home) -> bool:
+    """Retire ``connection.env`` (tools without the rendering guard read it) for ``CONNECTION_FILE`` with a new API
+    key, keeping ports, database password and reranker setting, and leave ``TOMBSTONE`` in its place; True when it
+    rotated. The tombstone is not a settings file, so such a tool's every command, its ``service install``
+    included, stops at "connection.env:1: malformed or repeated line" before writing anything, and the line says
+    why. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
+    never the one to create ``connection.env``. An old file beside the new one is tombstoned once it reads as
+    settings; a file that is neither is refused (``read_settings``), never overwritten."""
+    legacy = where.config / LEGACY_CONNECTION_FILE
+    if tombstoned(legacy):
+        return False
+    rotated = False
+    if legacy.exists() or legacy.is_symlink():
+        old = read_settings(where, legacy)
+        if not where.connection_file.exists():
+            write_private(where.connection_file, render_settings(replace(old, key=secrets.token_hex(32))).encode())
+            rotated = True
+    write_private(legacy, TOMBSTONE)
+    return rotated
 
 
 def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT, reranker: str = RERANKER_DEFAULT) -> Settings:
@@ -879,14 +924,18 @@ def backup_interpreter(environ: Mapping[str, str] | None = None) -> str:
 
 
 def install(where: Home, runtime: Assets, checkout: Path, reranker: str | None = None) -> float:
-    """Write the connection file (key, ports and password once) and the units, enable them, start the service;
-    returns seconds to ready. The connection file is rewritten in the generated shape every time, with
+    """Write the connection file (key, ports and password once; an old ``connection.env`` is rotated to it with a
+    new key, ``rotate_connection``) and the units, enable them, start the service; returns seconds to ready. The connection file is rewritten in the generated shape every time, with
     ``reranker`` (``off`` or a cap) or else the setting it holds (``off`` when it predates the setting), so
     the service's reranking is always set explicitly; any change restarts the service."""
     wanted = None if reranker is None else reranker_setting(reranker)
     if where.scratch:
         raise ServiceError(f"{HOME_VARIABLE} is set: a scratch home is never managed by systemd")
+    for directory in (where.config, where.data, where.state, where.backups):
+        make_directory(directory)
+    rotated = rotate_connection(where)
     settings, changed = set_reranker(where, ensure_settings(where).reranker if wanted is None else wanted)
+    changed = changed or rotated
     prepare_runtime_directories(where)
     make_directory(where.pg0_home)
     directory = unit_directory()
