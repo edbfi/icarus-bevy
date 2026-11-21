@@ -52,7 +52,8 @@ is not yet in ``ref``'s own journal.
 
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
-unsalvaged row and exits 1 if there is any. Exit status: 0 success; 1 a conflict or an error; 2 usage;
+unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
+branch's file) and exits 1 if there is any. Exit status: 0 success; 1 a conflict or an error; 2 usage;
 ``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
 still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
 parent instead (nothing is printed or written).
@@ -102,7 +103,8 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
     premerge: str | None = None
     merge: str | None = None
-    documents: list[str] = field(default_factory=list[str])
+    # Pending documents: (path, the REF whose body to revise, or None for a new document).
+    documents: list[tuple[str, str | None]] = field(default_factory=list[tuple[str, str | None]])
 
 
 @dataclass(frozen=True)
@@ -487,10 +489,10 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     for path, record in sorted(documents(after).items()):
         on_main = main_refs.get(path)
         if on_main is None:
-            result.documents.append(path)
+            result.documents.append((path, None))
             result.notices.append(f"{path}: new document; propose a REF for it by hand")
         elif record.body not in (on_main.body, base_bodies.get(path)):
-            result.documents.append(path)
+            result.documents.append((path, on_main.id))
             result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
@@ -654,8 +656,13 @@ def run(options: argparse.Namespace) -> int:
         if check:
             for identifier in result.unsalvaged:
                 print(f"{ref}: {identifier}: {result.kinds[identifier]} legacy row not yet salvaged")
-            print(f"memory salvage --check: {len(result.unsalvaged)} unsalvaged row(s) on {ref} (merge-base {result.base[:12]})")
-            return 1 if result.unsalvaged else 0
+            for path, target in result.documents:
+                print(f"{ref}: {path}: " + (f"changed document; memory revise {target} --body {path} (listed until the accepted body equals "
+                                            + "this file; a body merged by hand into other text stays listed)" if target is not None
+                                            else "new document; propose a REF for it"))
+            print(f"memory salvage --check: {len(result.unsalvaged)} unsalvaged row(s), {len(result.documents)} pending document(s) on {ref} "
+                  + f"(merge-base {result.base[:12]})")
+            return 1 if result.unsalvaged or result.documents else 0
         for notice in result.notices:
             print(f"notice: {notice}", file=sys.stderr)
         for identifier, fields in result.unrevisable.items():
