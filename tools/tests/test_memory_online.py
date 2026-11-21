@@ -667,6 +667,23 @@ class EvidenceTests(Online):
         self.assertEqual(1, staged.status, staged.lines)
         self.assertIn("M-001: unavailable (missing: work/case/receipt.txt)", staged.lines)
 
+    def test_staged_superseder_of_a_drifted_record_does_not_judge_the_record_it_supersedes(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        commit_all(self.root)
+        self.put("work/case/receipt.txt", "drifted receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented replacement", now=self.tick())
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        _ = run_git(self.root, "add", "memory/journal")
+        for lost in (False, True):
+            if lost:
+                (self.root / "work/case/receipt.txt").unlink()
+            staged = online.verify(self.root, (), staged=True)
+            self.assertEqual(0, staged.status, staged.lines)
+            self.assertFalse([line for line in staged.lines if line.startswith("M-001:")], staged.lines)
+            self.assertIn("M-002: verified", " ".join(staged.lines))
+
     def test_staged_refuses_a_stray_file_in_the_journal(self) -> None:
         stray = self.root / "memory/journal/2026/11/notes.txt"
         stray.parent.mkdir(parents=True, exist_ok=True)

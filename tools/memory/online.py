@@ -668,10 +668,12 @@ def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revis
     """The evidence records a commit of Git's index changes, each at its head(s) in what the commit holds:
     ``accepted`` (``origin/main``) plus every journal file in the index, never the working tree.
 
-    A record is affected when a staged segment adds, modifies or deletes one of its revisions, or a revision
-    that supersedes it (a deleted segment is read from ``HEAD``): deleting an unaccepted retirement or superseder
-    reactivates the revision before it, which is then judged. Every journal file is parsed as a segment, as ``check --ci`` reads the tree, so a stray file
-    or an unreadable one raises ``JournalError`` naming it and the pre-commit hook fails closed."""
+    A record is affected when a staged segment adds, modifies or deletes one of its revisions, or deletes a
+    revision that supersedes it (a deleted segment is read from ``HEAD``): deleting an unaccepted retirement or
+    superseder reactivates the revision before it, which is then judged. ADDING a superseder reactivates
+    nothing, so the record it names is not judged: the commit that replaces drifted or lost evidence must pass.
+    Every journal file is parsed as a segment, as ``check --ci`` reads the tree, so a stray file or an
+    unreadable one raises ``JournalError`` naming it and the pre-commit hook fails closed."""
     changed = git(root, "diff", "--cached", "--no-renames", "--name-status", "-z", "--diff-filter=AMD", "--", JOURNAL).decode().split("\0")
     pairs = [(changed[index], changed[index + 1]) for index in range(0, len(changed) - 1, 2)]
     staged = sorted(path for status, path in pairs if status in ("A", "M"))
@@ -684,13 +686,14 @@ def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revis
             raise JournalError(f"{path}: in the index but unreadable from it")
         committed[path] = parse_segment(path, data)
     changes = [revision for path in staged for revision in committed[path].revisions]
+    removed: list[Revision] = []
     for path, data in zip(deleted, read_blobs(root, [f"HEAD:{path}" for path in deleted]), strict=True):
         if data is None:
             raise JournalError(f"{path}: deleted in the index but unreadable from HEAD")
-        changes += parse_segment(path, data).revisions
-    # The changed revisions' own records and the records they supersede: deleting an unaccepted superseder
-    # reactivates the record it named.
-    affected = {revision.record.id for revision in changes} | {name for revision in changes for name in revision.record.links.supersedes}
+        removed += parse_segment(path, data).revisions
+    # The changed revisions' own records, and the records a DELETED revision superseded: only deleting an
+    # unaccepted superseder reactivates the record it named.
+    affected = {revision.record.id for revision in [*changes, *removed]} | {name for revision in removed for name in revision.record.links.supersedes}
     history = replay(committed.values())
     # A revision that a later one in the same commit replaces is not judged on its own: the record's head(s) in
     # what is committed decide. A record the commit removes entirely (its only segment deleted) has nothing left.
