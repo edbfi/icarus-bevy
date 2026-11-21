@@ -23,7 +23,7 @@ migrated record's legacy status (``Entry.legacy_holds``), so a status revision a
 | Changed in the row | Becomes |
 | --- | --- |
 | status cell naming a new successor (``superseded-by F-N``; an evidence row's ``superseded_by``) | a ``supersedes`` link on the successor: its proposal here, or a revision of its accepted record; the old row: ``superseded`` |
-| status cell ``retired ...``, or a value of the type's vocabulary | a revision storing that status, with a note quoting the cell |
+| status cell ``retired ...``, or a value of the type's vocabulary | a revision storing that status, with a note quoting the cell (``STATUS_NOTE``) |
 | status cell saying the same legacy status in other words; the raw line; the table framing; prose line numbers | ``cosmetic``: nothing to propose |
 | an unknown's next probe (changed, cleared or filled); appended notes; appended ``verified_on``/``supersedes``/``resolves`` | a revision taking it |
 | any other field or legacy cell (a claim, a cited ID, a label) | ``supersede``: needs a new record superseding the old one; never proposed |
@@ -31,7 +31,10 @@ migrated record's legacy status (``Entry.legacy_holds``), so a status revision a
 
 A plan the accepted record already holds (salvage's own output, merged) is ``accepted``; a plan whose base row
 main changed otherwise since the merge base is a ``conflict`` (never proposed: a revision built from the
-branch's row would silently undo main's change; rules, "Revisions"). One row never aborts the run.
+branch's row would silently undo main's change; rules, "Revisions"). One row never aborts the run. The proposal
+set is rebuilt until nothing more is held (``settle``), and ``invariants`` checks the end state before anything
+is returned: no proposal links to a row this run does not salvage, the proposals replay with no new problem, and
+every changed row is in exactly one class; a breach is a ``SalvageError``, never output.
 
 Salvage must run on the branch's pre-merge tip. A branch that merged the cut-over (a merge commit in its
 first-parent history since the merge base, one of whose parents is an ancestor of the accepted commit without
@@ -49,7 +52,8 @@ is not yet in ``ref``'s own journal.
 
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
-unsalvaged row and exits 1 if there is any. Exit status: 0 success; 1 a conflict or an error; 2 usage;
+unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
+branch's file) and exits 1 if there is any. Exit status: 0 success; 1 a conflict or an error; 2 usage;
 ``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
 still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
 parent instead (nothing is printed or written).
@@ -61,7 +65,8 @@ import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
@@ -75,6 +80,8 @@ from tools.memory.state import State, replay
 
 ACCEPTANCE_REF = "origin/main"
 EXIT_SUPERSEDE = 4
+# The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.
+STATUS_NOTE = "status cell (salvaged legacy row): {}"
 EXIT_PREMERGE = 5
 
 
@@ -94,7 +101,8 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
     premerge: str | None = None
     merge: str | None = None
-    documents: list[str] = field(default_factory=list[str])
+    # Pending documents: (path, the REF whose body to revise, or None for a new document).
+    documents: list[tuple[str, str | None]] = field(default_factory=list[tuple[str, str | None]])
 
 
 @dataclass(frozen=True)
@@ -196,10 +204,10 @@ def changed_cells(old: Record, new: Record) -> tuple[str, ...]:
     return tuple(found)
 
 
-def plan(origin: Record, record: Record, ref: str, tip: str = "") -> Edit:
+def plan(origin: Record, record: Record, ref: str) -> Edit:
     """The branch's edit of the migrated row ``origin`` (as of the merge base), cell by cell (module docstring table).
-    ``ref`` (as typed) names the branch in reasons; a note stored in the record names ``tip``, the salvaged commit's
-    short SHA, so the revision is the same however the ref was spelled (a branch name, the pre-merge SHA)."""
+    ``ref`` (as typed) names the branch in reasons only: nothing stored in a record depends on how the ref was
+    spelled or which commit was the tip (``STATUS_NOTE``), so a salvaged revision is the same on every run."""
     fields = tuple(name for name in unrevisable_fields(origin, record) if name not in ("legacy", "gaps"))
     if blocked := fields or changed_cells(origin, record):
         return Edit(blocked=blocked)
@@ -235,7 +243,7 @@ def plan(origin: Record, record: Record, ref: str, tip: str = "") -> Edit:
         else:
             return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
         if status is not None:
-            notes.append(f"status cell on {tip or ref}: {cell}")
+            notes.append(STATUS_NOTE.format(cell))
     # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
         return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
@@ -348,6 +356,103 @@ def without_supersedes(record: Record, old: str) -> Record:
     return Record.from_json(data, record.body)
 
 
+class SalvageError(RuntimeError):
+    """Salvage's output broke one of its invariants: an internal error, never a result to write."""
+
+
+def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[str, list[str]], edits: Mapping[str, Edit],
+           on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None]) -> tuple[list[Revision], dict[str, str]]:
+    """The proposal set, rebuilt from scratch until nothing more is held: each row's own proposal, then every
+    ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
+    revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
+    then the replay check (``honoured``) holds what fails. The held set only grows, so it ends; nothing is patched in
+    place, so no order of discovery leaves a stale link. Returns the proposals and the accepted records that could
+    not carry links, with why."""
+    accepted = on_accepted.records
+    unlinkable: dict[str, str] = {}
+    playing = ("revision", "superseded")
+    while True:
+        proposals = {identifier: revision for identifier, revision in own.items() if result.kinds.get(identifier) not in ("supersede", "undecided")}
+        carriers: dict[str, Revision] = {}
+        stuck: dict[str, str] = {}
+        for old, targets in pending_links.items():
+            if result.kinds.get(old) not in playing:
+                continue
+            for target in targets:
+                if target in proposals or target in carriers:
+                    base = proposals.get(target) or carriers[target]
+                    linked = Revision.of(with_supersedes(base.record, old), base.prev)
+                    if target in proposals:
+                        proposals[target] = linked
+                    else:
+                        carriers[target] = linked
+                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "revision", "superseded"):
+                    carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
+                else:
+                    why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
+                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why})")
+        if stuck:
+            for old, reason in stuck.items():
+                hold(old, "undecided", reason)
+            continue
+        everything = [*proposals.values(), *carriers.values()]
+        failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing})
+        if not failing:
+            for target in carriers:
+                if result.kinds.get(target) in (None, "accepted", "superseded"):
+                    result.kinds[target] = "revision"
+            return everything, unlinkable
+        for identifier, reason in failing.items():
+            if identifier in carriers:
+                unlinkable[identifier] = reason
+            else:
+                hold(identifier, "undecided", reason)
+
+
+def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted) -> None:
+    """Raise ``SalvageError`` (naming the row) unless (a) no proposal links to a row this run holds, reports as a
+    conflict or leaves unproposed, unless the accepted journal holds it (and an added ``supersedes``/``resolves``
+    names only a row in play); (b) replaying the accepted journal with the proposals adds no problem; (c) every
+    changed row is in exactly one class, its proposal present exactly when the class has one, and every notice
+    that claims a proposal names one in the output."""
+    accepted = on_accepted.records
+    proposed = {revision.record.id: revision.record for revision in result.proposals}
+    if len(proposed) != len(result.proposals):
+        raise SalvageError("two proposals for one ID")
+    out = {name for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict")}
+    for identifier, record in proposed.items():
+        base = accepted.get(identifier)
+        for name in ("supersedes", "resolves"):
+            added = set(record.links.named(name)) - set(base.links.named(name) if base is not None else ())
+            if bad := sorted(target for target in added if result.kinds.get(target) not in ("revision", "superseded")):
+                raise SalvageError(f"{identifier}: {name} {', '.join(bad)}, which this run does not salvage")
+        for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
+            if target in out and target not in accepted and target not in proposed:
+                raise SalvageError(f"{identifier}: links {target}, which this run holds or reports as a conflict")
+    if found := honoured(on_accepted, result.proposals, {}):
+        identifier, reason = next(iter(found.items()))
+        raise SalvageError(f"{identifier}: {reason}")
+    with_proposal = ("new", "revision")
+    without = ("superseded", "accepted", "cosmetic", "supersede", "undecided", "conflict")
+    conflicts = {new.id for _old, new in result.conflicts}
+    for identifier in changed:
+        kind = result.kinds.get(identifier)
+        if kind not in (*with_proposal, *without):
+            raise SalvageError(f"{identifier}: changed on the branch but in no class")
+        if (kind in with_proposal) != (identifier in proposed):
+            raise SalvageError(f"{identifier}: classed {kind} but {'not ' if identifier not in proposed else ''}proposed")
+        if (kind == "conflict") != (identifier in conflicts) or (kind in ("supersede", "undecided")) != (identifier in result.unrevisable or identifier in result.undecided):
+            raise SalvageError(f"{identifier}: classed {kind} but reported otherwise")
+        if kind == "superseded" and not any(identifier in record.links.supersedes for record in proposed.values()):
+            raise SalvageError(f"{identifier}: classed superseded but no proposal supersedes it")
+    for identifier in proposed:
+        if result.kinds.get(identifier) not in with_proposal:
+            raise SalvageError(f"{identifier}: proposed but classed {result.kinds.get(identifier)}")
+    for notice in result.notices:
+        if (claim := re.search(r"; ([A-Z]+-[0-9]+) is proposed without that link$", notice)) and claim[1] not in proposed:
+            raise SalvageError(f"{claim[1]}: a notice claims a proposal the output does not hold")
+
+
 def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     head = commit(root, ref)
     accepted_commit = commit(root, main)
@@ -371,6 +476,28 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     after = export(root, head).records()
     before = export(root, base).records() if has_legacy(root, base) else {}
     on_accepted = accepted_on(root, accepted_commit)
+    superseding = classify(result, after, before, on_accepted)
+    accepted = on_accepted.records
+    main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
+    for path, record in sorted(documents(after).items()):
+        on_main = main_refs.get(path)
+        if on_main is None:
+            result.documents.append((path, None))
+            result.notices.append(f"{path}: new document; propose a REF for it by hand")
+        elif record.body not in (on_main.body, base_bodies.get(path)):
+            result.documents.append((path, on_main.id))
+            result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
+    journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
+    result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
+    result.unsalvaged += [new.id for _old, new in result.conflicts]
+    return result
+
+
+def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted) -> list[Revision]:
+    """Classify every row ``after`` (the branch's export) changes against ``before`` (the merge base's) and the
+    accepted journal, filling ``result``; checked by ``invariants`` before it returns. Returns the revisions of the
+    rows held or in conflict (for ``unsalvaged``). Pure: no Git, no files."""
+    ref = result.ref
     result.source, accepted = on_accepted.source, on_accepted.records
     superseding: list[Revision] = []
     edits: dict[str, Edit] = {}
@@ -386,10 +513,12 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
         if identifier in after:
             superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
 
+    changed: list[str] = []
     for identifier in sorted(after, key=id_key):
         record = after[identifier]
         if record.type not in SALVAGED or before.get(identifier) == record:
             continue
+        changed.append(identifier)
         on_main, origin = accepted.get(identifier), before.get(identifier)
         if on_main == record:
             result.kinds[identifier] = "accepted"
@@ -399,7 +528,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             hold(identifier, "supersede", unrevisable_fields(origin, record) or ("content",))
         else:
             try:
-                edit = plan(origin, record, ref, head[:12])
+                edit = plan(origin, record, ref)
             except RecordError as error:
                 hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
                 continue
@@ -434,16 +563,15 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
         else:
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
-    linking: list[tuple[str, list[str]]] = []
+    pending_links: dict[str, list[str]] = {}
     for identifier, edit in edits.items():
         record, origin, on_main = after[identifier], before[identifier], accepted.get(identifier)
         if on_main is None:
             # A revision must name a head the accepted journal holds; with no record there is nothing to revise.
             hold(identifier, "undecided", f"the accepted journal has no record {identifier} to revise (main removed or never journalled it)")
             continue
-        base, heads = on_main, on_accepted.heads[identifier]
         try:
-            revision = apply(edit, base)
+            revision = apply(edit, on_main)
         except RecordError as error:
             hold(identifier, "undecided", f"its edit on {ref} does not make a valid revision: {error}")
             continue
@@ -460,72 +588,24 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
         else:
             result.kinds[identifier] = "revision" if revision is not None else "superseded"
             if revision is not None:
-                result.proposals.append(Revision.of(revision, heads))
+                result.proposals.append(Revision.of(revision, on_accepted.heads[identifier]))
             if pending:
-                linking.append((identifier, pending))
-    # The successor carries the link: on its proposal here, or on a revision of its accepted record.
-    attached: list[tuple[str, str]] = []
-    linked_only: set[str] = set()
-    for identifier, pending in linking:
-        if stuck := [target for target in pending if not any(item.record.id == target for item in result.proposals)
-                     and (target not in accepted or result.kinds.get(target) not in (None, "accepted"))]:
-            result.proposals = [item for item in result.proposals if item.record.id != identifier]
-            hold(identifier, "undecided", f"its row on {ref} names successor {', '.join(stuck)}, neither proposable here nor accepted")
-            continue
-        for target in pending:
-            attached.append((identifier, target))
-            index = next((number for number, item in enumerate(result.proposals) if item.record.id == target), None)
-            if index is not None:
-                proposal = result.proposals[index]
-                result.proposals[index] = Revision.of(with_supersedes(proposal.record, identifier), proposal.prev)
-            else:
-                linked_only.add(target)
-                result.proposals.append(Revision.of(with_supersedes(accepted[target], identifier), on_accepted.heads[target]))
-                result.kinds[target] = "revision"
+                pending_links[identifier] = pending
+    own = {revision.record.id: revision for revision in result.proposals}
+    result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold)
     for target, olds in sorted(links.items()):
-        proposed = next((item for item in result.proposals if item.record.id == target), None)
         for old in olds:
-            if proposed is not None and old not in proposed.record.links.supersedes and result.kinds.get(old) in ("conflict", "supersede", "undecided"):
-                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {target} is proposed without that link")
-    # Fail closed, to a fixpoint: drop what does not replay, then what depended on it, until the set replays cleanly.
-    while failing := honoured(on_accepted, result.proposals, {identifier: edit for identifier, edit in edits.items()
-                                                              if result.kinds.get(identifier) in ("revision", "superseded")}):
-        for identifier, reason in failing.items():
-            result.proposals = [item for item in result.proposals if item.record.id != identifier]
-            linked_only.discard(identifier)
-            hold(identifier, "undecided", reason)
-        for old, target in list(attached):
-            proposal = next((item for item in result.proposals if item.record.id == target), None)
-            if proposal is None and old not in failing and result.kinds.get(old) in ("revision", "superseded"):
-                # The successor that was to carry the old row's status is gone: the old row is not salvaged either.
-                result.proposals = [item for item in result.proposals if item.record.id != old]
-                hold(old, "undecided", f"its successor {target} is not proposed ({result.undecided.get(target, 'held')})")
-            elif proposal is not None and result.kinds.get(old) not in ("revision", "superseded") and old in proposal.record.links.supersedes:
-                attached.remove((old, target))
-                stripped = without_supersedes(proposal.record, old)
-                result.proposals = [item for item in result.proposals if item.record.id != target]
-                if target in linked_only and stripped == accepted.get(target):
-                    linked_only.discard(target)
-                    result.kinds[target] = "accepted"
-                else:
-                    result.proposals.append(Revision.of(stripped, proposal.prev))
-                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {target} is proposed without that link")
+            if result.kinds.get(old) in ("conflict", "supersede", "undecided"):
+                carried = any(item.record.id == target for item in result.proposals)
+                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; "
+                                      + (f"{target} is proposed without that link" if carried else f"{target} is not revised"))
+    for target, reason in sorted(unlinkable.items()):
+        result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
                           if before[identifier].type in SALVAGED)
-    main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
-    for path, record in sorted(documents(after).items()):
-        on_main = main_refs.get(path)
-        if on_main is None:
-            result.documents.append(path)
-            result.notices.append(f"{path}: new document; propose a REF for it by hand")
-        elif record.body not in (on_main.body, base_bodies.get(path)):
-            result.documents.append(path)
-            result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
-    journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
-    result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
-    result.unsalvaged += [new.id for _old, new in result.conflicts]
     result.proposals.sort(key=lambda revision: (revision.record.type, id_key(revision.record.id)))
-    return result
+    invariants(result, changed, on_accepted)
+    return superseding
 
 
 class Subparsers(Protocol):
@@ -569,8 +649,13 @@ def run(options: argparse.Namespace) -> int:
         if check:
             for identifier in result.unsalvaged:
                 print(f"{ref}: {identifier}: {result.kinds[identifier]} legacy row not yet salvaged")
-            print(f"memory salvage --check: {len(result.unsalvaged)} unsalvaged row(s) on {ref} (merge-base {result.base[:12]})")
-            return 1 if result.unsalvaged else 0
+            for path, target in result.documents:
+                print(f"{ref}: {path}: " + (f"changed document; memory revise {target} --body {path} (listed until the accepted body equals "
+                                            + "this file; a body merged by hand into other text stays listed)" if target is not None
+                                            else "new document; propose a REF for it"))
+            print(f"memory salvage --check: {len(result.unsalvaged)} unsalvaged row(s), {len(result.documents)} pending document(s) on {ref} "
+                  + f"(merge-base {result.base[:12]})")
+            return 1 if result.unsalvaged or result.documents else 0
         for notice in result.notices:
             print(f"notice: {notice}", file=sys.stderr)
         for identifier, fields in result.unrevisable.items():
@@ -595,6 +680,9 @@ def run(options: argparse.Namespace) -> int:
                 for path, data in split_change_set(created, result.proposals):
                     print(f"# {path}")
                     print(data.decode(), end="")
+    except SalvageError as error:
+        print(f"memory salvage: internal error, nothing written: {error}", file=sys.stderr)
+        return 1
     except (CatalogError, GitError, JournalError, MigrationError, RecordError, OSError) as error:
         print(f"memory salvage: {error}", file=sys.stderr)
         return 1
