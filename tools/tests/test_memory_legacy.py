@@ -976,6 +976,8 @@ class SalvageTests(LegacyRepository):
         renamed = [reason for reason in result.undecided.values() if "new compatibility row 'Discovery renamed'" in reason]
         self.assertEqual(1, len(renamed), result.undecided)
         self.assertIn("CP-001, CP-002 is gone from the branch", renamed[0])
+        # Only real IDs are reported: the accepted twins and the branch's row, never a merge-base provisional number.
+        self.assertEqual({"CP-001", "CP-002"}, {name for name, reason in result.undecided.items() if reason.startswith("it is gone from the branch")})
 
     def test_a_rename_to_a_name_main_added_meanwhile_is_held(self) -> None:
         _ = self.journal_on_main(remove_legacy=False)
@@ -1211,6 +1213,65 @@ class SalvageTests(LegacyRepository):
         self.assertIn("specs: docs/specs/net/third.md: new document;", stdout)
         self.assertIn("specs: M-105: undecided legacy row not yet salvaged", stdout)
 
+    def test_a_changed_document_naming_other_tokens_needs_a_superseding_ref(self) -> None:
+        # The widget spec's text names client:29990002 and server:29990001; the branch re-observes it on build 29990003.
+        self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
+                                "Candidate; observed with client build 29990003 only."))
+        result = salvage(self.root, "retoken")
+        (document,) = result.documents
+        self.assertEqual(("supersede", "docs/specs/net/widget.md"), (document.kind, document.path))
+        self.assertIn("client:29990003", document.names)
+        self.assertIn("client:29990002", document.scope)
+        self.assertIn(f"a body revision cannot change scope; propose it as a new reference and supersede {document.target}", document.line())
+        commands = document.commands("FILE")
+        self.assertEqual(2, len(commands))
+        self.assertIn("--set-json 'scope=<STATE THE SCOPE>' --note 'salvaged document: docs/specs/net/widget.md'", commands[0])
+        self.assertEqual(f"memory supersede {document.target} --by <the new REF>", commands[1])
+        self.setUp()
+        self.edited("same-tokens", ("docs/specs/net/widget.md", "Candidate; observed", "Candidate, still; observed"))
+        self.assertEqual(["revise"], [item.kind for item in salvage(self.root, "same-tokens").documents])
+
+    def test_a_hand_proposed_ref_takes_a_body_revision_only_under_the_same_tokens(self) -> None:
+        scopes: list[tuple[JSON, str]] = [({"basis": "explicit", "builds": ["server:29990001"]}, "revise"), ({"basis": "explicit"}, "supersede")]
+        for scope, kind in scopes:
+            with self.subTest(kind):
+                self.setUp()
+                _ = run_git(self.root, "checkout", "-q", "-b", "hand")
+                spec = self.root / "docs/specs/net/third.md"
+                _ = spec.write_text("# Third\n\n## Status\n\nObserved with server build 29990001.\n", encoding="utf-8")
+                _ = run_git(self.root, "add", "-A")
+                _ = run_git(self.root, "commit", "-q", "-m", "add a spec")
+                _ = self.journal_on_main(remove_legacy=True)
+                self.accept_reference(online.Changes({"title": "Third", "scope": scope}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                                     self.ref_body("hand", "docs/specs/net/third.md")), "REF-900")
+                _ = run_git(self.root, "checkout", "-q", "hand")
+                _ = spec.write_text(spec.read_text() + "\nMore text.\n", encoding="utf-8")
+                _ = run_git(self.root, "commit", "-q", "-am", "more text")
+                (document,) = salvage(self.root, "hand").documents
+                self.assertEqual((kind, "REF-900"), (document.kind, document.target))
+
+    def test_a_path_two_accepted_refs_name_gets_no_command(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md", cite=False)
+        for identifier in ("REF-900", "REF-901"):
+            self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}},
+                                                 salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"), f"# Other {identifier}\n"), identifier)
+        (document,) = salvage(self.root, "specs").documents
+        self.assertEqual(("ambiguous", ("REF-900", "REF-901"), []), (document.kind, document.holders, document.commands("FILE")))
+        self.assertIn("the accepted journal holds REF-900, REF-901 for this path: decide by hand (no command)", document.line())
+
+    def test_a_note_with_a_space_in_its_path_round_trips_through_the_printed_command(self) -> None:
+        pending = salvage_command.Pending("docs/specs/net/two words.md", "new", "# Two words\n", "Two words")
+        written = self.top / "out dir/documents/docs/specs/net/two words.md"
+        written.parent.mkdir(parents=True)
+        _ = written.write_text("# Two words\n", encoding="utf-8")
+        (command,) = pending.commands(str(written))
+        stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit"}'))
+        changes = online.changes_from(vars(cli.parse_options(stated[1:])))
+        assert changes.note is not None
+        record = Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "Two words", "scope": {"basis": "explicit"},
+                                   "body_sha256": hashlib.sha256(b"# Two words\n").hexdigest(), "notes": [changes.note]}, "# Two words\n")
+        self.assertEqual("docs/specs/net/two words.md", salvage_command.document_path(record))
+
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
@@ -1250,7 +1311,7 @@ class SalvageTests(LegacyRepository):
         self.accept_reference(changes, "REF-900")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertIn("0 pending document(s)", stdout)
-        # Run 2: the document maps to the REF proposed by hand (by body), so the row citing it is proposed with that ID.
+        # Run 2: the document maps to the REF proposed by hand (by its "salvaged document:" note), so the row citing it is proposed with that ID.
         second = salvage(self.root, "new-doc")
         self.assertEqual("new", second.kinds["M-105"])
         self.assertEqual(("REF-900",), next(item.record for item in second.proposals if item.record.id == "M-105").links.refs)
@@ -1265,104 +1326,51 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "commit", "-q", "-am", "a spec and a row")
         _ = self.journal_on_main(remove_legacy=True)
 
-    def test_out_refuses_symlinks_at_its_targets(self) -> None:
+    def test_out_must_name_a_new_directory(self) -> None:
         self.outs_branch()
-        reference = self.top / "reference"
-        _ = self.run_salvage("outs", out=reference)
-        document = Path("documents/docs/specs/net/another.md")
-        for case, pointing in (("dangling", self.top / "nowhere"), ("to identical bytes", reference / document)):
+        for case in ("an empty directory", "a directory with content", "a file", "a dangling symlink"):
             with self.subTest(case):
-                out = self.top / f"out-{case.replace(' ', '-')}"
-                (out / document).parent.mkdir(parents=True)
-                (out / document).symlink_to(pointing)
+                out = self.top / case.replace(" ", "-")
+                if case == "a file":
+                    _ = out.write_text("x", encoding="utf-8")
+                elif case == "a dangling symlink":
+                    out.symlink_to(self.top / "nowhere")
+                else:
+                    out.mkdir()
+                    if case == "a directory with content":
+                        _ = (out / "kept").write_text("x", encoding="utf-8")
+                before = sorted(str(path) for path in self.top.rglob("*") if path.is_relative_to(out)) if out.is_dir() else []
                 status, _stdout, stderr = self.run_salvage("outs", out=out)
                 self.assertEqual(1, status)
-                self.assertIn("is not a regular file with this content (symlinks are never followed)", stderr)
-                self.assertFalse((out / "memory").exists(), "nothing written")
+                self.assertIn(f"memory salvage: {out} exists: --out must name a new directory", stderr)
+                self.assertEqual(before, sorted(str(path) for path in self.top.rglob("*") if path.is_relative_to(out)) if out.is_dir() else [])
+        out = self.top / "new"
+        self.assertNotEqual(1, self.run_salvage("outs", out=out)[0])
+        self.assertEqual(2, len([path for path in out.rglob("*") if path.is_file()]), "one document body and one segment")
+        self.assertEqual(0o700, out.stat().st_mode & 0o777)
 
-    def test_out_removes_what_it_created_when_an_exclusive_create_finds_a_file(self) -> None:
+    def test_out_is_removed_when_a_step_inside_it_fails(self) -> None:
         self.outs_branch()
-        out = self.top / "out"
-        real = os.open
-        calls: list[str] = []
+        real_mkdir, real_fsync = os.mkdir, os.fsync
 
-        def racing(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
-            if flags & os.O_EXCL:
-                calls.append(str(path))
-                if len(calls) == 2:
-                    raise FileExistsError(17, "File exists", str(path))
-            return real(path, flags, mode)
+        def failing_mkdir(path: str | os.PathLike[str], mode: int = 0o777) -> None:
+            if str(path).endswith("memory"):
+                raise PermissionError(13, "Permission denied", str(path))
+            real_mkdir(path, mode)
 
-        with mock.patch("tools.memory.salvage.os.open", racing):
-            status, _stdout, stderr = self.run_salvage("outs", out=out)
-        self.assertEqual(1, status)
-        self.assertIn("File exists; removed the 1 file(s) this run had created", stderr)
-        self.assertEqual([], [path for path in out.rglob("*") if path.is_file()], "the first file this run created is gone")
+        def failing_fsync(_descriptor: int) -> None:
+            raise OSError(28, "No space left on device")
 
-    def test_out_removes_what_it_created_when_a_write_fails(self) -> None:
-        self.outs_branch()
-        out = self.top / "out"
-        real = os.fsync
-        calls: list[int] = []
-
-        def full(descriptor: int) -> None:
-            calls.append(descriptor)
-            if len(calls) == 2:
-                raise OSError(28, "No space left on device")
-            real(descriptor)
-
-        with mock.patch("tools.memory.salvage.os.fsync", full):
-            status, _stdout, stderr = self.run_salvage("outs", out=out)
-        self.assertEqual(1, status)
-        self.assertIn("No space left on device; removed the 2 file(s) this run had created", stderr)
-        self.assertEqual([], [path for path in out.rglob("*") if path.is_file()], "the partly written file is gone too")
-
-    def test_out_refuses_an_earlier_run_s_files_it_would_not_write(self) -> None:
-        self.outs_branch()
-        out = self.top / "out"
-        _ = self.run_salvage("outs", out=out)
-        earlier = sorted(path for path in out.rglob("*.jsonl"))
-        # Main moves on, so the change set (and its segment name) changes.
-        _ = run_git(self.root, "checkout", "-q", "main")
-        _ = (self.root / "src/lib.rs").write_text("//! Main moved on.\n", encoding="utf-8")
-        _ = run_git(self.root, "commit", "-q", "-am", "main moves")
-        self.publish()
-        ledger = self.root / "docs/ledgers/findings/widgets.md"
-        _ = run_git(self.root, "checkout", "-q", "outs")
-        _ = ledger.write_text(ledger.read_text() + "| F-112 | Another branch claim | observed | review | high; x | | active |\n")
-        _ = run_git(self.root, "commit", "-q", "-am", "another row")
-        status, _stdout, stderr = self.run_salvage("outs", out=out)
-        self.assertEqual(1, status)
-        self.assertIn(f"{earlier[0]} was left by an earlier run: use a new --out or remove it; nothing written", stderr)
-        self.assertEqual(earlier, sorted(out.rglob("*.jsonl")))
-        fresh = self.top / "fresh"
-        self.assertNotEqual(1, self.run_salvage("outs", out=fresh)[0])
-        self.assertEqual(1, len(list(fresh.rglob("*.jsonl"))))
-
-    def test_out_never_overwrites_a_file_with_other_content(self) -> None:
-        _ = run_git(self.root, "checkout", "-q", "-b", "outs")
-        spec = self.root / "docs/specs/net/another.md"
-        _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
-        ledger = self.root / "docs/ledgers/findings/widgets.md"
-        _ = ledger.write_text(ledger.read_text() + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
-        _ = run_git(self.root, "commit", "-q", "-am", "a spec and a row")
-        _ = self.journal_on_main(remove_legacy=True)
-        out = self.top / "out"
-        first = self.run_salvage("outs", out=out)
-        files = {path: path.read_bytes() for path in out.rglob("*") if path.is_file()}
-        self.assertEqual(2, len(files), "one document body and one segment")
-        stamps = {path: path.stat().st_mtime_ns for path in files}
-        self.assertEqual(first[0], self.run_salvage("outs", out=out)[0], "a rerun with identical files succeeds")
-        self.assertEqual(stamps, {path: path.stat().st_mtime_ns for path in files}, "identical files are left alone")
-        document = out / "documents/docs/specs/net/another.md"
-        segment = next(path for path in files if path != document)
-        _ = document.write_text("edited by the operator\n", encoding="utf-8")
-        segment.unlink()
-        status, stdout, stderr = self.run_salvage("outs", out=out)
-        self.assertEqual((1, ""), (status, stdout))
-        self.assertIn(f"memory salvage: {document} exists and is not a regular file with this content", stderr)
-        self.assertEqual("edited by the operator\n", document.read_text(encoding="utf-8"))
-        self.assertFalse(segment.exists(), "nothing written when one file differs")
+        for case, target, replacement in (("a subdirectory", "tools.memory.salvage.os.mkdir", failing_mkdir),
+                                          ("an fsync", "tools.memory.salvage.os.fsync", failing_fsync)):
+            with self.subTest(case):
+                out = self.top / f"out-{case.split()[-1]}"
+                with mock.patch(target, replacement):
+                    status, _stdout, stderr = self.run_salvage("outs", out=out)
+                self.assertEqual(1, status)
+                self.assertIn(f"removed {out}, which this run had created", stderr)
+                self.assertFalse(os.path.lexists(out))
+        del real_fsync
 
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
