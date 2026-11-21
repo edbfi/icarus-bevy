@@ -7,7 +7,8 @@
 - ``memory parity --rev REV --journal DIR`` runs the gate (``tools.memory.parity``); exit 1 on any
   mismatch, each printed with its ID.
 - ``memory salvage REF [--check] [--out DIR]`` converts the legacy rows ``REF`` adds or modifies
-  against its merge-base with ``main`` (``tools.memory.salvage``) into one proposal change set, printed
+  against its merge-base with ``main`` (``tools.memory.salvage``; meant for after the cut-over, classified
+  against ``main``'s journal, or its legacy export while it has no journal) into one proposal change set, printed
   as segment lines or written under ``DIR/memory/journal``; notices and conflicts go to stderr, and a
   conflict makes the exit status 1. ``--check`` prints each unsalvaged row and exits 1 if there is any.
 """
@@ -129,10 +130,11 @@ def run_salvage(options: argparse.Namespace) -> int:
         for identifier, fields in result.unrevisable.items():
             print(f"notice: {identifier}: changes {', '.join(fields)}, which a revision may not change; propose a new record that supersedes it", file=sys.stderr)
         for old, new in result.conflicts:
-            print(f"conflict: {new.id}: main holds different content under this ID ({old.legacy.path if old.legacy else '?'}); not proposed", file=sys.stderr)
+            print(f"conflict: {new.id}: main holds other content under this ID, allocated or changed there since the merge-base "
+                  + f"({old.legacy.path if old.legacy else '?'}); not proposed", file=sys.stderr)
         accepted = sorted((identifier for identifier, kind in result.kinds.items() if kind == "accepted"), key=id_key)
         print(f"memory salvage: {ref}: {len(result.proposals)} proposal(s), {len(result.conflicts)} conflict(s), "
-              + f"{len(accepted)} row(s) already on main", file=sys.stderr)
+              + f"{len(accepted)} row(s) already on main (against main's {'journal' if result.source == 'journal' else 'legacy export'})", file=sys.stderr)
         if not result.proposals:
             return 1 if result.conflicts else 0
         created = commit_time(root, result.head)
