@@ -37,7 +37,7 @@ document.
 
 | Type | ID | Stored status | Required fields |
 | --- | --- | --- | --- |
-| finding | `F-N` | active, retired | claim, kind, confidence, standing, scope, area |
+| finding | `F-N` | active, retired | claim, kind, confidence, standing, scope, area (optional limits) |
 | unknown | `U-N` | open, investigating, blocked, contradicted | question, severity, next_probe, area |
 | bug (native) | `N-N` | open, fixed | trigger, change, refs, tests |
 | lead (original defect) | `SL-N` | open, established, refuted | lead, static_evidence, refute_by |

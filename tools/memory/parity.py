@@ -8,10 +8,20 @@ Every mismatch is a line naming its ID; the gate passes only with none. It check
 - **Every F, U, N and M record**: present with its type; ``legacy`` path and cells byte-identical to
   the catalog's fields (and, rendered back, to the line in the Git blob); parsed fields against the
   catalog (claim, kind, question, severity, trigger, change; evidence path, sha256, class, kind, status,
-  date, label, note, records, members in listed order); derived status; supersession; resolvers.
-- **Links**: per record, the IDs a journal record links (cites, refs, legacy supersession and resolvers,
-  with each selector's evidence ID) equal the catalog's link targets; the unknown/finding split;
-  every selector resolving to one listed member (or a legacy case note on a legacy row).
+  date, label, note, records, members in listed order); derived status; supersession; no resolver of a
+  migrated unknown, and its Findings column listed (``state.legacy_listed``) exactly as the catalog reads it.
+- **Links**: per record, the IDs a journal record links (cites, refs, legacy supersession, with each
+  selector's evidence ID) equal the catalog's link targets; the unknown/finding split; every selector
+  resolving to one listed member (or a legacy case note on a legacy row). Compatibility, lead and report
+  rows (``table_edges``): each record links exactly the IDs and selectors its verbatim cells state (ranges
+  over defined IDs), and the total equals a scan of the raw table lines. A tracked evidence row whose path
+  a REF of the journal migrates links that REF, with the note, and nothing else changes.
+- **Rendering** (``rendering_problems``): every non-empty legacy cell of a migrated record appears
+  verbatim in its text, stored and with its derived status (an enum or status cell may differ in case
+  only); a release's cells are each named by its ``sources``; a REF's ``heading`` is its body's first line.
+- **Released model** (``released_model_problems``): every revision of the journal parses with the model of
+  ``origin/main`` (``tools/memory/model.py`` exported by ``git archive`` into a temporary directory), so
+  the tool already released reads the migration's journal.
 - **Counts** per type against a raw scan of the Git tree (``raw_counts``), the five-or-so unallocated
   finding numbers among them; edge counts (distinct targets per record) from the journal against the
   catalog's, and the catalog's raw link tuples (one per target and cell) for reference.
@@ -27,25 +37,34 @@ Every mismatch is a line naming its ID; the gate passes only with none. It check
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import re
 import shutil
+import sys
+import tarfile
 import tempfile
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Protocol, cast
 
 from tools.docs_lint import Linter, parse_shard
-from tools.evidence_catalog_model import Entry, Index, references
+from tools.evidence_catalog_model import ID_IN_TEXT, PIPE, RANGE, Entry, Index, references
 from tools.evidence_catalog_publish import resolved_catalog
 from tools.evidence_catalog_store import commit_id
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, run_check
 from tools.memory.gitio import GitError, git, listed_files, read_blobs, tree_files
+from tools.memory.canonical import RenderError, render_text
 from tools.memory.journal import JOURNAL, read_tree
+from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.legacy_prose import account
-from tools.memory.legacy_rules import PROSE_SUPERSESSION, SELECTORS, vocabulary
-from tools.memory.model import CONFIDENCES, EVIDENCE_CLASSES, EVIDENCE_KINDS, FINDING_KINDS, SEVERITIES, TYPES, Record, id_key
+from tools.memory.legacy_rules import PROSE_SUPERSESSION, SELECTORS, UNSTATED, vocabulary
+from tools.memory.model import (
+    CONFIDENCES, EVIDENCE_CLASSES, EVIDENCE_KINDS, FINDING_KINDS, SELECTOR, SEVERITIES, TYPES, Record, as_mapping, id_key, load_json,
+)
 from tools.memory.paths import primary_checkout, protected_paths_for
-from tools.memory.state import State, replay
+from tools.memory.state import State, legacy_listed, replay
 
 CODE_ROOTS = ("src/", "tests/", "examples/", "tools/", "config/")
 
@@ -104,11 +123,12 @@ def journal_targets(record: Record) -> set[str]:
     legacy = record.legacy
     found = {*record.links.cites, *record.links.refs, *(selector_base(cite) for cite in record.links.cites)}
     if legacy is not None:
-        found.update(legacy.superseded_by, legacy.resolved_by)
+        found.update(legacy.superseded_by)
     return found
 
 
-def compare_row(result: Parity, state: State, index: Index, entry: Entry, record: Record, blob_lines: list[str], prose: dict[str, set[str]]) -> None:
+def compare_row(result: Parity, state: State, index: Index, entry: Entry, record: Record, blob_lines: list[str], prose: dict[str, set[str]],
+                sources: dict[str, str]) -> None:
     identifier = entry.record.identifier
     legacy = record.legacy
     if legacy is None or legacy.path != entry.path:
@@ -123,7 +143,7 @@ def compare_row(result: Parity, state: State, index: Index, entry: Entry, record
             result.fail(f"{identifier}: legacy row is not the shard line byte for byte")
     else:
         expected = dict(fields) | ({"original": entry.record.original} if entry.record.original is not None else {})
-        kept = {name: cell for name, cell in legacy.cells.items() if not name.startswith("prose ")}
+        kept = {name: cell for name, cell in legacy.cells.items() if not name.startswith("prose ") and name != "table"}
         if kept != expected:
             result.fail(f"{identifier}: legacy cells differ from the catalog fields: {sorted(set(kept.items()) ^ set(expected.items()))[:2]}")
     status = state.status(identifier)
@@ -145,23 +165,27 @@ def compare_row(result: Parity, state: State, index: Index, entry: Entry, record
                 "question": fields["question"], "severity": vocabulary(fields["severity"], SEVERITIES) if fields["severity"] else None,
                 "next_probe": fields["next_probe"] or None,
             })
-            resolvers = {link.target for link in index.links[identifier] if link.field == "findings" and link.target.startswith("F-")}
-            wanted_resolvers = resolvers if fields["status"] == "resolved" else set[str]()
-            if set(state.resolved_by.get(identifier, ())) != wanted_resolvers:
-                result.fail(f"{identifier}: resolved by {sorted(state.resolved_by.get(identifier, ()))}, legacy Findings cell states {sorted(wanted_resolvers)}")
+            if resolvers := state.resolved_by.get(identifier, ()):
+                result.fail(f"{identifier}: resolved by {list(resolvers)}; the legacy table names no resolver")
+            listed = {link.target for link in index.links[identifier] if link.field == "findings"}
+            if set(legacy_listed(record, "findings")) != listed:
+                result.fail(f"{identifier}: lists {list(legacy_listed(record, 'findings'))}, the Findings cell states {sorted(listed, key=id_key)}")
             if status != fields["status"]:
                 result.fail(f"{identifier}: derived status {status}, legacy {fields['status']!r}")
         case "N":
             expect(result, identifier, record, {"trigger": fields["trigger_and_former_behavior"], "change": fields["change"]})
+            # The native table has no status column: the status is unstated, the framing verbatim ledger text.
+            if record.status != UNSTATED or legacy.cells.get("table", "\0") not in "\n".join(blob_lines):
+                result.fail(f"{identifier}: status {record.status} or its table cell is not the ledger's framing")
         case _:
-            compare_evidence(result, state, entry, record)
+            compare_evidence(result, state, entry, record, sources)
     if entry.record.kind != "M":
         catalog_targets = {link.target for link in index.links[identifier]} | prose.get(identifier, set())
         if journal_targets(record) != catalog_targets:
             result.fail(f"{identifier}: links {sorted(journal_targets(record) ^ catalog_targets, key=id_key)} differ from the catalog")
 
 
-def compare_evidence(result: Parity, state: State, entry: Entry, record: Record) -> None:
+def compare_evidence(result: Parity, state: State, entry: Entry, record: Record, sources: dict[str, str]) -> None:
     row = entry.record.evidence(entry.path, entry.line)
     identifier = row.identifier
     expect(result, identifier, record, {
@@ -172,8 +196,11 @@ def compare_evidence(result: Parity, state: State, entry: Entry, record: Record)
         result.fail(f"{identifier}: status {record.status}, legacy {row.status}")
     if record.items("members") != (*row.ev, *row.unk):
         result.fail(f"{identifier}: members differ from the listed ev and unk IDs")
-    if record.notes != ((row.note,) if row.note is not None else ()):
-        result.fail(f"{identifier}: note differs")
+    reference = sources.get(row.path) if row.klass == "tracked" else None
+    if record.notes != (*((row.note,) if row.note is not None else ()), *((TRACKED_NOTE.format(reference),) if reference else ())):
+        result.fail(f"{identifier}: notes differ from the legacy note and the tracked-file note")
+    if record.links.refs != ((reference,) if reference else ()) or record.links.cites:
+        result.fail(f"{identifier}: links {list(record.links.targets())}; the legacy row and its migrated file state {reference or 'none'}")
     wanted = (row.superseded_by,) if row.superseded_by is not None else ()
     if (record.legacy.superseded_by if record.legacy else ()) != wanted or state.superseded_by.get(identifier, ()) != wanted:
         result.fail(f"{identifier}: superseded_by differs from the legacy {row.superseded_by!r}")
@@ -224,6 +251,141 @@ def edge_counts(state: State, index: Index, prose: int) -> dict[str, tuple[int, 
     return {name: (journal[name], catalog[name]) for name in sorted(set(journal) | set(catalog))}
 
 
+def texts_of(state: State, identifier: str, record: Record) -> list[str]:
+    """The record's text as stored and, when replay derives another status, as the bank shows it."""
+    found = [render_text(record)]
+    if (status := state.status(identifier)) != record.status:
+        try:
+            found.append(render_text(replace(record, status=status)))
+        except RenderError:
+            pass
+    return found
+
+
+def cell_shown(record: Record, cell: str, text: str) -> bool:
+    """A cell is verbatim in the text, or an enum or status value equal to it ignoring case is."""
+    if cell in text:
+        return True
+    values = [record.status, *(value for name, value in record.fields.items() if record.spec.fields[name].kind == "enum" and isinstance(value, str))]
+    return any(value.lower() == cell.lower() and value in text for value in values)
+
+
+def rendering_problems(state: State, revision: str) -> list[str]:
+    """Every legacy cell a reader does not see (module docstring), one line per ID and cell."""
+    problems: list[str] = []
+    for identifier in sorted(state.entries, key=id_key):
+        record = state.entries[identifier].record
+        legacy = record.legacy
+        if legacy is None:
+            continue
+        if record.type == "reference":
+            heading = (record.body or "").split("\n", 1)[0]
+            if legacy.cells != {"heading": heading, "revision": revision}:
+                problems.append(f"{identifier}: cells are not the body's first line and the export revision")
+            continue
+        if record.type == "release":
+            sources = "\n".join(record.items("sources"))
+            problems.extend(f"{identifier}: cell {name!r} is named by no source" for name in legacy.cells
+                            if name.split(" ", 1)[0] not in sources and name.split(" ", 1)[-1] not in sources)
+            continue
+        cells = dict(legacy.cells)
+        if record.type == "evidence":
+            row = as_mapping(load_json(cells.pop("row", "{}").encode()), f"{identifier}: row")
+            cells = {name: str(value) for name, value in row.items()
+                     if name not in ("id", "legacy", "ev", "unk") and value is not None and not isinstance(value, (bool, list, dict))}
+        for text in texts_of(state, identifier, record):
+            problems.extend(f"{identifier}: legacy cell {name!r} not in its text: {cell[:80]!r}" for name, cell in cells.items()
+                            if name != "original" and cell and not cell_shown(record, cell, text))
+    return list(dict.fromkeys(problems))
+
+
+def stated_targets(text: str, known: Index) -> set[str]:
+    """IDs and selectors a cell states, by plain regular expressions: selectors, then ranges over defined
+    IDs, then single defined IDs."""
+    found = {match[0] for match in SELECTOR.finditer(text)}
+    rest = SELECTOR.sub(" ", text)
+    for match in RANGE.finditer(rest):
+        first, last = match[1], match[2]
+        if first[0] == last[0]:
+            found.update(key for key in known.entries if key[0] == first[0] and int(first[2:]) <= int(key[2:]) <= int(last[2:]))
+    found.update(match[0] for match in ID_IN_TEXT.finditer(RANGE.sub(" ", rest)) if match[0] in known.entries)
+    return found
+
+
+TABLE_TYPES = ("compatibility", "lead", "report")
+
+
+def table_edges(result: Parity, state: State, index: Index, documents: dict[str, list[str]]) -> None:
+    """Compatibility, lead and report links against their cells, and their total against the raw table lines."""
+    journal = 0
+    for identifier in sorted(state.entries, key=id_key):
+        record = state.entries[identifier].record
+        if record.type not in TABLE_TYPES or record.legacy is None:
+            continue
+        linked = {*record.links.cites, *record.links.refs}
+        journal += len(linked)
+        stated = {target for name, cell in record.legacy.cells.items() if name not in ("original", "table") for target in stated_targets(cell, index)}
+        if linked != stated:
+            result.fail(f"{identifier}: links {sorted(linked ^ stated, key=id_key)} differ from its cells")
+    raw = 0
+    for path in ("docs/ledgers/compatibility.md", "docs/ledgers/bugs.md"):
+        lines = documents.get(path, [])
+        for number, line in enumerate(lines):
+            following = lines[number + 1] if number + 1 < len(lines) else ""
+            header = re.fullmatch(r"\|(?:\s*:?-+:?\s*\|)+", following) is not None
+            if not line.startswith("|") or header or re.fullmatch(r"\|(?:\s*:?-+:?\s*\|)+", line) or re.match(r"\|\s*N-[0-9]+\s*\|", line):
+                continue
+            cells = [cell.strip().replace(r"\|", "|") for cell in PIPE.split(line)[1:-1]]
+            raw += len({target for cell in cells for target in stated_targets(cell, index)})
+    result.measured["edges compatibility, lead and report rows"] = f"{journal} (raw table lines {raw})"
+    if journal != raw:
+        result.fail(f"edges of compatibility, lead and report rows: journal {journal}, raw table lines {raw}")
+
+
+class Parser(Protocol):
+    def __call__(self, data: object, body: str | None = None, /) -> object: ...
+
+
+def released_model_problems(root: Path, journal: Path, ref: str = "origin/main") -> tuple[str, int, list[str]]:
+    """Parse every revision under ``journal`` with ``ref``'s ``tools/memory/model.py``; returns the commit, the
+    count parsed and one problem per rejected revision. A model that imports other project modules cannot be
+    loaded alone and is a problem itself."""
+    commit = git(root, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}").decode().strip()
+    archive = git(root, "archive", "--format=tar", commit, "tools/memory/model.py")
+    with tempfile.TemporaryDirectory(prefix="memory-released-model-") as scratch:
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+            tar.extractall(scratch, filter="data")
+        path = Path(scratch) / "tools/memory/model.py"
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*(?:from|import)\s+tools\b", source, re.MULTILINE):
+            return commit, 0, [f"{ref}:tools/memory/model.py imports project modules; it cannot be loaded alone"]
+        name = f"memory_released_model_{commit[:12]}"
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return commit, 0, [f"{ref}:tools/memory/model.py cannot be loaded"]
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+            parse = cast(Parser, getattr(cast(object, getattr(module, "Record")), "from_json"))
+            problems: list[str] = []
+            parsed = 0
+            for segment in sorted((journal / JOURNAL).rglob("*.jsonl")):
+                for number, line in enumerate(segment.read_bytes().split(b"\n")[1:], 2):
+                    if not line:
+                        continue
+                    raw = as_mapping(load_json(line), f"{segment}:{number}")
+                    body = raw.get("body")
+                    try:
+                        _ = parse(raw.get("record"), body if isinstance(body, str) else None)
+                        parsed += 1
+                    except ValueError as error:
+                        problems.append(f"{segment.relative_to(journal)}:{number}: {error}")
+        finally:
+            del sys.modules[name]
+    return commit, parsed, problems
+
+
 def legacy_local(primary: Path, root: Path, revision: str) -> tuple[set[str], list[str]]:
     """``docs_lint --list-local`` over the shards of ``revision``, resolved against ``primary``."""
     linter = Linter(primary, local=True)
@@ -265,7 +427,8 @@ def scratch_clone(primary: Path, revision: str, journal: Path, directory: Path) 
     return tree
 
 
-def parity(root: Path, rev: str, journal: Path) -> Parity:
+def parity(root: Path, rev: str, journal: Path, released: str = "origin/main") -> Parity:
+    """The gate (module docstring); ``released`` names the ref whose model must parse the journal."""
     result = Parity()
     revision = commit_id(root, rev)
     segments = read_tree(journal)
@@ -288,13 +451,23 @@ def parity(root: Path, rev: str, journal: Path) -> Parity:
                     prose_count += 1
     blobs = {path: (data or b"").decode().split("\n") for path, data in zip(
         sorted(catalog.documents), read_blobs(root, [f"{revision}:{path}" for path in sorted(catalog.documents)]), strict=True)}
+    sources = {entry.record.legacy.path: identifier for identifier, entry in state.entries.items()
+               if entry.record.type == "reference" and entry.record.legacy is not None}
     for identifier in sorted(index.entries, key=id_key):
         entry = index.entries[identifier]
         record = state.record(identifier)
         if record is None:
             result.fail(f"{identifier}: missing from the journal")
             continue
-        compare_row(result, state, index, entry, record, blobs[entry.path], prose)
+        compare_row(result, state, index, entry, record, blobs[entry.path], prose, sources)
+    tracked = sum(1 for entry in state.entries.values() if entry.record.type == "evidence" and entry.record.links.refs)
+    result.measured["tracked evidence linked to the REF of its file"] = str(tracked)
+    table_edges(result, state, index, blobs)
+    rendering = rendering_problems(state, revision)
+    result.mismatches.extend(rendering)
+    texts = [len(render_text(entry.record)) for entry in state.entries.values() if entry.record.body is None]
+    result.measured["rendering"] = f"{len(rendering)} legacy cell(s) unseen; longest text {max(texts, default=0)} characters"
+
     counts, unallocated = raw_counts(root, revision)
     journal_counts = Counter(entry.record.type for entry in state.entries.values())
     for kind in sorted(set(counts) | set(journal_counts)):
@@ -347,4 +520,7 @@ def parity(root: Path, rev: str, journal: Path) -> Parity:
     result.measured["protected paths"] = f"{len(protected.paths)} from the journal, {len(legacy_paths)} from docs_lint ({len(legacy_problems)} local problem(s))"
     for path in sorted(set(protected.paths) ^ legacy_paths):
         result.fail(f"protected-paths: {path} only {'in the journal' if path in protected.paths else 'in the legacy list'}")
+    commit, parsed, rejected = released_model_problems(root, journal, released)
+    result.mismatches.extend(f"released model: {problem}" for problem in rejected)
+    result.measured["released model"] = f"{released} {commit[:12]}: {parsed} revision(s) parsed, {len(rejected)} rejected"
     return result

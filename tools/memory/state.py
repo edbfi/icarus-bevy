@@ -8,12 +8,18 @@ cycle). Two heads are a fork, shown as ``conflict`` until a reconciling revision
 
 Links are stored once, on the newer record; ``State`` derives the inverses from every head:
 ``superseded_by`` (``supersedes`` edges, unioned with what a migrated record's legacy row stated
-about itself) and ``resolved_by`` (``resolves`` edges, unioned likewise). ``State.status`` is the derived status: ``superseded``,
+about itself) and ``resolved_by``. ``State.status`` is the derived status: ``superseded``,
 ``resolved``, a migrated record's implied ``retired``, else the stored status.
+
+A migrated unknown whose legacy status was ``resolved`` derives ``resolved`` from that status alone: the
+legacy table never said which finding resolved it, so no resolver edge exists. ``legacy_listed`` names
+the linked records one of its legacy cells lists (its Findings column: ``legacy_listed(record,
+"findings")``), for display as "resolved (legacy status); findings listed: ...".
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
@@ -23,6 +29,8 @@ from pathlib import Path
 from tools.memory.journal import Revision, Segment
 from tools.memory.model import ID, SELECTOR, Record, RecordError, as_mapping, id_key, type_of
 
+# An ID, or a range of two IDs of one type, as legacy cells write them (``F-1``, ``F-1 to F-3``, ``F-1..F-3``).
+LISTED = re.compile(rf"(?<![\w-])({ID.pattern})(?:(?:\.\.| to |–)({ID.pattern}))?(?![\w-])")
 PARTITIONS = ("current", "other-build", "legacy-scope", "native", "unscoped")
 RELEASE_CONFIG = "config/release.toml"
 
@@ -151,7 +159,6 @@ class State:
                 named += [("refs", target) for target in record.links.refs]
                 if record.legacy is not None:
                     named += [("legacy.superseded_by", target) for target in record.legacy.superseded_by]
-                    named += [("legacy.resolved_by", target) for target in record.legacy.resolved_by]
                 problems.extend(f"{identifier}: {name}: no record {target}" for name, target in named if target not in self.entries)
                 for citation in record.links.citations():
                     if (problem := self.resolve(citation).problem) is not None:
@@ -217,13 +224,29 @@ def replay(segments: Iterable[Segment]) -> State:
                 resolved_by[target].add(identifier)
             if record.legacy is not None:
                 superseded_by[identifier].update(record.legacy.superseded_by)
-                resolved_by[identifier].update(record.legacy.resolved_by)
     return State(
         entries,
         {key: tuple(sorted(value, key=id_key)) for key, value in sorted(superseded_by.items())},
         {key: tuple(sorted(value, key=id_key)) for key, value in sorted(resolved_by.items())},
         tuple(problems),
     )
+
+
+def legacy_listed(record: Record, cell: str) -> tuple[str, ...]:
+    """The records ``record`` links (``refs``, ``cites``) that its legacy cell ``cell`` names, a range
+    covering the linked IDs between its ends; empty for a record without that cell."""
+    text = record.legacy.cells.get(cell, "") if record.legacy is not None else ""
+    linked = {*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)}
+    found: set[str] = set()
+    for match in LISTED.finditer(text):
+        first, last = match[1], match[2]
+        prefix = first.split("-", 1)[0]
+        if last is None or last.split("-", 1)[0] != prefix or prefix == "REL":
+            found.update(item for item in (first, last) if item in linked)
+            continue
+        low, high = id_key(first), id_key(last)
+        found.update(item for item in linked if item.split("-", 1)[0] == prefix and low <= id_key(item) <= high)
+    return tuple(sorted(found, key=id_key))
 
 
 def _has_cycle(revisions: Mapping[str, Located]) -> bool:

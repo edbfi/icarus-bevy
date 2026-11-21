@@ -3,9 +3,10 @@
 
 ``render(result, root)`` returns Markdown with, in order: counts per type; every record with gaps,
 grouped by type and gap; every ``legacy:<verbatim>`` value with its count and IDs; links taken from
-ledger prose; rows whose several commits leave the scope without one; the judgments the rows force
-(standing, partitions against the current release); release records with what each lacks and its
-notes; citations kept as text; the residue; inbound references to spec and digest paths.
+ledger prose; commit candidates left out of scope and source revisions; tracked evidence linked to the
+REF its file becomes; the judgments the rows force (statuses no table states, standing, partitions
+against the current release); release records with what each lacks and its notes; table-row edges and
+citations kept as text; the residue; inbound references to spec and digest paths.
 
 - **Residue** (``residue``): every concrete value in the research digests (``docs/research/<area>/``,
   not the archive), in ledger lines outside table rows and in ``docs/implementation-status.md`` that
@@ -30,8 +31,8 @@ from tools.evidence_catalog_model import ID_IN_TEXT
 from tools.memory.check import CITATION
 from tools.memory.gitio import git, read_blobs
 from tools.memory.journal import JOURNAL, Revision, Segment
-from tools.memory.legacy import Export
-from tools.memory.legacy_rules import COMMIT
+from tools.memory.legacy import TRACKED_NOTE, Export
+from tools.memory.legacy_rules import COMMIT, UNSTATED
 from tools.memory.model import LEGACY, Record, id_key
 from tools.memory.state import partition, replay
 
@@ -152,15 +153,30 @@ def inbound(result: Export, root: Path) -> list[Inbound]:
     return found
 
 
+def table_edges(result: Export) -> dict[str, int]:
+    """Edges of compatibility, lead, report and bug rows, by type and link name."""
+    counts: Counter[str] = Counter()
+    for item in result.migrated:
+        record = item.record
+        if record.type in ("compatibility", "lead", "report", "bug"):
+            counts[f"{record.type} refs"] += len(record.links.refs)
+            counts[f"{record.type} cites"] += len(record.links.cites)
+    return dict(counts)
+
+
 def text_citations(result: Export) -> dict[str, int]:
-    """ID mentions kept as text: in CP, SL and RP cells, in compatibility/bug ledger prose, in evidence labels and notes."""
+    """ID mentions kept as text: in table-row cells naming no defined record, in compatibility/bug ledger prose,
+    in evidence labels and notes."""
     counts: Counter[str] = Counter()
     for item in result.migrated:
         record = item.record
         if record.legacy is None:
             continue
         if record.type in ("compatibility", "lead", "report"):
-            counts[f"{record.type} cells"] += sum(len(ID_IN_TEXT.findall(cell)) for name, cell in record.legacy.cells.items() if name != "original")
+            linked = set(record.links.targets())
+            counts[f"{record.type} cells, no such record"] += sum(
+                1 for name, cell in record.legacy.cells.items() if name not in ("original", "table")
+                for mention in ID_IN_TEXT.finditer(cell) if mention[0] not in linked)
         if record.type == "evidence":
             counts["evidence label and note"] += sum(len(ID_IN_TEXT.findall(text)) for text in (record.text("label") or "", *record.notes))
     catalog = result.catalog
@@ -196,8 +212,7 @@ def render(result: Export, root: Path) -> str:
     gaps: dict[tuple[str, str], list[str]] = defaultdict(list)
     for record in records:
         for gap in record.gaps:
-            name, _, detail = gap.partition(": ")
-            gaps[(record.type, name)].append(f"{record.id} ({detail})" if detail else record.id)
+            gaps[(record.type, gap)].append(record.id)
     kinds = Counter[str]()
     for (_kind, name), identifiers in gaps.items():
         kinds[name] += len(identifiers)
@@ -205,7 +220,7 @@ def render(result: Export, root: Path) -> str:
     lines.append(f"Records with at least one gap: {sum(1 for record in records if record.gaps)} of {len(records)}.")
     lines.append("")
     for (kind, name), identifiers in sorted(gaps.items()):
-        lines.append(f"- {kind} `{name}`: {len(identifiers)}: {', '.join(sorted(identifiers, key=lambda item: id_key(item.split(' ', 1)[0])))}")
+        lines.append(f"- {kind} `{name}`: {len(identifiers)}: {_ids(identifiers)}")
     lines.extend(["", "## Values outside the vocabulary (`legacy:`)", ""])
     legacy_values: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for record in records:
@@ -216,16 +231,30 @@ def render(result: Export, root: Path) -> str:
         lines.append(f"- {kind} `{name}` `{value}`: {len(identifiers)}: {_ids(identifiers)}")
     lines.extend(["", "## Links taken from ledger prose", ""])
     lines.extend(f"- {link.old} superseded by {link.new}: {link.path}:{link.line}: {link.text}" for link in result.prose_links)
-    lines.extend(["", "## Rows with several commits (scope keeps none)", ""])
-    lines.extend(f"- {identifier}: {', '.join(commits)}" for identifier, commits in sorted(result.commits.items(), key=lambda item: id_key(item[0])))
+    by_id = result.records()
+    lines.extend(["", "## Commit candidates left out of scope (several commits, or an all-digit token beside them)", ""])
+    lines.extend(f"- {identifier}: {'; '.join(note for note in by_id[identifier].notes if note.startswith('scope commit not set'))}"
+                 for identifier in sorted(result.unplaced, key=id_key))
+    revisions = [record for record in records if any(note.startswith("source revision") for note in record.notes)]
+    undecided = [record.id for record in revisions if any(note.startswith("source revision candidates") for note in record.notes)]
+    lines.extend(["", "## Source revisions (evidence cells; kept as notes, never scope)", ""])
+    lines.append(f"- records with a source revision note: {len(revisions)}; with an all-digit candidate among them: {len(undecided)}"
+                 + f" ({_ids(undecided) or 'none'})")
+    tracked = [record for record in records if record.type == "evidence" and any(note == TRACKED_NOTE.format(ref) for ref in record.links.refs for note in record.notes)]
+    lines.extend(["", "## Tracked evidence whose file becomes a REF", ""])
+    lines.extend(f"- {record.id} ({record.status}): {record.text('path')} -> {', '.join(record.links.refs)}" for record in tracked)
     lines.extend(["", "## Known limit: commit-like words only in a finding's claim (scope keeps none)", ""])
     lines.extend(f"- {identifier}: {', '.join(words)}" for identifier, words in claim_commits(result.records().values()))
     lines.extend(["", "## Judgments the rows force", ""])
     by_type: dict[str, list[str]] = defaultdict(list)
     for record in records:
         by_type[record.type].append(record.id)
-    lines.append(f"- bug status `fixed` (no status column; the table states the former behavior and the change): {_ids(by_type['bug'])}")
-    lines.append(f"- lead status `open` (the table calls the leads hypotheses to test): {_ids(by_type['lead'])}")
+    for kind in ("bug", "lead"):
+        unstated = [record for record in records if record.type == kind and record.status == UNSTATED]
+        framings = sorted({record.legacy.cells.get("table", "") for record in unstated if record.legacy is not None})
+        lines.append(f"- {kind} status `{UNSTATED}` on {len(unstated)} (no status column; the heading and preamble, kept as the"
+                     + f" `table` cell, state none): {_ids(record.id for record in unstated)}")
+        lines.extend("  - framing: " + framing.replace("\n", " / ") for framing in framings)
     lines.append(f"- reference status `current` (documents on the current surface): {_ids(by_type['reference'])}")
     standing = [record.id for record in records if record.type == "finding" and "standing" in record.fields]
     findings = len(by_type["finding"])
@@ -244,6 +273,8 @@ def render(result: Export, root: Path) -> str:
             stated = ", ".join(f"{name} {record.fields[name]}" for name in ("version_string", "server_build", "client_build") if name in record.fields)
             lines.append(f"- {record.id} ({record.status}): states {stated or 'no field'}; lacks {', '.join(record.gaps) or 'nothing'}")
             lines.extend(f"  - note: {note}" for note in record.notes)
+    lines.extend(["", "## Table-row edges (compatibility, lead, report, bug)", ""])
+    lines.extend(f"- {name}: {count}" for name, count in sorted(table_edges(result).items()))
     lines.extend(["", "## Citations kept as text (not edges)", ""])
     lines.extend(f"- {name}: {count}" for name, count in sorted(text_citations(result).items()))
     found = residue(result, root)

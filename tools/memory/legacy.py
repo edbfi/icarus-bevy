@@ -8,6 +8,9 @@ compatibility, campaign and lead tables, releases) and every document the cut-ov
 reference (``tools.memory.legacy_prose``: specs, digests, ledger prose, the status file, the evidence
 README), and returns every record once, as a first revision. Nothing is checked out and no artifact is read or hashed.
 
+A tracked evidence row whose path is the source of a document this export turns into a reference
+(``tracked_references``) gains that REF in ``refs`` and the note ``TRACKED_NOTE``; its path stays as it was.
+
 ``write(result, out)`` writes the segments under ``out/memory/journal``, one change set per record
 type, each segment created at the revision's commit time: exporting one revision twice yields
 byte-identical files.
@@ -27,11 +30,12 @@ from tools.memory import legacy_prose, legacy_tables
 from tools.memory.gitio import git
 from tools.memory.journal import JOURNAL, Revision, read_tree, split_change_set, write_change_set
 from tools.memory.legacy_rules import (
-    COMMIT_CELLS, EVIDENCE_CELL, PROSE_SUPERSESSION, SELECTOR_SUFFIX, SELECTORS, Migrated, MigrationError, extract, finish,
-    implied_status, standing, vocabulary,
+    EVIDENCE_CELL, PROSE_SUPERSESSION, REVISION_CELLS, SCOPE_COMMIT_CELLS, SELECTOR_SUFFIX, SELECTORS, UNSTATED, UNSTATED_NOTE, Migrated,
+    MigrationError, extract, finish, implied_status, standing, vocabulary,
 )
 from tools.memory.model import CONFIDENCES, EVIDENCE_CLASSES, EVIDENCE_KINDS, FINDING_KINDS, JSON, SEVERITIES, TYPES, Record, id_key
 
+TRACKED_NOTE = "tracked file migrated to {} at cut-over (link assigned at migration)"
 ORDER = ("evidence", "finding", "unknown", "bug", "lead", "report", "compatibility", "reference", "release")
 
 
@@ -58,7 +62,7 @@ class Export:
     created: datetime
     migrated: list[Migrated] = field(default_factory=list[Migrated])
     prose_links: list[ProseLink] = field(default_factory=list[ProseLink])
-    commits: dict[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
+    unplaced: dict[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
     catalog: Catalog | None = None
     index: Index | None = None
 
@@ -86,12 +90,12 @@ def legacy_cells(entry: Entry) -> dict[str, JSON]:
     return cells
 
 
-def row_links(entry: Entry, index: Index, *, resolved: bool) -> dict[str, list[str]]:
-    """``cites``, ``refs``, ``superseded_by`` and ``resolved_by`` of one ledger row (see the module docstring)."""
+def row_links(entry: Entry, index: Index) -> dict[str, list[str]]:
+    """``cites``, ``refs`` and ``superseded_by`` of one ledger row (``tools.memory.legacy_rules``)."""
     record = entry.record
     prefix = record.kind
     evidence_cell = EVIDENCE_CELL.get(prefix)
-    found: dict[str, set[str]] = {"cites": set(), "refs": set(), "superseded_by": set(), "resolved_by": set()}
+    found: dict[str, set[str]] = {"cites": set(), "refs": set(), "superseded_by": set()}
     bare: dict[str, set[str]] = {}
     for name, value in record.fields.items():
         text = stripped = str(value)
@@ -111,11 +115,8 @@ def row_links(entry: Entry, index: Index, *, resolved: bool) -> dict[str, list[s
             continue
         elif target.startswith("M-") and link.field == evidence_cell:
             found["cites"].add(target)
-        elif resolved and link.field == "findings" and target.startswith("F-"):
-            found["resolved_by"].add(target)
         else:
             found["refs"].add(target)
-    found["refs"] -= found["resolved_by"]
     return {name: sorted(items, key=id_key) for name, items in found.items() if items}
 
 
@@ -123,9 +124,8 @@ def put_links(data: dict[str, JSON], legacy: dict[str, JSON], links: Mapping[str
     for name in ("cites", "refs"):
         if name in links:
             data[name] = list[JSON](links[name])
-    for name in ("superseded_by", "resolved_by"):
-        if name in links:
-            legacy[name] = list[JSON](links[name])
+    if "superseded_by" in links:
+        legacy["superseded_by"] = list[JSON](links["superseded_by"])
 
 
 def convert_finding(entry: Entry, index: Index, prose: Sequence[ProseLink]) -> Migrated:
@@ -142,11 +142,11 @@ def convert_finding(entry: Entry, index: Index, prose: Sequence[ProseLink]) -> M
         data["standing"] = stated
     if (area := topic(entry.path)) is not None:
         data["area"] = area
-    extraction = extract(cells, COMMIT_CELLS["F"])
+    extraction = extract(cells, SCOPE_COMMIT_CELLS["F"], REVISION_CELLS["F"])
     if extraction.scope is not None:
         data["scope"] = extraction.scope
     legacy: dict[str, JSON] = {"path": entry.path, "cells": legacy_cells(entry)}
-    links = dict(row_links(entry, index, resolved=False))
+    links = dict(row_links(entry, index))
     stated_prose = [link for link in prose if link.old == identifier]
     if stated_prose:
         links["superseded_by"] = sorted({*links.get("superseded_by", []), *(link.new for link in stated_prose)}, key=id_key)
@@ -172,27 +172,29 @@ def convert_unknown(entry: Entry, index: Index) -> Migrated:
         data["severity"] = vocabulary(cells["severity"], SEVERITIES)
     if cells["next_probe"]:
         data["next_probe"] = cells["next_probe"]
-    extraction = extract(cells, COMMIT_CELLS["U"])
+    extraction = extract(cells, (), REVISION_CELLS["U"])
     if extraction.scope is not None:
         data["scope"] = extraction.scope
     legacy: dict[str, JSON] = {"path": entry.path, "cells": legacy_cells(entry)}
-    put_links(data, legacy, row_links(entry, index, resolved=implied == "resolved"))
+    put_links(data, legacy, row_links(entry, index))
     if implied is not None:
         legacy["implied_status"] = implied
     return Migrated(finish(data, legacy, extraction), f"{entry.path}:{entry.line}", extraction)
 
 
-def convert_bug(entry: Entry, index: Index) -> Migrated:
+def convert_bug(entry: Entry, index: Index, framing: str) -> Migrated:
+    """A native defect: its table has no status column (``legacy_rules``), so ``UNSTATED`` with the table's
+    heading and preamble (``framing``) kept as the ``table`` cell."""
     cells = {name: str(value) for name, value in entry.record.fields.items()}
     data: dict[str, JSON] = {
-        "id": entry.record.identifier, "type": "bug", "status": "fixed",
-        "trigger": cells["trigger_and_former_behavior"], "change": cells["change"],
+        "id": entry.record.identifier, "type": "bug", "status": UNSTATED,
+        "trigger": cells["trigger_and_former_behavior"], "change": cells["change"], "notes": [UNSTATED_NOTE],
     }
     extraction = extract(cells)
     if extraction.scope is not None:
         data["scope"] = extraction.scope
-    legacy: dict[str, JSON] = {"path": entry.path, "cells": legacy_cells(entry)}
-    put_links(data, legacy, row_links(entry, index, resolved=False))
+    legacy: dict[str, JSON] = {"path": entry.path, "cells": {**legacy_cells(entry), "table": framing}}
+    put_links(data, legacy, row_links(entry, index))
     return Migrated(finish(data, legacy, extraction), f"{entry.path}:{entry.line}", extraction)
 
 
@@ -233,6 +235,20 @@ def prose_links(catalog: Catalog) -> list[ProseLink]:
     return found
 
 
+def tracked_references(migrated: list[Migrated]) -> None:
+    """Link each tracked evidence record whose path a REF of the same export migrates (module docstring)."""
+    sources = {item.record.legacy.path: item.record.id for item in migrated if item.record.type == "reference" and item.record.legacy}
+    for position, item in enumerate(migrated):
+        record = item.record
+        target = sources.get(record.text("path") or "")
+        if record.type != "evidence" or record.text("class") != "tracked" or target is None:
+            continue
+        data = record.to_json()
+        data["refs"] = list[JSON](sorted({*record.links.refs, target}, key=id_key))
+        data["notes"] = [*record.notes, TRACKED_NOTE.format(target)]
+        migrated[position] = Migrated(Record.from_json(data), item.source, item.extraction)
+
+
 def commit_time(root: Path, revision: str) -> datetime:
     return datetime.fromtimestamp(int(git(root, "show", "-s", "--format=%ct", revision).decode().strip()), UTC)
 
@@ -255,19 +271,20 @@ def export(root: Path, rev: str) -> Export:
             case "U":
                 result.migrated.append(convert_unknown(entry, index))
             case "N":
-                result.migrated.append(convert_bug(entry, index))
+                result.migrated.append(convert_bug(entry, index, legacy_tables.framing(catalog, entry.path, entry.line)))
             case _:
                 result.migrated.append(convert_evidence(entry))
-    result.migrated.extend(legacy_tables.tables(catalog))
+    result.migrated.extend(legacy_tables.tables(catalog, index))
     result.migrated.extend(legacy_prose.references(root, revision))
     result.migrated.extend(legacy_tables.releases(root, revision, index))
+    tracked_references(result.migrated)
     seen: set[str] = set()
     for item in result.migrated:
         if item.record.id in seen:
             raise MigrationError(f"{item.record.id}: defined twice ({item.source})")
         seen.add(item.record.id)
-        if item.extraction is not None and len(item.extraction.commits) > 1:
-            result.commits[item.record.id] = item.extraction.commits
+        if item.extraction is not None and item.extraction.unplaced:
+            result.unplaced[item.record.id] = item.extraction.unplaced
     return result
 
 
