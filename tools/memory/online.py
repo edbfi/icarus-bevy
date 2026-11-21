@@ -670,12 +670,13 @@ def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revis
 
     A record is affected when a staged segment adds, modifies or deletes one of its revisions (a deleted
     segment is read from ``HEAD``): deleting an unaccepted retirement reactivates the revision before it, which
-    is then judged. An unreadable segment raises, so the pre-commit hook fails closed."""
+    is then judged. Every journal file is parsed as a segment, as ``check --ci`` reads the tree, so a stray file
+    or an unreadable one raises ``JournalError`` naming it and the pre-commit hook fails closed."""
     changed = git(root, "diff", "--cached", "--no-renames", "--name-status", "-z", "--diff-filter=AMD", "--", JOURNAL).decode().split("\0")
     pairs = [(changed[index], changed[index + 1]) for index in range(0, len(changed) - 1, 2)]
     staged = sorted(path for status, path in pairs if status in ("A", "M"))
     deleted = sorted(path for status, path in pairs if status == "D")
-    indexed = sorted(path for path in git(root, "ls-files", "-z", "--", JOURNAL).decode().split("\0") if path.endswith(".jsonl"))
+    indexed = sorted(path for path in git(root, "ls-files", "-z", "--", JOURNAL).decode().split("\0") if path)
     committed = {segment.path: segment for segment in accepted}
     for path, data in zip(indexed, read_blobs(root, [f":{path}" for path in indexed]), strict=True):
         if data is None:

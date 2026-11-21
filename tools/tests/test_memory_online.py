@@ -648,6 +648,15 @@ class EvidenceTests(Online):
         staged = online.verify(self.root, (), staged=True)
         self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (staged.status, staged.lines[0]))
 
+    def test_staged_refuses_a_stray_file_in_the_journal(self) -> None:
+        stray = self.root / "memory/journal/2026/11/notes.txt"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        _ = stray.write_text("not a segment\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "memory/journal")
+        stray.unlink()  # only the index holds it: the working-tree replay never sees it
+        with self.assertRaisesRegex(JournalError, r"^memory/journal/2026/11/notes\.txt: not a segment path"):
+            _ = online.verify(self.root, (), staged=True)
+
     def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
         self.put("work/case/receipt.txt", "invented receipt")
         _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
