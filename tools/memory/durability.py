@@ -606,7 +606,7 @@ def register(commands: Subcommands) -> None:
     """``memory service ...``, ``memory backup`` and ``memory restore ...``."""
     service = commands.add_parser("service", help="install and run the always-on memory service")
     _ = service.add_argument("action", choices=("install", "start", "stop", "status", "uninstall"))
-    _ = service.add_argument("--reranker", metavar="off|N", help="with install: turn reranking off or cap its candidates per recall (default 50)")
+    _ = service.add_argument("--reranker", metavar="off|N", help="with install: turn reranking off or cap its candidates per recall (default: the current setting, off on a first install)")
     service.set_defaults(handler=run_service)
     made = commands.add_parser("backup", help="pg_dump the memory service with its watermark, then rotate")
     made.set_defaults(handler=run_backup)

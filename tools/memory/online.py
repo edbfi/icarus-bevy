@@ -1048,8 +1048,12 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         config, _overrides = bank.config()
         reranking = config.get("enable_reranking") is not False
         cap = reranker_cap()
-        ranker = (f"reranker on, at most {cap} candidates (instance-wide; Hindsight 1.2.3 takes no per-request cap)"
-                  if reranking else "reranker off (bank config); fused ranking only")
+        if not reranking:
+            ranker = "reranker off (bank config); fused ranking only"
+        elif cap is None:
+            ranker = "reranker on although the service settings say off (Hindsight's own default candidate count); run memory service install"
+        else:
+            ranker = f"reranker on, at most {cap} candidates (instance-wide; Hindsight 1.2.3 takes no per-request cap)"
         lines.extend(f"repaired: {document}: differed from the journal; rewritten from it (something wrote to the bank outside the tool)" for document in repaired)
         if hidden:
             lines.append(f"not shown ({len(hidden)} over the {RECALL_BUDGET // 1024} KB budget): {capped(hidden, 12)}; memory get ID reads one, --full prints all")
