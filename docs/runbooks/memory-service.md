@@ -18,12 +18,16 @@ repository; the service is shared by all of them.
    start that it stops and drops, then verifies the build against a pinned
    digest. It needs more than 31 GiB free; a missing build makes
    `memory service install` name this command.
-2. `memory service install` writes the owner-only connection file (key, ports,
-   database password) under `$XDG_CONFIG_HOME/icarus-memory/`, the systemd user
-   units `icarus-memory.service`, `icarus-memory-backup.service` and
+2. `memory service install` writes the owner-only connection file
+   `connection-v2.env` (key, ports, database password) under
+   `$XDG_CONFIG_HOME/icarus-memory/`, the systemd user units
+   `icarus-memory.service`, `icarus-memory-backup.service` and
    `icarus-memory-backup.timer`, and starts the service on 127.0.0.1:18681
-   (PostgreSQL 18682). Data lives under `$XDG_DATA_HOME/icarus-memory/`.
-   Never print, log or pass the key.
+   (PostgreSQL 18682). Data lives under `$XDG_DATA_HOME/icarus-memory/`. An
+   older `connection.env` is moved to the new name with a new key (ports and
+   password kept) and the unit restarts; a tombstone named `connection.env`
+   stays in its place, on a fresh host too. Never print, log or pass the key,
+   and never edit or remove the tombstone.
 3. A new instance is empty: `memory rebuild` (needs the 30 GiB free-disk floor),
    then `memory sync` and `memory check --bank`.
 
@@ -73,12 +77,13 @@ second path; it needs no dump. Evidence bytes have no off-host copy:
 ## Worktrees that predate the cut-over
 
 A branch cut before the cut-over still has `docs/ledgers/` and `evidence/`, and
-the rows it added there exist nowhere else. Its own tools fail closed first:
-a `memory` command or scratch guard older than `main`'s journal format cannot
-parse that journal, so `tools/work_gc.py` reports `protected paths unknown: …`
-and holds everything, `tools/cargo_guard.py` refuses cleanup with
-`protected evidence unknown: …`, and `memory` commands exit with the segment
-and field they cannot read. A worktree older than the memory tool keeps its own
+the rows it added there exist nowhere else. A worktree whose memory tool is
+older than the bank's rendering guard (it contains `8592948e` but not the
+cut-over) parses `main`'s journal, and its scratch guards (`tools/work_gc.py`,
+`tools/cargo_guard.py`) keep working, but its online `memory` commands stop at
+`connection.env:1: malformed or repeated line`: the service's connection file
+was retired for `connection-v2.env`, and the tombstone left under the old name
+says to merge `main`. A worktree older than the memory tool keeps its own
 legacy hooks and notices nothing until it merges `main`. On `main`,
 `memory check --ci` on such a branch says `this branch predates the cut-over`
 and lists its rows, but its own hooks are old and CI checks the merge commit,
