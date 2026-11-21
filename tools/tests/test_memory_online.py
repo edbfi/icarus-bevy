@@ -1310,6 +1310,20 @@ class TerminalTests(Online):
         self.assertFalse(any("(terminal: )" in line for line in got.lines))
 
 
+class NamedDocumentTests(Online):
+    def test_get_routes_a_document_a_legacy_cell_names_to_the_ref_holding_it(self) -> None:
+        body = "# Invented spec\n"
+        ref = Record.from_json({"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                "scope": {"basis": "explicit", "subjects": ["tooling"]}, "body_sha256": sha256_hex(body.encode()),
+                                "legacy": {"path": "docs/specs/net/invented.md", "cells": {"document": "docs/specs/net/invented.md"}}}, body)
+        row = Record.from_json({**finding("F-501", "Invented row naming a spec"), "legacy": {
+            "path": "docs/ledgers/findings/invented.md", "cells": {"evidence": "spec; [spec](../../specs/net/invented.md)", "status": "active"}}})
+        _ = write_change_set(self.root, CREATED, [Revision.of(ref), Revision.of(row), Revision.of(Record.from_json(finding("F-502", "Invented plain row")))])
+        commit_all(self.root)
+        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", online.get(self.bank, self.root, "F-501").lines)
+        self.assertFalse(any(line.startswith("content:") for line in online.get(self.bank, self.root, "F-502").lines))
+
+
 class StampTests(Online):
     """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
 

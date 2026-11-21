@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -31,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
@@ -564,6 +565,25 @@ def migrated_to(state: State | None, record: Record) -> str | None:
     return None
 
 
+DOCUMENT_PATH = re.compile(r"(?<![\w./-])((?:\.\./|docs/)[\w./-]+\.md)")
+
+
+def named_documents(state: State, record: Record) -> tuple[tuple[str, str], ...]:
+    """``(REF, path)`` for each document a migrated record's legacy cells name by path (relative to its ledger, or
+    from ``docs/``) that a REF of ``state`` now holds: read-time routes, no journal link."""
+    if record.legacy is None or record.type in ("reference", "evidence"):
+        return ()
+    held = {entry.record.legacy.path: name for name, entry in state.entries.items() if entry.record.type == "reference" and entry.record.legacy is not None}
+    base = PurePosixPath(record.legacy.path).parent
+    found: dict[str, str] = {}
+    for cell in (value for name, value in record.legacy.cells.items() if name != "original"):
+        for match in DOCUMENT_PATH.finditer(cell):
+            path = match[1] if match[1].startswith("docs/") else posixpath.normpath(str(base / match[1]))
+            if (name := held.get(path)) is not None:
+                found[name] = path
+    return tuple(sorted(found.items(), key=lambda item: id_key(item[0])))
+
+
 def locator_found(primary: Path, locator: str) -> bool:
     """Whether a tracked locator's path exists under the primary checkout and, when it names one, its ``#anchor`` is defined there."""
     path, _, anchor = locator.partition("#")
@@ -941,7 +961,8 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
         "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
     }
     # A tracked file migrated into a REF: where its content now is comes first.
-    lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, ""]
+    routes = [f"content: {name} (holds {path}, which its legacy cells name)" for name, path in named_documents(state, record)]
+    lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, "", *routes]
     lines += [f"state: {target.state}", f"status: {status_label(universe, entry, target.revision.rev, proposed)}", *([f"partition: {phrase}"] if phrase else []),
               f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
     if "/" in citation:
