@@ -62,22 +62,25 @@ The command prints the proposal change set as segment lines, or writes it under 
 unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
 branch's, or for a new document when an accepted REF holds its body) and exits 1 if there is any. ``--out`` also
 writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
-``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that uses it. Exit status: 0 success; 1 a conflict or an error; 2 usage;
-``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
-still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
-parent instead (nothing is printed or written).
+``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that
+uses it.
+
+Exit status: 0 success; 1 a conflict or an error; 2 usage; ``EXIT_SUPERSEDE`` (4) some row needs a superseding
+record or a decision by hand (and none conflicts; the other proposals are still printed or written);
+``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge parent instead (nothing is printed
+or written).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import sys
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
-from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Protocol
 
 from tools.evidence_catalog_model import CatalogError

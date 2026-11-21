@@ -16,34 +16,32 @@ the server app in a release profile.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
 import contextlib
 import hashlib
 import io
 import json
-import shlex
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
-from unittest import mock
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
+from unittest import mock
 
+from tools.memory import cli, migrate, online, salvage as salvage_command
 from tools.memory.canonical import render_text
-from tools.memory.journal import Revision, Segment, read_tree, write_change_set
+from tools.memory.check import revision_problems
+from tools.memory.journal import Revision, Segment, read_git, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
-from tools.memory.legacy_rules import extract, standing
 from tools.memory.legacy_prose import account
 from tools.memory.legacy_report import inbound, render, residue
+from tools.memory.legacy_rules import extract, standing
 from tools.memory.model import JSON, Record, RecordError
-from tools.memory import migrate
 from tools.memory.parity import parity
 from tools.memory.paths import ProtectedPathsError
-from tools.memory import cli, online, salvage as salvage_command
-from tools.memory.check import revision_problems
-from tools.memory.journal import read_git
 from tools.memory.salvage import Salvage, salvage
 from tools.memory.state import State, legacy_listed, partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git

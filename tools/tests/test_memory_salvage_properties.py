@@ -15,8 +15,8 @@ import unittest
 
 from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
-from tools.memory.model import JSON, Record
 from tools.memory.legacy import TRACKED_NOTE
+from tools.memory.model import JSON, Record
 from tools.memory.salvage import SALVAGED, Accepted, Salvage, SalvageError, classify, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
