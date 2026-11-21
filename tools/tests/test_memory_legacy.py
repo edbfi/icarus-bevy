@@ -21,6 +21,8 @@ import contextlib
 import hashlib
 import io
 import json
+import shlex
+import re
 import subprocess
 import tempfile
 import unittest
@@ -33,7 +35,7 @@ from tools.memory.journal import Revision, Segment, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
 from tools.memory.legacy_rules import extract, standing
 from tools.memory.model import JSON, Record, RecordError
-from tools.memory import salvage as salvage_command
+from tools.memory import cli, online, salvage as salvage_command
 from tools.memory.check import revision_problems
 from tools.memory.journal import read_git
 from tools.memory.salvage import Salvage, salvage
@@ -536,7 +538,8 @@ class SalvageTests(LegacyRepository):
         # A changed claim is not revisable: the row needs a superseding record and is never proposed.
         self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
         self.assertEqual("supersede", result.kinds["F-107"])
-        self.assertIn("docs/ledgers/findings/widgets.md: changed on feature; revise the body of REF-007 by hand", result.notices)
+        self.assertTrue(any(notice.startswith("docs/ledgers/findings/widgets.md: changed document; revise REF-007 with the body salvage --out writes")
+                            for notice in result.notices), result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
         self.assertEqual(sorted(result.unsalvaged), ["F-107", "F-111", "F-112", "M-105"])
@@ -865,6 +868,40 @@ class SalvageTests(LegacyRepository):
         self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
         self.assertIn("F-107: F-105 would supersede it, but F-107 is undecided; F-105 is not revised", result.notices)
 
+    def test_a_notice_about_a_held_row_follows_the_successor_s_actual_links(self) -> None:
+        # Main already links F-105 -> F-107. The branch names F-105 and F-109 as F-107's successors (F-109's claim edit
+        # holds it, so F-107 is held) and F-108 superseded by F-105, so F-105 is revised to carry F-108's link and keeps
+        # the accepted link to F-107.
+        records = self.journal_on_main(remove_legacy=False)
+        f105 = records["F-105"]
+        linked = Revision.of(Record.from_json({**f105.to_json(), "supersedes": ["F-107"]}, f105.body), [Revision.of(f105).rev])
+        _ = write_change_set(self.root, datetime(2026, 2, 3, tzinfo=UTC), [linked])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main links F-105 to F-107")
+        self.publish()
+        _ = run_git(self.root, "checkout", "-q", "-b", "kept", "main~1")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        text = ledger.read_text()
+        text = text.replace("Last reconciled", "F-107 superseded-by F-109.\n\nLast reconciled")
+        text = text.replace("owner said so | | active |", "owner said so | | superseded-by F-105 |")
+        text = text.replace("| medium; loopback |  | active |", "| medium; loopback |  | superseded-by F-105 |")
+        text = text.replace("|  F-109 | Spaced row |", "|  F-109 | Spaced row edited |")
+        _ = ledger.write_text(text)
+        _ = run_git(self.root, "commit", "-q", "-am", "branch edits")
+        result = salvage(self.root, "kept")
+        self.assertEqual("undecided", result.kinds["F-107"])
+        f105_proposal = next(item.record for item in result.proposals if item.record.id == "F-105")
+        self.assertEqual(("F-107", "F-108"), f105_proposal.links.supersedes)
+        self.assertIn("F-107: F-105 would supersede it, but F-107 is undecided; F-105 keeps the link its accepted record already holds", result.notices)
+        self.assertFalse(any("F-105 is proposed without that link" in notice for notice in result.notices))
+
+    def test_invariants_refuse_a_notice_its_proposal_contradicts(self) -> None:
+        self.superseded_by_new_row()
+        result = salvage(self.root, "pair")
+        result.notices.append("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is not revised")
+        with self.assertRaisesRegex(salvage_command.SalvageError, "F-111: a notice says it is not revised"):
+            salvage_command.invariants(result, ["F-107", "F-111"], salvage_command.accepted_on(self.root, "origin/main"))
+
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
         self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",
@@ -1002,7 +1039,13 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "commit", "-q", "-m", "revise the spec's REF")
         self.publish()
 
-    def test_check_lists_a_pending_document_until_the_accepted_body_equals_the_branch_file(self) -> None:
+    def ref_body(self, ref: str, path: str) -> str:
+        body = next(record.body for record in export(self.root, ref).records().values()
+                    if record.type == "reference" and record.legacy is not None and record.legacy.path == path)
+        assert body is not None
+        return body
+
+    def test_check_lists_a_pending_document_and_out_writes_the_body_that_clears_it(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "spec-only")
         spec = self.root / "docs/specs/net/another.md"
         _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
@@ -1010,17 +1053,49 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual(1, status)
-        self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: changed document; memory revise REF-[0-9]+ --body docs/specs/net/another.md "
-                         + r"\(listed until the accepted body equals this file; a body merged by hand into other text stays listed\)")
+        self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: changed document; revise REF-[0-9]+ with the body salvage --out writes "
+                         + r"\(listed until the accepted body equals the branch's; a body merged by hand into other text stays listed\)")
+        self.assertNotIn("--body", stdout, "no path that does not exist")
         self.assertIn("0 unsalvaged row(s), 1 pending document(s) on spec-only", stdout)
-        branch_body = next(record.body for record in export(self.root, "spec-only").records().values()
-                           if record.type == "reference" and record.legacy is not None and record.legacy.path == "docs/specs/net/another.md")
-        assert branch_body is not None
-        self.revise_spec_on_main(branch_body.replace("one more line", "a different line"))
+        out = self.top / "out"
+        status, _stdout, stderr = self.run_salvage("spec-only", out=out)
+        written = out / "documents/docs/specs/net/another.md"
+        self.assertEqual(self.ref_body("spec-only", "docs/specs/net/another.md").encode(), written.read_bytes(), "the exporter's body at the tip")
+        self.assertRegex(stderr, rf"docs/specs/net/another.md: memory revise REF-[0-9]+ --body {re.escape(str(written))}")
+        self.revise_spec_on_main(written.read_text(encoding="utf-8").replace("one more line", "a different line"))
         self.assertEqual(1, self.run_salvage("spec-only", check=True)[0], "a body merged into other text stays listed")
-        self.revise_spec_on_main(branch_body)
+        self.revise_spec_on_main(written.read_text(encoding="utf-8"))
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout))
+
+    def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
+        _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Scope\n\nInvented: new.\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "add a spec")
+        _ = self.journal_on_main(remove_legacy=True)
+        status, stdout, _stderr = self.run_salvage("new-doc", check=True)
+        self.assertEqual(1, status)
+        self.assertIn("new-doc: docs/specs/net/third.md: new document; salvage --out writes its body", stdout)
+        out = self.top / "out"
+        _, _stdout, stderr = self.run_salvage("new-doc", out=out)
+        written = out / "documents/docs/specs/net/third.md"
+        self.assertEqual(self.ref_body("new-doc", "docs/specs/net/third.md").encode(), written.read_bytes())
+        command = next(line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: "))
+        words = shlex.split(command)
+        self.assertEqual(["memory", "propose", "reference"], words[:3])
+        options = cli.parse_options(words[1:])
+        changes = online.changes_from(vars(options))
+        data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
+        assert changes.body is not None
+        data |= {"id": "REF-900", "type": "reference", "status": "current", "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest()}
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = write_change_set(self.root, datetime(2026, 4, 2, tzinfo=UTC), [Revision.of(Record.from_json(data, changes.body))])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "propose the new spec as a REF")
+        self.publish()
+        status, stdout, _stderr = self.run_salvage("new-doc", check=True)
+        self.assertEqual((0, True), (status, "0 pending document(s)" in stdout), stdout)
 
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")

@@ -44,7 +44,12 @@ against the accepted commit as the normal path does: if anything is left (a prop
 a changed document), ``premerge`` names that parent and nothing is classified: run ``memory salvage <premerge>``;
 if all of it is accepted (its salvage merged first, as the runbook does), nothing is left to salvage.
 
-New compatibility and campaign rows get positional IDs at export, so their IDs are only provisional.
+Migration-assigned IDs (REF, CP, RP) are positional in an export, so a branch that adds or removes a document or a
+table row numbers the rest differently from the accepted journal. Before anything is compared, both exports are
+translated to the accepted journal's IDs by identity (``renumber``: a REF by its legacy path, a CP row by its name,
+an RP row by its reported problem), in record IDs, links and citations. A record with no accepted counterpart gets a
+provisional number above every accepted one: a row citing it is held until that record is accepted, and a new CP or
+RP row is proposed (its number provisional) only if nothing on the branch cites it.
 A document the branch changed (a spec, digest, ledger prose, the status file) is listed by path with
 the accepted REF whose body to revise, since a REF's ``legacy`` never changes and its body is revised by hand.
 ``unsalvaged`` holds every proposal, conflict, ``supersede`` or ``undecided`` row whose content (ID and sha256)
@@ -53,7 +58,9 @@ is not yet in ``ref``'s own journal.
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
 unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
-branch's file) and exits 1 if there is any. Exit status: 0 success; 1 a conflict or an error; 2 usage;
+branch's, or for a new document when an accepted REF holds its body) and exits 1 if there is any. ``--out`` also
+writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
+``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that uses it. Exit status: 0 success; 1 a conflict or an error; 2 usage;
 ``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
 still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
 parent instead (nothing is printed or written).
@@ -62,6 +69,8 @@ parent instead (nothing is printed or written).
 from __future__ import annotations
 
 import argparse
+import json
+import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,7 +81,7 @@ from typing import Protocol
 from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
-from tools.memory.legacy import SALVAGED, commit_time, export
+from tools.memory.legacy import SALVAGED, TRACKED_NOTE, commit_time, export
 from tools.memory.legacy_reader import CatalogError, has_legacy
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
@@ -102,7 +111,32 @@ class Salvage:
     premerge: str | None = None
     merge: str | None = None
     # Pending documents: (path, the REF whose body to revise, or None for a new document).
-    documents: list[tuple[str, str | None]] = field(default_factory=list[tuple[str, str | None]])
+    documents: list[Pending] = field(default_factory=list["Pending"])
+
+
+@dataclass(frozen=True)
+class Pending:
+    """A document the branch changed or added: its legacy path, the accepted REF whose body to revise (``None`` for
+    a new document), and the body and title the exporter gives its REF at the salvaged tip."""
+
+    path: str
+    target: str | None
+    body: str
+    title: str
+
+    def command(self, file: str) -> str:
+        """What the operator runs once ``--out`` wrote the body to ``file``."""
+        if self.target is not None:
+            return f"memory revise {self.target} --body {shlex.quote(file)}"
+        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + json.dumps({'basis': 'explicit'}))}"
+                + f" --body {shlex.quote(file)}")
+
+    def line(self) -> str:
+        """The pending document without ``--out``: no path is named that does not exist."""
+        if self.target is not None:
+            return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
+                    + " branch's; a body merged by hand into other text stays listed)")
+        return "new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF holds that body)"
 
 
 @dataclass(frozen=True)
@@ -413,8 +447,9 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted) -
     """Raise ``SalvageError`` (naming the row) unless (a) no proposal links to a row this run holds, reports as a
     conflict or leaves unproposed, unless the accepted journal holds it (and an added ``supersedes``/``resolves``
     names only a row in play); (b) replaying the accepted journal with the proposals adds no problem; (c) every
-    changed row is in exactly one class, its proposal present exactly when the class has one, and every notice
-    that claims a proposal names one in the output."""
+    changed row is in exactly one class, its proposal present exactly when the class has one; (d) every notice
+    about a successor's link agrees with that successor's proposal (absent, with the link, or without it); (e) no
+    proposal carries a migration-assigned ID (REF, CP, RP) that is not the accepted journal's ID for that identity."""
     accepted = on_accepted.records
     proposed = {revision.record.id: revision.record for revision in result.proposals}
     if len(proposed) != len(result.proposals):
@@ -448,9 +483,25 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted) -
     for identifier in proposed:
         if result.kinds.get(identifier) not in with_proposal:
             raise SalvageError(f"{identifier}: proposed but classed {result.kinds.get(identifier)}")
+    # (e) No proposal carries a migration-assigned ID other than the accepted journal's (a new CP or RP row's own provisional ID aside).
+    for identifier, record in proposed.items():
+        assigned = [name for name in (*record.links.targets(), *(record.legacy.superseded_by if record.legacy is not None else ()))
+                    if name.split("-", 1)[0] in ASSIGNED and name not in accepted]
+        if identifier.split("-", 1)[0] in ASSIGNED and identifier not in accepted and result.kinds.get(identifier) != "new":
+            assigned.append(identifier)
+        if assigned:
+            raise SalvageError(f"{identifier}: carries {', '.join(assigned)}, not the accepted journal's ID for that identity")
+    # (d) A notice about a link agrees with the links of the proposal it names.
     for notice in result.notices:
-        if (claim := re.search(r"; ([A-Z]+-[0-9]+) is proposed without that link$", notice)) and claim[1] not in proposed:
-            raise SalvageError(f"{claim[1]}: a notice claims a proposal the output does not hold")
+        claim = re.fullmatch(r"([A-Z]+-[0-9]+): ([A-Z]+-[0-9]+) would supersede it, but .*; \2 (is proposed without that link|is not revised"
+                             + r"|keeps the link its accepted record already holds)", notice)
+        if claim is None:
+            continue
+        old, target, outcome = claim[1], claim[2], claim[3]
+        record = proposed.get(target)
+        holds = record is not None and old in record.links.supersedes
+        if (outcome == "is not revised") != (record is None) or (record is not None and holds != outcome.startswith("keeps")):
+            raise SalvageError(f"{target}: a notice says it {outcome} about {old}, which its proposal contradicts")
 
 
 def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
@@ -476,28 +527,114 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     after = export(root, head).records()
     before = export(root, base).records() if has_legacy(root, base) else {}
     on_accepted = accepted_on(root, accepted_commit)
-    superseding = classify(result, after, before, on_accepted)
+    (after, before), unmapped = renumber((after, before), on_accepted.records)
+    superseding = classify(result, after, before, on_accepted, unmapped)
     accepted = on_accepted.records
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
+    # A new document is done once some accepted REF holds its body (a REF proposed by hand has no legacy path).
+    held_bodies = {record.body for record in accepted.values() if record.type == "reference" and record.body is not None}
     for path, record in sorted(documents(after).items()):
         on_main = main_refs.get(path)
-        if on_main is None:
-            result.documents.append((path, None))
-            result.notices.append(f"{path}: new document; propose a REF for it by hand")
-        elif record.body not in (on_main.body, base_bodies.get(path)):
-            result.documents.append((path, on_main.id))
-            result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
+        body, title = record.body or "", record.text("title") or path
+        if on_main is None and body not in held_bodies:
+            result.documents.append(Pending(path, None, body, title))
+            result.notices.append(f"{path}: {result.documents[-1].line()}")
+        elif on_main is not None and record.body not in (on_main.body, base_bodies.get(path)):
+            result.documents.append(Pending(path, on_main.id, body, title))
+            result.notices.append(f"{path}: {result.documents[-1].line()}")
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
     result.unsalvaged += [new.id for _old, new in result.conflicts]
     return result
 
 
-def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted) -> list[Revision]:
+# Migration-assigned IDs are positional in an export: a branch that adds a document or a table row numbers the rest
+# differently from the accepted journal. They are translated by identity before anything is compared.
+ASSIGNED = ("REF", "CP", "RP")
+
+
+def identity(record: Record) -> str | None:
+    """What a migration-assigned record is, whatever its number: a REF its legacy path, a CP row its name (its first
+    cell, the Surface or Subsurface), an RP row its reported problem."""
+    if record.type == "reference":
+        return f"document {record.legacy.path}" if record.legacy is not None else None
+    if record.type == "compatibility":
+        return f"compatibility row {record.text('name')!r}"
+    if record.type == "report":
+        return f"report row {record.text('problem')!r}"
+    return None
+
+
+def relink(record: Record, mapping: Mapping[str, str]) -> Record:
+    """``record`` with its ID and every linked ID (``supersedes``, ``resolves``, ``refs``, ``cites``, legacy successors, and the
+    exporter's ``TRACKED_NOTE`` naming a REF) mapped."""
+    targets = {record.id, *record.links.targets(), *(record.legacy.superseded_by if record.legacy is not None else ())}
+    if not targets & mapping.keys():
+        return record
+    data = record.to_json()
+    data["id"] = mapping.get(record.id, record.id)
+    for name in ("supersedes", "resolves", "refs"):
+        if isinstance(items := data.get(name), list):
+            data[name] = [mapping.get(item, item) if isinstance(item, str) else item for item in items]
+    if isinstance(items := data.get("cites"), list):
+        data["cites"] = [mapping.get(item.split("/", 1)[0], item.split("/", 1)[0]) + item[len(item.split("/", 1)[0]):] if isinstance(item, str) else item
+                         for item in items]
+    # The exporter's own note naming the REF a tracked file became carries the number too.
+    renamed = {TRACKED_NOTE.format(old): TRACKED_NOTE.format(new) for old, new in mapping.items() if old.startswith("REF-")}
+    if isinstance(notes := data.get("notes"), list):
+        data["notes"] = [renamed.get(note, note) if isinstance(note, str) else note for note in notes]
+    if isinstance(legacy := data.get("legacy"), dict) and isinstance(successors := legacy.get("superseded_by"), list):
+        legacy["superseded_by"] = [mapping.get(item, item) if isinstance(item, str) else item for item in successors]
+    return Record.from_json(data, record.body)
+
+
+def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record]) -> tuple[list[dict[str, Record]], dict[str, str]]:
+    """Each export with its migration-assigned IDs translated to the accepted journal's, by ``identity``. A record
+    with no accepted counterpart (or an identity that is not unique) gets a provisional number above every accepted
+    one, the same in every export; returns the exports and the provisional IDs, each with what it is."""
+    counts: dict[str, int] = {}
+    for record in accepted.values():
+        if (key := identity(record)) is not None:
+            counts[key] = counts.get(key, 0) + 1
+    known = {key: record.id for record in accepted.values() if (key := identity(record)) is not None and counts[key] == 1}
+    top = {prefix: max((int(name.split("-", 1)[1]) for name in accepted if name.split("-", 1)[0] == prefix), default=0) for prefix in ASSIGNED}
+    provisional: dict[str, str] = {}
+    unmapped: dict[str, str] = {}
+    result: list[dict[str, Record]] = []
+    for export in exports:
+        seen: dict[str, int] = {}
+        for record in export.values():
+            if (key := identity(record)) is not None:
+                seen[key] = seen.get(key, 0) + 1
+        mapping: dict[str, str] = {}
+        for record in export.values():
+            key = identity(record)
+            if key is None or record.id.split("-", 1)[0] not in ASSIGNED:
+                continue
+            if key in known and seen[key] == 1:
+                target = known[key]
+            else:
+                if key not in provisional:
+                    prefix = record.id.split("-", 1)[0]
+                    top[prefix] += 1
+                    provisional[key] = f"{prefix}-{top[prefix]:03d}"
+                    unmapped[provisional[key]] = f"the new {key}"
+                target = provisional[key]
+            if target != record.id:
+                mapping[record.id] = target
+        translated = {relink(record, mapping).id: relink(record, mapping) for record in export.values()}
+        result.append(translated)
+    return result, unmapped
+
+
+def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
+             unmapped: Mapping[str, str] | None = None) -> list[Revision]:
     """Classify every row ``after`` (the branch's export) changes against ``before`` (the merge base's) and the
     accepted journal, filling ``result``; checked by ``invariants`` before it returns. Returns the revisions of the
-    rows held or in conflict (for ``unsalvaged``). Pure: no Git, no files."""
+    rows held or in conflict (for ``unsalvaged``). Pure: no Git, no files. ``unmapped``: the provisional numbers
+    ``renumber`` gave records with no accepted counterpart; a row linking to one is held until that record is accepted."""
     ref = result.ref
+    unmapped = unmapped or {}
     result.source, accepted = on_accepted.source, on_accepted.records
     superseding: list[Revision] = []
     edits: dict[str, Edit] = {}
@@ -520,6 +657,15 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             continue
         changed.append(identifier)
         on_main, origin = accepted.get(identifier), before.get(identifier)
+        named = {*record.links.targets(), *(record.legacy.superseded_by if record.legacy is not None else ())}
+        if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
+            hold(identifier, "undecided", "it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in cited)
+                 + ", whose record must be accepted first")
+            continue
+        if identifier in unmapped and (citing := sorted((name for name, other in after.items() if name != identifier and identifier in {
+                *other.links.targets(), *(other.legacy.superseded_by if other.legacy is not None else ())}), key=id_key)):
+            hold(identifier, "undecided", f"its provisional number is cited by {', '.join(citing)}; propose it alone first")
+            continue
         if on_main == record:
             result.kinds[identifier] = "accepted"
         elif origin is None:
@@ -549,16 +695,19 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             links.setdefault(target, []).append(identifier)
     for identifier in fresh:
         record, on_main = after[identifier], accepted.get(identifier)
-        linked = record
+        # What a run of salvage may have proposed for it: the row, with ``supersedes`` for any of the old rows naming
+        # it (settling may have kept only some), so the accepted record is compared without those links.
+        linked = on_main
         for old in links.get(identifier, ()):
-            linked = with_supersedes(linked, old)
+            if linked is not None and old in linked.links.supersedes and old not in record.links.supersedes:
+                linked = without_supersedes(linked, old)
         if on_main is None:
             result.kinds[identifier] = "new"
             if record.type in ("compatibility", "report"):
                 result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
             # Without links: the linking pass below adds each only from an edit that is neither a conflict nor held.
             result.proposals.append(Revision.of(record))
-        elif on_main in (record, linked):
+        elif linked == record:
             result.kinds[identifier] = "accepted"
         else:
             result.kinds[identifier] = "conflict"
@@ -596,9 +745,14 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):
-                carried = any(item.record.id == target for item in result.proposals)
-                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; "
-                                      + (f"{target} is proposed without that link" if carried else f"{target} is not revised"))
+                proposal = next((item for item in result.proposals if item.record.id == target), None)
+                if proposal is None:
+                    outcome = f"{target} is not revised"
+                elif old in proposal.record.links.supersedes:
+                    outcome = f"{target} keeps the link its accepted record already holds"
+                else:
+                    outcome = f"{target} is proposed without that link"
+                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {outcome}")
     for target, reason in sorted(unlinkable.items()):
         result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
@@ -649,10 +803,8 @@ def run(options: argparse.Namespace) -> int:
         if check:
             for identifier in result.unsalvaged:
                 print(f"{ref}: {identifier}: {result.kinds[identifier]} legacy row not yet salvaged")
-            for path, target in result.documents:
-                print(f"{ref}: {path}: " + (f"changed document; memory revise {target} --body {path} (listed until the accepted body equals "
-                                            + "this file; a body merged by hand into other text stays listed)" if target is not None
-                                            else "new document; propose a REF for it"))
+            for document in result.documents:
+                print(f"{ref}: {document.path}: {document.line()}")
             print(f"memory salvage --check: {len(result.unsalvaged)} unsalvaged row(s), {len(result.documents)} pending document(s) on {ref} "
                   + f"(merge-base {result.base[:12]})")
             return 1 if result.unsalvaged or result.documents else 0
@@ -671,6 +823,12 @@ def run(options: argparse.Namespace) -> int:
               + f"{len(result.undecided)} needing a decision by hand, "
               + f"{len(result.conflicts)} conflict(s), {len(accepted)} row(s) already accepted "
               + f"(against {main} {result.main[:12]}'s {'journal' if result.source == 'journal' else 'legacy export'})", file=sys.stderr)
+        if out is not None:
+            for document in result.documents:
+                target = out / "documents" / document.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _ = target.write_bytes(document.body.encode())
+                print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)
         if result.proposals:
             created = commit_time(root, result.head)
             if out is not None:
