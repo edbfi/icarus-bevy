@@ -740,7 +740,8 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "retire")
         (revision,) = result.proposals
         self.assertEqual(("F-107", "retired"), (revision.record.id, revision.record.status))
-        self.assertEqual("status cell on retire: retired: replaced by the invented design", revision.record.notes[-1])
+        tip = run_git(self.root, "rev-parse", "retire").strip()[:12]
+        self.assertEqual(f"status cell on {tip}: retired: replaced by the invented design", revision.record.notes[-1])
         self.assertEqual(self.records["F-107"].legacy, revision.record.legacy, "main's verbatim cells are kept")
         _ = self.legal(result)
 
@@ -922,6 +923,24 @@ class SalvageTests(LegacyRepository):
         self.edited("pair", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",
                              "owner said so | | superseded-by F-111 |\n| F-111 | Replacement claim | observed | review | high; x | | active |"))
 
+    def test_a_status_note_is_the_same_by_branch_name_and_by_its_merged_tip(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "named")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("owner said so | | active |", "owner said so | | retired: dropped |"))
+        _ = run_git(self.root, "commit", "-q", "-am", "retire F-107")
+        _ = self.journal_on_main(remove_legacy=True)
+        first = salvage(self.root, "named")
+        self.assertEqual(["F-107"], [item.record.id for item in first.proposals])
+        self.accept(first)
+        _ = run_git(self.root, "checkout", "-q", "named")
+        with self.assertRaises(subprocess.CalledProcessError):
+            _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        _ = run_git(self.root, "rm", "-r", "-q", "--ignore-unmatch", "docs/ledgers", "evidence")
+        _ = run_git(self.root, "commit", "-q", "--no-edit")
+        status, stdout, stderr = self.run_salvage("named")
+        self.assertEqual((0, ""), (status, stdout), stderr)
+        self.assertIn("leaves nothing to salvage", stderr)
+
     def test_a_dropped_old_row_strips_its_link_from_the_successor(self) -> None:
         self.superseded_by_new_row()
         result = self.forced("pair", "F-107")
@@ -950,8 +969,8 @@ class SalvageTests(LegacyRepository):
     def test_one_bad_row_never_aborts_the_run(self) -> None:
         self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")
 
-        def failing(origin: Record, record: Record, ref: str) -> salvage_command.Edit:
-            raise RecordError(f"{record.id}: invented failure on {ref} ({origin.id})")
+        def failing(origin: Record, record: Record, ref: str, tip: str) -> salvage_command.Edit:
+            raise RecordError(f"{record.id}: invented failure on {ref} at {tip} ({origin.id})")
 
         with mock.patch.object(salvage_command, "plan", failing):
             result = salvage(self.root, "two")

@@ -203,8 +203,10 @@ def changed_cells(old: Record, new: Record) -> tuple[str, ...]:
     return tuple(found)
 
 
-def plan(origin: Record, record: Record, ref: str) -> Edit:
-    """The branch's edit of the migrated row ``origin`` (as of the merge base), cell by cell (module docstring table)."""
+def plan(origin: Record, record: Record, ref: str, tip: str = "") -> Edit:
+    """The branch's edit of the migrated row ``origin`` (as of the merge base), cell by cell (module docstring table).
+    ``ref`` (as typed) names the branch in reasons; a note stored in the record names ``tip``, the salvaged commit's
+    short SHA, so the revision is the same however the ref was spelled (a branch name, the pre-merge SHA)."""
     fields = tuple(name for name in unrevisable_fields(origin, record) if name not in ("legacy", "gaps"))
     if blocked := fields or changed_cells(origin, record):
         return Edit(blocked=blocked)
@@ -240,7 +242,7 @@ def plan(origin: Record, record: Record, ref: str) -> Edit:
         else:
             return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
         if status is not None:
-            notes.append(f"status cell on {ref}: {cell}")
+            notes.append(f"status cell on {tip or ref}: {cell}")
     # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
         return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
@@ -404,7 +406,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             hold(identifier, "supersede", unrevisable_fields(origin, record) or ("content",))
         else:
             try:
-                edit = plan(origin, record, ref)
+                edit = plan(origin, record, ref, head[:12])
             except RecordError as error:
                 hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
                 continue
