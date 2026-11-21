@@ -52,16 +52,18 @@ provisional number above every accepted one: a row citing it is held until that 
 RP row is proposed (its number provisional) only if nothing on the branch cites it. Records sharing an identity in
 one export (two CP rows of one name) are never mapped: each gets its own provisional number and is held, with every
 row citing one.
-A document the branch changed (a spec, digest, ledger prose, the status file) is listed by path with
-the accepted REF whose body to revise, since a REF's ``legacy`` never changes and its body is revised by hand.
+A document the branch changed or added (a spec, digest, ledger prose, the status file) is listed by path
+(``pending_documents``), matched to the accepted REF of that path by identity only (its legacy path or its
+``DOCUMENT_NOTE``, never its body): a body revision when the text's tokens equal that REF's scope tokens, else a
+superseding REF; a new REF for a new document; nothing but a decision by hand when two accepted REFs name the path.
 ``unsalvaged`` holds every proposal, conflict, ``supersede`` or ``undecided`` row whose content (ID and sha256)
 is not yet in ``ref``'s own journal.
 
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out DIR``, a directory that must not exist (salvage creates it, and removes it again if anything fails); notices,
 conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
-unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
-branch's, or for a new document when an accepted REF holds its body) and exits 1 if there is any. ``--out`` also
+unsalvaged row and each pending document (done when the accepted REF of its path holds the branch's body) and exits
+1 if there is any. ``--out`` also
 writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
 ``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that
 uses it.
@@ -100,7 +102,7 @@ SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatib
 EXIT_SUPERSEDE = 4
 # The note a REF proposed with salvage's printed command carries: the legacy document it stands for (its identity).
 DOCUMENT_NOTE = "salvaged document: {}"
-DOCUMENT_NOTED = re.compile(r"salvaged document: (\S+)")
+DOCUMENT_NOTED = re.compile(r"salvaged document: (.+)")
 # A new document's printed command carries this in place of a scope: not JSON, so the tool refuses it until replaced.
 SCOPE_PLACEHOLDER = "<STATE THE SCOPE>"
 # The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.

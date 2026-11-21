@@ -256,7 +256,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                              f"seed {seed}: what run 1 proposed is accepted in run 2")
             self.assertEqual(set[str](), {name for name, kind in again.kinds.items() if kind == "conflict"} - set(held), f"seed {seed}: new conflicts")
             if "M-501" in raw_after:
-                # The new document proposed by hand (no legacy, same body) and accepted: the row citing it now translates.
+                # The new document proposed by hand (no legacy; the note names its path) and accepted: the row citing it now translates.
                 body = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/a.md")
                 assert body is not None
                 hand = Revision.of(Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "docs/specs/a.md",

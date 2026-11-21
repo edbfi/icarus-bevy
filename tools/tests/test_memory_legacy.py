@@ -1376,6 +1376,19 @@ class SalvageTests(LegacyRepository):
         self.assertEqual(("ambiguous", ("REF-900", "REF-901"), []), (document.kind, document.holders, document.commands("FILE")))
         self.assertIn("the accepted journal holds REF-900, REF-901 for this path: decide by hand (no command)", document.line())
 
+    def test_a_note_with_a_space_in_its_path_round_trips_through_the_printed_command(self) -> None:
+        pending = salvage_command.Pending("docs/specs/net/two words.md", "new", "# Two words\n", "Two words")
+        written = self.top / "out dir/documents/docs/specs/net/two words.md"
+        written.parent.mkdir(parents=True)
+        _ = written.write_text("# Two words\n", encoding="utf-8")
+        (command,) = pending.commands(str(written))
+        stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit"}'))
+        changes = online.changes_from(vars(cli.parse_options(stated[1:])))
+        assert changes.note is not None
+        record = Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "Two words", "scope": {"basis": "explicit"},
+                                   "body_sha256": hashlib.sha256(b"# Two words\n").hexdigest(), "notes": [changes.note]}, "# Two words\n")
+        self.assertEqual("docs/specs/net/two words.md", salvage_command.document_path(record))
+
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
@@ -1415,7 +1428,7 @@ class SalvageTests(LegacyRepository):
         self.accept_reference(changes, "REF-900")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertIn("0 pending document(s)", stdout)
-        # Run 2: the document maps to the REF proposed by hand (by body), so the row citing it is proposed with that ID.
+        # Run 2: the document maps to the REF proposed by hand (by its "salvaged document:" note), so the row citing it is proposed with that ID.
         second = salvage(self.root, "new-doc")
         self.assertEqual("new", second.kinds["M-105"])
         self.assertEqual(("REF-900",), next(item.record for item in second.proposals if item.record.id == "M-105").links.refs)
