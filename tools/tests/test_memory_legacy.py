@@ -1470,7 +1470,7 @@ class SalvageTests(LegacyRepository):
 
     def test_out_is_removed_when_a_step_inside_it_fails(self) -> None:
         self.outs_branch()
-        real_mkdir, real_fsync = os.mkdir, os.fsync
+        real_mkdir = os.mkdir
 
         def failing_mkdir(path: str | os.PathLike[str], mode: int = 0o777) -> None:
             if str(path).endswith("memory"):
@@ -1489,7 +1489,6 @@ class SalvageTests(LegacyRepository):
                 self.assertEqual(1, status)
                 self.assertIn(f"removed {out}, which this run had created", stderr)
                 self.assertFalse(os.path.lexists(out))
-        del real_fsync
 
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
