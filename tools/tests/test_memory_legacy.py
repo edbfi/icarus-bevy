@@ -1299,6 +1299,24 @@ class SalvageTests(LegacyRepository):
         self.assertIn("File exists; removed the 1 file(s) this run had created", stderr)
         self.assertEqual([], [path for path in out.rglob("*") if path.is_file()], "the first file this run created is gone")
 
+    def test_out_removes_what_it_created_when_a_write_fails(self) -> None:
+        self.outs_branch()
+        out = self.top / "out"
+        real = os.fsync
+        calls: list[int] = []
+
+        def full(descriptor: int) -> None:
+            calls.append(descriptor)
+            if len(calls) == 2:
+                raise OSError(28, "No space left on device")
+            real(descriptor)
+
+        with mock.patch("tools.memory.salvage.os.fsync", full):
+            status, _stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual(1, status)
+        self.assertIn("No space left on device; removed the 2 file(s) this run had created", stderr)
+        self.assertEqual([], [path for path in out.rglob("*") if path.is_file()], "the partly written file is gone too")
+
     def test_out_refuses_an_earlier_run_s_files_it_would_not_write(self) -> None:
         self.outs_branch()
         out = self.top / "out"
