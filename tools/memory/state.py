@@ -133,17 +133,32 @@ class State:
         entry = self.entries.get(identifier)
         return entry.record if entry is not None else None
 
-    def status(self, identifier: str) -> str:
-        """Derived status of a known ID: superseded, resolved, an implied legacy retirement while ``legacy_holds``,
-        or the stored status. ``superseded_by`` holds a head's legacy edges only while they hold."""
-        entry = self.entries[identifier]
-        record = entry.record
-        implied = record.legacy.implied_status if record.legacy is not None and entry.legacy_holds(entry.heads[0]) else None
-        if self.superseded_by.get(identifier) or implied == "superseded":
+    def stated_superseders(self, identifier: str) -> tuple[str, ...]:
+        """Records of this state whose own ``supersedes`` names ``identifier`` (``superseded_by`` also holds the
+        record's own legacy edges)."""
+        return tuple(name for name in self.superseded_by.get(identifier, ())
+                     if (record := self.record(name)) is not None and identifier in record.links.supersedes)
+
+    def status_at(self, entry: Entry, rev: str) -> str:
+        """THE derived status: revision ``rev`` of ``entry`` against this state's links. ``entry`` is the history
+        holding the revision, from whichever replay shows it (the union, a checkout's view, ``origin/main``), so
+        its legacy status is judged on its own path (``Entry.legacy_holds``); the links that supersede or resolve
+        it are those of this state (``origin/main``'s for the bank). Superseded by a stated link or by its legacy
+        edges while they hold; resolved by a link or its holding legacy status; a holding legacy retirement;
+        else its stored status. Every surface that shows a derived status asks this, never the record alone."""
+        record = entry.revisions[rev].revision.record
+        legacy = record.legacy if record.legacy is not None and entry.legacy_holds(rev) else None
+        implied = legacy.implied_status if legacy is not None else None
+        if self.stated_superseders(record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
             return "superseded"
-        if self.resolved_by.get(identifier) or implied == "resolved":
+        if self.resolved_by.get(record.id) or implied == "resolved":
             return "resolved"
         return "retired" if implied == "retired" else record.status
+
+    def status(self, identifier: str) -> str:
+        """``status_at`` of a known ID's head (the first, at a fork) against this state's own links."""
+        entry = self.entries[identifier]
+        return self.status_at(entry, entry.heads[0])
 
     def retired(self, identifier: str) -> bool:
         return self.status(identifier) in ("superseded", "retired")

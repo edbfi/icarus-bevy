@@ -1128,6 +1128,81 @@ class OlderToolTests(Online):
         self.assertEqual((), tuple(path for path in read_tree(self.root) if "F-107" in path.path), "nothing was written")
 
 
+class OneDerivedStatusTests(Online):
+    """Every surface reports the derived status ``State.status_at`` gives the revision it shows, for each history
+    of a migrated evidence row retired with ``superseded_by`` M-202 (migration status ``retired``)."""
+
+    @staticmethod
+    def receipt(status: str, notes: tuple[str, ...] = ()) -> Record:
+        data: dict[str, JSON] = {**evidence("M-201", "work/case/a.txt", status=status, area="listing", label="Invented gadget receipt"),
+                                 "legacy": {"path": "evidence/x.jsonl", "cells": {"row": "{}"}, "superseded_by": ["M-202"]}}
+        if notes:
+            data["notes"] = list[JSON](notes)
+        return Record.from_json(data)
+
+    def history(self, name: str) -> str:
+        """Write the history ``name``; the derived status of the revision this checkout reads (its view head)."""
+        root = Revision.of(self.receipt("retired"))
+        newer = Revision.of(Record.from_json(evidence("M-202", "work/case/b.txt", area="listing")))
+        active = Revision.of(self.receipt("active", ("Invented: back",)), [root.rev])
+        again = Revision.of(self.receipt("retired", ("Invented: back", "Invented: done")), [active.rev])
+        noted = Revision.of(self.receipt("retired", ("Invented: note",)), [root.rev])
+        accepted, local, expected = {
+            "first": ([root, newer], [], "superseded"),
+            "notes": ([root, newer, noted], [], "superseded"),
+            "override": ([root, newer, active], [], "active"),
+            "restore": ([root, newer, active, again], [], "retired"),
+            "override here": ([root, newer], [active], "active"),
+            "restore here": ([root, newer], [active, again], "retired"),
+            "fork": ([root, newer, active, noted], [], ""),
+            "reconciled": ([root, newer, active, noted, Revision.of(self.receipt("retired", ("Invented: back", "Invented: note")),
+                                                                    [active.rev, noted.rev])], [], "retired"),
+        }[name]
+        for number, revision in enumerate(accepted):
+            _ = write_change_set(self.root, CREATED.replace(second=number), [revision])
+        commit_all(self.root)
+        for number, revision in enumerate(local, start=30):
+            _ = write_change_set(self.root, CREATED.replace(second=number), [revision])
+        return expected
+
+    def offline(self, identifier: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(0, cli.main(["get", identifier, "--offline"]))
+        return output.getvalue().split("\n")
+
+    def test_every_surface_reports_the_same_derived_status(self) -> None:
+        for name in ("first", "notes", "override", "restore", "override here", "restore here", "fork", "reconciled"):
+            with self.subTest(name):
+                self.setUp()
+                expected = self.history(name)
+                universe = gather(self.root)
+                view = universe.view.entries["M-201"]
+                head = view.heads[0]
+                shown = universe.settled.status_at(view, head)
+                if expected:
+                    self.assertEqual(expected, shown)
+                self.assertEqual(shown, universe.state.status("M-201"), "replay of the union")
+                documents = {item.document_id: item for item in desired(universe).values() if item.record_id == "M-201"}
+                holding = next(item for item in documents.values() if item.revision.rev == head)
+                self.assertEqual(shown, holding.status, "the bank document of that revision")
+                for lines in (online.get(self.bank, self.root, "M-201").lines, self.offline("M-201")):
+                    if holding.document_id == "M-201":
+                        self.assertTrue(any(line.startswith(f"status: {shown}") for line in lines), lines)
+                    else:
+                        self.assertIn(f"status {shown}", next(line for line in lines if line.startswith(f"pending revision: {holding.document_id}")))
+                recalled = "\n".join(online.recall(self.bank, self.root, "invented gadget receipt", include_evidence=True).lines)
+                # Recall shows the M-201 document (retired ones under their successor), never a pending revision.
+                self.assertRegex(recalled, rf"M-201 \[(evidence; )?{documents['M-201'].state}, {documents['M-201'].status}[];]")
+                listing = online.area(self.bank, self.root, "listing").data["statuses"]
+                assert isinstance(listing, dict)
+                self.assertIn("M-201", [row.get("id") for row in cast(list[dict[str, JSON]], listing[shown])])
+                counts = online.status(self.bank, self.root).data["by_type"]
+                assert isinstance(counts, dict)
+                expected_counts = {"active": 2} if shown == "active" else {"active": 1, shown: 1}
+                self.assertEqual(expected_counts, counts["evidence"])
+
+
 class StampTests(Online):
     """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
 
