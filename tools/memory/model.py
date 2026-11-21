@@ -384,6 +384,24 @@ class Record:
         return result
 
 
+def regap(data: dict[str, JSON], name: str) -> None:
+    """On a migrated record's JSON, after a revision filled or cleared the field ``name``: list it in ``gaps``
+    exactly when it is absent and required, so the record validates."""
+    if "legacy" not in data:
+        return
+    held = data.get("gaps")
+    gaps = {item for item in held if isinstance(item, str)} if isinstance(held, list) else set[str]()
+    kind = data.get("type")
+    if name in data or not isinstance(kind, str) or kind not in TYPES or name not in TYPES[kind].required:
+        gaps.discard(name)
+    else:
+        gaps.add(name)
+    if gaps:
+        data["gaps"] = list[JSON](sorted(gaps, key=id_key))
+    else:
+        _ = data.pop("gaps", None)
+
+
 def _dump(value: Value) -> JSON:
     if isinstance(value, tuple):
         return list(value)

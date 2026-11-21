@@ -45,7 +45,7 @@ from tools.memory.gitio import GitError, descends, git, listed_files
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags
 from tools.memory.journal import JournalError, Revision, Segment, write_change_set
 from tools.memory.model import (
-    ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, sha256_hex,
+    ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, regap, sha256_hex,
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor, reranker_cap
@@ -350,6 +350,7 @@ def _revision_of(current: Session, identifier: str, edit: Mapping[str, JSON | No
             _ = data.pop(name, None)
         else:
             data[name] = value
+        regap(data, name)
     if note is not None:
         notes.append(note)
     if notes:
