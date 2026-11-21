@@ -16,6 +16,7 @@ the server app in a release profile.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping, Sequence
 import contextlib
 import io
 import json
@@ -901,6 +902,50 @@ class SalvageTests(LegacyRepository):
             result = salvage(self.root, "dangling")
         self.assertEqual([], result.proposals)
         self.assertIn("would not replay cleanly: F-107: revision ", result.undecided["F-107"])
+
+    def forced(self, branch: str, identifier: str) -> Salvage:
+        """Salvage ``branch`` with the first replay check also failing ``identifier``; the final set must replay cleanly."""
+        real = salvage_command.honoured
+        calls: list[int] = []
+
+        def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit]) -> dict[str, str]:
+            found = real(on_accepted, proposals, edits)
+            calls.append(len(calls))
+            return {**found, identifier: "invented failure"} if len(calls) == 1 else found
+
+        with mock.patch.object(salvage_command, "honoured", failing):
+            result = salvage(self.root, branch)
+        _ = self.legal(result)
+        return result
+
+    def superseded_by_new_row(self) -> None:
+        self.edited("pair", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",
+                             "owner said so | | superseded-by F-111 |\n| F-111 | Replacement claim | observed | review | high; x | | active |"))
+
+    def test_a_dropped_old_row_strips_its_link_from_the_successor(self) -> None:
+        self.superseded_by_new_row()
+        result = self.forced("pair", "F-107")
+        self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
+        self.assertEqual(("undecided", "invented failure"), (result.kinds["F-107"], result.undecided["F-107"]))
+        self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
+
+    def test_a_dropped_successor_holds_the_old_row(self) -> None:
+        self.superseded_by_new_row()
+        result = self.forced("pair", "F-111")
+        self.assertEqual([], result.proposals)
+        self.assertEqual("undecided", result.kinds["F-107"])
+        self.assertIn("its successor F-111 is not proposed (invented failure)", result.undecided["F-107"])
+        self.assertIn("F-107", result.unsalvaged)
+
+    def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
+        # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
+        self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",
+                              "owner said so | | active |\n| F-111 | One | observed | review | high; x | | superseded-by F-112 |"
+                              + "\n| F-112 | Two | observed | review | high; x | | superseded-by F-111 |"))
+        result = salvage(self.root, "cycle")
+        self.assertEqual([], result.proposals)
+        self.assertEqual({"F-111", "F-112"}, {name for name, reason in result.undecided.items() if "supersession cycle" in reason}, result.undecided)
+        _ = self.legal(result)
 
     def test_one_bad_row_never_aborts_the_run(self) -> None:
         self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")

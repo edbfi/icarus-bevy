@@ -71,8 +71,8 @@ from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
 from tools.memory.legacy import commit_time, export
 from tools.memory.legacy_rules import MigrationError
-from tools.memory.model import JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
-from tools.memory.state import replay
+from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
+from tools.memory.state import State, replay
 
 ACCEPTANCE_REF = "origin/main"
 SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
@@ -306,17 +306,26 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
 
 
 def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit]) -> dict[str, str]:
-    """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly (no replay,
-    revision or link problem the accepted journal alone does not have, ``check --ci``'s tests) and every edit must
-    show. A status edit must derive its status, a successor must derive ``superseded`` on the old row, and every
-    proposal must change its record's head. Returns the IDs that fail, with why (never expected: a guard)."""
+    """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly and every edit
+    must show. Any replay, revision, link or cycle problem the accepted journal alone does not have (``check
+    --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
+    derive its status, an edit naming successors must derive ``superseded``, and every proposal must change its
+    record's head. Returns the IDs that fail, with why; ``salvage`` repeats it until nothing fails."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
     found: dict[str, str] = {}
-    known = {*accepted_state.problems, *revision_problems(accepted_state), *accepted_state.link_problems()}
-    for problem in (*proposed.problems, *revision_problems(proposed), *proposed.link_problems()):
-        identifier = problem.split(":", 1)[0]
-        if problem not in known and any(revision.record.id == identifier for revision in proposals):
+    ids = {revision.record.id for revision in proposals}
+
+    def problems(state: State) -> list[str]:
+        return [*state.problems, *revision_problems(state), *state.link_problems(),
+                *(f"supersession cycle {cycle}" for cycle in state.supersession_cycles())]
+
+    known = set(problems(accepted_state))
+    for problem in problems(proposed):
+        if problem in known:
+            continue
+        named = sorted({match[0] for match in ID.finditer(problem)} & ids, key=id_key)
+        for identifier in named or sorted(ids, key=id_key):
             _ = found.setdefault(identifier, f"it would not replay cleanly: {problem}")
     for revision in proposals:
         identifier = revision.record.id
@@ -329,9 +338,19 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
         shown = proposed.status(identifier)
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
             found[identifier] = f"its status {edit.status} would replay as {shown}"
-        if edit.successors and shown != "superseded" and any(revision.record.id in edit.successors for revision in proposals):
+        if edit.successors and shown != "superseded":
             found[identifier] = f"its successors {', '.join(edit.successors)} would not supersede it on replay"
     return found
+
+
+def without_supersedes(record: Record, old: str) -> Record:
+    """``record`` with ``old`` removed from its ``supersedes``."""
+    data = record.to_json()
+    if kept := [item for item in record.links.supersedes if item != old]:
+        data["supersedes"] = list[JSON](kept)
+    else:
+        _ = data.pop("supersedes", None)
+    return Record.from_json(data, record.body)
 
 
 def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
@@ -450,6 +469,8 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             if pending:
                 linking.append((identifier, pending))
     # The successor carries the link: on its proposal here, or on a revision of its accepted record.
+    attached: list[tuple[str, str]] = []
+    linked_only: set[str] = set()
     for identifier, pending in linking:
         if stuck := [target for target in pending if not any(item.record.id == target for item in result.proposals)
                      and (target not in accepted or result.kinds.get(target) not in (None, "accepted"))]:
@@ -457,11 +478,13 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             hold(identifier, "undecided", f"its row on {ref} names successor {', '.join(stuck)}, neither proposable here nor accepted")
             continue
         for target in pending:
+            attached.append((identifier, target))
             index = next((number for number, item in enumerate(result.proposals) if item.record.id == target), None)
             if index is not None:
                 proposal = result.proposals[index]
                 result.proposals[index] = Revision.of(with_supersedes(proposal.record, identifier), proposal.prev)
             else:
+                linked_only.add(target)
                 result.proposals.append(Revision.of(with_supersedes(accepted[target], identifier), on_accepted.heads[target]))
                 result.kinds[target] = "revision"
     for target, olds in sorted(links.items()):
@@ -469,11 +492,29 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
         for old in olds:
             if proposed is not None and old not in proposed.record.links.supersedes and result.kinds.get(old) in ("conflict", "supersede", "undecided"):
                 result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {target} is proposed without that link")
-    no_op = honoured(on_accepted, result.proposals, {identifier: edit for identifier, edit in edits.items()
-                                                     if result.kinds.get(identifier) in ("revision", "superseded")})
-    for identifier, reason in no_op.items():
-        result.proposals = [item for item in result.proposals if item.record.id != identifier]
-        hold(identifier, "undecided", reason)
+    # Fail closed, to a fixpoint: drop what does not replay, then what depended on it, until the set replays cleanly.
+    while failing := honoured(on_accepted, result.proposals, {identifier: edit for identifier, edit in edits.items()
+                                                              if result.kinds.get(identifier) in ("revision", "superseded")}):
+        for identifier, reason in failing.items():
+            result.proposals = [item for item in result.proposals if item.record.id != identifier]
+            linked_only.discard(identifier)
+            hold(identifier, "undecided", reason)
+        for old, target in list(attached):
+            proposal = next((item for item in result.proposals if item.record.id == target), None)
+            if proposal is None and old not in failing and result.kinds.get(old) in ("revision", "superseded"):
+                # The successor that was to carry the old row's status is gone: the old row is not salvaged either.
+                result.proposals = [item for item in result.proposals if item.record.id != old]
+                hold(old, "undecided", f"its successor {target} is not proposed ({result.undecided.get(target, 'held')})")
+            elif proposal is not None and result.kinds.get(old) not in ("revision", "superseded") and old in proposal.record.links.supersedes:
+                attached.remove((old, target))
+                stripped = without_supersedes(proposal.record, old)
+                result.proposals = [item for item in result.proposals if item.record.id != target]
+                if target in linked_only and stripped == accepted.get(target):
+                    linked_only.discard(target)
+                    result.kinds[target] = "accepted"
+                else:
+                    result.proposals.append(Revision.of(stripped, proposal.prev))
+                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {target} is proposed without that link")
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
                           if before[identifier].type in SALVAGED)
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
