@@ -1420,7 +1420,17 @@ class SalvageTests(LegacyRepository):
                                                  salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"), f"# Other {identifier}\n"), identifier)
         (document,) = salvage(self.root, "specs").documents
         self.assertEqual(("ambiguous", ("REF-900", "REF-901"), []), (document.kind, document.holders, document.commands("FILE")))
-        self.assertIn("the accepted journal holds REF-900, REF-901 for this path: decide by hand (no command)", document.line())
+        self.assertIn("the accepted journal holds REF-900 (scope: none); REF-901 (scope: none) for this path: decide by hand (no command)", document.line())
+
+    def test_two_refs_holding_the_branch_s_body_get_no_supersede_command(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md", cite=False)
+        scopes: list[tuple[str, JSON]] = [("REF-900", {"basis": "explicit", "releases": ["3.0.91"]}), ("REF-901", {"basis": "explicit", "releases": ["3.0.91", "3.0.92"]})]
+        for identifier, scope in scopes:
+            self.accept_reference(online.Changes({"title": "Third", "scope": scope}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                                 "# Same\n"), identifier)
+        (document,) = salvage(self.root, "specs").documents
+        self.assertEqual(("ambiguous", None, []), (document.kind, document.target, document.commands("FILE")))
+        self.assertIn("holds REF-900 (scope: 3.0.91); REF-901 (scope: 3.0.91, 3.0.92) for this path: decide by hand (no command)", document.line())
 
     def test_a_note_with_a_space_in_its_path_round_trips_through_the_printed_command(self) -> None:
         pending = salvage_command.Pending("docs/specs/net/two words.md", "new", "# Two words\n", "Two words")

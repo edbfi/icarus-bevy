@@ -145,6 +145,7 @@ class Pending:
     target: str | None = None
     holders: tuple[str, ...] = ()
     scope: tuple[str, ...] = ()
+    scopes: tuple[str, ...] = ()
 
     def commands(self, file: str) -> list[str]:
         """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
@@ -178,7 +179,8 @@ class Pending:
                 return (f"changed document; the accepted journal holds {', '.join(self.holders)} for this path, {self.target} with this body:"
                         + f" supersede {others} by it (" + "; ".join(f"memory supersede {other} --by {self.target}" for other in self.holders
                                                                     if other != self.target) + ") or decide by hand")
-            return f"changed document; the accepted journal holds {', '.join(self.holders)} for this path: decide by hand (no command)"
+            held = "; ".join(f"{holder} (scope: {scope})" for holder, scope in zip(self.holders, self.scopes, strict=True))
+            return f"changed document; the accepted journal holds {held} for this path: decide by hand (no command)"
         return ("new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
                 + " path, by legacy path or that command's note, with this body)")
 
@@ -208,9 +210,14 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         if not on_main:
             found.append(Pending(path, "new", body, title, names))
         elif len(on_main) > 1:
-            # Ambiguity before done: two REFs in force for one document is never done, even if one holds this body.
-            current = next((other.id for other in on_main if other.body == record.body), None)
-            found.append(Pending(path, "ambiguous", body, title, names, target=current, holders=tuple(sorted((other.id for other in on_main), key=id_key))))
+            # Ambiguity before done: two REFs in force for one document is never done. A supersession is offered only when
+            # exactly one of them holds this body; with several, which one's scope is right is the operator's call.
+            matching = [other.id for other in on_main if other.body == record.body]
+            ordered = sorted(on_main, key=lambda other: id_key(other.id))
+            found.append(Pending(path, "ambiguous", body, title, names, target=matching[0] if len(matching) == 1 else None,
+                                 holders=tuple(other.id for other in ordered),
+                                 scopes=tuple(", ".join(other.scope.tokens) if other.scope is not None and other.scope.tokens else "none"
+                                              for other in ordered)))
         elif record.body != on_main[0].body:
             held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
             kind = "revise" if sorted(names) == sorted(held) else "supersede"
