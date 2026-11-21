@@ -520,6 +520,41 @@ class RestoreRollback(Backups):
         self.assertEqual(settings.bank, "icarus")
 
 
+class DrillSettings(Backups):
+    def test_the_scratch_instance_runs_with_the_live_reranker_setting(self) -> None:
+        installed = Home(self.root / "live/config", self.root / "live/data", self.root / "live/state")
+        _ = ensure_settings(installed)
+        _settings, changed = set_reranker(installed, "40")
+        self.assertTrue(changed)
+        served: list[Settings] = []
+
+        def restore_cluster(pg0_home: Path, _dump: Path, _settings: Settings, _runtime: Assets) -> None:
+            pg0_home.mkdir(parents=True)
+
+        def serve(_scratch: Home, settings: Settings, _runtime: Assets) -> tuple[subprocess.Popen[bytes], float]:
+            served.append(settings)
+            raise ServiceError("stop here: the scratch settings are what this test reads")
+
+        def noop(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        def ready(_api: Api) -> bool:
+            return True
+
+        def free(_port: int) -> bool:
+            return False
+
+        floor = patch("tools.memory.service.shutil.disk_usage", return_value=Usage(FLOOR * 4, FLOOR, FLOOR * 3))
+        with (floor, patch.object(Api, "ready", ready), patch.object(durability, "port_open", free),
+              patch.object(durability, "restore_cluster", restore_cluster), patch.object(durability, "prepare_runtime_directories", noop),
+              patch.object(durability, "serve", serve), patch.object(durability, "stop_postgres", noop)):
+            with self.assertRaisesRegex(ServiceError, "stop here"):
+                _ = durability.drill(installed, self.runtime())
+        self.assertEqual(["40"], [item.reranker for item in served])
+        self.assertEqual(40, served[0].reranker_cap)
+        self.assertNotEqual(API_PORT, served[0].port, "the scratch instance never takes the live port")
+
+
 class Serve(Scratch):
     def test_a_scratch_instance_refuses_a_port_in_use(self) -> None:
         with socket.socket() as taken:

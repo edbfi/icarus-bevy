@@ -7,8 +7,22 @@
 - ``record_sha256``: the sha256 of a record's canonical JSON (a REF's JSON holds ``body_sha256``).
 - ``render_text``: the text of a record's bank document. A REF's text is its body. Any other record
   renders as ``<ID> <type> <status>`` on the first line, its headline field (claim, question, ...) on
-  the second, then its other fields in schema order; bundle members and legacy cells are omitted.
-  The result is LF-only and at most ``TEXT_LIMIT`` characters, or ``RenderError``.
+  the second, then a new finding's ``limits``, then (``legacy_lines``) every legacy cell of a migrated
+  record that no rendered field reproduces, then its other fields in schema order; bundle members are
+  omitted. The result is LF-only and at most ``TEXT_LIMIT`` characters, or ``RenderError``.
+- ``legacy_lines``: one ``<name>: <cell>`` line per non-empty legacy cell, the Scope and limits cell first
+  (as ``limits``), then Evidence (``evidence``), then the rest in name order. A cell is skipped when a
+  rendered field holds it verbatim: the status or a field equal to it, or to ``legacy:<cell>``, or an
+  enum value equal to it ignoring case (the vocabulary rule). ``original`` (a raw line kept for byte
+  parity) is never a line; of an evidence row's ``row`` only its ``status`` counts as a cell (its other
+  values are the record's rendered fields), so a derived status never hides the stored one. Edges the legacy row
+  stated about itself follow as ``superseded by (legacy row): ...``. The caveats and method words of a
+  row therefore sit next to its claim, inside the first 512 tokens ranking sees. A release has no such
+  lines: its cells quote the profiles and finding cells its ``sources`` field names one by one, each
+  finding cell already rendered in that finding's own text (and together they exceed ``TEXT_LIMIT``).
+- ``RENDERING``: the version of ``render_text``. Raise it whenever a record's text changes; the bank's
+  reconcile marker carries it (``tools.memory.bank``) so tools of different versions never rewrite each
+  other's documents.
 - ``tags`` and ``entities``: the tag set and entity list of a bank document.
 """
 
@@ -17,9 +31,14 @@ from __future__ import annotations
 import json
 import re
 
-from tools.memory.model import JSON, RUN, Record, RecordError, Value, sha256_hex, string_problem
+from tools.memory.model import JSON, LEGACY, RUN, Record, RecordError, Value, as_mapping, load_json, sha256_hex, string_problem
 
 TEXT_LIMIT = 1800
+# 1: fields only. 2: legacy cells and a new finding's limits are rendered.
+RENDERING = 2
+# Legacy cells rendered first, and the label each is shown under.
+LEGACY_FIRST = {"scope_and_limits": "limits", "evidence": "evidence"}
+LEGACY_HIDDEN = ("original",)
 STATES = ("accepted", "proposed", "pending", "orphaned", "conflict")
 # A Markdown code span on one line, and the identifiers entity extraction takes from it.
 CODE_SPAN = re.compile(r"(`+)([^`\n](?:[^\n]*?[^`\n])?)\1(?!`)")
@@ -69,10 +88,13 @@ def render_text(record: Record) -> str:
     lines = [f"{record.id} {record.type} {record.status}"]
     if (headline := record.text(spec.headline)) is not None:
         lines.append(headline)
+    if (limits := record.text("limits")) is not None:
+        lines.append(f"limits: {limits}")
+    lines.extend(legacy_lines(record))
     lines.extend(
         f"{name}: {_show(record.fields[name])}"
         for name in spec.fields
-        if name in record.fields and name not in (spec.headline, "members")
+        if name in record.fields and name not in (spec.headline, "members", "limits")
     )
     if (scope := record.scope) is not None:
         parts = [f"basis {scope.basis}"]
@@ -99,6 +121,32 @@ def render_text(record: Record) -> str:
     return text
 
 
+def legacy_lines(record: Record) -> list[str]:
+    """The legacy cells no rendered field reproduces, and the row's own supersession (module docstring)."""
+    legacy = record.legacy
+    if legacy is None or record.type == "release":
+        return []
+    shown = {record.status, *(_show(value) for name, value in record.fields.items() if name != "members")}
+    folded = {record.status, *(value for name, value in record.fields.items()
+                               if record.spec.fields[name].kind == "enum" and isinstance(value, str))}
+    cells = dict(legacy.cells)
+    if (row := cells.pop("row", None)) is not None:
+        stated = as_mapping(load_json(row.encode()), f"{record.id}: legacy row").get("status")
+        if isinstance(stated, str):
+            cells["status"] = stated
+    order = [name for name in LEGACY_FIRST if name in cells]
+    order += sorted(name for name in cells if name not in LEGACY_FIRST and name not in LEGACY_HIDDEN)
+    lines: list[str] = []
+    for name in order:
+        cell = cells[name]
+        if not cell or cell in shown or LEGACY + cell in shown or cell.lower() in folded:
+            continue
+        lines.append(f"{LEGACY_FIRST.get(name, name)}: {cell}")
+    if legacy.superseded_by:
+        lines.append("superseded by (legacy row): " + ", ".join(legacy.superseded_by))
+    return lines
+
+
 def tags(record: Record, *, state: str, status: str, segment: str) -> tuple[str, ...]:
     """Sorted tags of a bank document: ``state`` is one of ``STATES``, ``status`` the derived status."""
     if state not in STATES:
@@ -118,7 +166,7 @@ def entities(record: Record) -> tuple[str, ...]:
     """Sorted entities: linked IDs and selectors, builds, and identifiers in code spans of the text."""
     found = {*record.links.targets(), *(cite for cite in record.links.citations() if "/" in cite)}
     if record.legacy is not None:
-        found.update(record.legacy.superseded_by, record.legacy.resolved_by)
+        found.update(record.legacy.superseded_by)
     if record.scope is not None:
         found.update(record.scope.builds)
     found.update(item.build for item in record.links.verified_on)

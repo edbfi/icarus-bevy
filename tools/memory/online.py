@@ -35,10 +35,10 @@ from typing import Final, Protocol, cast
 
 from tools import sha256_manifest
 from tools.memory.bank import (
-    MARKER, Applied, Bank, BankError, Desired, Universe, Wanted, allocate, derived_status, desired, diff, gather, read_back, reconcile,
-    shared_elsewhere, unchanged,
+    MARKER, Applied, Bank, BankError, Desired, OlderTool, Universe, Wanted, allocate, derived_status, desired, diff, gather, marker_rendering, read_back,
+    reconcile, shared_elsewhere, unchanged,
 )
-from tools.memory.canonical import render_text
+from tools.memory.canonical import RENDERING, render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
 from tools.memory.gitio import GitError, descends, git, listed_files, read_blobs
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags, Unavailable
@@ -48,7 +48,7 @@ from tools.memory.model import (
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor, reranker_cap
-from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, partition, pinned_build, replay
+from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, legacy_listed, partition, pinned_build, replay
 
 FETCH_TIMEOUT = 120
 BUNDLE_PARSE_CAP = 64 * 1024 * 1024
@@ -84,7 +84,9 @@ class Output:
 
 @dataclass
 class Session:
-    """``trusted``: the bank diff was skipped on the reconcile stamp; ``reconcile_now`` drops that trust."""
+    """``trusted``: the bank diff was skipped on the reconcile stamp; ``reconcile_now`` drops that trust.
+    ``older``: the ``OlderTool`` message when a newer tool rendered the bank: the read neither reconciled nor
+    repairs, and exact GET accepts a document whose ``sha256`` and ``rev`` match the journal (``same``)."""
 
     root: Path
     bank: Bank
@@ -92,10 +94,11 @@ class Session:
     applied: Applied
     now: datetime
     trusted: bool = False
+    older: str | None = None
 
     def reconcile_now(self) -> bool:
         """A read whose verification failed on a trusted stamp reconciles in full once; True if it did."""
-        if not self.trusted:
+        if not self.trusted or self.older is not None:
             return False
         self.trusted = False
         self.applied = reconcile(self.bank, self.universe)
@@ -111,14 +114,25 @@ def session(bank: Bank, root: Path, *, now: datetime | None = None, orphan: bool
             read: bool = False) -> Generator[Session]:
     """Under the host lock: gather the journal, finish an interrupted regeneration, and reconcile the bank with
     it (replay first). A ``read`` skips the bank diff when the reconcile stamp shows nothing new (``unchanged``);
-    a write always reconciles in full."""
+    a write always reconciles in full. A bank a newer tool rendered (``OlderTool``) refuses every write; a read
+    goes on without reconciling, its message a notice (``Session.older``)."""
     with host_lock():
         universe = gather(root)
         if heal_regeneration(universe):
             universe = gather(root)
         trusted = read and unchanged(bank, universe)
-        applied = Applied(notices=list(universe.notices)) if trusted else reconcile(bank, universe, orphan=orphan, bulk=bulk)
-        yield Session(root, bank, universe, applied, now or now_utc(), trusted)
+        older: str | None = None
+        if trusted:
+            applied = Applied(notices=list(universe.notices))
+        else:
+            try:
+                applied = reconcile(bank, universe, orphan=orphan, bulk=bulk)
+            except OlderTool as error:
+                if not read:
+                    raise
+                older = str(error)
+                applied = Applied(notices=[*universe.notices, older])
+        yield Session(root, bank, universe, applied, now or now_utc(), trusted, older)
 
 
 def validate(universe: Universe, revisions: Sequence[Revision], *, replacing: str | None = None) -> list[str]:
@@ -266,15 +280,15 @@ def proof_problems(universe: Universe, after: State, record: Record) -> list[str
         values = run.run
         listed = [item for key in ("targets", "identities") if isinstance(value := values.get(key), tuple) for item in value]
         environment = str(values.get("environment", ""))
-        if run.status != "active":
-            reasons.append(f"{name} is {run.status}")
+        if (run_status := derived_status(universe.settled, run)) != "active":
+            reasons.append(f"{name} is {run_status}")
         elif values.get("outcome") != "pass":
             reasons.append(f"{name} outcome is {values.get('outcome')}")
         elif scope is not None and "original-client" in scope.subjects and "loopback" in environment.casefold():
             reasons.append(f"{name} ran on loopback ({environment}); a loopback run never validates stock-client interoperability")
         elif missing := sorted(build for build in builds if not any(build in item for item in listed)):
             reasons.append(f"{name} does not name {', '.join(missing)} among its targets or identities")
-        elif (verdict := verify_record(primary, run)).outcome != "verified":
+        elif (verdict := verify_record(primary, run, run_status, after)).outcome != "verified":
             reasons.append(f"{name} artifacts are {verdict.outcome} ({verdict.detail})")
         else:
             return []
@@ -498,7 +512,8 @@ def evidence_add(bank: Bank, root: Path, path: str, kind: str, label: str, *, ru
     with session(bank, root, now=now) as current:
         for entry in current.universe.view.entries.values():
             record = entry.record
-            if record.type == "evidence" and record.text("path") == relative and record.text("sha256") == digest and record.status == "active":
+            if (record.type == "evidence" and record.text("path") == relative and record.text("sha256") == digest
+                    and derived_status(current.universe.settled, record) == "active"):
                 raise Refused(f"{relative} with these bytes is {record.id} already")
         notices: list[str] = []
         data["id"] = allocate(current.universe, bank.documents(), "M", notices)
@@ -517,20 +532,80 @@ class Verdict:
     failing: bool
 
 
-def verify_record(primary: Path, record: Record) -> Verdict:
-    """One evidence record against the bytes under the primary checkout, as the legacy ``--local`` lint reads them."""
+HEADING_NOISE = re.compile(r"[^\w\- ]")
+EXPLICIT_ANCHOR = re.compile(r"""\bid=["']([^"']+)["']""")
+
+
+def anchors(text: str) -> set[str]:
+    """The anchors a Markdown file defines: GitHub-style heading slugs (repeats numbered ``-1``, ``-2``) and ``id`` attributes."""
+    found: set[str] = set(EXPLICIT_ANCHOR.findall(text))
+    seen: dict[str, int] = {}
+    for line in text.split("\n"):
+        if line.startswith("#") and (title := line.lstrip("#").strip()):
+            slug = HEADING_NOISE.sub("", title.casefold()).replace(" ", "-")
+            found.add(f"{slug}-{seen[slug]}" if slug in seen else slug)
+            seen[slug] = seen.get(slug, 0) + 1
+    return found
+
+
+def migrated_to(state: State | None, record: Record) -> str | None:
+    """The REF a tracked evidence record's file was migrated into at cut-over: a ``refs`` target that is a
+    reference record whose legacy source path is the locator's path (without its ``#anchor``)."""
+    locator = record.text("path")
+    if state is None or record.type != "evidence" or record.text("class") != "tracked" or locator is None:
+        return None
+    path = locator.partition("#")[0]
+    for name in record.links.refs:
+        target = state.record(name)
+        if target is not None and target.type == "reference" and target.legacy is not None and target.legacy.path == path:
+            return name
+    return None
+
+
+def locator_found(primary: Path, locator: str) -> bool:
+    """Whether a tracked locator's path exists under the primary checkout and, when it names one, its ``#anchor`` is defined there."""
+    path, _, anchor = locator.partition("#")
+    target = primary / path
+    if not target.exists():
+        return False
+    if not anchor:
+        return True
+    try:
+        return target.is_file() and anchor in anchors(target.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
+def verify_record(primary: Path, record: Record, status: str, state: State | None = None) -> Verdict:
+    """One evidence record against the bytes under the primary checkout, as the legacy ``--local`` lint reads them.
+
+    ``status`` is the record's DERIVED status (``derived_status``: accepted supersession, legacy retirement, else
+    stored): superseding writes no revision of the old record, so its stored status stays ``active`` although
+    the scratch routine may prune its bytes once the supersession is accepted.
+
+    A ``tracked`` record's locator is checked whether or not it has a digest: its path (and ``#anchor``) must
+    exist, or the record must name the REF of ``state`` its file was migrated into (``migrated_to``), which is
+    ``legacy-unverifiable`` with that REF named as the content; otherwise ``unavailable``."""
     path, digest = record.text("path"), record.text("sha256")
-    active_private = record.status == "active" and record.text("class") == "local-private"
+    active_private = status == "active" and record.text("class") == "local-private"
 
     def verdict(outcome: str, detail: str) -> Verdict:
-        # As ``unavailable``, ``mismatched`` fails only while the record is active: a retired or missing record's
-        # artifact may have been changed or removed after retirement (the legacy ``--local`` lint checked active rows only).
-        failing = (outcome == "mismatched" and record.status == "active") or (outcome == "unavailable" and active_private)
+        # As ``unavailable``, ``mismatched`` fails only while the record is active: a superseded, retired or missing
+        # record's artifact may have been changed or removed since (the legacy ``--local`` lint checked active rows only).
+        failing = (outcome == "mismatched" and status == "active") or (outcome == "unavailable" and active_private)
         return Verdict(record.id, outcome, detail, failing)
 
-    if path is None or digest is None:
-        return verdict("legacy-unverifiable", "no " + ("path" if path is None else "sha256"))
-    target = primary / path
+    if path is None:
+        return verdict("legacy-unverifiable", "no path")
+    tracked = record.text("class") == "tracked"
+    if tracked and not locator_found(primary, path):
+        moved = migrated_to(state, record)
+        if moved is None:
+            return verdict("unavailable", f"missing: {path}")
+        return verdict("legacy-unverifiable", f"tracked file migrated to {moved}; content: {moved}")
+    if digest is None:
+        return verdict("legacy-unverifiable", "no sha256")
+    target = primary / (path.partition("#")[0] if tracked else path)
     if not target.exists():
         return verdict("unavailable", f"missing: {path}")
     if not target.is_file():
@@ -583,14 +658,15 @@ def staged_evidence(root: Path) -> list[Record]:
 
 def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, staged: bool = False) -> Output:
     """``verified``, ``unavailable``, ``mismatched`` or ``legacy-unverifiable`` per evidence record; exit 1 on
-    ``mismatched`` of an active record or an active local-private record ``unavailable``. ``staged``: every
-    evidence revision in the staged segments (the prek hook), whatever the replayed journal holds."""
+    ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``).
+    ``staged``: every evidence revision in the staged segments (the prek hook), whatever the replayed journal holds."""
+    universe = gather(root)
+    view, settled = universe.view, universe.settled
     primary = primary_checkout(root)
     records: list[Record] = []
     if staged:
         records = staged_evidence(root)
     else:
-        view = gather(root).view
         names = (sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key) if every
                  else [name.split("/", 1)[0] for name in identifiers])
         for name in names:
@@ -598,7 +674,7 @@ def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, stage
             if record is None or record.type != "evidence":
                 raise Refused(f"{name}: no evidence record in this checkout")
             records.append(record)
-    verdicts = [verify_record(primary, record) for record in records]
+    verdicts = [verify_record(primary, record, derived_status(settled, record), view) for record in records]
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
     failing = sum(1 for item in verdicts if item.failing)
@@ -713,21 +789,34 @@ class Fetched:
         return self.found[document_id]
 
 
-def summary(bank: Reader, wanted: Wanted, identifier: str) -> tuple[dict[str, JSON], str]:
+def same(document: Document | None, target: Desired, *, older: bool = False) -> bool:
+    """Whether a fetched document holds the journal's revision: its text is this tool's rendering, or, when a newer
+    tool rendered the bank (``older``), its ``sha256`` and ``rev`` metadata name the journal's revision."""
+    if document is None:
+        return False
+    if document.text == target.item.content:
+        return True
+    return older and document.metadata.get("sha256") == target.revision.sha256 and document.metadata.get("rev") == target.revision.rev
+
+
+def summary(bank: Reader, wanted: Wanted, identifier: str, *, older: bool = False) -> tuple[dict[str, JSON], str]:
     """A linked record by exact GET of its ``<ID>`` document: ID, state, first line."""
     target = wanted.get(identifier)
     document = bank.document(identifier)
     if target is None or document is None or document.text is None:
         return {"id": identifier, "state": "absent"}, f"{identifier}: not in the bank"
-    ok = document.text == target.item.content
+    ok = same(document, target, older=older)
     data: dict[str, JSON] = {"id": identifier, "state": target.state, "status": target.status, "line": headline(document.text), "verified": ok}
     return data, f"{identifier} [{target.state}, {target.status}]{'' if ok else ' (differs from the journal)'}: {headline(document.text)}"
 
 
-def check_document(bank: Bank, target: Desired) -> list[str]:
+def check_document(bank: Bank, target: Desired, *, older: bool = False) -> list[str]:
+    """Why the bank's document differs from the journal's; nothing when it matches (``same`` when ``older``)."""
     document = bank.document(target.document_id)
     if document is None:
         return [f"{target.document_id}: missing from the bank"]
+    if older and same(document, target, older=True):
+        return []
     problems: list[str] = []
     if document.text != target.item.content or document.content_hash != sha256_hex(target.item.content.encode()):
         problems.append(f"{target.document_id}: text differs from the journal")
@@ -738,83 +827,142 @@ def check_document(bank: Bank, target: Desired) -> list[str]:
     return problems
 
 
+def stated_resolvers(settled: State, identifier: str) -> tuple[str, ...]:
+    """Accepted records whose own ``resolves`` names ``identifier``. Only these are resolver links: a migrated
+    unknown's legacy "Findings" are listed findings (its ``refs``), not a statement that they resolve it."""
+    return tuple(name for name in settled.resolved_by.get(identifier, ())
+                 if (record := settled.record(name)) is not None and identifier in record.links.resolves)
+
+
+def from_legacy(settled: State, record: Record, status: str) -> bool:
+    """Whether the derived ``status`` rests only on a migrated record's legacy status cell (no accepted link implies it)."""
+    if record.legacy is None or record.legacy.implied_status != status:
+        return False
+    if status == "superseded":
+        return not settled.superseded_by.get(record.id)
+    return not stated_resolvers(settled, record.id) if status == "resolved" else True
+
+
+def status_text(settled: State, record: Record, status: str) -> str:
+    """The derived status as ``get`` and ``recall`` print it: ``(legacy status)`` when only the migrated row's cell
+    implies it, ``(stored X)`` when links make it differ from the stored status."""
+    if from_legacy(settled, record, status):
+        return f"{status} (legacy status)"
+    return status + (f" (stored {record.status})" if status != record.status else "")
+
+
+def listed_findings(settled: State, record: Record, status: str) -> tuple[str, ...]:
+    """A migrated unknown resolved by its legacy status: the findings its Findings cell lists (``state.legacy_listed``)."""
+    if record.type != "unknown" or record.legacy is None or record.legacy.implied_status != "resolved" or not from_legacy(settled, record, status):
+        return ()
+    return legacy_listed(record, "findings")
+
+
+@dataclass(frozen=True)
+class Described:
+    """What ``get`` shows from the journal and the evidence bytes alone; online ``get`` adds the bank's verdict."""
+
+    identifier: str
+    documents: list[Desired]
+    data: dict[str, JSON]
+    lines: list[str]
+
+
+def describe(universe: Universe, root: Path, citation: str, *, history: bool = False, all_proposals: bool = False, full: bool = False) -> Described:
+    """The one formatter of ``get`` and ``get --offline``: state, derived status, partition (none for evidence),
+    the document and its pending revisions, stored and derived links (accepted ones; this worktree's proposals
+    overlaid, every gathered one with ``all_proposals``), conflicts, the evidence verdict, cited evidence and,
+    with ``history``, one line per revision (``full``: each revision's whole text). The text is the document
+    the bank should hold (``render_text`` with the derived status). Raises ``LookupError`` for an unknown ID."""
+    state, settled = universe.state, universe.settled
+    resolution = state.resolve(citation)
+    if resolution.problem is not None:
+        raise LookupError(resolution.problem)
+    identifier = resolution.target
+    documents = Wanted(universe).of(identifier)
+    target = documents[0]
+    pending = [item for item in documents if item.state == "pending"]
+    record = target.revision.record
+    release, reason = release_for(universe, root, None)
+    placed, phrase = place(root, record, release, reason)
+    entry = state.entries[identifier]
+    proposed = overlay(universe, identifier, every=all_proposals)
+    resolvers, listed = stated_resolvers(settled, identifier), listed_findings(settled, record, target.status)
+    moved = migrated_to(state, record)
+    data: dict[str, JSON] = {
+        "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
+        "legacy_status": from_legacy(settled, record, target.status), "sha256": target.revision.sha256, "rev": target.revision.rev,
+        "segment": target.segment, "text": target.item.content, "record": record.to_json(), "partition": placed,
+        "superseded_by": list(settled.superseded_by.get(identifier, ())), "successors": list(settled.successors(identifier)),
+        "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved, "proposed": [item.json() for item in proposed],
+        "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
+    }
+    # A tracked file migrated into a REF: where its content now is comes first.
+    lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, ""]
+    lines += [f"state: {target.state}", f"status: {status_text(settled, record, target.status)}", *([f"partition: {phrase}"] if phrase else []),
+              f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
+    if "/" in citation:
+        data["selector"], data["member"] = citation, resolution.member
+        lines.insert(0, f"{citation}: " + (f"listed member {resolution.member}" if resolution.member else "legacy case note") + f" of {identifier}\n")
+    for name in ("supersedes", "resolves", "refs"):
+        # The findings a legacy-resolved unknown lists get their own line; its other refs stay refs.
+        if items := tuple(item for item in record.links.named(name) if not (name == "refs" and item in listed)):
+            lines.append(f"{name}: {', '.join(items)}")
+    if listed:
+        lines.append(f"findings listed: {', '.join(listed)}")
+    if superseded := settled.superseded_by.get(identifier):
+        lines.append(f"superseded by: {', '.join(superseded)} (terminal: {', '.join(settled.successors(identifier))})")
+    if resolvers:
+        lines.append(f"resolved by: {', '.join(resolvers)}")
+    lines.extend(item.line() for item in proposed)
+    lines.extend(f"pending revision: {item.document_id} rev {item.revision.rev} in {item.segment}" for item in pending)
+    if target.state == "conflict" or entry.conflict:
+        lines.extend(f"conflict head: {key} in {entry.revisions[key].segment}" for key in entry.heads)
+        data["heads"] = list(entry.heads)
+    if record.type == "evidence":
+        verdict = verify_record(primary_checkout(root), record, target.status, state)
+        data["evidence"] = {"outcome": verdict.outcome, "detail": verdict.detail}
+        lines.append(f"evidence: {verdict.outcome} ({verdict.detail})")
+    cited: list[JSON] = []
+    for name in sorted({item.split("/", 1)[0] for item in record.links.citations()}, key=id_key):
+        evidence = state.record(name)
+        shown = derived_status(settled, evidence) if evidence is not None else "absent"
+        cited.append({"id": name, "status": shown})
+        lines.append(f"cites {name}: {shown}")
+    data["cited_evidence"] = cited
+    if history:
+        data["history"] = [{"rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev),
+                            "record": item.revision.record.to_json()} for item in entry.history()]
+        lines.append("history:")
+        for item in entry.history():
+            record_line = f"{item.revision.rev} in {item.segment}; prev {', '.join(rev[:12] for rev in item.revision.prev) or 'none'}; status {item.revision.record.status}"
+            # One line per revision by default; ``full`` adds each revision's whole text.
+            lines.extend(["", record_line, render_text(item.revision.record)] if full else [f"  {record_line}"])
+    return Described(identifier, documents, data, lines)
+
+
 def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_proposals: bool = False, full: bool = False) -> Output:
-    """Exact document GET, verified against the replayed journal, with state, partition, derived links
-    (accepted ones; this worktree's proposals overlaid, every worktree's with ``all_proposals``), pending
-    revisions, conflicts and evidence status."""
+    """Exact document GET: ``describe``, with every document of the record verified against the bank."""
     with session(bank, root, read=True) as current:
-        universe, state, settled = current.universe, current.universe.state, current.universe.settled
-        resolution = state.resolve(citation)
-        if resolution.problem is not None:
-            raise LookupError(resolution.problem)
-        identifier = resolution.target
-        documents = Wanted(universe).of(identifier)
-        target = documents[0]
-        pending = [item for item in documents if item.state == "pending"]
-        problems = [problem for item in documents for problem in check_document(bank, item)]
+        described = describe(current.universe, root, citation, history=history, all_proposals=all_proposals, full=full)
+        older = current.older is not None
+        problems = [problem for item in described.documents for problem in check_document(bank, item, older=older)]
         # A document that differs although the stamp said the bank was current was written outside the tool:
         # the full reconciliation rewrites it from the journal, and the read reports what it repaired.
         repaired: list[str] = []
         if problems and current.reconcile_now():
-            repaired, problems = problems, [problem for item in documents for problem in check_document(bank, item)]
-        record = target.revision.record
-        release, reason = release_for(universe, root, None)
-        placed, phrase = place(root, record, release, reason)
-        entry = state.entries[identifier]
-        proposed = overlay(universe, identifier, every=all_proposals)
-        data: dict[str, JSON] = {
-            "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
-            "sha256": target.revision.sha256, "rev": target.revision.rev, "segment": target.segment, "text": target.item.content,
-            "record": record.to_json(), "partition": placed, "superseded_by": list(settled.superseded_by.get(identifier, ())),
-            "successors": list(settled.successors(identifier)), "resolved_by": list(settled.resolved_by.get(identifier, ())),
-            "proposed": [item.json() for item in proposed], "verified": not problems, "problems": list(problems), "repaired": list(repaired),
-            "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
-        }
-        lines = [target.item.content, "", f"state: {target.state}", f"status: {target.status}" + (f" (stored {record.status})" if target.status != record.status else ""),
-                 *([f"partition: {phrase}"] if phrase else []), f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
-        if "/" in citation:
-            data["selector"], data["member"] = citation, resolution.member
-            lines.insert(0, f"{citation}: " + (f"listed member {resolution.member}" if resolution.member else "legacy case note") + f" of {identifier}\n")
-        for name in ("supersedes", "resolves", "refs"):
-            if items := record.links.named(name):
-                lines.append(f"{name}: {', '.join(items)}")
-        if superseded := settled.superseded_by.get(identifier):
-            lines.append(f"superseded by: {', '.join(superseded)} (terminal: {', '.join(settled.successors(identifier))})")
-        if resolvers := settled.resolved_by.get(identifier):
-            lines.append(f"resolved by: {', '.join(resolvers)}")
-        lines.extend(item.line() for item in proposed)
-        lines.extend(f"pending revision: {item.document_id} rev {item.revision.rev} in {item.segment}" for item in pending)
-        if target.state == "conflict" or entry.conflict:
-            lines.extend(f"conflict head: {key} in {entry.revisions[key].segment}" for key in entry.heads)
-            data["heads"] = list(entry.heads)
-        primary = primary_checkout(root)
-        if record.type == "evidence":
-            verdict = verify_record(primary, record)
-            data["evidence"] = {"outcome": verdict.outcome, "detail": verdict.detail}
-            lines.append(f"evidence: {verdict.outcome} ({verdict.detail})")
-        cited: list[JSON] = []
-        for name in sorted({item.split("/", 1)[0] for item in record.links.citations()}, key=id_key):
-            evidence = state.record(name)
-            shown = derived_status(settled, evidence) if evidence is not None else "absent"
-            cited.append({"id": name, "status": shown})
-            lines.append(f"cites {name}: {shown}")
-        data["cited_evidence"] = cited
-        if history:
-            data["history"] = [{"rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev),
-                                "record": item.revision.record.to_json()} for item in entry.history()]
-            lines.append("history:")
-            for item in entry.history():
-                record_line = f"{item.revision.rev} in {item.segment}; prev {', '.join(rev[:12] for rev in item.revision.prev) or 'none'}; status {item.revision.record.status}"
-                # One line per revision by default; ``full`` adds each revision's whole text.
-                lines.extend(["", record_line, render_text(item.revision.record)] if full else [f"  {record_line}"])
+            repaired, problems = problems, [problem for item in described.documents for problem in check_document(bank, item)]
+        data: dict[str, JSON] = {**described.data, "verified": not problems, "problems": list[JSON](problems), "repaired": list[JSON](repaired)}
+        lines = [*described.lines, *([f"notice: {current.older}"] if current.older is not None else [])]
         lines.extend(f"repaired: {problem}; rewritten from the journal (something wrote to the bank outside the tool)" for problem in repaired)
         lines.extend(f"problem: {problem}" for problem in problems)
         return Output(data, lines, 1 if problems else 0)
 
 
-def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = False) -> list[Group]:
-    """Strict tag groups of default recall (accepted plus this worktree's proposals) or of other worktrees' proposals."""
-    groups: list[Group] = []
+def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = False, refs: bool = False) -> list[Group]:
+    """Strict tag groups of default recall (accepted plus this worktree's proposals) or of other worktrees' proposals;
+    ``refs`` keeps only reference documents (``type:reference``), so the hit limit counts references alone."""
+    groups: list[Group] = [Tags(("type:reference",))] if refs else []
     own = Tags(tuple(f"seg:{stem}" for stem in sorted(mine)), every=False) if mine else None
     if others:
         groups.append(Tags(("state:proposed",)))
@@ -830,9 +978,11 @@ def visibility(mine: frozenset[str], *, include_evidence: bool, others: bool = F
     return groups
 
 
-def visible(labels: Sequence[str], mine: frozenset[str], *, include_evidence: bool, others: bool = False) -> bool:
+def visible(labels: Sequence[str], mine: frozenset[str], *, include_evidence: bool, others: bool = False, refs: bool = False) -> bool:
     """``visibility`` evaluated on one document's tags (for substring hits, which the API cannot filter by group)."""
     found = set(labels)
+    if refs and "type:reference" not in found:
+        return False
     if "type:evidence" in found and not include_evidence:
         return False
     if others:
@@ -904,7 +1054,9 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
     question, label or title, for a REF the returned passage, capped link lines) and the text stops at
     ``RECALL_BUDGET`` bytes, naming the hits it did not show. Within a partition claim-bearing records come
     before reference documents, and at most ``REF_HITS`` references are shown (passages of ``PASSAGE_CAP``);
-    ``refs`` lists only references, with passages of ``REFS_PASSAGE_CAP``. ``text`` hits rank first.
+    ``refs`` lists only references, with passages of ``REFS_PASSAGE_CAP``: the tag filter itself holds only
+    ``type:reference`` documents (``visibility``), so the limit counts references and ``full`` shows nothing else.
+    ``text`` hits rank first.
     ``full`` prints every record's whole text and every link, as ``--full``."""
     limit = RECALL_LIMIT if limit is None else max(1, limit)
     with session(bank, root, read=True) as current:
@@ -920,12 +1072,12 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         units: dict[str, list[str]] = {}
 
         def ranked(others: bool) -> list[str]:
-            groups = visibility(mine, include_evidence=include_evidence, others=others)
+            groups = visibility(mine, include_evidence=include_evidence, others=others, refs=refs)
             order: list[str] = []
             if text is not None:
                 # Substring hits first: an exact phrase is the strongest signal a caller can give.
                 for unit in sorted(bank.units(text=text), key=lambda found: id_key(found.document_id or "")):
-                    if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others):
+                    if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others, refs=refs):
                         units.setdefault(unit.document_id, []).append(unit.text)
                         if unit.document_id not in order:
                             order.append(unit.document_id)
@@ -967,7 +1119,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             for value in shown.values():
                 if (want := wanted.get(value.document)) is not None:
                     held = fetched.document(want.document_id)
-                    found[value.document] = held is not None and held.text == want.item.content
+                    found[value.document] = same(held, want, older=current.older is not None)
             return fetched, found
 
         fetched, checked = verify_hits()
@@ -977,7 +1129,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         else:
             repaired = []
         for identifier in named:
-            data, line = summary(fetched, wanted, identifier)
+            data, line = summary(fetched, wanted, identifier, older=current.older is not None)
             exact.append(data)
             lines.append(f"named: {line}")
         for item in sorted(shown.values(), key=lambda value: value.rank):
@@ -988,19 +1140,19 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                     blocks.append((False, item.rank, "not-in-journal", item.identifier, f"{item.document}: in the bank but not in any gathered journal"))
                 continue
             record = target.revision.record
-            if refs and not full and record.type != "reference":
-                continue
             verified = checked.get(item.document, False)
             placed, phrase = place(root, record, rel, reason)
             name = str(placed["name"])
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
-            retired = [summary(fetched, wanted, old) for old in sorted(set(item.retired), key=id_key)]
-            header = f"{item.identifier} [{record.type}; {target.state}, {target.status}{f'; {phrase}' if phrase else ''}]" + ("" if verified else " (differs from the journal)")
+            retired = [summary(fetched, wanted, old, older=current.older is not None) for old in sorted(set(item.retired), key=id_key)]
+            shown_status = f"{target.status} (legacy status)" if from_legacy(settled, record, target.status) else target.status
+            header = f"{item.identifier} [{record.type}; {target.state}, {shown_status}{f'; {phrase}' if phrase else ''}]" + ("" if verified else " (differs from the journal)")
+            findings = listed_findings(settled, record, target.status)
             derived = [(label, list(names)) for label, names in (
-                ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", settled.resolved_by.get(item.identifier, ()))) if names]
+                ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", stated_resolvers(settled, item.identifier)), ("findings listed", findings)) if names]
             if full:
                 links = links_of(item, target)
-                linked = [summary(fetched, wanted, link) for link in links]
+                linked = [summary(fetched, wanted, link, older=current.older is not None) for link in links]
                 sections[name].append({
                     "id": item.identifier, "document": target.document_id, "state": target.state, "status": target.status, "partition": placed,
                     "text": target.item.content, "verified": verified, "retired": [data for data, _ in retired],
@@ -1027,7 +1179,9 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                     entry_json["passage"], entry_json["heading"] = excerpt, heading
                     block.append(f"  passage{f' (under {heading!r})' if heading else ''}: {excerpt}")
                 kinds: dict[str, JSON] = {}
-                for label, names in [*((link, list(record.links.named(link))) for link in ("supersedes", "resolves", "cites", "refs")), *derived]:
+                stored = [(link, [item for item in record.links.named(link) if not (link == "refs" and item in findings)])
+                          for link in ("supersedes", "resolves", "cites", "refs")]
+                for label, names in [*stored, *derived]:
                     if names:
                         kinds[label] = list[JSON](names[:LINK_CAP])
                         block.append(f"  {label}: {capped(names)}")
@@ -1076,6 +1230,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         if len(documents) >= limit:
             lines.append(f"hits limited to {limit}; --limit N shows more")
         lines.append(f"ranking: {ranker}")
+        if current.older is not None:
+            lines.append(f"notice: {current.older}")
         data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact, "ranking": {
             "reranking": reranking, "candidates": cap if reranking else None, "scope": "instance"},
                                  "partitions": {name: items for name, items in sections.items() if items}, "repaired": list[JSON](repaired),
@@ -1083,7 +1239,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                                  "more_references": list[JSON](extra_refs), "full": full, "refs": refs}
         if all_proposals:
             others = ranked(True)[:limit]
-            listing = [summary(bank, wanted, document_id.split("@", 1)[0]) for document_id in others]
+            listing = [summary(bank, wanted, document_id.split("@", 1)[0], older=current.older is not None) for document_id in others]
             data["other_proposals"] = [item for item, _ in listing]
             if listing:
                 lines.append("== proposals of other worktrees ==")
@@ -1120,13 +1276,15 @@ TERMINAL = ("superseded", "retired", "resolved", "refuted", "fixed", "past", "mi
 
 
 def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
-    """Records of one area by status and partition, its open unknowns and the closure of their links. By
+    """Records of one area by status and partition, its open unknowns, the open unknowns its records' ``refs``
+    name (a derived section: unknowns migrated from the legacy table have no area), and the closure of their links. By
     default the text is counts, the open unknowns and as many record rows (in-force statuses first) as fit
     in ``AREA_BUDGET``; ``full`` lists every record and every linked record."""
     with session(bank, root, read=True) as current:
         universe = current.universe
         view = universe.view
         release, reason = release_for(universe, root, None)
+        older = [f"notice: {current.older}"] if current.older is not None else []
         members = sorted((identifier for identifier, entry in view.entries.items() if entry.record.text("area") == name), key=id_key)
         by_status: dict[str, list[str]] = {}
         for identifier in members:
@@ -1146,6 +1304,13 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         data["statuses"] = statuses
         unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and derived_status(universe.settled, view.entries[identifier].record) in OPEN_UNKNOWN]
         data["open_unknowns"] = list[JSON](unknowns)
+        # Derived, not stored: migrated unknowns carry no area, so the area names the open ones its records' refs point at.
+        referenced = sorted({target for identifier in members for target in view.entries[identifier].record.links.refs
+                             if target not in unknowns and (linked := view.record(target)) is not None and linked.type == "unknown"
+                             and derived_status(universe.settled, linked) in OPEN_UNKNOWN}, key=id_key)
+        data["open_unknowns_referenced"] = list[JSON](referenced)
+        derived_line = ("open unknowns referenced by this area's records (derived from their refs; not an area of the unknowns): "
+                        + (", ".join(referenced) or "none"))
         closure: set[str] = set()
         pending = list(members)
         while pending:
@@ -1163,17 +1328,19 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
                 lines.append(f"{status}:")
                 lines.extend(text)
             lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
+            lines.append(derived_line)
             rows, text = record_rows(universe, root, outside, release, reason)
             data["closure"] = rows
             lines.append(f"linked records outside the area ({len(outside)}):")
             lines.extend(text)
-            return Output(data, lines)
+            return Output(data, [*lines, *older])
         data["closure"] = list[JSON](outside)
         lines.append("by status: " + ", ".join(f"{len(by_status[status])} {status}" for status in texts))
         lines.append("by partition: " + ", ".join(f"{partitions.get(part, 0)} {part}" for part in PARTITIONS))
         open_rows = [line for status in texts for line in texts[status] if line.split(" [", 1)[0].strip() in unknowns]
         lines.append(f"open unknowns ({len(unknowns)}):" if unknowns else "open unknowns: none")
         lines.extend(row[:ROW_CAP] for row in open_rows)
+        lines.append(derived_line)
         used = sum(len(line.encode()) + 1 for line in lines)
         shown = 0
         rows_text = [(status, row) for status in texts for row in texts[status] if row not in open_rows]
@@ -1190,7 +1357,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         if shown < len(rows_text):
             lines.append(f"... {len(rows_text) - shown} more record(s) not shown; memory area {name} --full lists every one, memory get ID reads one")
         lines.append(f"linked records outside the area: {len(outside)}" + (f": {capped(outside, 12)} (--full lists them)" if outside else ""))
-        return Output(data, lines)
+        return Output(data, [*lines, *older])
 
 
 def claim_bearing(record: Record) -> bool:
@@ -1262,7 +1429,7 @@ def summarize(universe: Universe, root: Path, applied: Applied | None, unavailab
         counts[shown] = counts.get(shown, 0) + 1
         if record.type == "evidence":
             path = record.text("path")
-            if unavailable is None and record.status == "active" and (record.text("sha256") is None or path is None or not (primary / path).exists()):
+            if unavailable is None and shown == "active" and (record.text("sha256") is None or path is None or not (primary / path).exists()):
                 unverified.append((identifier, "no sha256" if record.text("sha256") is None else f"missing: {path}"))
             continue
         if record.type == "unknown" and shown in OPEN_UNKNOWN:
@@ -1379,6 +1546,8 @@ def check_bank(bank: Bank, root: Path) -> Output:
 def compare_bank(bank: Bank, root: Path) -> Output:
     """``check --bank`` without the host lock (the caller holds it). Always the full comparison: the reconcile
     stamp is never trusted, and its marker document is only checked for its own shape."""
+    if (held_rendering := marker_rendering(bank)) is not None and held_rendering > RENDERING:
+        raise OlderTool(held_rendering)
     universe = gather(root)
     problems: list[str] = []
     notices: list[str] = list(universe.notices)

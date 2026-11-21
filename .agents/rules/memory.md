@@ -35,7 +35,7 @@ document.
 
 | Type | ID | Stored status | Required fields |
 | --- | --- | --- | --- |
-| finding | `F-N` | active, retired | claim, kind, confidence, standing, scope, area |
+| finding | `F-N` | active, retired | claim, kind, confidence, standing, scope, area (optional limits) |
 | unknown | `U-N` | open, investigating, blocked, contradicted | question, severity, next_probe, area |
 | bug (native) | `N-N` | open, fixed | trigger, change, refs, tests |
 | lead (original defect) | `SL-N` | open, established, refuted | lead, static_evidence, refute_by |
@@ -118,6 +118,8 @@ Supersession is acyclic.
   ID, type, status and claim first (ranking sees only a unit's first 512 tokens).
 - A REF's text is its body; its canonical JSON holds header fields and the
   body's sha256, never the body.
+- The bank marker carries the tool's rendering version: a tool older than the bank refuses to reconcile
+  or write it (merge `main`); a newer one re-renders every document and raises the marker.
 - One retain item per document. `<ID>` holds the accepted head (or the proposal
   if never accepted); `<ID>@<12 hex>` exists only for a pending revision of an
   accepted record. Prior revisions live in the journal.
@@ -158,7 +160,7 @@ Supersession is acyclic.
 | `sync` | Fetch, then reconcile states with `origin/main`; idempotent. |
 | `check [--ci] [--bank] [--pin]` | Journal, citations, forks, notices; `--bank` as above; `--pin` lists cited records not current. |
 | `protected-paths` | Paths to keep; fails closed. |
-| `salvage BRANCH [--check] [--out DIR]` | A branch's added legacy rows as proposals; run on its tip before it merges `main`. |
+| `salvage BRANCH [--check] [--out DIR] [--main REF]` | A branch's added legacy rows as proposals against `origin/main`, none needing a superseding record; run on its pre-merge tip before it merges `main`. |
 | `backup`, `restore FILE [--drill]`, `rebuild` | Durability. |
 
 ## Reading

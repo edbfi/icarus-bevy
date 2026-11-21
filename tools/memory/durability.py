@@ -462,7 +462,8 @@ def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = 
           journal_check: Callable[[Connection, Watermark], list[str]] = no_journal_check) -> Drilled:
     """Back up the live instance, restore that backup into a scratch home on other ports, compare it read-only with the live one, remove it."""
     require_floor(where.state)
-    live = Api(read_settings(where).connection())
+    current = read_settings(where)
+    live = Api(current.connection())
     if not live.ready():
         raise ServiceError("the live service is not ready; the drill compares against it")
     for port in (DRILL_PORT, DRILL_PG_PORT):
@@ -474,7 +475,9 @@ def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = 
     process: subprocess.Popen[bytes] | None = None
     scratch = Home.under(root)
     try:
-        settings = ensure_settings(scratch, port=DRILL_PORT, pg_port=DRILL_PG_PORT)
+        # The scratch instance runs with the live reranker setting: its health checks and the journal comparison
+        # (``check --bank``) assert the bank config against that setting.
+        settings = ensure_settings(scratch, port=DRILL_PORT, pg_port=DRILL_PG_PORT, reranker=current.reranker)
         began = time.monotonic()
         with Lock(where.backups):
             restore_cluster(scratch.pg0_home, made.backup.dump, settings, runtime)

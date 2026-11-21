@@ -193,13 +193,18 @@ TOOLS: tuple[Tool, ...] = (
 
 
 def matches(schema: JSON, value: JSON) -> bool:
-    """``value`` against the small JSON Schema subset the tools use: type, enum and array items."""
+    """``value`` against the small JSON Schema subset the tools use: type, enum, an integer's minimum and array items.
+    A boolean is never an integer, although Python's ``bool`` is an ``int``."""
     if not isinstance(schema, dict):
         return True
     match schema.get("type"):
         case "string":
             enum = schema.get("enum")
             return isinstance(value, str) and (not isinstance(enum, list) or value in enum)
+        case "integer":
+            minimum = schema.get("minimum")
+            return (isinstance(value, int) and not isinstance(value, bool)
+                    and (not isinstance(minimum, int) or isinstance(minimum, bool) or value >= minimum))
         case "boolean":
             return isinstance(value, bool)
         case "object":

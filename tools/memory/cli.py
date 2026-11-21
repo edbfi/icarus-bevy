@@ -17,18 +17,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from tools.memory.canonical import render_text
+from tools.memory.bank import Universe
 from tools.memory.check import run_check
 from tools.memory import durability, mcp, online, salvage
-from tools.memory.gitio import GitError, descends, git
+from tools.memory.gitio import GitError, git
 from tools.memory.journal import JournalError, read_git, read_tree
-from tools.memory.model import JSON, RecordError
 from tools.memory.paths import ProtectedPathsError, protected_paths
-from tools.memory.state import RELEASE_CONFIG, Entry, State, partition, pinned_build, replay
 
 EXIT_NO_JOURNAL = 3
 ACCEPTANCE_REF = "origin/main"
@@ -87,85 +84,20 @@ def repository_root() -> Path:
     return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
 
 
-def document_state(entry: Entry, accepted: set[str] | None) -> str:
-    """accepted, pending (an accepted record with a newer revision), proposed, conflict, or unknown without the acceptance ref."""
-    if entry.conflict:
-        return "conflict"
-    if accepted is None:
-        return "unknown"
-    if entry.heads[0] in accepted:
-        return "accepted"
-    return "pending" if any(rev in accepted for rev in entry.revisions) else "proposed"
-
-
-def describe(root: Path, state: State, citation: str, *, history: bool) -> tuple[dict[str, JSON], list[str]]:
-    """``get --offline`` as JSON and as text lines. Raises ``LookupError`` for an unknown ID or selector."""
-    resolution = state.resolve(citation)
-    if resolution.problem is not None:
-        raise LookupError(resolution.problem)
-    identifier = resolution.target
-    entry = state.entries[identifier]
-    record = entry.record
+def offline_universe(root: Path) -> Universe:
+    """``origin/main`` and this worktree's journal as a ``Universe``, read without the service, other worktrees
+    or other refs: what ``get --offline`` formats with ``online.describe``. Without ``origin/main`` nothing
+    counts as accepted (a notice says so)."""
+    local = read_tree(root)
     try:
-        accepted: set[str] | None = {revision.rev for segment in read_git(root, ACCEPTANCE_REF) for revision in segment.revisions}
-    except (GitError, JournalError):
-        accepted = None
-    try:
-        build = pinned_build(root)
-        release = state.release(build)
-        reason = f"no REL record for server build {build}" if release is None else ""
-    except (OSError, RecordError, tomllib.TOMLDecodeError) as error:
-        release, reason = None, f"{RELEASE_CONFIG}: {error}"
-    status = state.status(identifier)
-    superseded_by, successors, resolved_by = state.superseded_by.get(identifier, ()), state.successors(identifier), state.resolved_by.get(identifier, ())
-    heads: list[JSON] = [
-        {"rev": rev, "sha256": entry.revisions[rev].revision.sha256, "segment": entry.revisions[rev].segment,
-         "prev": list(entry.revisions[rev].revision.prev), "text": render_text(entry.revisions[rev].revision.record)}
-        for rev in entry.heads
-    ]
-    result: dict[str, JSON] = {
-        "id": identifier, "state": document_state(entry, accepted), "status": status, "stored_status": record.status,
-        "superseded_by": list(superseded_by), "successors": list(successors), "resolved_by": list(resolved_by),
-        "heads": heads, "record": record.to_json(), "text": render_text(record),
-    }
-    lines = [render_text(record), "", f"state: {result['state']}", f"status: {status}" + (f" (stored {record.status})" if status != record.status else "")]
-    if "/" in citation:
-        result["selector"] = citation
-        result["member"] = resolution.member
-        lines.insert(0, f"{citation}: " + (f"listed member {resolution.member}" if resolution.member else "legacy case note") + f" of {identifier}\n")
-    if release is None:
-        result["partition"] = {"name": "unknown", "reason": reason}
-        lines.append(f"partition: unknown ({reason})")
+        main, known, commit = read_git(root, ACCEPTANCE_REF), True, git(root, "rev-parse", "--verify", "--end-of-options", f"{ACCEPTANCE_REF}^{{commit}}").decode().strip()
+    except GitError as error:
+        main, known, commit, notices = (), False, None, (f"{ACCEPTANCE_REF} unreadable ({error}); nothing counts as accepted",)
     else:
-        placed = partition(record, release, lambda commit: descends(root, commit))
-        result["partition"] = {"name": placed.name, "release": release.id, "tokens": list(placed.tokens), "names_pin": placed.names_pin,
-                               "commit": placed.commit, "descends": placed.descends}
-        detail = [f"tokens {', '.join(placed.tokens)}"] if placed.tokens else []
-        if placed.name == "legacy-scope":
-            detail.append(f"names the pin: {'yes' if placed.names_pin else 'no'}")
-        if placed.name == "native":
-            answer = "unknown" if placed.descends is None else "yes" if placed.descends else "no"
-            detail.append(f"HEAD descends from {placed.commit}: {answer}")
-        lines.append(f"partition: {placed.name} against {release.id}" + "".join(f"; {item}" for item in detail))
-    if superseded_by:
-        lines.append(f"superseded by: {', '.join(superseded_by)} (terminal: {', '.join(successors)})")
-    if resolved_by:
-        lines.append(f"resolved by: {', '.join(resolved_by)}")
-    for rev in entry.heads:
-        located = entry.revisions[rev]
-        prev = ", ".join(item[:12] for item in located.revision.prev) or "none"
-        lines.append(f"{'conflict head' if entry.conflict else 'revision'}: {rev} in {located.segment} (prev {prev})")
-        if entry.conflict and rev != entry.heads[0]:
-            lines.extend(["", render_text(located.revision.record), ""])
-    if history:
-        result["history"] = [
-            {"rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev), "record": item.revision.record.to_json()}
-            for item in entry.history()
-        ]
-        lines.append("history:")
-        for item in entry.history():
-            lines.extend(["", f"{item.revision.rev} in {item.segment}", render_text(item.revision.record)])
-    return result, lines
+        notices = ()
+    own = tuple(sorted({segment.name: segment for segment in (*main, *local)}.values(), key=lambda segment: segment.path))
+    accepted = frozenset(revision.rev for segment in main for revision in segment.revisions)
+    return Universe(root, own, main, local, own, accepted, known, commit, notices)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -189,17 +121,19 @@ def run_protected_paths(_options: Options) -> int:
 
 
 def run_get(options: Options) -> int:
-    """``get --offline`` reads this worktree's journal; ``get`` reads the bank (``online.get``)."""
+    """``get`` reads the bank (``online.get``); ``get --offline`` prints the same formatter (``online.describe``) over
+    ``origin/main`` and this worktree's journal, without the lines only the bank can answer (its documents verified)."""
     if not options.offline:
         return online.run(options)
     try:
         root = repository_root()
-        state = replay(read_tree(root))
-        result, lines = describe(root, state, options.id, history=options.history)
-    except (GitError, JournalError, LookupError) as error:
+        universe = offline_universe(root)
+        described = online.describe(universe, root, options.id, history=options.history, all_proposals=options.all_proposals, full=options.full)
+    except (GitError, JournalError, LookupError, ProtectedPathsError) as error:
         print(f"memory get: {error}", file=sys.stderr)
         return 1
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) if options.json else "\n".join(lines))
+    lines = [*described.lines, *(f"notice: {notice}" for notice in universe.notices)]
+    print(json.dumps(described.data, ensure_ascii=False, indent=2, sort_keys=True) if options.json else "\n".join(lines))
     return 0
 
 

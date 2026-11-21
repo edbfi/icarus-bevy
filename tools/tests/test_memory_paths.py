@@ -173,5 +173,69 @@ class SourcesTests(unittest.TestCase):
             _ = protected_paths(self.root)
 
 
+class AcceptedReleaseTests(unittest.TestCase):
+    """Protection follows the derived status, but only ACCEPTED links (``origin/main``'s journal) release a path."""
+
+    top: Path = Path()
+    root: Path = Path()
+
+    @override
+    def setUp(self) -> None:
+        self.top = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root = self.top / "primary"
+        self.root.mkdir()
+        self.enterContext(clean_git_environment())
+        new_repository(self.root)
+        _ = write_change_set(self.root, CREATED, [Revision.of(Record.from_json(evidence("M-101", "work/case/")))])
+        commit_all(self.root)
+
+    def worktree(self, name: str) -> Path:
+        checkout = self.top / name
+        _ = run_git(self.root, "worktree", "add", "-q", "--detach", str(checkout))
+        return checkout
+
+    def superseder(self) -> Revision:
+        return Revision.of(Record.from_json(evidence("M-102", "work/case-v2/report.md", kind="manifest", supersedes=["M-101"])))
+
+    def test_an_accepted_superseder_releases_the_old_path(self) -> None:
+        old = self.worktree("old")
+        _ = write_change_set(self.root, CREATED.replace(second=1), [self.superseder()])
+        commit_all(self.root)
+        self.assertEqual(("work/case-v2/report.md",), protected_paths(self.root).paths, "the old worktree's head of M-101 is released too")
+        self.assertTrue((old / "memory/journal").is_dir())
+
+    def test_a_proposed_superseder_releases_nothing_and_its_new_record_protects_at_once(self) -> None:
+        proposing = self.worktree("proposing")
+        _ = write_change_set(proposing, CREATED.replace(second=1), [self.superseder()])
+        self.assertEqual(("work/case-v2/report.md", "work/case/"), protected_paths(self.root).paths)
+
+    def test_an_unreadable_origin_main_releases_nothing(self) -> None:
+        _ = write_change_set(self.root, CREATED.replace(second=1), [self.superseder()])
+        commit_all(self.root)
+        _ = run_git(self.root, "update-ref", "-d", "refs/remotes/origin/main")
+        self.assertEqual(("work/case-v2/report.md", "work/case/"), protected_paths(self.root).paths)
+
+    def test_an_accepted_retirement_releases_older_heads_but_not_a_reactivating_proposal(self) -> None:
+        first = Revision.of(Record.from_json(evidence("M-101", "work/case/")))
+        retired = Revision.of(Record.from_json(evidence("M-101", "work/case/", status="retired", notes=["Invented: retired"])), [first.rev])
+        old = self.worktree("old")
+        _ = write_change_set(self.root, CREATED.replace(second=1), [retired])
+        commit_all(self.root)
+        self.assertEqual((), protected_paths(self.root).paths, "a worktree still holding the accepted first revision is released")
+        reviving = self.worktree("reviving")
+        again = Revision.of(Record.from_json(evidence("M-101", "work/case/", notes=["Invented: retired", "Invented: back"])), [retired.rev])
+        _ = write_change_set(reviving, CREATED.replace(second=2), [again])
+        self.assertEqual(("work/case/",), protected_paths(old).paths)
+
+    def test_a_legacy_row_is_released_only_for_the_same_path(self) -> None:
+        old = self.worktree("old")
+        (old / "evidence").mkdir()
+        _ = (old / "evidence/001.jsonl").write_text(json.dumps(legacy("M-101", "work/case/")) + "\n" + json.dumps(legacy("M-102", "work/other/")) + "\n")
+        _ = write_change_set(self.root, CREATED.replace(second=1), [self.superseder()])
+        commit_all(self.root)
+        self.assertEqual(("work/case-v2/report.md", "work/other/"), protected_paths(self.root).paths,
+                         "M-101's row is released; the branch's own M-102 names another path and stays")
+
+
 if __name__ == "__main__":
     _ = unittest.main()

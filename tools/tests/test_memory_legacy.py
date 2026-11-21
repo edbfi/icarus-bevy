@@ -3,11 +3,12 @@
 
 Every row below is invented; builds are fictitious ``2999xxxx`` numbers and releases ``3.0.9x``. The
 fixture carries each hazard of the legacy data: free-text and role-less builds, glued builds, digits
-inside selectors, tool versions, commits in claims, several commits in one row, a confidence slot
-holding a build, ``unknown`` kind, bare ``retired``/``superseded`` and compound statuses, cross-file
-supersession, prose supersessions, ranges over an unallocated number and ending in a selector, a
-resolved unknown, compatibility/bug/lead tables whose citations stay text, a non-canonically spaced
-row, legacy evidence without digest or date, directory and descriptive paths, a bundle whose record
+inside selectors, tool versions, commits in claims, source revisions in evidence cells, several
+commits in one row, an all-digit commit candidate beside a commit, a confidence slot holding a build,
+``unknown`` kind, bare ``retired``/``superseded`` and compound statuses, cross-file supersession, prose
+supersessions, ranges over an unallocated number and ending in a selector, a resolved unknown,
+compatibility/bug/lead tables whose cells link IDs and whose framing states no status, a tracked
+evidence row whose file becomes a REF, a non-canonically spaced row, legacy evidence without digest or date, directory and descriptive paths, a bundle whose record
 count differs from its listed members, shared members, IDs in labels, and a client build stored under
 the server app in a release profile.
 """
@@ -18,6 +19,7 @@ import argparse
 import contextlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -25,13 +27,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
 
-from tools.memory import salvage as salvage_module
 from tools.memory.journal import Revision, Segment, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
 from tools.memory.legacy_rules import extract, standing
-from tools.memory.model import JSON, Legacy, Record, RecordError
-from tools.memory.salvage import salvage
-from tools.memory.state import partition, replay
+from tools.memory.model import JSON, Record, RecordError
+from tools.memory import salvage as salvage_command
+from tools.memory.check import revision_problems
+from tools.memory.journal import read_git
+from tools.memory.salvage import Salvage, salvage
+from tools.memory.state import State, legacy_listed, partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
 
 MEMBER_A = "ev_29990001aaaa" + "1" * 52
@@ -52,7 +56,7 @@ F-106 is retired in favor of F-107.
 | F-105 | Gadget 3.0.91 run ends; tool 0.20.0 used; commit-like deadbee9 in claim | measured | live; M-102..M-104/ev_bbbbbbbbbbbb; a1b2c3d | 29990001; one run; 1,299,900,010 bytes | U-101, U-102 | active |
 | F-107 | Decision text without tokens | derived | review | bounded; candidate; owner said so | | active |
 | F-108 | Native loop at abc1234 then def5678 | observed | authored-test; abc1234, def5678 | medium; loopback |  | active |
-|  F-109 | Spaced row | observed | review | low; none | | active |
+|  F-109 | Spaced row | observed | review | low; build 1234567, c0ffee4 | | active |
 """
 RETIRED = """# Retired findings: Widgets
 
@@ -234,13 +238,32 @@ class ExtractionTests(unittest.TestCase):
         scope = extract({"claim": "29990001 here; server 29990001 there"}).scope
         self.assertEqual(scope, {"basis": "legacy-text", "builds": ["server:29990001"]})
 
-    def test_commits_only_from_the_named_cells_and_only_when_single(self) -> None:
+    def test_a_commit_only_from_a_scope_cell_and_only_when_alone(self) -> None:
         self.assertIsNone(extract({"claim": "pawn c0ffee1"}, ()).scope)
-        self.assertEqual(extract({"evidence": "x; c0ffee1"}, ("evidence",)).scope, {"basis": "legacy-text", "commit": "c0ffee1"})
-        several = extract({"evidence": "abc1234, def5678"}, ("evidence",))
+        self.assertEqual(extract({"scope_and_limits": "x; c0ffee1"}, ("scope_and_limits",)).scope, {"basis": "legacy-text", "commit": "c0ffee1"})
+        several = extract({"scope_and_limits": "abc1234, def5678"}, ("scope_and_limits",))
         self.assertIsNone(several.scope)
-        self.assertEqual(several.commits, ("abc1234", "def5678"))
-        self.assertIsNone(extract({"evidence": "deadbeef cafebabe 1234567"}, ("evidence",)).scope)
+        self.assertEqual(several.unplaced, ("abc1234", "def5678"))
+        self.assertEqual(several.notes, ("scope commit not set: the limits cell names abc1234, def5678 (several commits)",))
+
+    def test_an_all_digit_candidate_is_named_and_keeps_any_commit_out_of_scope(self) -> None:
+        # 1234567 may be a commit or a number; 29990001 is a build, not a candidate.
+        beside = extract({"scope_and_limits": "high; builds 1234567, 591d40f; server 29990001"}, ("scope_and_limits",))
+        self.assertEqual(beside.scope, {"basis": "legacy-text", "builds": ["server:29990001"]})
+        self.assertEqual(beside.unplaced, ("1234567", "591d40f"))
+        self.assertEqual(beside.notes, ("scope commit not set: the limits cell names 1234567, 591d40f; all-digit 1234567 is a commit or a number,"
+                                        + " not decided at migration",))
+        alone = extract({"scope_and_limits": "branch build 6286752"}, ("scope_and_limits",))
+        self.assertIsNone(alone.scope)
+        self.assertEqual(alone.unplaced, ("6286752",))
+
+    def test_an_evidence_cell_revision_is_a_note_never_scope(self) -> None:
+        found = extract({"evidence": "static; M-101; c0ffee1"}, (), ("evidence",))
+        self.assertIsNone(found.scope)
+        self.assertEqual((found.revisions, found.notes), (("c0ffee1",), ("source revision (evidence cell): c0ffee1",)))
+        mixed = extract({"evidence": "authored-test; M-101; ebd38a67, 12760573; 1178518/b1e1697; M-1545; 2026-01-01"}, (), ("evidence",))
+        self.assertEqual(mixed.notes, ("source revision candidates (evidence cell): ebd38a67, 12760573, 1178518, b1e1697; all-digit 12760573,"
+                                       + " 1178518 are a commit or a number, not decided at migration",))
 
     def test_standing_only_in_so_many_words(self) -> None:
         self.assertEqual(standing(["high; candidate; x"]), "candidate")
@@ -248,40 +271,32 @@ class ExtractionTests(unittest.TestCase):
         self.assertIsNone(standing(["confirmed", "refuted"]))
 
 
-class LegacyResolverTests(unittest.TestCase):
-    def test_only_an_unknown_lead_or_report_names_resolvers(self) -> None:
+class ReleasedModelTests(unittest.TestCase):
+    def test_a_legacy_resolver_list_and_a_scope_part_gap_are_refused_as_main_refuses_them(self) -> None:
         data: dict[str, JSON] = {"id": "U-101", "type": "unknown", "status": "legacy:resolved", "question": "Which?",
                                  "legacy": {"path": "x.md", "cells": {"status": "resolved"}, "resolved_by": ["F-101"], "implied_status": "resolved"},
                                  "gaps": ["area", "next_probe", "severity"]}
-        self.assertEqual(Record.from_json(data).legacy, Legacy("x.md", {"status": "resolved"}, resolved_by=("F-101",), implied_status="resolved"))
-        data.update({"id": "F-102", "type": "finding", "claim": "x", "gaps": ["area", "confidence", "kind", "scope", "standing"]})
-        _ = data.pop("question")
-        with self.assertRaisesRegex(RecordError, "only an unknown, lead or report is resolved"):
+        with self.assertRaisesRegex(RecordError, "legacy: unknown fields resolved_by"):
             _ = Record.from_json(data)
-
-
-class GapTests(unittest.TestCase):
-    @staticmethod
-    def finding(*gaps: str, scope: JSON = None) -> dict[str, JSON]:
-        data: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
-                                 "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": list[JSON](gaps)}
-        if scope is not None:
-            data["scope"] = scope
-        return data
-
-    def test_a_gap_may_name_a_scope_part_with_detail(self) -> None:
-        record = Record.from_json(self.finding("scope.commit: several commits in row (abc1234, def5678)", "standing",
-                                               scope={"basis": "legacy-text", "releases": ["3.0.91"]}))
-        self.assertEqual(record.gaps, ("scope.commit: several commits in row (abc1234, def5678)", "standing"))
-        _ = Record.from_json(self.finding("scope", "scope.commit: several commits in row (a, b)", "standing"))
-
-    def test_a_gap_names_an_absent_field(self) -> None:
-        with self.assertRaisesRegex(RecordError, "listed as missing but present"):
-            _ = Record.from_json(self.finding("scope.commit: x", "standing", scope={"basis": "legacy-text", "commit": "abc1234"}))
+        finding: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                    "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": ["scope", "scope.commit: x", "standing"]}
         with self.assertRaisesRegex(RecordError, "is not a field"):
-            _ = Record.from_json(self.finding("scope.other: x", "scope", "standing"))
+            _ = Record.from_json(finding)
+
+    def test_a_gap_names_an_absent_required_field(self) -> None:
+        finding: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                    "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": ["area", "scope", "standing"]}
+        with self.assertRaisesRegex(RecordError, "listed as missing but present"):
+            _ = Record.from_json(finding)
+        finding["gaps"] = ["scope"]
         with self.assertRaisesRegex(RecordError, "standing: required field missing"):
-            _ = Record.from_json(self.finding("scope"))
+            _ = Record.from_json(finding)
+
+    def test_limits_belong_to_new_findings(self) -> None:
+        finding: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                    "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": ["scope", "standing"], "limits": "one run"}
+        with self.assertRaisesRegex(RecordError, "limits: a migrated finding keeps its limits in its legacy cell"):
+            _ = Record.from_json(finding)
 
 
 class ExportTests(LegacyRepository):
@@ -300,7 +315,7 @@ class ExportTests(LegacyRepository):
         self.assertEqual(record.gaps, ("standing",))
         spaced = self.record("F-109")
         assert spaced.legacy is not None
-        self.assertEqual(spaced.legacy.cells["original"], "|  F-109 | Spaced row | observed | review | low; none | | active |")
+        self.assertEqual(spaced.legacy.cells["original"], "|  F-109 | Spaced row | observed | review | low; build 1234567, c0ffee4 | | active |")
 
     def test_vocabulary_and_legacy_values(self) -> None:
         self.assertEqual(self.record("F-103").text("kind"), "legacy:unknown")
@@ -314,14 +329,18 @@ class ExportTests(LegacyRepository):
     def test_scope_tokens(self) -> None:
         f102 = self.record("F-102").scope
         assert f102 is not None
+        # The Evidence cell's hash is the revision of the sources read: a note, never scope.
         self.assertEqual((f102.basis, f102.builds, f102.commit, f102.subjects),
-                         ("legacy-text", ("any:29990003", "any:29990004", "client:29990002", "server:29990001"), "c0ffee1", ()))
+                         ("legacy-text", ("any:29990003", "any:29990004", "client:29990002", "server:29990001"), None, ()))
+        self.assertEqual(self.record("F-102").notes, ("source revision (evidence cell): c0ffee1",))
         f105 = self.record("F-105").scope
         assert f105 is not None
-        self.assertEqual((f105.builds, f105.releases, f105.commit), (("any:29990001",), ("3.0.91",), "a1b2c3d"))
+        self.assertEqual((f105.builds, f105.releases, f105.commit), (("any:29990001",), ("3.0.91",), None))
         self.assertIsNone(self.record("F-108").scope)
-        self.assertEqual(self.result.commits["F-108"], ("abc1234", "def5678"))
-        self.assertEqual(self.record("F-108").gaps, ("scope", "scope.commit: several commits in row (abc1234, def5678)", "standing"))
+        self.assertEqual(self.record("F-108").notes, ("source revision (evidence cell): abc1234, def5678",))
+        self.assertEqual(self.record("F-108").gaps, ("scope", "standing"))
+        f109 = self.record("F-109")
+        self.assertEqual((f109.scope, f109.gaps, self.result.unplaced), (None, ("scope", "standing"), {"F-109": ("1234567", "c0ffee4")}))
         self.assertIn("scope", self.record("F-107").gaps)
         # M-101's label names server 29990001; F-101 cites M-101 but states no build.
         self.assertIn("scope", self.record("F-101").gaps)
@@ -343,10 +362,13 @@ class ExportTests(LegacyRepository):
         state = replay(self.segments())
         u101 = self.record("U-101")
         assert u101.legacy is not None
-        # F-101 to F-105 expands over defined IDs only; F-103 is defined, an unallocated number would not be.
-        self.assertEqual(u101.legacy.resolved_by, ("F-101", "F-102", "F-103", "F-104", "F-105", "F-107"))
+        # The Findings column lists related findings, never a resolver: they are refs, and U-101 is resolved by its
+        # legacy status alone. F-101 to F-105 expands over defined IDs only.
+        self.assertEqual(u101.links.refs, ("F-101", "F-102", "F-103", "F-104", "F-105", "F-107"))
+        self.assertEqual(legacy_listed(u101, "findings"), ("F-101", "F-102", "F-103", "F-104", "F-105", "F-107"))
+        self.assertEqual(legacy_listed(u101, "next_probe"), ("F-102",))
         self.assertEqual(u101.links.cites, ("M-101/ev_bbbbbbbbbbbb",))
-        self.assertEqual(state.status("U-101"), "resolved")
+        self.assertEqual((state.status("U-101"), state.resolved_by.get("U-101")), ("resolved", None))
         self.assertEqual(self.record("U-102").links.refs, ("F-105",))
         self.assertEqual(state.status("U-102"), "open")
         f105 = self.record("F-105")
@@ -355,18 +377,23 @@ class ExportTests(LegacyRepository):
         self.assertEqual(self.record("F-101").links.refs, ("F-102", "U-101"))
         self.assertEqual(state.link_problems(), ())
 
-    def test_tables_keep_citations_as_text(self) -> None:
+    def test_tables_link_their_ids_and_state_no_status_they_lack(self) -> None:
         cp = self.record("CP-002")
         self.assertTrue(cp.assigned_at_migration)
-        self.assertEqual((cp.text("name"), cp.links.targets()), ("Widgets", ()))
+        self.assertEqual((cp.text("name"), cp.links.refs, cp.links.cites), ("Widgets", ("F-102", "F-105", "U-101"), ()))
         lead = self.record("SL-001")
-        self.assertEqual((lead.text("lead"), lead.links.targets(), lead.status), ("Reader differs", (), "open"))
-        scope = lead.scope
-        assert scope is not None
-        self.assertEqual(scope.commit, "c0ffee2")
+        self.assertEqual((lead.text("lead"), lead.links.cites, lead.links.refs, lead.status),
+                         ("Reader differs", ("M-101", "M-103/E-010"), ("F-102",), "legacy:unstated"))
+        self.assertIsNone(lead.scope)
+        self.assertEqual(lead.notes[-1], "source revision (static evidence cell): c0ffee2")
+        assert lead.legacy is not None
+        self.assertEqual(lead.legacy.cells["table"], "## Static leads on the original")
         report = self.record("RP-001")
-        self.assertEqual((report.number("priority"), report.status, report.links.targets()), (1, "unreproduced", ()))
-        self.assertEqual((self.record("N-101").status, self.record("N-101").gaps), ("fixed", ("tests",)))
+        self.assertEqual((report.number("priority"), report.status, report.links.refs), (1, "unreproduced", ("F-102",)))
+        bug = self.record("N-101")
+        assert bug.legacy is not None
+        self.assertEqual((bug.status, bug.gaps, bug.legacy.cells["table"]), ("legacy:unstated", ("tests",), "## Native foundation defects"))
+        self.assertTrue(bug.notes[0].startswith("status unstated"))
 
     def test_references_are_verbatim_specs(self) -> None:
         widget = self.record("REF-002")
@@ -416,6 +443,10 @@ class ExportTests(LegacyRepository):
                          ("retired", ("M-104",), ("see M-104 and F-105",), ()))
         line = (self.root / "evidence/widgets/001.jsonl").read_text().split("\n")[2]
         self.assertEqual(retired.legacy.cells, {"row": line})
+        # M-104 is tracked and its file becomes REF-002 at cut-over: linked, its locator kept.
+        tracked = self.record("M-104")
+        self.assertEqual((tracked.text("path"), tracked.links.refs, tracked.notes),
+                         ("docs/specs/net/widget.md", ("REF-002",), ("tracked file migrated to REF-002 at cut-over (link assigned at migration)",)))
 
     def test_segments_are_deterministic_and_bounded(self) -> None:
         out = self.top
@@ -441,6 +472,10 @@ class ExportTests(LegacyRepository):
 
 
 class SalvageTests(LegacyRepository):
+    def publish(self) -> None:
+        """Point ``origin/main``, the acceptance ref salvage classifies against, at ``main``."""
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/main", "main")
+
     def branch_and_main(self) -> None:
         """``feature`` edits F-107 and adds F-111, F-112 and M-105; ``main`` meanwhile takes F-112 for its own row."""
         root = self.root
@@ -458,33 +493,35 @@ class SalvageTests(LegacyRepository):
         _ = run_git(root, "checkout", "-q", "main")
         _ = ledger.write_text(ledger.read_text() + "| F-112 | Main's own F-112 | observed | review | high; y | | active |\n")
         _ = run_git(root, "commit", "-q", "-am", "main row")
+        self.publish()
 
     def journal_on_main(self, *, remove_legacy: bool) -> dict[str, Record]:
         """Commit ``main``'s export as its journal, as the cut-over does, optionally deleting the legacy trees."""
+        _ = run_git(self.root, "checkout", "-q", "main")
         migrated = export(self.root, "main")
         _ = write(migrated, self.root)
         if remove_legacy:
             _ = run_git(self.root, "rm", "-r", "-q", "docs/ledgers", "evidence")
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "cut-over")
+        self.publish()
         return migrated.records()
 
-    def run_salvage(self, ref: str) -> tuple[int, str, str]:
+    def run_salvage(self, ref: str, *, out: Path | None = None, main: str = "origin/main") -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
         with (mock.patch("tools.memory.salvage.repository_root", return_value=self.root), contextlib.redirect_stdout(stdout),
               contextlib.redirect_stderr(stderr)):
-            status = salvage_module.run_salvage(argparse.Namespace(ref=ref, check=False, out=None))
+            status = salvage_command.run(argparse.Namespace(ref=ref, check=False, out=out, main=main))
         return status, stdout.getvalue(), stderr.getvalue()
 
     def test_branch_rows_become_proposals_and_conflicts_are_kept_apart(self) -> None:
         self.branch_and_main()
         result = salvage(self.root, "feature")
         self.assertEqual("legacy", result.source)
-        self.assertEqual({revision.record.id: bool(revision.prev) for revision in result.proposals}, {"F-107": True, "F-111": False, "M-105": False})
-        on_main = Revision.of(self.records["F-107"])
-        self.assertEqual(next(revision.prev for revision in result.proposals if revision.record.id == "F-107"), (on_main.rev,))
-        # A changed row changes its verbatim legacy cells, which never change: it must become a superseding record.
-        self.assertEqual(result.unrevisable, {"F-107": ("claim", "legacy")})
+        self.assertEqual({revision.record.id: bool(revision.prev) for revision in result.proposals}, {"F-111": False, "M-105": False})
+        # A changed claim is not revisable: the row needs a superseding record and is never proposed.
+        self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
+        self.assertEqual("supersede", result.kinds["F-107"])
         self.assertIn("docs/ledgers/findings/widgets.md: changed on feature; revise the body of REF-007 by hand", result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
@@ -493,6 +530,21 @@ class SalvageTests(LegacyRepository):
         f111 = proposed["F-111"].scope
         assert f111 is not None
         self.assertEqual(f111.builds, ("server:29990001",))
+
+    def test_an_unrevisable_edit_is_never_written_and_exits_apart_from_conflicts(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "claim-edit")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("| F-107 | Decision text", "| F-107 | Edited decision text")
+                              + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit a claim")
+        self.publish()
+        out = self.top / "salvaged"
+        status, stdout, stderr = self.run_salvage("claim-edit", out=out)
+        self.assertEqual((salvage_command.EXIT_SUPERSEDE, ""), (status, stdout))
+        self.assertIn("needs a superseding record: F-107: changes claim, which a revision may not change; not proposed", stderr)
+        self.assertIn("1 proposal(s), 1 needing a superseding record, 0 needing a decision by hand, 0 conflict(s)", stderr)
+        written = {revision.record.id for segment in read_tree(out) for revision in segment.revisions}
+        self.assertEqual({"F-111"}, written)
 
     def test_after_the_cut_over_main_s_journal_gives_the_same_answer(self) -> None:
         self.branch_and_main()
@@ -506,9 +558,89 @@ class SalvageTests(LegacyRepository):
                          (after.kinds, after.unrevisable, after.notices, after.unsalvaged))
         status, stdout, stderr = self.run_salvage("feature")
         self.assertEqual(1, status, "a conflict fails the command")
-        self.assertIn("memory salvage: feature: 3 proposal(s), 1 conflict(s), 0 row(s) already on main (against main's journal)", stderr)
-        self.assertIn("conflict: F-112: main holds other content under this ID", stderr)
+        self.assertIn("memory salvage: feature: 2 proposal(s), 1 needing a superseding record, 0 needing a decision by hand, 1 conflict(s), 0 row(s) already accepted "
+                      + "(against origin/main ", stderr)
+        self.assertIn("conflict: F-112: origin/main holds other content under this ID", stderr)
         self.assertIn("# memory/journal/", stdout)
+
+    def status_branch(self, name: str, status: str, *, extra: str = "") -> None:
+        """A branch that changes only F-107's Status cell (and may add rows), after the cut-over journalled main."""
+        _ = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", name, "main")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        row = "| F-107 | Decision text without tokens | derived | review | bounded; candidate; owner said so | |"
+        text = ledger.read_text()
+        self.assertIn(f"{row} active |", text)
+        _ = ledger.write_text(text.replace(f"{row} active |", f"{row} {status} |") + extra)
+        _ = run_git(self.root, "commit", "-q", "-am", "status edit")
+
+    def legal(self, result: Salvage) -> State:
+        """The accepted journal plus the proposals, replayed: no illegal revision, no dangling link."""
+        out = self.top / "legal"
+        _ = write_change_set(out, datetime(2026, 2, 1, tzinfo=UTC), result.proposals)
+        state = replay([*read_git(self.root, "origin/main"), *read_tree(out)])
+        self.assertEqual(([], (), ()), (revision_problems(state), state.link_problems(), state.problems))
+        return state
+
+    def test_a_status_cell_superseded_by_a_new_row_is_a_supersedes_link_on_it(self) -> None:
+        self.status_branch("supersede", "superseded-by F-111", extra="| F-111 | Replacement claim | observed | review | high; x | | active |\n")
+        result = salvage(self.root, "supersede")
+        self.assertEqual(({}, {}), (result.unrevisable, result.undecided))
+        self.assertEqual({"F-107": "superseded", "F-111": "new"}, result.kinds)
+        self.assertEqual(["F-111"], [revision.record.id for revision in result.proposals], "no revision of F-107")
+        self.assertEqual(("F-107",), result.proposals[0].record.links.supersedes)
+        state = self.legal(result)
+        self.assertEqual("superseded", state.status("F-107"))
+        status, _stdout, _stderr = self.run_salvage("supersede")
+        self.assertEqual(0, status)
+
+    def test_a_status_cell_superseded_by_an_accepted_record_appends_to_it(self) -> None:
+        self.status_branch("by-accepted", "superseded-by F-105")
+        result = salvage(self.root, "by-accepted")
+        self.assertEqual({"F-107": "superseded", "F-105": "revision"}, result.kinds)
+        (revision,) = result.proposals
+        self.assertEqual(("F-105", ("F-107",)), (revision.record.id, revision.record.links.supersedes))
+        _ = self.legal(result)
+
+    def test_a_retired_status_cell_is_a_status_revision_quoting_the_cell(self) -> None:
+        self.status_branch("retire", "retired: replaced by the invented design")
+        result = salvage(self.root, "retire")
+        (revision,) = result.proposals
+        self.assertEqual(("F-107", "retired"), (revision.record.id, revision.record.status))
+        self.assertEqual("status cell on retire: retired: replaced by the invented design", revision.record.notes[-1])
+        self.assertEqual(self.records["F-107"].legacy, revision.record.legacy, "main's verbatim cells are kept")
+        _ = self.legal(result)
+
+    def test_a_status_cell_outside_the_vocabulary_or_without_a_known_successor_is_undecided(self) -> None:
+        self.status_branch("odd", "parked for later")
+        odd = salvage(self.root, "odd")
+        self.assertEqual(([], {"F-107": "its status cell on odd is outside the finding vocabulary: 'parked for later'"}), (odd.proposals, odd.undecided))
+        status, _stdout, stderr = self.run_salvage("odd")
+        self.assertEqual(salvage_command.EXIT_SUPERSEDE, status)
+        self.assertIn("needs a decision by hand: F-107:", stderr)
+
+    def test_the_accepted_ref_is_origin_main_whatever_local_main_says(self) -> None:
+        self.branch_and_main()
+        expected = salvage(self.root, "feature")
+        records = self.journal_on_main(remove_legacy=True)
+        f111 = records.get("F-111")
+        self.assertIsNone(f111)
+        accepted = salvage(self.root, "feature")
+        # A stale local main (behind origin/main) plays no part.
+        _ = run_git(self.root, "checkout", "-q", "feature")
+        _ = run_git(self.root, "branch", "-f", "main", "main~2")
+        stale = salvage(self.root, "feature")
+        self.assertEqual(("journal", accepted.main, accepted.base), (stale.source, stale.main, stale.base))
+        self.assertEqual([revision.line() for revision in accepted.proposals], [revision.line() for revision in stale.proposals])
+        self.assertEqual(expected.kinds, stale.kinds)
+        # Nor does a missing one.
+        _ = run_git(self.root, "branch", "-D", "main")
+        missing = salvage(self.root, "feature")
+        self.assertEqual((accepted.kinds, accepted.main), (missing.kinds, missing.main))
+        # --main overrides the acceptance ref: against the pre-cut-over commit the legacy export stands in.
+        status, _stdout, stderr = self.run_salvage("feature", main="origin/main~1")
+        self.assertEqual(1, status)
+        self.assertIn("legacy export)", stderr)
 
     def test_a_record_main_s_journal_revised_is_a_conflict_and_otherwise_prev_is_the_journal_head(self) -> None:
         self.branch_and_main()
@@ -520,21 +652,63 @@ class SalvageTests(LegacyRepository):
         _ = write_change_set(self.root, datetime(2026, 1, 7, tzinfo=UTC), [second])
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "revise F-107 on main")
+        self.publish()
         # The journal wins over the legacy trees main still has: they would have made this a plain revision.
         revised = salvage(self.root, "feature")
         self.assertEqual("journal", revised.source)
         self.assertEqual(["F-107", "F-112"], [new.id for _old, new in revised.conflicts])
         self.assertEqual("conflict", revised.kinds["F-107"])
         self.assertNotIn("F-107", {revision.record.id for revision in revised.proposals})
-        # Main returns F-107 to its merge-base content: a new revision, whose rev the branch's revision must name.
+        # Main returns F-107 to its merge-base content: a new revision, whose rev the branch's row would have to name.
         third = Revision.of(f107, [second.rev])
         _ = write_change_set(self.root, datetime(2026, 1, 8, tzinfo=UTC), [third])
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "revert F-107 on main")
+        self.publish()
         restored = salvage(self.root, "feature")
-        self.assertEqual("revision", restored.kinds["F-107"])
-        self.assertEqual((third.rev,), next(revision.prev for revision in restored.proposals if revision.record.id == "F-107"))
+        self.assertEqual("supersede", restored.kinds["F-107"], "no longer a conflict; its claim edit still needs a superseding record")
+        self.assertNotIn("F-107", {revision.record.id for revision in restored.proposals})
         self.assertNotEqual(third.rev, first.rev)
+
+    def merged_cut_over(self, *, keep_legacy: bool) -> str:
+        """``feature`` merges the cut-over, resolving the modify/delete conflicts by deleting or by keeping its files; its pre-merge tip."""
+        self.branch_and_main()
+        _ = self.journal_on_main(remove_legacy=True)
+        _ = run_git(self.root, "checkout", "-q", "feature")
+        tip = run_git(self.root, "rev-parse", "HEAD").strip()
+        with self.assertRaises(subprocess.CalledProcessError):
+            _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        if keep_legacy:
+            _ = run_git(self.root, "add", "-A", "docs/ledgers", "evidence")
+        else:
+            _ = run_git(self.root, "rm", "-r", "-q", "--ignore-unmatch", "docs/ledgers", "evidence")
+        _ = run_git(self.root, "commit", "-q", "--no-edit")
+        return tip
+
+    def test_after_merging_the_cut_over_salvage_names_the_pre_merge_tip(self) -> None:
+        for keep in (False, True):
+            with self.subTest(keep_legacy=keep):
+                self.setUp()
+                tip = self.merged_cut_over(keep_legacy=keep)
+                result = salvage(self.root, "feature")
+                self.assertEqual((tip, [], [], {}), (result.premerge, result.proposals, result.conflicts, result.kinds))
+                status, stdout, stderr = self.run_salvage("feature")
+                self.assertEqual((salvage_command.EXIT_PREMERGE, ""), (status, stdout))
+                self.assertIn(f"run memory salvage {tip}", stderr)
+                self.assertNotIn("nothing to salvage", stderr)
+                again = salvage(self.root, tip)
+                self.assertEqual(({"F-107": "supersede", "F-111": "new", "F-112": "conflict", "M-105": "new"}, None), (again.kinds, again.premerge))
+
+    def test_a_merge_of_the_cut_over_without_branch_rows_has_nothing_to_salvage(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "quiet")
+        _ = (self.root / "src/lib.rs").write_text("//! Branch work without legacy rows.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "work")
+        _ = self.journal_on_main(remove_legacy=True)
+        _ = run_git(self.root, "checkout", "-q", "quiet")
+        _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        status, stdout, stderr = self.run_salvage("quiet")
+        self.assertEqual((0, ""), (status, stdout))
+        self.assertIn("changes no legacy rows; nothing to salvage", stderr)
 
     def test_a_branch_without_legacy_trees_has_nothing_to_salvage(self) -> None:
         _ = self.journal_on_main(remove_legacy=True)
