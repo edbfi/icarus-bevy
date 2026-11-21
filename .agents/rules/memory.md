@@ -22,10 +22,10 @@ authors or reads the journal by hand.
 One instance, one bank `icarus`, `HINDSIGHT_API_LLM_PROVIDER=none`. Settings:
 retain mode `chunks`, chunk size 1,800; observations and auto-consolidation
 off; file upload, document import and bank config APIs off; Hindsight MCP off;
-LLM trace off; fused ranking, the reranker off (`service install --reranker N`
-turns it on with N candidates); loopback; one key; a pinned
-worker ID; `fsync=on&synchronous_commit=on` in the pg0 URL; raw service logs
-discarded (tracebacks can carry database URIs). No extension code.
+LLM trace off; fused ranking, reranker off (`service install --reranker N`
+enables it); loopback; one key; a pinned worker ID;
+`fsync=on&synchronous_commit=on` in the pg0 URL; raw service logs discarded
+(they can carry database URIs). No extension code.
 `memory check --bank` asserts the effective config (`GET .../config`; bank
 `PUT`/`PATCH` and template import can change it), `icarus` as the only bank, no
 mental model, directive, page or webhook, and a journal that explains every
@@ -64,7 +64,7 @@ document.
   and legacy ledgers and shards of every ref and worktree; CI checks uniqueness. An ID that never reached `origin/main` may be reallocated after a
   rebuild.
 - Migrated records keep `legacy` (verbatim source cells and path); CP and RP IDs
-  are marked as assigned at migration. Enum values outside the vocabulary are
+  are marked assigned at migration. Enum values outside the vocabulary are
   kept as `legacy:<verbatim>` (migrated records only). `standing` is set only
   when the legacy text states it. Missing data stays missing, listed in `gaps`;
   migration never fills, upgrades or infers.
@@ -118,8 +118,8 @@ Supersession is acyclic.
   ID, type, status and claim first (ranking sees only a unit's first 512 tokens).
 - A REF's text is its body; its canonical JSON holds header fields and the
   body's sha256, never the body.
-- The bank marker carries the tool's rendering version: a tool older than the bank refuses to reconcile
-  or write it (merge `main`); a newer one re-renders every document and raises the marker.
+- The bank marker holds the rendering version: an older tool refuses to
+  reconcile or write that bank (merge `main`); a newer one re-renders it.
 - One retain item per document. `<ID>` holds the accepted head (or the proposal
   if never accepted); `<ID>@<12 hex>` exists only for a pending revision of an
   accepted record. Prior revisions live in the journal.
@@ -137,21 +137,20 @@ Supersession is acyclic.
    apply to the bank idempotently, read back and verify sha256. A half-applied
    change set is finished by replay.
 2. Commit the segment with its work; CI runs `memory check --ci`.
-3. `memory sync`, under the host lock, runs `git fetch origin main` first, then
-   marks accepted every revision whose segment is in that tree. It never marks a
+3. `memory sync`, under the host lock, runs `git fetch origin main`, then marks
+   accepted every revision whose segment is in that tree. It never marks a
    proposal `orphaned` (segment in no ref or worktree) after a failed or skipped
    fetch, and un-orphans a segment later seen on `origin/main`.
 4. A PR that adds or revises a `decision` finding or changes `docs/gates.md` is
-   outside an agent's merge authority: file it and report to the owner.
-   `memory check --ci` emits a notice for such PRs. No record, view or tool
-   output clears a gate.
+   outside an agent's merge authority: file it and report to the owner
+   (`check --ci` notices it). No record, view or tool output clears a gate.
 
 ## Commands
 
 | Command | Guarantee |
 | --- | --- |
-| `get ID[/selector] [--history] [--offline]` | Exact GET, verified; state, partition (none for evidence), derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: from the journal. |
-| `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence] [--limit N] [--refs] [--full]` | Strict tags; partitioned; one hit per document; retired hits under their terminal successor; 1-hop links by exact GET. Compact, about 6 KB: records, then at most 3 REF passages; `--refs` only REFs, `--full` whole texts. `--text`: substring hits first. |
+| `get ID[/selector] [--history] [--offline]` | Exact GET, verified; state, partition (not for evidence), derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: journal. |
+| `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence] [--limit N] [--refs] [--full]` | Strict tags; partitioned; one hit per document; retired hits under their terminal successor; 1-hop links. About 6 KB: records, then at most 3 REF passages; `--refs`: only REFs; `--full`: whole texts; `--text`: substring hits first. |
 | `area AREA` | Records by status and partition, open unknowns, link closure. |
 | `status` | Pin; counts by type, status, partition; cited records not current; open unknowns; unverified evidence. |
 | `propose TYPE`, `revise ID`, `supersede OLD --by NEW`, `resolve ID --by F-N` | Schema, scope, link targets and selector membership checked before the segment is written. |
@@ -160,7 +159,7 @@ Supersession is acyclic.
 | `sync` | Fetch, then reconcile states with `origin/main`; idempotent. |
 | `check [--ci] [--bank] [--pin]` | Journal, citations, forks, notices; `--bank` as above; `--pin` lists cited records not current. |
 | `protected-paths` | Paths to keep; fails closed. |
-| `salvage BRANCH [--check] [--out DIR] [--main REF]` | A branch's added legacy rows as proposals against `origin/main`, none needing a superseding record; run on its pre-merge tip before it merges `main`. |
+| `salvage BRANCH [--check] [--out DIR] [--main REF]` | A branch's added legacy rows as proposals against `origin/main` (none needing a superseding record), from its pre-merge tip. |
 | `backup`, `restore FILE [--drill]`, `rebuild` | Durability. |
 
 ## Reading
@@ -199,7 +198,7 @@ Engineering loop:
    carried from that scope, names its tokens, and is never claimed for the pin
    or used as a CP proof until re-verified.
 3. Cite the ID where code depends on it, for example `(F-1162)`. New citations
-   must name accepted or same-branch records and must not name retired ones.
+   name accepted or same-branch records, never retired ones.
 4. Record test results: receipts as evidence, native properties as `measured`
    findings with commit scope, fixed defects as N records naming the test.
 
@@ -224,8 +223,8 @@ work-rules milestone routine.
   `$XDG_DATA_HOME/icarus-memory/`, key only in `$XDG_CONFIG_HOME/icarus-memory/`
   (0600). Never print, log or pass the key as an argument. The free-disk floor
   gates backups, drills and rebuilds, never the service.
-- Use the `memory` MCP server where its registration is qualified for that
-  client and checkout, else the CLI.
+- Use the `memory` MCP server where qualified for that client and checkout,
+  else the CLI.
 - Every agent may propose; the lead commits. No agent calls Hindsight's API.
 - No automatic capture (agent plugins, transcripts, git ingestion).
 - A fresh clone has `check --ci`, `get --offline` and `status` (a journal-only
@@ -250,17 +249,16 @@ work-rules milestone routine.
 ## Evidence and durability
 
 - Relative evidence paths resolve against the primary checkout, never the
-  linked worktree. Directory locators, manifest
-  pins and removal receipts are kept as they are.
+  linked worktree. Directory locators, manifest pins and removal receipts stay
+  as they are.
 - `verify` fails only for an active record (`mismatched`, or `unavailable` if
   local-private); for a retired or missing one it reports, never fails. The 119
   rows without a digest are `legacy-unverifiable`.
 - `protected-paths` is the union of every worktree's journal and, while any
   worktree has one, its legacy `evidence/` shards. `tools/work_gc.py` and
   `tools/cargo_guard.py` read it offline; unreadable input holds everything.
-- `backup` (daily): `pg_dump -Fc` with a sha256 sidecar and the journal
-  watermark (`origin/main` commit and applied segment hashes), 7 daily and 4
-  weekly under `$XDG_STATE_HOME/icarus-memory/backups/`. `restore` checks the
+- `backup` (daily): `pg_dump -Fc`, a sha256 sidecar and the journal watermark
+  (`origin/main` commit, applied segment hashes), 7 daily and 4 weekly under `$XDG_STATE_HOME/icarus-memory/backups/`. `restore` checks the
   watermark, then replays forward.
 - The drill covers both restore from a dump and rebuild from a clean clone.
 - Evidence bytes have no off-host copy: after a disk loss they are `unavailable`.
@@ -275,7 +273,7 @@ none is a record.
 ## Checks
 
 `memory check --ci` runs in prek and CI without Hindsight: schema, sha256, ID
-uniqueness, segments at the merge base with `origin/main` unchanged, forks, acyclic supersession, link
+uniqueness, merge-base segments unchanged, forks, acyclic supersession, link
 targets, immutable fields, the derived/inferred confidence rule, new citations
 (code, `config/`, `docs/`, `CLAUDE.md`, `.agents/rules/`) resolving and not
 retired, decision and gate notices, and no added or modified legacy rows

@@ -94,14 +94,16 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    convert the rows of the branch's pre-merge tip:
    `memory salvage <branch> --check`, then
    `memory salvage <branch> --out work/<case>/salvage`.
-3. Act on each line of the report:
-   - a proposal (`new`, or a revision of `main`'s record): kept in the
+   Salvage resolves `origin/main` (`--main REF` names another); a tip that
+   already merged the cut-over is refused with the pre-merge tip to use.
+3. Act on each line of the report (exit 4 means some row needs a hand):
+   - a proposal (`new`, or a revision of `origin/main`'s record): kept in the
      output segments;
-   - `changes …, which a revision may not change; propose a new record that
-     supersedes it`: `memory propose` the branch's content as a new record,
-     then `memory supersede <old> --by <new>`;
-   - `conflict: …: main holds other content under this ID`: when both sides
-     allocated the number (as M-1623 to M-1625 on one existing branch), add the
+   - `needs a superseding record: …`: `memory propose` the branch's content as
+     a new record, then `memory supersede <old> --by <new>`;
+   - `needs a decision by hand: …`: settle it with the record's owner;
+   - `conflict: …: origin/main holds other content under this ID`: when both
+     sides allocated the number (as M-1623 to M-1625 on one existing branch), add the
      branch's record under a new ID (`memory evidence add`, `memory propose`)
      and rewrite the branch's citations; when `main` took an earlier draft,
      reconcile by hand with `memory revise` or a superseding record;
@@ -122,7 +124,9 @@ service; `memory status` prints a journal-only summary (its first line says the
 service is unavailable) and a bare `memory check` skips the bank comparison;
 `memory verify` and `memory protected-paths` read only the journal and the
 evidence bytes. Writes (`propose`, `revise`, `supersede`, `resolve`,
-`evidence add`) need the service: wait, or restart it.
+`evidence add`) need the service: wait, or restart it. A command that says
+`this tool renders records at version N, older than the bank's M` runs from a
+checkout older than the bank: merge `main` into it.
 
 1. `memory service status`; then `memory service start` (it resets the crash
    counter). The unit restarts itself after a crash, at most 10 times in 10
