@@ -69,8 +69,9 @@ Record claims about originals, measured native properties and decisions that
 depend on them as memory records; record receipts and one REA bundle per session
 as evidence (`memory evidence add`). Cite permanent IDs where code or documents
 depend on them, for example `(F-1162)` or `M-NNN/ev_<12 hex>`; a new citation
-names an accepted or same-branch record and never a retired one. Rely only on
-records `current` for the pinned release. Follow the session-close,
+names an accepted or same-branch record and never a retired one. Only records
+`current` for the pinned release are established for it; work built on any
+other partition is recorded as carried from that scope. Follow the session-close,
 engineering-loop and milestone procedures of `.agents/rules/memory.md`; commit
 the journal segments with the work. A pull request that adds a decision
 finding or changes `docs/gates.md` goes to the owner. Plan, gates,

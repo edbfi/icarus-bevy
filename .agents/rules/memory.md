@@ -192,7 +192,10 @@ Engineering loop:
 
 1. Read `memory status` and the plan; recall the topic; `get` each ID you will
    rely on; check `docs/gates.md`.
-2. Rely on `current` records; anything else needs research or an unknown.
+2. Only `current` records are established for the pinned release. Another
+   partition may guide native work, but what is built on it is recorded as
+   carried from that scope, names its tokens, and is never claimed for the pin
+   or used as a CP proof until re-verified.
 3. Cite the ID where code depends on it, for example `(F-1162)`. New citations
    must name accepted or same-branch records and must not name retired ones.
 4. Record test results: receipts as evidence, native properties as `measured`
