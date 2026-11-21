@@ -108,6 +108,10 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     branch_names = ["Alpha", "Beta", *main_names[1:]] if rng.random() < 0.5 else list(main_names)
     if twins and rng.random() < 0.4:
         branch_names.remove("Gamma")  # the branch drops one of main's twins: the other is still ambiguous on main
+    if rng.random() < 0.25:
+        branch_names[0] = "Alpha renamed"  # a rename: an accepted name lost, a new one gained
+    if rng.random() < 0.25:
+        branch_names.append("Delta")  # an unrelated new row
     # A repeated name: two new rows of one name, or a second row of an accepted name.
     repeated = rng.choice([[], [], ["Dup", "Dup"], ["Gamma"]])
     branch_names = [*branch_names, *repeated]
@@ -120,7 +124,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
             last = max(f"CP-{number:03d}" for number, name in enumerate(names, 1) if name == "Gamma")
             export[last] = Record.from_json(export[last].to_json() | {"status": "observed"})
         export["M-500"] = tracked("M-500", "docs/specs/e.md", refs["docs/specs/e.md"])
-        cited = export[base_ids[0]].to_json() | {"refs": [cps["Alpha" if twins else "Gamma"]]}
+        cited = export[base_ids[0]].to_json() | {"refs": [cps["Gamma" if not twins else names[1] if names[1] != "Gamma" else names[0]]]}
         export[base_ids[0]] = Record.from_json(cited)
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.5:
         after["M-501"] = tracked("M-501", "docs/specs/a.md", numbered(branch_paths, branch_names)[0]["docs/specs/a.md"])
@@ -165,6 +169,11 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
+            lost = {identity(record) for record in accepted.records.values() if record.type in ("compatibility", "report")} \
+                - {identity(record) for record in raw_after.values()}
+            if lost:
+                self.assertEqual([], [item.record.id for item in result.proposals if item.record.type in ("compatibility", "report")],
+                                 f"seed {seed}: an accepted identity disappeared while a new row of its table is proposed")
             held_identities = {identity(record) for record in accepted.records.values()} - {None}
             self.assertEqual([], [item.record.id for item in result.proposals
                                   if result.kinds.get(item.record.id) == "new" and identity(item.record) in held_identities],
@@ -191,8 +200,12 @@ class GeneratedSalvageTests(unittest.TestCase):
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
             self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
-            held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict")}
+            # Held rows keep their class; a provisional number may move once other records are accepted, so those compare by identity.
+            held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict") and name not in unmapped}
             self.assertEqual(held, {name: kind for name, kind in again.kinds.items() if name in held}, f"seed {seed}: second run")
+            held_new = sorted(str(identity(after[name])) for name, kind in result.kinds.items() if kind == "undecided" and name in unmapped and name in after)
+            again_new = sorted(str(identity(after_again[name])) for name, kind in again.kinds.items() if kind == "undecided" and name in unmapped_again and name in after_again)
+            self.assertEqual(held_new, again_new, f"seed {seed}: second run, provisional rows")
             changed = {name for name, record in after.items() if before.get(name) != record}
             proposed = {revision.record.id for revision in result.proposals} & changed
             self.assertEqual({name: "accepted" for name in proposed}, {name: again.kinds.get(name) for name in proposed},

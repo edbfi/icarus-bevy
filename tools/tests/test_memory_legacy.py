@@ -1053,6 +1053,19 @@ class SalvageTests(LegacyRepository):
                 # A changed twin is held; the twin left as it was when the other is dropped is unchanged (the other a removal).
                 self.assertEqual(1 if case == "changed" else 0, len(held), result.undecided)
 
+    def test_a_renamed_compatibility_row_is_held_with_the_row_it_may_replace(self) -> None:
+        self.edited("rename", ("docs/ledgers/compatibility.md", "| Discovery | Unknown |", "| Discovery renamed | Unknown |"))
+        result = salvage(self.root, "rename")
+        cps = {name: kind for name, kind in result.kinds.items() if name.startswith("CP-")}
+        self.assertEqual(2, len(cps), cps)
+        self.assertEqual({"undecided"}, set(cps.values()))
+        self.assertIn("CP-001", cps)
+        self.assertIn("is gone from the branch and new compatibility rows appeared ('Discovery renamed' as", result.undecided["CP-001"])
+        new = next(name for name in cps if name != "CP-001")
+        self.assertIn("new compatibility row 'Discovery renamed', and CP-001 is gone from the branch", result.undecided[new])
+        self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
+        self.assertFalse(any("CP-001: removed" in notice for notice in result.notices), result.notices)
+
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
         self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",

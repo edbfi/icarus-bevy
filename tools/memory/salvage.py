@@ -577,6 +577,11 @@ def identity(record: Record) -> str | None:
     return None
 
 
+def name_of(record: Record) -> str:
+    """The cell a CP or RP row is known by (its identity, without the table)."""
+    return record.text("name") or record.text("problem") or record.id
+
+
 def relink(record: Record, mapping: Mapping[str, str]) -> Record:
     """``record`` with its ID and every linked ID (``supersedes``, ``resolves``, ``refs``, ``cites``, legacy successors, and the
     exporter's ``TRACKED_NOTE`` naming a REF) mapped."""
@@ -699,9 +704,29 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         if identifier in after:
             superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
 
+    # Within one table, a lost accepted identity beside a gained one may be a rename (a name or problem cell edited):
+    # salvage cannot tell a rename from a delete and an add, so it proposes neither and holds both.
+    renamed: dict[str, str] = {}
+    for kind in ("compatibility", "report"):
+        lost = sorted((name for name, other in before.items() if other.type == kind and name in accepted and name not in after), key=id_key)
+        gained = sorted((name for name, other in after.items() if other.type == kind and name in unmapped and name not in shared and name not in before),
+                        key=id_key)
+        if lost and gained:
+            for name in lost:
+                renamed[name] = (f"it is gone from the branch and new {kind} rows appeared ({', '.join(f'{name_of(after[item])!r} as {item}' for item in gained)}): "
+                                 + "a rename needs a superseding record; decide by hand")
+            for name in gained:
+                renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
+                                 + "a rename needs a superseding record; decide by hand")
     changed: list[str] = []
+    for name in sorted(set(renamed) - set(after), key=id_key):
+        hold(name, "undecided", renamed[name])
     for identifier in sorted(after, key=id_key):
         record = after[identifier]
+        if identifier in renamed:
+            changed.append(identifier)
+            hold(identifier, "undecided", renamed[identifier])
+            continue
         if record.type not in SALVAGED or before.get(identifier) == record:
             continue
         changed.append(identifier)
@@ -809,7 +834,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
     shared_keys = {identity(after[name]) for name in shared if name in after}
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
-                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys)
+                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys and identifier not in renamed)
     result.proposals.sort(key=lambda revision: (revision.record.type, id_key(revision.record.id)))
     invariants(result, changed, on_accepted)
     return superseding
