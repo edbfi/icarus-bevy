@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -34,6 +35,7 @@ from tools.memory.model import JSON, Legacy, Record, RecordError
 from tools.memory import migrate
 from tools.memory.parity import parity
 from tools.memory.paths import ProtectedPathsError
+from tools.memory import salvage as salvage_command
 from tools.memory.salvage import salvage
 from tools.memory.state import partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
@@ -519,6 +521,10 @@ class ParityTests(LegacyRepository):
 
 
 class SalvageTests(LegacyRepository):
+    def publish(self) -> None:
+        """Point ``origin/main``, the acceptance ref salvage classifies against, at ``main``."""
+        _ = run_git(self.root, "update-ref", "refs/remotes/origin/main", "main")
+
     def branch_and_main(self) -> None:
         """``feature`` edits F-107 and adds F-111, F-112 and M-105; ``main`` meanwhile takes F-112 for its own row."""
         root = self.root
@@ -536,33 +542,35 @@ class SalvageTests(LegacyRepository):
         _ = run_git(root, "checkout", "-q", "main")
         _ = ledger.write_text(ledger.read_text() + "| F-112 | Main's own F-112 | observed | review | high; y | | active |\n")
         _ = run_git(root, "commit", "-q", "-am", "main row")
+        self.publish()
 
     def journal_on_main(self, *, remove_legacy: bool) -> dict[str, Record]:
         """Commit ``main``'s export as its journal, as the cut-over does, optionally deleting the legacy trees."""
+        _ = run_git(self.root, "checkout", "-q", "main")
         migrated = export(self.root, "main")
         _ = write(migrated, self.root)
         if remove_legacy:
             _ = run_git(self.root, "rm", "-r", "-q", "docs/ledgers", "evidence")
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "cut-over")
+        self.publish()
         return migrated.records()
 
-    def run_salvage(self, ref: str) -> tuple[int, str, str]:
+    def run_salvage(self, ref: str, *, out: Path | None = None, main: str = "origin/main") -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
-        with (mock.patch("tools.memory.migrate.repository_root", return_value=self.root), contextlib.redirect_stdout(stdout),
+        with (mock.patch("tools.memory.salvage.repository_root", return_value=self.root), contextlib.redirect_stdout(stdout),
               contextlib.redirect_stderr(stderr)):
-            status = migrate.run_salvage(argparse.Namespace(ref=ref, check=False, out=None))
+            status = salvage_command.run(argparse.Namespace(ref=ref, check=False, out=out, main=main))
         return status, stdout.getvalue(), stderr.getvalue()
 
     def test_branch_rows_become_proposals_and_conflicts_are_kept_apart(self) -> None:
         self.branch_and_main()
         result = salvage(self.root, "feature")
         self.assertEqual("legacy", result.source)
-        self.assertEqual({revision.record.id: bool(revision.prev) for revision in result.proposals}, {"F-107": True, "F-111": False, "M-105": False})
-        on_main = Revision.of(self.records["F-107"])
-        self.assertEqual(next(revision.prev for revision in result.proposals if revision.record.id == "F-107"), (on_main.rev,))
-        # A changed row changes its verbatim legacy cells, which never change: it must become a superseding record.
+        self.assertEqual({revision.record.id: bool(revision.prev) for revision in result.proposals}, {"F-111": False, "M-105": False})
+        # A changed row changes its verbatim legacy cells, which never change: it needs a superseding record and is never proposed.
         self.assertEqual(result.unrevisable, {"F-107": ("claim", "legacy")})
+        self.assertEqual("supersede", result.kinds["F-107"])
         self.assertIn("docs/ledgers/findings/widgets.md: changed on feature; revise the body of REF-007 by hand", result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
@@ -571,6 +579,21 @@ class SalvageTests(LegacyRepository):
         f111 = proposed["F-111"].scope
         assert f111 is not None
         self.assertEqual(f111.builds, ("server:29990001",))
+
+    def test_an_unrevisable_edit_is_never_written_and_exits_apart_from_conflicts(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "claim-edit")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("| F-107 | Decision text", "| F-107 | Edited decision text")
+                              + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit a claim")
+        self.publish()
+        out = self.top / "salvaged"
+        status, stdout, stderr = self.run_salvage("claim-edit", out=out)
+        self.assertEqual((salvage_command.EXIT_SUPERSEDE, ""), (status, stdout))
+        self.assertIn("needs a superseding record: F-107: changes claim, legacy, which a revision may not change; not proposed", stderr)
+        self.assertIn("1 proposal(s), 1 needing a superseding record, 0 conflict(s)", stderr)
+        written = {revision.record.id for segment in read_tree(out) for revision in segment.revisions}
+        self.assertEqual({"F-111"}, written)
 
     def test_after_the_cut_over_main_s_journal_gives_the_same_answer(self) -> None:
         self.branch_and_main()
@@ -584,9 +607,33 @@ class SalvageTests(LegacyRepository):
                          (after.kinds, after.unrevisable, after.notices, after.unsalvaged))
         status, stdout, stderr = self.run_salvage("feature")
         self.assertEqual(1, status, "a conflict fails the command")
-        self.assertIn("memory salvage: feature: 3 proposal(s), 1 conflict(s), 0 row(s) already on main (against main's journal)", stderr)
-        self.assertIn("conflict: F-112: main holds other content under this ID", stderr)
+        self.assertIn("memory salvage: feature: 2 proposal(s), 1 needing a superseding record, 1 conflict(s), 0 row(s) already accepted "
+                      + "(against origin/main ", stderr)
+        self.assertIn("conflict: F-112: origin/main holds other content under this ID", stderr)
         self.assertIn("# memory/journal/", stdout)
+
+    def test_the_accepted_ref_is_origin_main_whatever_local_main_says(self) -> None:
+        self.branch_and_main()
+        expected = salvage(self.root, "feature")
+        records = self.journal_on_main(remove_legacy=True)
+        f111 = records.get("F-111")
+        self.assertIsNone(f111)
+        accepted = salvage(self.root, "feature")
+        # A stale local main (behind origin/main) plays no part.
+        _ = run_git(self.root, "checkout", "-q", "feature")
+        _ = run_git(self.root, "branch", "-f", "main", "main~2")
+        stale = salvage(self.root, "feature")
+        self.assertEqual(("journal", accepted.main, accepted.base), (stale.source, stale.main, stale.base))
+        self.assertEqual([revision.line() for revision in accepted.proposals], [revision.line() for revision in stale.proposals])
+        self.assertEqual(expected.kinds, stale.kinds)
+        # Nor does a missing one.
+        _ = run_git(self.root, "branch", "-D", "main")
+        missing = salvage(self.root, "feature")
+        self.assertEqual((accepted.kinds, accepted.main), (missing.kinds, missing.main))
+        # --main overrides the acceptance ref: against the pre-cut-over commit the legacy export stands in.
+        status, _stdout, stderr = self.run_salvage("feature", main="origin/main~1")
+        self.assertEqual(1, status)
+        self.assertIn("legacy export)", stderr)
 
     def test_a_record_main_s_journal_revised_is_a_conflict_and_otherwise_prev_is_the_journal_head(self) -> None:
         self.branch_and_main()
@@ -598,21 +645,63 @@ class SalvageTests(LegacyRepository):
         _ = write_change_set(self.root, datetime(2026, 1, 7, tzinfo=UTC), [second])
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "revise F-107 on main")
+        self.publish()
         # The journal wins over the legacy trees main still has: they would have made this a plain revision.
         revised = salvage(self.root, "feature")
         self.assertEqual("journal", revised.source)
         self.assertEqual(["F-107", "F-112"], [new.id for _old, new in revised.conflicts])
         self.assertEqual("conflict", revised.kinds["F-107"])
         self.assertNotIn("F-107", {revision.record.id for revision in revised.proposals})
-        # Main returns F-107 to its merge-base content: a new revision, whose rev the branch's revision must name.
+        # Main returns F-107 to its merge-base content: a new revision, whose rev the branch's row would have to name.
         third = Revision.of(f107, [second.rev])
         _ = write_change_set(self.root, datetime(2026, 1, 8, tzinfo=UTC), [third])
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "revert F-107 on main")
+        self.publish()
         restored = salvage(self.root, "feature")
-        self.assertEqual("revision", restored.kinds["F-107"])
-        self.assertEqual((third.rev,), next(revision.prev for revision in restored.proposals if revision.record.id == "F-107"))
+        self.assertEqual("supersede", restored.kinds["F-107"], "no longer a conflict; its claim edit still needs a superseding record")
+        self.assertNotIn("F-107", {revision.record.id for revision in restored.proposals})
         self.assertNotEqual(third.rev, first.rev)
+
+    def merged_cut_over(self, *, keep_legacy: bool) -> str:
+        """``feature`` merges the cut-over, resolving the modify/delete conflicts by deleting or by keeping its files; its pre-merge tip."""
+        self.branch_and_main()
+        _ = self.journal_on_main(remove_legacy=True)
+        _ = run_git(self.root, "checkout", "-q", "feature")
+        tip = run_git(self.root, "rev-parse", "HEAD").strip()
+        with self.assertRaises(subprocess.CalledProcessError):
+            _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        if keep_legacy:
+            _ = run_git(self.root, "add", "-A", "docs/ledgers", "evidence")
+        else:
+            _ = run_git(self.root, "rm", "-r", "-q", "--ignore-unmatch", "docs/ledgers", "evidence")
+        _ = run_git(self.root, "commit", "-q", "--no-edit")
+        return tip
+
+    def test_after_merging_the_cut_over_salvage_names_the_pre_merge_tip(self) -> None:
+        for keep in (False, True):
+            with self.subTest(keep_legacy=keep):
+                self.setUp()
+                tip = self.merged_cut_over(keep_legacy=keep)
+                result = salvage(self.root, "feature")
+                self.assertEqual((tip, [], [], {}), (result.premerge, result.proposals, result.conflicts, result.kinds))
+                status, stdout, stderr = self.run_salvage("feature")
+                self.assertEqual((salvage_command.EXIT_PREMERGE, ""), (status, stdout))
+                self.assertIn(f"run memory salvage {tip}", stderr)
+                self.assertNotIn("nothing to salvage", stderr)
+                again = salvage(self.root, tip)
+                self.assertEqual(({"F-107": "supersede", "F-111": "new", "F-112": "conflict", "M-105": "new"}, None), (again.kinds, again.premerge))
+
+    def test_a_merge_of_the_cut_over_without_branch_rows_has_nothing_to_salvage(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "quiet")
+        _ = (self.root / "src/lib.rs").write_text("//! Branch work without legacy rows.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "work")
+        _ = self.journal_on_main(remove_legacy=True)
+        _ = run_git(self.root, "checkout", "-q", "quiet")
+        _ = run_git(self.root, "merge", "-q", "--no-edit", "main")
+        status, stdout, stderr = self.run_salvage("quiet")
+        self.assertEqual((0, ""), (status, stdout))
+        self.assertIn("changes no legacy rows; nothing to salvage", stderr)
 
     def test_a_branch_without_legacy_trees_has_nothing_to_salvage(self) -> None:
         _ = self.journal_on_main(remove_legacy=True)

@@ -26,6 +26,7 @@ from tools.memory import durability, mcp, online
 from tools.memory.gitio import GitError, git
 from tools.memory.journal import JournalError, read_git, read_tree
 from tools.memory.migrate import register as register_migration
+from tools.memory.salvage import register as register_salvage
 from tools.memory.paths import ProtectedPathsError, protected_paths
 
 EXIT_NO_JOURNAL = 3
@@ -72,6 +73,7 @@ def parser() -> argparse.ArgumentParser:
     durability.register(commands)
     mcp.register(commands)
     register_migration(commands)
+    register_salvage(commands)
     return top
 
 
