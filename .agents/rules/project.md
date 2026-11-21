@@ -90,8 +90,8 @@ be demonstrated rather than assumed.
 - Separate offline and dynamic scopes; lab-only scopes permit no external service
   connections. Preserve frozen case artifacts and receipts; adapt later probes
   with fresh reviewed bindings.
-- A session closes as `.agents/rules/docs.md` requires; preconditions that block
-  actions live only in `docs/gates.md`.
+- A session closes as `.agents/rules/memory.md` (Procedures) requires;
+  preconditions that block actions live only in `docs/gates.md`.
 
 # Execution and handoff
 
@@ -111,13 +111,13 @@ be demonstrated rather than assumed.
   related batch. Preserve history, keep hooks enabled, and verify remote delivery.
   The 2026-10-12 instruction supersedes the old overnight batch's no-push rule.
   Do not force-push, rewrite existing commits or merge into `main` as routine sync.
-- Maintain `docs/linux-dedicated-server-plan.md` as the canonical plan,
-  `docs/implementation-status.md` as the current checkpoint and `docs/gates.md`
-  as the only home of preconditions. Record findings by area under
-  `docs/ledgers/findings/`, open questions, bugs and compatibility in the other
-  ledgers, research state in digests under `docs/research/`, and evidence
-  artifacts in the `evidence/` index, following `.agents/rules/docs.md`. Avoid
-  duplicate plans, generic AI prose and speculative completion claims.
+- Maintain `docs/linux-dedicated-server-plan.md` as the canonical plan, with
+  milestone state and the ordered next tasks, and `docs/gates.md` as the only
+  home of preconditions. Record findings, open questions, bugs, leads,
+  compatibility, references and evidence artifacts as memory records through
+  `python3 -m tools.memory`, following `.agents/rules/memory.md`; architecture
+  and runbooks cite them by ID. Avoid duplicate plans, generic AI prose and
+  speculative completion claims.
 - Resource budgets for heavy work: start with two Cargo jobs and at most four
   CPU-heavy workers; serialize large builds, Ghidra and original-server runs when
   memory is tight. Keep owned jobs under 10 GiB; defer heavy work below 3 GiB

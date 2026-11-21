@@ -103,8 +103,9 @@ class CheckTests(Repository):
             path.unlink()
         report = self.check()
         self.assertFalse(report.no_journal)
-        self.assertIn("removed or changed", report.problems[0])
-        self.assertEqual(["src/old.rs:1: F-101: no record F-101"], report.problems[1:])
+        self.assertEqual("no journal: memory/journal/ holds no segment, and this repository requires one", report.problems[0])
+        self.assertIn("removed or changed", report.problems[1])
+        self.assertEqual(["src/old.rs:1: F-101: no record F-101"], report.problems[2:])
 
     def test_required_journal(self) -> None:
         commit_all(self.root)
@@ -192,6 +193,27 @@ class CheckTests(Repository):
         self.assertEqual([], self.check().problems)
         self.assertEqual(["evidence/area/001.jsonl: adds or modifies legacy rows; turn them into proposals with memory salvage"],
                          self.check(frozen=True).problems)
+
+
+    def test_a_branch_from_before_the_cut_over_is_told_so_with_the_rows_it_adds(self) -> None:
+        header = "# Findings: Widgets\n\n| ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |\n| --- | --- | --- | --- | --- | --- | --- |\n"
+        self.put("docs/ledgers/findings/widgets.md", header + "| F-090 | Invented old claim | observed | review | high; server 29990001 | | active |\n")
+        commit_all(self.root, "legacy era")
+        _ = run_git(self.root, "checkout", "-q", "-b", "old")
+        self.put("docs/ledgers/findings/widgets.md", header + "| F-090 | Invented old claim | observed | review | high; server 29990001 | | active |\n"
+                 + "| F-099 | Invented row added on the old branch | observed | review | high | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "old branch row")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = run_git(self.root, "rm", "-r", "-q", "docs/ledgers")
+        self.accept_chain()
+        _ = run_git(self.root, "checkout", "-q", "old")
+        report = self.check(frozen=True)
+        self.assertFalse(report.no_journal)
+        self.assertEqual(2, len(report.problems))
+        self.assertTrue(report.problems[0].startswith("this branch predates the cut-over: it holds the legacy ledgers or evidence index and no journal, "
+                                                      + "while origin/main holds the journal. Salvage BEFORE merging main"))
+        self.assertIn("run memory salvage <this branch> --out <dir> on this tip, commit the proposals, then merge main", report.problems[0])
+        self.assertEqual(["F-099: legacy finding row added or changed on this branch; memory salvage turns it into a proposal"], report.problems[1:])
 
 
 def revised(old: dict[str, JSON], changes: dict[str, JSON], body: tuple[str, str] | None = None) -> list[str]:

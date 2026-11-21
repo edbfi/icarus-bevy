@@ -36,7 +36,7 @@ Contracts and limitations:
   contents; absent worktree/CI manifests retain lexical protection.
 * Protected evidence is what `memory protected-paths` reads (tools/memory/paths.py):
   active local-private records of every worktree's journal and, while a worktree
-  has one, its legacy evidence/ shards, read without tools/docs_lint.py. Every
+  has one, its legacy evidence/ shards (old branches). Every
   path is checked against the primary checkout, and each worktree's own paths
   against that worktree as well. Refusals: under every policy, an unreadable or
   malformed journal, shard or manifest, a reading past the 30-second budget

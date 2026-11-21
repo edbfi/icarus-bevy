@@ -62,18 +62,16 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from tools.evidence_catalog_model import CatalogError
-from tools.evidence_catalog_store import LEGACY_ROOTS
 from tools.memory.check import APPEND_ONLY, REVISABLE
 from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
-from tools.memory.legacy import commit_time, export
+from tools.memory.legacy import SALVAGED, commit_time, export
+from tools.memory.legacy_reader import CatalogError, has_legacy
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
 from tools.memory.state import replay
 
 ACCEPTANCE_REF = "origin/main"
-SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 EXIT_SUPERSEDE = 4
 EXIT_PREMERGE = 5
 
@@ -117,11 +115,6 @@ def accepted_on(root: Path, main: str) -> Accepted:
     revisions = tuple(Revision.of(record) for record in records.values())
     return Accepted(records, {revision.record.id: (revision.rev,) for revision in revisions}, "legacy",
                     (Segment("memory/journal/accepted-legacy-export.jsonl", "", revisions),))
-
-
-def has_legacy(root: Path, revision: str) -> bool:
-    """Whether ``revision`` has a legacy ledger or evidence index tree."""
-    return bool(git(root, "ls-tree", "--name-only", "--end-of-options", revision, "--", *LEGACY_ROOTS).strip())
 
 
 def documents(records: dict[str, Record]) -> dict[str, Record]:

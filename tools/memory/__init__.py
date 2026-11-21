@@ -19,5 +19,8 @@ On top of it:
 - ``online``: the commands that touch the bank.
 - ``durability``: ``backup``, ``restore`` and the drill, with their journal watermark and replay.
 - ``mcp``: the stdio MCP server over the same command functions.
+- ``legacy_reader``, ``legacy_rules``, ``legacy_tables``, ``legacy_prose``, ``legacy``: the frozen reader and
+  the conversion of the legacy ledgers the cut-over removed, kept for ``salvage`` of older branches.
+- ``salvage``: ``memory salvage``.
 - ``cli``: argument parsing and the single handler dispatch.
 """

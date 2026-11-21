@@ -22,6 +22,8 @@ modules to retain warm reuse.
 Own cap: 16 GiB (provisional; owner storage allowance M-1360); growth reserve:
 min(8 GiB, remaining cap), minimum 2 GiB headroom. Local disk floor: 30 GiB. CI explicitly sets
 `ICARUS_CARGO_GUARD_POLICY=ci` for a 4 GiB floor; `CI=true` changes nothing.
-Contracts: [guard contracts](../../tools/cargo_guard.py).
+Cleanup never removes a path `python3 -m tools.memory protected-paths` lists
+(the evidence pins of every worktree's journal); unreadable pins hold the
+target. Contracts: [guard contracts](../../tools/cargo_guard.py).
 
 Local measurements: M-1184.

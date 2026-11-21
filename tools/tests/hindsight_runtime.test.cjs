@@ -2,15 +2,12 @@
 
 const assert = require('node:assert/strict');
 const {spawn, spawnSync} = require('node:child_process');
-const {createHash} = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {test} = require('node:test');
 
 const launcher = path.resolve(__dirname, '../hindsight_runtime');
-const tenant = 'invented-example-key-for-test-only';
-const bank = 'icarus-catalog-fixture';
 
 function fixture(t, commands) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'icarus-hindsight-runtime-'));
@@ -21,8 +18,6 @@ function fixture(t, commands) {
   return (args, overrides = {}) => {
     const env = {
       PATH: `${directory}:/usr/bin:/bin`,
-      HINDSIGHT_API_KEY: tenant,
-      ICARUS_HINDSIGHT_PORT: '18481',
       ...overrides,
     };
     const result = spawnSync('/bin/bash', [launcher, ...args], {env, encoding: 'utf8', timeout: 5000});
@@ -30,74 +25,6 @@ function fixture(t, commands) {
     return result;
   };
 }
-
-test('client wrappers carry the trusted loopback bank and reference the token environment', t => {
-  const printArgs = 'printf "%s\\n" "$@"';
-  const run = fixture(t, {codex: printArgs, claude: printArgs});
-  const url = `http://127.0.0.1:18481/mcp/${bank}/`;
-  const codex = run(['codex', bank, 'exec', 'verify citations']);
-  assert.equal(codex.status, 0, codex.stderr);
-  assert.deepEqual(codex.stdout.trimEnd().split('\n'), [
-    '-c', `mcp_servers.icarus_hindsight.url="${url}"`,
-    '-c', 'mcp_servers.icarus_hindsight.bearer_token_env_var="HINDSIGHT_API_KEY"',
-    '-c', 'mcp_servers.icarus_hindsight.enabled=true',
-    '-c', 'mcp_servers.icarus_hindsight.enabled_tools=["recall","reflect"]',
-    'exec', 'verify citations',
-  ]);
-  const claude = run(['claude', bank, '--print', 'verify citations']);
-  assert.equal(claude.status, 0, claude.stderr);
-  const [print, prompt, option, config] = claude.stdout.trimEnd().split('\n');
-  assert.equal(option, '--mcp-config');
-  assert.deepEqual(JSON.parse(config), {
-    mcpServers: {
-      icarus_hindsight: {
-        type: 'http',
-        url,
-        headers: {Authorization: 'Bearer ${HINDSIGHT_API_KEY}'},
-      },
-    },
-  });
-  assert.deepEqual([print, prompt], ['--print', 'verify citations']);
-  assert.equal(codex.stdout.includes(tenant) || claude.stdout.includes(tenant), false);
-});
-
-test('client wrappers reject unsafe banks and insufficient bearer keys', t => {
-  const run = fixture(t, {codex: 'exit 99', claude: 'exit 99'});
-  for (const result of [
-    run(['codex', '../other-scope']),
-    run(['claude', 'bank?alternate']),
-    run(['claude', bank], {HINDSIGHT_API_KEY: 'short'}),
-    run(['codex', bank], {ICARUS_HINDSIGHT_PORT: '99999'}),
-  ]) {
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /^hindsight:/);
-  }
-});
-
-test('health requires readiness, anonymous denial, and authenticated access', t => {
-  const run = fixture(t, {curl: `
-set -euo pipefail
-[[ "$1" == --disable ]] || exit 1
-case "${'${!#}'}" in
-  */health/ready) exit 0 ;;
-  */v1/default/banks)
-    case " $* " in
-      *" --write-out "*) printf "%s" "${'${ANON_STATUS:-401}'}" ;;
-      *" --config - "*)
-        read -r config
-        [[ $config == "header = \\"Authorization: Bearer $HINDSIGHT_API_KEY\\"" ]]
-        [[ $* != *"$HINDSIGHT_API_KEY"* && "$*" == *"--noproxy *"* ]] ;;
-      *) exit 2 ;;
-    esac ;;
-  *) exit 3 ;;
-esac
-`});
-  const healthy = run(['health']);
-  assert.equal(healthy.status, 0, healthy.stderr);
-  assert.equal(healthy.stdout.trim(), 'Hindsight ready at http://127.0.0.1:18481');
-  const unsecured = run(['health'], {ANON_STATUS: '200'});
-  assert.equal(unsecured.status, 1);
-});
 
 test('the supported wheel lock pins one SHA-256 per unique distribution', () => {
   const lock = fs.readFileSync(`${launcher}.requirements.txt`, 'utf8');
@@ -114,41 +41,6 @@ test('the supported wheel lock pins one SHA-256 per unique distribution', () => 
   assert.equal(distributions.get('hindsight-api-slim'), '1.2.3');
   assert.ok(distributions.has('onnxruntime'));
   assert.ok(distributions.has('pg0-embedded'));
-});
-
-test('alternate assets require a matching verification stamp before serving', t => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'icarus-hindsight-assets-'));
-  t.after(() => fs.rmSync(repo, {recursive: true}));
-  const assets = path.join(repo, 'work', 'alternate');
-  const state = path.join(repo, 'work', 'state');
-  for (const directory of [assets, state]) fs.mkdirSync(directory, {recursive: true, mode: 0o700});
-  fs.writeFileSync(path.join(assets, 'assets.lock'), '');
-  const run = fixture(t, {
-    git: 'printf "%s\\n" "$FAKE_COMMON_DIR"',
-    df: 'printf "%s\\n" Available 99999999999',
-  });
-  const env = {
-    FAKE_COMMON_DIR: path.join(repo, '.git'),
-    ICARUS_HINDSIGHT_ASSETS_ROOT: assets,
-    ICARUS_HINDSIGHT_STATE_ROOT: state,
-    ICARUS_HINDSIGHT_PROXY_BASE_URL: 'https://fixture.example/v1',
-    ICARUS_HINDSIGHT_PROXY_API_KEY: 'invented-provider-key',
-  };
-  const stamp = path.join(assets, 'wheels.sha256');
-  const missing = run(['serve'], env);
-  fs.writeFileSync(stamp, 'incorrect digest\n');
-  const mismatched = run(['serve'], env);
-  for (const result of [missing, mismatched]) {
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /install to verify the selected environment/);
-    assert.equal(result.stdout, '');
-  }
-
-  const digest = createHash('sha256').update(fs.readFileSync(`${launcher}.requirements.txt`)).digest('hex');
-  fs.writeFileSync(stamp, `${digest}\n`);
-  const verified = run(['serve'], env);
-  assert.equal(verified.status, 1);
-  assert.match(verified.stderr, /install first/);
 });
 
 test('install refuses while a memory service holds the shared assets lock', t => {
@@ -172,4 +64,67 @@ test('install refuses while a memory service holds the shared assets lock', t =>
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Stop the running project instance before installing/);
+});
+
+test('only the guide and install remain', t => {
+  const run = fixture(t, {});
+  for (const command of ['serve', 'health', 'codex', 'claude']) {
+    const result = run([command]);
+    assert.equal(result.status, 2, command);
+    assert.match(result.stderr, /Usage: tools\/hindsight_runtime guide\|install/);
+  }
+  const guide = run(['guide']);
+  assert.equal(guide.status, 0, guide.stderr);
+  assert.match(guide.stdout, /python3 -m tools\.memory service/);
+});
+
+test('install provisions PostgreSQL by a throwaway pg0 start and refuses a build that is not the pinned one', t => {
+  if (!fs.existsSync('/usr/bin/python3.14')) {
+    t.skip('the wheel lock needs /usr/bin/python3.14');
+    return;
+  }
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'icarus-hindsight-postgres-'));
+  t.after(() => fs.rmSync(repo, {recursive: true}));
+  const assets = path.join(repo, 'work', 'alternate');
+  fs.mkdirSync(assets, {recursive: true, mode: 0o700});
+  const calls = path.join(repo, 'pg0-calls.txt');
+  const pg0 = path.join(assets, 'venv', 'lib', 'python3.14', 'site-packages', 'pg0', 'bin', 'pg0');
+  fs.mkdirSync(path.dirname(pg0), {recursive: true});
+  fs.mkdirSync(path.join(assets, 'venv', 'bin'), {recursive: true});
+  fs.writeFileSync(path.join(assets, 'venv', 'bin', 'python'), '#!/bin/bash\n', {mode: 0o700});
+  // A stand-in pg0: logs its arguments and, on start, "extracts" a build whose binaries report 18.1.
+  fs.writeFileSync(pg0, `#!/bin/bash
+printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
+if [[ $1 == start ]]; then
+  mkdir -p "$PG0_INSTALLATION_DIR/18.1.0/bin"
+  for name in postgres pg_dump pg_restore psql; do
+    printf '#!/bin/bash\\necho "postgres (PostgreSQL) 18.1"\\n' > "$PG0_INSTALLATION_DIR/18.1.0/bin/$name"
+    chmod 700 "$PG0_INSTALLATION_DIR/18.1.0/bin/$name"
+  done
+fi
+`, {mode: 0o700});
+  const hub = path.join(assets, '.cache', 'hf', 'hub');
+  for (const [repoName, revision, files] of [
+    ['models--intfloat--multilingual-e5-small', '614241f622f53c4eeff9890bdc4f31cfecc418b3',
+      ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'special_tokens_map.json', 'sentencepiece.bpe.model', 'onnx/model.onnx']],
+    ['models--hindsight-ai--hs-rerank-1', '927f5be31280298a51cf29af8a29cb111ed812c5',
+      ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'onnx/model.onnx']],
+  ]) {
+    for (const file of files) {
+      const target = path.join(hub, repoName, 'snapshots', revision, file);
+      fs.mkdirSync(path.dirname(target), {recursive: true});
+      fs.writeFileSync(target, 'x');
+    }
+  }
+  const run = fixture(t, {
+    git: 'printf "%s\\n" "$FAKE_COMMON_DIR"',
+    df: 'printf "%s\\n" Available 99999999999',
+    uv: 'exit 0',
+  });
+  const result = run(['install'], {FAKE_COMMON_DIR: path.join(repo, '.git'), ICARUS_HINDSIGHT_ASSETS_ROOT: assets, ICARUS_HINDSIGHT_STATE_ROOT: assets});
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /The extracted PostgreSQL 18\.1\.0 does not match the pinned build/);
+  const logged = fs.readFileSync(calls, 'utf8').trim().split('\n').map(line => line.split(' ').slice(0, 3).join(' '));
+  assert.deepEqual(logged, ['start --name provision', 'stop --name provision', 'drop --name provision']);
+  assert.equal(fs.existsSync(path.join(assets, 'wheels.sha256')), false, 'no install stamp without a verified PostgreSQL');
 });

@@ -1,10 +1,10 @@
 # Scratch rules
 
-`work/` is never tracked. It holds the cases behind the evidence index, so it
-is pruned by rule, not by size or age. `tools/work_gc.py` applies the mechanical
-part; deciding what a case still means is reviewed. Preservation limits in
-`.agents/rules/project.md` and the evidence rules in
-`.agents/rules/docs.md` take precedence over everything here.
+`work/` is never tracked. It holds the cases behind the evidence records of the
+memory journal, so it is pruned by rule, not by size or age. `tools/work_gc.py`
+applies the mechanical part; deciding what a case still means is reviewed.
+Preservation limits in `.agents/rules/project.md` and the evidence rules in
+`.agents/rules/memory.md` take precedence over everything here.
 
 ## Layout
 
@@ -33,32 +33,37 @@ until their case is deliberately retired.
 
 ## Routines
 
-1. Session close: set the case's `case.json` state to `closed`, index what
-   rows will cite (`docs.md` rule 2), stop the case's processes and run
-   `python3 tools/work_gc.py` to see what it left behind.
+1. Session close: set the case's `case.json` state to `closed`, record what
+   records will cite as evidence (`memory.md`, Session close), stop the case's
+   processes and run `python3 tools/work_gc.py` to see what it left behind.
 2. Milestone: run `python3 tools/work_gc.py --prune`, then
    `python3 tools/work_gc.py --check`, which fails while eligible scratch
    remains. Review the reported signals:
-   - scratch held by a row naming a whole directory: write the directory's
-     manifest with `python3 tools/work_gc.py --fixity <dir>`, add a row naming
-     `<dir>/fixity.sha256` with its digest, retire the directory row with
-     `superseded_by` (`docs.md` rule 4), then prune. The manifest pins every
-     kept file; `docs_lint.py --local` verifies and `--list-local` backs up
-     each one;
-   - unindexed cases that no tracked or untracked, non-ignored file mentions:
-     retire the ones no longer needed with
-     `python3 tools/work_gc.py --retire <name>...`, which refuses any name an
-     active row covers, such a file mentions, or a guard holds;
+   - scratch held by an evidence record naming a whole directory: write the
+     directory's manifest with `python3 tools/work_gc.py --fixity <dir>`,
+     record it with `python3 -m tools.memory evidence add <dir>/fixity.sha256
+     --kind manifest --label ...`, supersede the directory record with it
+     (`memory supersede M-OLD --by M-NEW`), and prune only after that
+     supersession is accepted on `origin/main` (merged, then `memory sync`),
+     never while it is only proposed: until then the directory record still
+     protects the whole directory. The manifest pins every kept file; `memory verify` checks and `memory protected-paths` lists each
+     one for backup;
+   - cases no evidence record covers and no tracked or untracked, non-ignored
+     file mentions: retire the ones no longer needed with
+     `python3 tools/work_gc.py --retire <name>...`, which refuses any name a
+     protected path covers, such a file mentions, or a guard holds;
      cases cited by `docs/history/` or `docs/research/archive/` stay;
    - loose top-level files: move them into their case, or retire them.
-3. Before deleting anything else in `work/`, grep the path in `evidence/`,
-   `docs/` and `.agents/`, and retire every active row that names it first.
-   Every removal by the tool is logged in `work/.gc/log.jsonl`.
+3. Before deleting anything else in `work/`, check it against
+   `python3 -m tools.memory protected-paths`, grep it in `docs/` and
+   `.agents/`, and retire every active evidence record that names it first
+   (`memory revise M-N --set status=retired --note ...`). Every removal by the
+   tool is logged in `work/.gc/log.jsonl`.
 
 ## Never
 
-- Delete a path that equals, contains or lies inside an active `local-private`
-  evidence row's path.
+- Delete a path that equals, contains or lies inside a path
+  `python3 -m tools.memory protected-paths` lists.
 - Prune a case that is open, used by a running process or changed within the
   settle window (6 hours by default).
 - Delete by age or size alone, or with blanket `rm -rf work/*` or `git clean`.

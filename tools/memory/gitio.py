@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The Git reads the memory tool shares: plumbing only, never a checkout or a fetch.
+"""The Git calls the memory tool shares: plumbing, and the one ``fetch`` of ``memory sync``; never a checkout.
 
-Every failure is ``GitError`` with Git's own message; callers decide whether that fails closed.
+Every failure is ``GitError`` with Git's own message (a ``timeout`` that expires included); callers decide
+whether that fails closed.
 """
 
 from __future__ import annotations
@@ -15,15 +16,21 @@ class GitError(RuntimeError):
     """A Git command failed or answered in an unexpected form."""
 
 
-def git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
+def git(root: Path, *args: str, stdin: bytes | None = None, timeout: float | None = None) -> bytes:
     """Standard output of a Git command that must exit 0."""
-    return run_git(root, *args, stdin=stdin)[1]
+    return run_git(root, *args, stdin=stdin, timeout=timeout)[1]
 
 
-def run_git(root: Path, *args: str, stdin: bytes | None = None, ok: tuple[int, ...] = (0,)) -> tuple[int, bytes]:
+def run_git(root: Path, *args: str, stdin: bytes | None = None, ok: tuple[int, ...] = (0,), timeout: float | None = None) -> tuple[int, bytes]:
     """Exit status and standard output of a Git command; a status outside ``ok`` raises ``GitError`` naming the
-    subcommand (``git grep`` exits 1 when nothing matches, which a caller passes as ``ok=(0, 1)``)."""
-    result = subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args], input=stdin, capture_output=True, check=False)
+    subcommand (``git grep`` exits 1 when nothing matches, which a caller passes as ``ok=(0, 1)``), and so
+    does a ``timeout`` (seconds) that expires or a Git that cannot be run."""
+    try:
+        result = subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args], input=stdin, capture_output=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git {_subcommand(args)}: no answer within {timeout:g} s") from None
+    except OSError as error:
+        raise GitError(f"git {_subcommand(args)}: {error.strerror or error}") from None
     if result.returncode not in ok:
         raise GitError(f"git {_subcommand(args)}: exit status {result.returncode}: {result.stderr.decode(errors='replace').strip()}")
     return result.returncode, result.stdout

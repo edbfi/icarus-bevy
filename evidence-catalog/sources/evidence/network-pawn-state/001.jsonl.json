@@ -1,4 +1,0 @@
-{"lines":[
-{"id":"M-1504","fields":{"path":"work/leave-placement-selection-20261115/selection-fixity-r7.sha256","sha256":"ff4498dad964c2030b900e2015bb485cba32ee55318292e1bebb0c2183e4ffd1","class":"local-private","kind":"report","date":"2026-11-15","label":"Private player-created point candidate and specific historical-run/full-map configuration association","status":"active","note":"Reuses M-1161/M-1422/M-1423; three selector tests pass. Private values stay local. No general name inversion, terrain, collision, clearance or current-client placement proof."}},
-""
-]}
