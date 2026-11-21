@@ -1242,6 +1242,56 @@ class SalvageTests(LegacyRepository):
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout))
 
+    def accept_reference(self, changes: online.Changes, identifier: str) -> None:
+        """Accept on main the REF ``memory propose reference`` would publish from ``changes``."""
+        data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
+        assert changes.body is not None
+        data |= {"id": identifier, "type": "reference", "status": "current", "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest()}
+        if changes.note is not None:
+            data["notes"] = [changes.note]
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = write_change_set(self.root, datetime(2026, 4, 2, tzinfo=UTC), [Revision.of(Record.from_json(data, changes.body))])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", f"accept {identifier}")
+        self.publish()
+
+    def new_spec_branch(self, *specs: str, cite: bool = True) -> None:
+        """A branch adding ``specs`` (each body "# Same\\n") and, with ``cite``, a tracked row on the first; main cut over."""
+        _ = run_git(self.root, "checkout", "-q", "-b", "specs")
+        for spec in specs:
+            _ = (self.root / spec).write_text("# Same\n", encoding="utf-8")
+        if cite:
+            shard = self.root / "evidence/widgets/001.jsonl"
+            _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": specs[0], "sha256": "d" * 64, "class": "tracked", "kind": "report",
+                                                                 "date": "2026-01-07", "label": "A new spec", "status": "active"}, separators=(",", ":")) + "\n")
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "add specs")
+        _ = self.journal_on_main(remove_legacy=True)
+
+    def test_an_unrelated_accepted_ref_with_the_same_body_is_not_the_new_document(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md")
+        self.accept_reference(online.Changes({"title": "Unrelated", "scope": {"basis": "explicit", "subjects": ["tooling"]}}, None, "# Same\n"), "REF-900")
+        result = salvage(self.root, "specs")
+        self.assertEqual("undecided", result.kinds["M-105"])
+        self.assertIn("docs/specs/net/third.md, which no accepted REF names", result.undecided["M-105"])
+        self.assertEqual([("docs/specs/net/third.md", None)], [(item.path, item.target) for item in result.documents])
+
+    def test_two_branch_documents_with_one_body_are_each_provisional(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md", "docs/specs/net/fourth.md")
+        # An accepted REF of that one body (proposed by hand, no note) once made both map to it and abort the run.
+        self.accept_reference(online.Changes({"title": "Same", "scope": {"basis": "explicit"}}, None, "# Same\n"), "REF-900")
+        result = salvage(self.root, "specs")
+        self.assertEqual(["docs/specs/net/fourth.md", "docs/specs/net/third.md"], sorted(item.path for item in result.documents))
+        self.assertEqual("undecided", result.kinds["M-105"])
+
+    def test_a_ref_proposed_without_the_note_leaves_the_document_and_its_row_listed(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md")
+        self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}}, None, "# Same\n"), "REF-900")
+        status, stdout, _stderr = self.run_salvage("specs", check=True)
+        self.assertEqual(1, status)
+        self.assertIn("specs: docs/specs/net/third.md: new document;", stdout)
+        self.assertIn("specs: M-105: undecided legacy row not yet salvaged", stdout)
+
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
@@ -1256,7 +1306,7 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         first = salvage(self.root, "new-doc")
         self.assertEqual("undecided", first.kinds["M-105"])
-        self.assertIn("it cites the new document docs/specs/net/third.md", first.undecided["M-105"])
+        self.assertIn("it cites the document docs/specs/net/third.md, which no accepted REF names", first.undecided["M-105"])
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
         self.assertIn("new-doc: docs/specs/net/third.md: new document; salvage --out writes its body", stdout)
@@ -1267,6 +1317,7 @@ class SalvageTests(LegacyRepository):
         lines = [line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: ")]
         command, scope_line = lines
         self.assertIn("'scope=<STATE THE SCOPE>'", command)
+        self.assertIn("--note 'salvaged document: docs/specs/net/third.md'", command)
         self.assertEqual("the scope must be stated by whoever proposes it: replace <STATE THE SCOPE> with a JSON scope (salvage neither keeps nor upgrades "
                          + "the text's tokens); the text names: server:29990001", scope_line)
         words = shlex.split(command)
@@ -1277,14 +1328,7 @@ class SalvageTests(LegacyRepository):
         stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit", "builds": ["server:29990001"]}'))
         options = cli.parse_options(stated[1:])
         changes = online.changes_from(vars(options))
-        data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
-        assert changes.body is not None
-        data |= {"id": "REF-900", "type": "reference", "status": "current", "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest()}
-        _ = run_git(self.root, "checkout", "-q", "main")
-        _ = write_change_set(self.root, datetime(2026, 4, 2, tzinfo=UTC), [Revision.of(Record.from_json(data, changes.body))])
-        _ = run_git(self.root, "add", "-A")
-        _ = run_git(self.root, "commit", "-q", "-m", "propose the new spec as a REF")
-        self.publish()
+        self.accept_reference(changes, "REF-900")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertIn("0 pending document(s)", stdout)
         # Run 2: the document maps to the REF proposed by hand (by body), so the row citing it is proposed with that ID.

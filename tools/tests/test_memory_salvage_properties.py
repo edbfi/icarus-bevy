@@ -17,7 +17,7 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import SALVAGED, Accepted, Salvage, SalvageError, classify, identity, renumber
+from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, identity, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -41,10 +41,13 @@ def row(identifier: str, cell: str, claim: str = "Invented claim", successors: t
     return Record.from_json(data)
 
 
-def document(identifier: str, path: str) -> Record:
-    body = f"# {path}\n"
+SAME_BODY = "# One body for several documents\n"
+
+
+def document(identifier: str, path: str, body: str | None = None) -> Record:
+    text = f"# {path}\n" if body is None else body
     return Record.from_json({"id": identifier, "type": "reference", "status": "current", "title": path, "scope": {"basis": "explicit", "subjects": ["tooling"]},
-                             "body_sha256": hashlib.sha256(body.encode()).hexdigest(), "legacy": {"path": path, "cells": {"document": path}}}, body)
+                             "body_sha256": hashlib.sha256(text.encode()).hexdigest(), "legacy": {"path": path, "cells": {"document": path}}}, text)
 
 
 def surface(identifier: str, name: str) -> Record:
@@ -115,6 +118,10 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     twins = rng.random() < 0.2
     main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
+    # Documents sharing one body: two new ones on the branch; an unrelated REF of that body on main (no identity).
+    same_body = rng.random() < 0.3
+    if same_body and "docs/specs/a.md" in branch_paths:
+        branch_paths = [*branch_paths, "docs/specs/b.md"]
     branch_names = ["Alpha", "Beta", *main_names[1:]] if rng.random() < 0.5 else list(main_names)
     if twins and rng.random() < 0.4:
         branch_names.remove("Gamma")  # the branch drops one of main's twins: the other is still ambiguous on main
@@ -127,7 +134,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     branch_names = [*branch_names, *repeated]
     for paths, names, export in ((main_paths, main_names, before), (branch_paths, branch_names, after)):
         refs, cps = numbered(paths, names)
-        export.update({refs[path]: document(refs[path], path) for path in paths})
+        export.update({refs[path]: document(refs[path], path, SAME_BODY if same_body and path in ("docs/specs/a.md", "docs/specs/b.md") else None)
+                       for path in paths})
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
         if twins and export is after and rng.random() < 0.5:
             # The branch changes one of main's twin rows.
@@ -141,6 +149,11 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    if same_body:
+        # An unrelated accepted REF with the same body and no document identity: it must never stand for a.md or b.md.
+        unrelated = Record.from_json({"id": "REF-950", "type": "reference", "status": "current", "title": "Unrelated", "scope": {"basis": "explicit"},
+                                      "body_sha256": hashlib.sha256(SAME_BODY.encode()).hexdigest()}, SAME_BODY)
+        revisions["REF-950"] = Revision.of(unrelated)
     later: list[Revision] = []
     if rng.random() < 0.5:
         changed = rng.choice(base_ids)
@@ -179,6 +192,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
+            # (Invariant (f) checks no proposal cites a REF, CP or RP whose identity differs from the branch record it stood for.)
             self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
                              f"seed {seed}: a cosmetic row refused as a successor")
             lost = {identity(record) for record in accepted.records.values() if record.type in ("compatibility", "report")} \
@@ -229,7 +243,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                 body = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/a.md")
                 assert body is not None
                 hand = Revision.of(Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "docs/specs/a.md",
-                                                     "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest()}, body))
+                                                     "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
+                                                     "notes": [DOCUMENT_NOTE.format("docs/specs/a.md")]}, body))
                 with_hand = (*merged, Segment("memory/journal/hand.jsonl", "", (hand,)))
                 state = replay(with_hand)
                 later = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
