@@ -648,6 +648,25 @@ class EvidenceTests(Online):
         staged = online.verify(self.root, (), staged=True)
         self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (staged.status, staged.lines[0]))
 
+    def test_staged_deletion_of_an_unaccepted_superseder_judges_the_record_it_reactivates(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        commit_all(self.root)
+        before = set((self.root / "memory/journal").rglob("*.jsonl"))
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented superseder", now=self.tick())
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        added = set((self.root / "memory/journal").rglob("*.jsonl")) - before
+        _ = run_git(self.root, "add", "memory/journal")
+        _ = run_git(self.root, "commit", "-q", "-m", "superseder, not on origin/main")
+        (self.root / "work/case/receipt.txt").unlink()
+        superseding = [path for path in added if '"supersedes":["M-001"]' in path.read_text(encoding="utf-8")]
+        self.assertEqual(1, len(superseding), "one segment holds M-002's supersedes M-001")
+        _ = run_git(self.root, "rm", "-q", str(superseding[0].relative_to(self.root)))
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual(1, staged.status, staged.lines)
+        self.assertIn("M-001: unavailable (missing: work/case/receipt.txt)", staged.lines)
+
     def test_staged_refuses_a_stray_file_in_the_journal(self) -> None:
         stray = self.root / "memory/journal/2026/11/notes.txt"
         stray.parent.mkdir(parents=True, exist_ok=True)
