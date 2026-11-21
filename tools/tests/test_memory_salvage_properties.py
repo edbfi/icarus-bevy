@@ -53,15 +53,17 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
             continue
         if choice < 0.45:
             count = rng.choice([1, 1, 2])
-            named = tuple(rng.sample([item for item in candidates if item != identifier], count))
+            # New rows are named often, so a new row gets two incoming links and, naming one back, a cycle.
+            pool = [item for item in candidates if item != identifier] + fresh_ids * 2
+            named = tuple(dict.fromkeys(rng.sample(pool, min(count, len(pool)))))
             after[identifier] = row(identifier, f"superseded-by {named[0]}", successors=named)
         elif choice < 0.75:
             after[identifier] = row(identifier, rng.choice(["active", "retired", "retired: replaced", "parked"]))
         else:
             after[identifier] = row(identifier, "active", claim="Changed claim")
     for identifier in fresh_ids:
-        if rng.random() < 0.4 and len(fresh_ids) > 1:
-            other = next(item for item in fresh_ids if item != identifier)
+        if rng.random() < 0.4:
+            other = rng.choice([item for item in candidates if item != identifier])
             after[identifier] = row(identifier, f"superseded-by {other}", successors=(other,))
         else:
             after[identifier] = row(identifier, "active")
@@ -108,9 +110,14 @@ class GeneratedSalvageTests(unittest.TestCase):
                 _ = classify(again, after, before, now)
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
-            self.assertEqual([], again.proposals, f"seed {seed}: second run")
+            self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
             held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict")}
             self.assertEqual(held, {name: kind for name, kind in again.kinds.items() if name in held}, f"seed {seed}: second run")
+            changed = {name for name, record in after.items() if before.get(name) != record}
+            proposed = {revision.record.id for revision in result.proposals} & changed
+            self.assertEqual({name: "accepted" for name in proposed}, {name: again.kinds.get(name) for name in proposed},
+                             f"seed {seed}: what run 1 proposed is accepted in run 2")
+            self.assertEqual(set[str](), {name for name, kind in again.kinds.items() if kind == "conflict"} - set(held), f"seed {seed}: new conflicts")
 
 
 if __name__ == "__main__":

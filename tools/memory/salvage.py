@@ -556,16 +556,19 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             links.setdefault(target, []).append(identifier)
     for identifier in fresh:
         record, on_main = after[identifier], accepted.get(identifier)
-        linked = record
+        # What a run of salvage may have proposed for it: the row, with ``supersedes`` for any of the old rows naming
+        # it (settling may have kept only some), so the accepted record is compared without those links.
+        linked = on_main
         for old in links.get(identifier, ()):
-            linked = with_supersedes(linked, old)
+            if linked is not None and old in linked.links.supersedes and old not in record.links.supersedes:
+                linked = without_supersedes(linked, old)
         if on_main is None:
             result.kinds[identifier] = "new"
             if record.type in ("compatibility", "report"):
                 result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
             # Without links: the linking pass below adds each only from an edit that is neither a conflict nor held.
             result.proposals.append(Revision.of(record))
-        elif on_main in (record, linked):
+        elif linked == record:
             result.kinds[identifier] = "accepted"
         else:
             result.kinds[identifier] = "conflict"
