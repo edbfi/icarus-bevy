@@ -74,7 +74,6 @@ or written).
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shlex
 import sys
@@ -96,6 +95,8 @@ from tools.memory.state import State, replay
 ACCEPTANCE_REF = "origin/main"
 SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 EXIT_SUPERSEDE = 4
+# A new document's printed command carries this in place of a scope: not JSON, so the tool refuses it until replaced.
+SCOPE_PLACEHOLDER = "<STATE THE SCOPE>"
 # The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.
 STATUS_NOTE = "status cell (salvaged legacy row): {}"
 EXIT_PREMERGE = 5
@@ -130,13 +131,22 @@ class Pending:
     target: str | None
     body: str
     title: str
+    names: tuple[str, ...] = ()
 
     def command(self, file: str) -> str:
-        """What the operator runs once ``--out`` wrote the body to ``file``."""
+        """What the operator runs once ``--out`` wrote the body to ``file``. For a new document the scope is the
+        operator's statement: the command carries ``SCOPE_PLACEHOLDER``, which the tool's parser refuses (not JSON),
+        so it cannot run until they replace it; ``scope_line`` says what the exporter read from the text."""
         if self.target is not None:
             return f"memory revise {self.target} --body {shlex.quote(file)}"
-        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + json.dumps({'basis': 'explicit'}))}"
+        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                 + f" --body {shlex.quote(file)}")
+
+    def scope_line(self) -> str:
+        """For a new document: who states the scope, and the build, release and commit tokens its text names."""
+        named = f"the text names: {', '.join(self.names)}" if self.names else "the text names no build, release or commit"
+        return (f"the scope must be stated by whoever proposes it: replace {SCOPE_PLACEHOLDER} with a JSON scope"
+                + f" (salvage neither keeps nor upgrades the text's tokens); {named}")
 
     def line(self) -> str:
         """The pending document without ``--out``: no path is named that does not exist."""
@@ -549,7 +559,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
         on_main = main_refs.get(path)
         body, title = record.body or "", record.text("title") or path
         if on_main is None and body not in held_bodies:
-            result.documents.append(Pending(path, None, body, title))
+            result.documents.append(Pending(path, None, body, title, record.scope.tokens if record.scope is not None else ()))
             result.notices.append(f"{path}: {result.documents[-1].line()}")
         elif on_main is not None and record.body not in (on_main.body, base_bodies.get(path)):
             result.documents.append(Pending(path, on_main.id, body, title))
@@ -907,6 +917,8 @@ def run(options: argparse.Namespace) -> int:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _ = target.write_bytes(document.body.encode())
                 print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)
+                if document.target is None:
+                    print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
         if result.proposals:
             created = commit_time(root, result.head)
             if out is not None:

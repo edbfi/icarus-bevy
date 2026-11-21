@@ -1234,7 +1234,8 @@ class SalvageTests(LegacyRepository):
 
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
-        _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Scope\n\nInvented: new.\n", encoding="utf-8")
+        _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
+                                                               + "## Scope\n\nInvented: new.\n", encoding="utf-8")
         # A tracked evidence row on the branch points at the new document: it cites the REF that document becomes.
         shard = self.root / "evidence/widgets/001.jsonl"
         _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/third.md", "sha256": "d" * 64, "class": "tracked",
@@ -1253,10 +1254,18 @@ class SalvageTests(LegacyRepository):
         _, _stdout, stderr = self.run_salvage("new-doc", out=out)
         written = out / "documents/docs/specs/net/third.md"
         self.assertEqual(self.ref_body("new-doc", "docs/specs/net/third.md").encode(), written.read_bytes())
-        command = next(line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: "))
+        lines = [line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: ")]
+        command, scope_line = lines
+        self.assertIn("'scope=<STATE THE SCOPE>'", command)
+        self.assertEqual("the scope must be stated by whoever proposes it: replace <STATE THE SCOPE> with a JSON scope (salvage neither keeps nor upgrades "
+                         + "the text's tokens); the text names: server:29990001", scope_line)
         words = shlex.split(command)
         self.assertEqual(["memory", "propose", "reference"], words[:3])
-        options = cli.parse_options(words[1:])
+        with self.assertRaisesRegex(RecordError, "invalid JSON"):
+            _ = online.changes_from(vars(cli.parse_options(words[1:])))
+        # The operator states the scope: the printed command, the placeholder replaced.
+        stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit", "builds": ["server:29990001"]}'))
+        options = cli.parse_options(stated[1:])
         changes = online.changes_from(vars(options))
         data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
         assert changes.body is not None
