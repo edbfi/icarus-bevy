@@ -1228,7 +1228,8 @@ TERMINAL = ("superseded", "retired", "resolved", "refuted", "fixed", "past", "mi
 
 
 def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
-    """Records of one area by status and partition, its open unknowns and the closure of their links. By
+    """Records of one area by status and partition, its open unknowns, the open unknowns its records' ``refs``
+    name (a derived section: unknowns migrated from the legacy table have no area), and the closure of their links. By
     default the text is counts, the open unknowns and as many record rows (in-force statuses first) as fit
     in ``AREA_BUDGET``; ``full`` lists every record and every linked record."""
     with session(bank, root, read=True) as current:
@@ -1254,6 +1255,13 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         data["statuses"] = statuses
         unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and derived_status(universe.settled, view.entries[identifier].record) in OPEN_UNKNOWN]
         data["open_unknowns"] = list[JSON](unknowns)
+        # Derived, not stored: migrated unknowns carry no area, so the area names the open ones its records' refs point at.
+        referenced = sorted({target for identifier in members for target in view.entries[identifier].record.links.refs
+                             if target not in unknowns and (linked := view.record(target)) is not None and linked.type == "unknown"
+                             and derived_status(universe.settled, linked) in OPEN_UNKNOWN}, key=id_key)
+        data["open_unknowns_referenced"] = list[JSON](referenced)
+        derived_line = ("open unknowns referenced by this area's records (derived from their refs; not an area of the unknowns): "
+                        + (", ".join(referenced) or "none"))
         closure: set[str] = set()
         pending = list(members)
         while pending:
@@ -1271,6 +1279,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
                 lines.append(f"{status}:")
                 lines.extend(text)
             lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
+            lines.append(derived_line)
             rows, text = record_rows(universe, root, outside, release, reason)
             data["closure"] = rows
             lines.append(f"linked records outside the area ({len(outside)}):")
@@ -1282,6 +1291,7 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         open_rows = [line for status in texts for line in texts[status] if line.split(" [", 1)[0].strip() in unknowns]
         lines.append(f"open unknowns ({len(unknowns)}):" if unknowns else "open unknowns: none")
         lines.extend(row[:ROW_CAP] for row in open_rows)
+        lines.append(derived_line)
         used = sum(len(line.encode()) + 1 for line in lines)
         shown = 0
         rows_text = [(status, row) for status in texts for row in texts[status] if row not in open_rows]

@@ -777,6 +777,28 @@ class SharedFormatterTests(Online):
         self.assertIn("status: resolved (stored open)", stated)
 
 
+class AreaUnknownTests(Online):
+    def test_area_derives_the_open_unknowns_its_records_refs_name(self) -> None:
+        legacy: JSON = {"path": "docs/ledgers/unknowns.md", "cells": {"Status": "open"}}
+        open_one = unknown("U-160", "Invented: which handler owns the gadget?", legacy=legacy, gaps=["area"])
+        closed = unknown("U-161", "Invented: closed question", status="blocked", legacy=legacy, gaps=["area"])
+        elsewhere = unknown("U-162", "Invented: never named by the area", legacy=legacy, gaps=["area"])
+        for item in (open_one, closed, elsewhere):
+            del item["area"]
+        _ = write(self.root, [*chain(), open_one, closed, elsewhere,
+                              finding("F-160", "Invented: gadget handler", refs=["U-160", "U-101", "F-101"]),
+                              finding("F-161", "Invented: other area", area="gadgets", refs=["U-162"])])
+        commit_all(self.root)
+        _ = online.revise(self.bank, self.root, "U-161", changes(status="investigating"), now=self.tick())
+        for full in (False, True):
+            with self.subTest(full=full):
+                output = online.area(self.bank, self.root, "listing", full=full)
+                self.assertEqual(["U-160"], output.data["open_unknowns_referenced"])
+                self.assertIn("open unknowns referenced by this area's records (derived from their refs; not an area of the unknowns): U-160",
+                              output.lines)
+                self.assertEqual([], output.data["open_unknowns"], "U-101 is resolved; migrated unknowns have no area")
+
+
 class CompactReadTests(Online):
     def reference(self) -> str:
         body = "# Invented reference\n\n" + "".join(f"## Section {number}\n\nInvented filler paragraph {number} about nothing in particular.\n\n" for number in range(60))
