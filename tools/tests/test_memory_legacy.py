@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -486,6 +487,12 @@ class AnchoredTrackedTests(LegacyRepository):
                          (anchored.links.refs, anchored.notes))
 
 
+def surface_record(identifier: str, name: str) -> Record:
+    """A compatibility row as proposed on main (not migrated)."""
+    return Record.from_json({"id": identifier, "type": "compatibility", "status": "unknown", "name": name, "qualifier": "Invented",
+                             "required_proof": "Invented proof", "scope": {"basis": "explicit", "subjects": ["original-server"]}})
+
+
 class SalvageTests(LegacyRepository):
     def publish(self) -> None:
         """Point ``origin/main``, the acceptance ref salvage classifies against, at ``main``."""
@@ -941,7 +948,7 @@ class SalvageTests(LegacyRepository):
         self.assertEqual(2, len(cps), cps)
         self.assertEqual({"undecided"}, set(cps.values()))
         self.assertIn("CP-001", cps)
-        self.assertIn("is gone from the branch and new compatibility rows appeared ('Discovery renamed' as", result.undecided["CP-001"])
+        self.assertIn("is gone from the branch (accepted as CP-001) and new compatibility rows appeared ('Discovery renamed' as", result.undecided["CP-001"])
         new = next(name for name in cps if name != "CP-001")
         self.assertIn("new compatibility row 'Discovery renamed', and CP-001 is gone from the branch", result.undecided[new])
         self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
@@ -956,6 +963,37 @@ class SalvageTests(LegacyRepository):
         self.assertEqual({}, result.undecided)
         self.assertFalse(any(notice.startswith("F-105: only verbatim") for notice in result.notices), result.notices)
         _ = self.legal(result)
+
+    def test_a_rename_of_a_name_main_holds_twice_is_held_naming_both(self) -> None:
+        table = self.root / "docs/ledgers/compatibility.md"
+        _ = table.write_text(table.read_text().replace("| Discovery | Unknown | Browser behavior |\n",
+                                                       "| Discovery | Unknown | Browser behavior |\n| Discovery | Unknown | Twin |\n"))
+        _ = run_git(self.root, "commit", "-q", "-am", "main holds Discovery twice")
+        self.edited("rename-twin", ("docs/ledgers/compatibility.md", "| Discovery | Unknown | Twin |", "| Discovery renamed | Unknown | Twin |"))
+        result = salvage(self.root, "rename-twin")
+        self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"], result.kinds)
+        self.assertFalse(any("removed on" in notice and notice.startswith("CP-") for notice in result.notices), result.notices)
+        renamed = [reason for reason in result.undecided.values() if "new compatibility row 'Discovery renamed'" in reason]
+        self.assertEqual(1, len(renamed), result.undecided)
+        self.assertIn("CP-001, CP-002 is gone from the branch", renamed[0])
+
+    def test_a_rename_to_a_name_main_added_meanwhile_is_held(self) -> None:
+        _ = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", "rename-new", "main")
+        table = self.root / "docs/ledgers/compatibility.md"
+        _ = table.write_text(table.read_text().replace("| Discovery | Unknown |", "| Gadgets | Unknown |"))
+        _ = run_git(self.root, "commit", "-q", "-am", "rename Discovery to Gadgets")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        gadgets = surface_record("CP-900", "Gadgets")
+        _ = write_change_set(self.root, datetime(2026, 2, 4, tzinfo=UTC), [Revision.of(gadgets)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main adds Gadgets")
+        self.publish()
+        result = salvage(self.root, "rename-new")
+        self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"], result.kinds)
+        self.assertEqual("undecided", result.kinds.get("CP-900"), result.kinds)
+        self.assertIn("CP-001 is gone from the branch", result.undecided["CP-900"])
+        self.assertIn("it is gone from the branch (accepted as CP-001)", result.undecided["CP-001"])
 
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
@@ -1123,6 +1161,56 @@ class SalvageTests(LegacyRepository):
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout))
 
+    def accept_reference(self, changes: online.Changes, identifier: str) -> None:
+        """Accept on main the REF ``memory propose reference`` would publish from ``changes``."""
+        data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
+        assert changes.body is not None
+        data |= {"id": identifier, "type": "reference", "status": "current", "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest()}
+        if changes.note is not None:
+            data["notes"] = [changes.note]
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = write_change_set(self.root, datetime(2026, 4, 2, tzinfo=UTC), [Revision.of(Record.from_json(data, changes.body))])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", f"accept {identifier}")
+        self.publish()
+
+    def new_spec_branch(self, *specs: str, cite: bool = True) -> None:
+        """A branch adding ``specs`` (each body "# Same\\n") and, with ``cite``, a tracked row on the first; main cut over."""
+        _ = run_git(self.root, "checkout", "-q", "-b", "specs")
+        for spec in specs:
+            _ = (self.root / spec).write_text("# Same\n", encoding="utf-8")
+        if cite:
+            shard = self.root / "evidence/widgets/001.jsonl"
+            _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": specs[0], "sha256": "d" * 64, "class": "tracked", "kind": "report",
+                                                                 "date": "2026-01-07", "label": "A new spec", "status": "active"}, separators=(",", ":")) + "\n")
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "add specs")
+        _ = self.journal_on_main(remove_legacy=True)
+
+    def test_an_unrelated_accepted_ref_with_the_same_body_is_not_the_new_document(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md")
+        self.accept_reference(online.Changes({"title": "Unrelated", "scope": {"basis": "explicit", "subjects": ["tooling"]}}, None, "# Same\n"), "REF-900")
+        result = salvage(self.root, "specs")
+        self.assertEqual("undecided", result.kinds["M-105"])
+        self.assertIn("docs/specs/net/third.md, which no accepted REF names", result.undecided["M-105"])
+        self.assertEqual([("docs/specs/net/third.md", None)], [(item.path, item.target) for item in result.documents])
+
+    def test_two_branch_documents_with_one_body_are_each_provisional(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md", "docs/specs/net/fourth.md")
+        # An accepted REF of that one body (proposed by hand, no note) once made both map to it and abort the run.
+        self.accept_reference(online.Changes({"title": "Same", "scope": {"basis": "explicit"}}, None, "# Same\n"), "REF-900")
+        result = salvage(self.root, "specs")
+        self.assertEqual(["docs/specs/net/fourth.md", "docs/specs/net/third.md"], sorted(item.path for item in result.documents))
+        self.assertEqual("undecided", result.kinds["M-105"])
+
+    def test_a_ref_proposed_without_the_note_leaves_the_document_and_its_row_listed(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md")
+        self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}}, None, "# Same\n"), "REF-900")
+        status, stdout, _stderr = self.run_salvage("specs", check=True)
+        self.assertEqual(1, status)
+        self.assertIn("specs: docs/specs/net/third.md: new document;", stdout)
+        self.assertIn("specs: M-105: undecided legacy row not yet salvaged", stdout)
+
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
@@ -1137,7 +1225,7 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         first = salvage(self.root, "new-doc")
         self.assertEqual("undecided", first.kinds["M-105"])
-        self.assertIn("it cites the new document docs/specs/net/third.md", first.undecided["M-105"])
+        self.assertIn("it cites the document docs/specs/net/third.md, which no accepted REF names", first.undecided["M-105"])
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
         self.assertIn("new-doc: docs/specs/net/third.md: new document; salvage --out writes its body", stdout)
@@ -1148,6 +1236,7 @@ class SalvageTests(LegacyRepository):
         lines = [line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: ")]
         command, scope_line = lines
         self.assertIn("'scope=<STATE THE SCOPE>'", command)
+        self.assertIn("--note 'salvaged document: docs/specs/net/third.md'", command)
         self.assertEqual("the scope must be stated by whoever proposes it: replace <STATE THE SCOPE> with a JSON scope (salvage neither keeps nor upgrades "
                          + "the text's tokens); the text names: server:29990001", scope_line)
         words = shlex.split(command)
@@ -1158,20 +1247,79 @@ class SalvageTests(LegacyRepository):
         stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit", "builds": ["server:29990001"]}'))
         options = cli.parse_options(stated[1:])
         changes = online.changes_from(vars(options))
-        data: dict[str, JSON] = {name: value for name, value in changes.values.items() if value is not None}
-        assert changes.body is not None
-        data |= {"id": "REF-900", "type": "reference", "status": "current", "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest()}
-        _ = run_git(self.root, "checkout", "-q", "main")
-        _ = write_change_set(self.root, datetime(2026, 4, 2, tzinfo=UTC), [Revision.of(Record.from_json(data, changes.body))])
-        _ = run_git(self.root, "add", "-A")
-        _ = run_git(self.root, "commit", "-q", "-m", "propose the new spec as a REF")
-        self.publish()
+        self.accept_reference(changes, "REF-900")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertIn("0 pending document(s)", stdout)
         # Run 2: the document maps to the REF proposed by hand (by body), so the row citing it is proposed with that ID.
         second = salvage(self.root, "new-doc")
         self.assertEqual("new", second.kinds["M-105"])
         self.assertEqual(("REF-900",), next(item.record for item in second.proposals if item.record.id == "M-105").links.refs)
+
+    def outs_branch(self) -> None:
+        """A branch changing a spec and adding a row: --out writes one document body and one segment."""
+        _ = run_git(self.root, "checkout", "-q", "-b", "outs")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text() + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "a spec and a row")
+        _ = self.journal_on_main(remove_legacy=True)
+
+    def test_out_refuses_symlinks_at_its_targets(self) -> None:
+        self.outs_branch()
+        reference = self.top / "reference"
+        _ = self.run_salvage("outs", out=reference)
+        document = Path("documents/docs/specs/net/another.md")
+        for case, pointing in (("dangling", self.top / "nowhere"), ("to identical bytes", reference / document)):
+            with self.subTest(case):
+                out = self.top / f"out-{case.replace(' ', '-')}"
+                (out / document).parent.mkdir(parents=True)
+                (out / document).symlink_to(pointing)
+                status, _stdout, stderr = self.run_salvage("outs", out=out)
+                self.assertEqual(1, status)
+                self.assertIn("is not a regular file with this content (symlinks are never followed)", stderr)
+                self.assertFalse((out / "memory").exists(), "nothing written")
+
+    def test_out_removes_what_it_created_when_an_exclusive_create_finds_a_file(self) -> None:
+        self.outs_branch()
+        out = self.top / "out"
+        real = os.open
+        calls: list[str] = []
+
+        def racing(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+            if flags & os.O_EXCL:
+                calls.append(str(path))
+                if len(calls) == 2:
+                    raise FileExistsError(17, "File exists", str(path))
+            return real(path, flags, mode)
+
+        with mock.patch("tools.memory.salvage.os.open", racing):
+            status, _stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual(1, status)
+        self.assertIn("File exists; removed the 1 file(s) this run had created", stderr)
+        self.assertEqual([], [path for path in out.rglob("*") if path.is_file()], "the first file this run created is gone")
+
+    def test_out_refuses_an_earlier_run_s_files_it_would_not_write(self) -> None:
+        self.outs_branch()
+        out = self.top / "out"
+        _ = self.run_salvage("outs", out=out)
+        earlier = sorted(path for path in out.rglob("*.jsonl"))
+        # Main moves on, so the change set (and its segment name) changes.
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = (self.root / "src/lib.rs").write_text("//! Main moved on.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "main moves")
+        self.publish()
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = run_git(self.root, "checkout", "-q", "outs")
+        _ = ledger.write_text(ledger.read_text() + "| F-112 | Another branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "another row")
+        status, _stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual(1, status)
+        self.assertIn(f"{earlier[0]} was left by an earlier run: use a new --out or remove it; nothing written", stderr)
+        self.assertEqual(earlier, sorted(out.rglob("*.jsonl")))
+        fresh = self.top / "fresh"
+        self.assertNotEqual(1, self.run_salvage("outs", out=fresh)[0])
+        self.assertEqual(1, len(list(fresh.rglob("*.jsonl"))))
 
     def test_out_never_overwrites_a_file_with_other_content(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "outs")
@@ -1194,7 +1342,7 @@ class SalvageTests(LegacyRepository):
         segment.unlink()
         status, stdout, stderr = self.run_salvage("outs", out=out)
         self.assertEqual((1, ""), (status, stdout))
-        self.assertIn(f"memory salvage: {document} exists with other content; nothing written", stderr)
+        self.assertIn(f"memory salvage: {document} exists and is not a regular file with this content", stderr)
         self.assertEqual("edited by the operator\n", document.read_text(encoding="utf-8"))
         self.assertFalse(segment.exists(), "nothing written when one file differs")
 
