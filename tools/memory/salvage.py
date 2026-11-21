@@ -74,8 +74,10 @@ or written).
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
+import stat
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -90,7 +92,6 @@ from tools.memory.journal import JournalError, Revision, Segment, read_git, spli
 from tools.memory.legacy import TRACKED_NOTE, commit_time, export
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
-from tools.memory.service import write_private
 from tools.memory.state import State, replay
 
 ACCEPTANCE_REF = "origin/main"
@@ -887,6 +888,68 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     return superseding
 
 
+class PublishError(RuntimeError):
+    """``--out`` refused: a target or a file under the output directory that this run may not create or keep."""
+
+
+PUBLISHED = ("memory/journal", "documents")
+
+
+def same_regular_file(path: Path, data: bytes) -> bool | None:
+    """``None`` when nothing is at ``path`` (``lstat``, never following a link); True when a regular file holds exactly
+    ``data``; False for anything else (other bytes, a symlink, dangling or not, a directory)."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return False
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as handle:
+        return handle.read(len(data) + 1) == data
+
+
+def publish(out: Path, planned: Sequence[tuple[Path, bytes]]) -> list[Path]:
+    """Write ``planned`` under ``out`` without ever replacing anything. Preflight: each target must be absent or a
+    regular file with identical bytes (a symlink, even to identical bytes, refuses), and nothing else may be under
+    ``out``'s ``memory/journal`` or ``documents`` (an earlier run's segment would be copied with the new ones). Then
+    each new file is created exclusively (``O_CREAT | O_EXCL | O_NOFOLLOW``), written and closed; if a create fails,
+    the files this run created are removed. Raises ``PublishError``; returns the files created."""
+    wanted = {target: data for target, data in planned}
+    for target, data in wanted.items():
+        if same_regular_file(target, data) is False:
+            raise PublishError(f"{target} exists and is not a regular file with this content (symlinks are never followed); "
+                               + "nothing written (move it away or use another --out)")
+    for root in PUBLISHED:
+        top = out / root
+        if not os.path.lexists(top):
+            continue
+        if os.path.islink(top) or not top.is_dir():
+            raise PublishError(f"{top} is not a directory; nothing written")
+        for parent, directories, files in os.walk(top, followlinks=False):
+            for name in (*directories, *files):
+                path = Path(parent) / name
+                if path not in wanted and (os.path.islink(path) or not path.is_dir()):
+                    raise PublishError(f"{path} was left by an earlier run: use a new --out or remove it; nothing written")
+    created: list[Path] = []
+    for target, data in wanted.items():
+        if os.path.lexists(target):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except OSError as error:
+            for path in created:
+                path.unlink()
+            raise PublishError(f"{target}: {error.strerror or error}; removed the {len(created)} file(s) this run had created") from error
+        with os.fdopen(descriptor, "wb") as handle:
+            _ = handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        created.append(target)
+    return created
+
+
 class Subparsers(Protocol):
     """What ``register`` needs of ``ArgumentParser.add_subparsers()``."""
 
@@ -952,15 +1015,11 @@ def run(options: argparse.Namespace) -> int:
         if out is not None:
             planned = [(out / "documents" / document.path, document.body.encode()) for document in result.documents]
             planned += [(out / path, data) for path, data in segments]
-            # Never overwrite: an existing file with the same bytes is left alone; one with other bytes (an operator's
-            # edit, an earlier run's other output) refuses the whole run before anything is written.
-            if differing := [target for target, data in planned if target.exists() and target.read_bytes() != data]:
-                print(f"memory salvage: {differing[0]} exists with other content; nothing written (move it away or use another --out)", file=sys.stderr)
+            try:
+                _ = publish(out, planned)
+            except PublishError as error:
+                print(f"memory salvage: {error}", file=sys.stderr)
                 return 1
-            for target, data in planned:
-                if not target.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    write_private(target, data)
             for document in result.documents:
                 target = out / "documents" / document.path
                 print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)

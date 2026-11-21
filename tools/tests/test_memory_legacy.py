@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -1373,6 +1374,72 @@ class SalvageTests(LegacyRepository):
         self.assertEqual("new", second.kinds["M-105"])
         self.assertEqual(("REF-900",), next(item.record for item in second.proposals if item.record.id == "M-105").links.refs)
 
+    def outs_branch(self) -> None:
+        """A branch changing a spec and adding a row: --out writes one document body and one segment."""
+        _ = run_git(self.root, "checkout", "-q", "-b", "outs")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text() + "| F-111 | New branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "a spec and a row")
+        _ = self.journal_on_main(remove_legacy=True)
+
+    def test_out_refuses_symlinks_at_its_targets(self) -> None:
+        self.outs_branch()
+        reference = self.top / "reference"
+        _ = self.run_salvage("outs", out=reference)
+        document = Path("documents/docs/specs/net/another.md")
+        for case, pointing in (("dangling", self.top / "nowhere"), ("to identical bytes", reference / document)):
+            with self.subTest(case):
+                out = self.top / f"out-{case.replace(' ', '-')}"
+                (out / document).parent.mkdir(parents=True)
+                (out / document).symlink_to(pointing)
+                status, _stdout, stderr = self.run_salvage("outs", out=out)
+                self.assertEqual(1, status)
+                self.assertIn("is not a regular file with this content (symlinks are never followed)", stderr)
+                self.assertFalse((out / "memory").exists(), "nothing written")
+
+    def test_out_removes_what_it_created_when_an_exclusive_create_finds_a_file(self) -> None:
+        self.outs_branch()
+        out = self.top / "out"
+        real = os.open
+        calls: list[str] = []
+
+        def racing(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+            if flags & os.O_EXCL:
+                calls.append(str(path))
+                if len(calls) == 2:
+                    raise FileExistsError(17, "File exists", str(path))
+            return real(path, flags, mode)
+
+        with mock.patch("tools.memory.salvage.os.open", racing):
+            status, _stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual(1, status)
+        self.assertIn("File exists; removed the 1 file(s) this run had created", stderr)
+        self.assertEqual([], [path for path in out.rglob("*") if path.is_file()], "the first file this run created is gone")
+
+    def test_out_refuses_an_earlier_run_s_files_it_would_not_write(self) -> None:
+        self.outs_branch()
+        out = self.top / "out"
+        _ = self.run_salvage("outs", out=out)
+        earlier = sorted(path for path in out.rglob("*.jsonl"))
+        # Main moves on, so the change set (and its segment name) changes.
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = (self.root / "src/lib.rs").write_text("//! Main moved on.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "main moves")
+        self.publish()
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = run_git(self.root, "checkout", "-q", "outs")
+        _ = ledger.write_text(ledger.read_text() + "| F-112 | Another branch claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "another row")
+        status, _stdout, stderr = self.run_salvage("outs", out=out)
+        self.assertEqual(1, status)
+        self.assertIn(f"{earlier[0]} was left by an earlier run: use a new --out or remove it; nothing written", stderr)
+        self.assertEqual(earlier, sorted(out.rglob("*.jsonl")))
+        fresh = self.top / "fresh"
+        self.assertNotEqual(1, self.run_salvage("outs", out=fresh)[0])
+        self.assertEqual(1, len(list(fresh.rglob("*.jsonl"))))
+
     def test_out_never_overwrites_a_file_with_other_content(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "outs")
         spec = self.root / "docs/specs/net/another.md"
@@ -1394,7 +1461,7 @@ class SalvageTests(LegacyRepository):
         segment.unlink()
         status, stdout, stderr = self.run_salvage("outs", out=out)
         self.assertEqual((1, ""), (status, stdout))
-        self.assertIn(f"memory salvage: {document} exists with other content; nothing written", stderr)
+        self.assertIn(f"memory salvage: {document} exists and is not a regular file with this content", stderr)
         self.assertEqual("edited by the operator\n", document.read_text(encoding="utf-8"))
         self.assertFalse(segment.exists(), "nothing written when one file differs")
 
