@@ -17,7 +17,7 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, identity, renumber
+from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, identity, pending_documents, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -44,9 +44,10 @@ def row(identifier: str, cell: str, claim: str = "Invented claim", successors: t
 SAME_BODY = "# One body for several documents\n"
 
 
-def document(identifier: str, path: str, body: str | None = None) -> Record:
+def document(identifier: str, path: str, body: str | None = None, builds: tuple[str, ...] = ()) -> Record:
     text = f"# {path}\n" if body is None else body
-    return Record.from_json({"id": identifier, "type": "reference", "status": "current", "title": path, "scope": {"basis": "explicit", "subjects": ["tooling"]},
+    scope: dict[str, JSON] = {"basis": "legacy-text", "builds": list[JSON](builds)} if builds else {"basis": "explicit", "subjects": ["tooling"]}
+    return Record.from_json({"id": identifier, "type": "reference", "status": "current", "title": path, "scope": scope,
                              "body_sha256": hashlib.sha256(text.encode()).hexdigest(), "legacy": {"path": path, "cells": {"document": path}}}, text)
 
 
@@ -72,6 +73,10 @@ def numbered(paths: list[str], names: list[str]) -> tuple[dict[str, str], dict[s
 
 def base_ids(before: dict[str, Record]) -> list[str]:
     return sorted(name for name, record in before.items() if record.type == "finding")
+
+
+def retoken_case(after: dict[str, Record]) -> bool:
+    return any(record.body == "# e.md, re-observed\n" for record in after.values())
 
 
 def problems(state: State) -> set[str]:
@@ -118,6 +123,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     twins = rng.random() < 0.2
     main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
+    retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
     # Documents sharing one body: two new ones on the branch; an unrelated REF of that body on main (no identity).
     same_body = rng.random() < 0.3
     if same_body and "docs/specs/a.md" in branch_paths:
@@ -141,6 +147,11 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         refs, cps = numbered(paths, names)
         export.update({refs[path]: document(refs[path], path, SAME_BODY if same_body and path in ("docs/specs/a.md", "docs/specs/b.md") else None)
                        for path in paths})
+        if export is after and retoken:
+            # The branch's e.md text changes and names a build the accepted REF's scope does not hold.
+            export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md, re-observed\n", ("server:29990001",))
+        if export is after and rewrite_c:
+            export[refs["docs/specs/c.md"]] = document(refs["docs/specs/c.md"], "docs/specs/c.md", "# c.md, rewritten\n")
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
         if twins and export is after and "Gamma" in names and rng.random() < 0.5:
             # The branch changes one of main's twin rows.
@@ -154,6 +165,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    if two_holders:
+        # A second accepted REF naming c.md by note: the path is ambiguous on main.
+        body = "# c.md, by hand\n"
+        revisions["REF-951"] = Revision.of(Record.from_json({"id": "REF-951", "type": "reference", "status": "current", "title": "c.md",
+                                                             "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
+                                                             "notes": [DOCUMENT_NOTE.format("docs/specs/c.md")]}, body))
     if omega:
         revisions["CP-900"] = Revision.of(Record.from_json({"id": "CP-900", "type": "compatibility", "status": "unknown", "name": "Omega",
                                                             "qualifier": "Generated", "required_proof": "Generated proof",
@@ -202,6 +219,16 @@ class GeneratedSalvageTests(unittest.TestCase):
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
             # (Invariant (f) checks no proposal cites a REF, CP or RP whose identity differs from the branch record it stood for.)
+            # Documents: a body revision only under equal tokens; no command for a path main holds twice.
+            for pending in pending_documents(after, before, accepted):
+                if pending.kind == "revise":
+                    self.assertEqual(sorted(pending.names), sorted(pending.scope), f"seed {seed}: {pending.path}")
+                if pending.kind == "ambiguous":
+                    self.assertEqual([], pending.commands("FILE"), f"seed {seed}: {pending.path}")
+                if pending.path == "docs/specs/e.md" and retoken_case(raw_after):
+                    self.assertEqual("supersede", pending.kind, f"seed {seed}: e.md names a build its REF's scope lacks")
+                if pending.path == "docs/specs/c.md" and "REF-951" in accepted.records:
+                    self.assertEqual("ambiguous", pending.kind, f"seed {seed}: c.md is named by two accepted REFs")
             self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
                              f"seed {seed}: a cosmetic row refused as a successor")
             def counted(export: dict[str, Record]) -> dict[str | None, int]:
