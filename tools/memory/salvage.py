@@ -58,7 +58,8 @@ the accepted REF whose body to revise, since a REF's ``legacy`` never changes an
 is not yet in ``ref``'s own journal.
 
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
-``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
+``--out DIR``, a directory that must not exist (salvage creates it, and removes it again if anything fails); notices,
+conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
 unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
 branch's, or for a new document when an accepted REF holds its body) and exits 1 if there is any. ``--out`` also
 writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
@@ -77,7 +78,7 @@ import argparse
 import os
 import re
 import shlex
-import stat
+import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -889,67 +890,35 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
 
 
 class PublishError(RuntimeError):
-    """``--out`` refused: a target or a file under the output directory that this run may not create or keep."""
+    """``--out`` refused or failed; nothing it created is left behind."""
 
 
-PUBLISHED = ("memory/journal", "documents")
-
-
-def same_regular_file(path: Path, data: bytes) -> bool | None:
-    """``None`` when nothing is at ``path`` (``lstat``, never following a link); True when a regular file holds exactly
-    ``data``; False for anything else (other bytes, a symlink, dangling or not, a directory)."""
+def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
+    """Write ``planned`` (paths relative to ``out``) into ``out``, a directory that must not exist: one ``os.mkdir`` creates
+    it (its parent must exist; anything at the path, a dangling symlink included, refuses), and every subdirectory and
+    file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure after the mkdir the whole
+    tree is removed. A concurrent process of the same user changing that directory during the run, and symlinks in the
+    path leading to its parent, are outside what this guards against. Raises ``PublishError``."""
     try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISREG(info.st_mode):
-        return False
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    with os.fdopen(descriptor, "rb") as handle:
-        return handle.read(len(data) + 1) == data
-
-
-def publish(out: Path, planned: Sequence[tuple[Path, bytes]]) -> list[Path]:
-    """Write ``planned`` under ``out`` without ever replacing anything. Preflight: each target must be absent or a
-    regular file with identical bytes (a symlink, even to identical bytes, refuses), and nothing else may be under
-    ``out``'s ``memory/journal`` or ``documents`` (an earlier run's segment would be copied with the new ones). Then
-    each new file is created exclusively (``O_CREAT | O_EXCL | O_NOFOLLOW``), written and closed; if a create or a
-    write fails, the files this run created (the one being written included) are removed. Raises ``PublishError``;
-    returns the files created."""
-    wanted = {target: data for target, data in planned}
-    for target, data in wanted.items():
-        if same_regular_file(target, data) is False:
-            raise PublishError(f"{target} exists and is not a regular file with this content (symlinks are never followed); "
-                               + "nothing written (move it away or use another --out)")
-    for root in PUBLISHED:
-        top = out / root
-        if not os.path.lexists(top):
-            continue
-        if os.path.islink(top) or not top.is_dir():
-            raise PublishError(f"{top} is not a directory; nothing written")
-        for parent, directories, files in os.walk(top, followlinks=False):
-            for name in (*directories, *files):
-                path = Path(parent) / name
-                if path not in wanted and (os.path.islink(path) or not path.is_dir()):
-                    raise PublishError(f"{path} was left by an earlier run: use a new --out or remove it; nothing written")
-    created: list[Path] = []
-    for target, data in wanted.items():
-        if os.path.lexists(target):
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
+        os.mkdir(out, 0o700)
+    except FileExistsError as error:
+        raise PublishError(f"{out} exists: --out must name a new directory") from error
+    except OSError as error:
+        raise PublishError(f"{out}: {error.strerror or error}") from error
+    try:
+        for relative, data in planned:
+            target = out / relative
+            for parent in reversed([*target.relative_to(out).parents][:-1]):
+                if not (out / parent).is_dir():
+                    os.mkdir(out / parent, 0o700)
             descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-            # Ours from here on: a failed write must not leave a partial file for the next run to refuse.
-            created.append(target)
             with os.fdopen(descriptor, "wb") as handle:
                 _ = handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-        except OSError as error:
-            for path in created:
-                path.unlink(missing_ok=True)
-            raise PublishError(f"{target}: {error.strerror or error}; removed the {len(created)} file(s) this run had created") from error
-    return created
+    except OSError as error:
+        shutil.rmtree(out, ignore_errors=True)
+        raise PublishError(f"{error}; removed {out}, which this run had created") from error
 
 
 class Subparsers(Protocol):
@@ -962,7 +931,8 @@ def register(subparsers: Subparsers) -> None:
     parser = subparsers.add_parser("salvage", help="turn a branch's added or modified legacy rows into proposals")
     _ = parser.add_argument("ref", help="branch, commit or worktree HEAD to salvage (its pre-merge tip if it merged the cut-over)")
     _ = parser.add_argument("--check", action="store_true", help="only report unsalvaged legacy rows")
-    _ = parser.add_argument("--out", type=Path, help="write the proposal segments under DIR/memory/journal")
+    _ = parser.add_argument("--out", type=Path, help="a NEW directory (it must not exist) to write the proposal segments (DIR/memory/journal) and "
+                            + "pending document bodies (DIR/documents) into")
     _ = parser.add_argument("--main", default=ACCEPTANCE_REF, help=f"the accepted commit to classify against (default {ACCEPTANCE_REF})")
     _ = parser.set_defaults(handler=run)
 
@@ -1015,10 +985,10 @@ def run(options: argparse.Namespace) -> int:
               + f"(against {main} {result.main[:12]}'s {'journal' if result.source == 'journal' else 'legacy export'})", file=sys.stderr)
         segments = split_change_set(commit_time(root, result.head), result.proposals) if result.proposals else []
         if out is not None:
-            planned = [(out / "documents" / document.path, document.body.encode()) for document in result.documents]
-            planned += [(out / path, data) for path, data in segments]
+            planned = [(f"documents/{document.path}", document.body.encode()) for document in result.documents]
+            planned += [(path, data) for path, data in segments]
             try:
-                _ = publish(out, planned)
+                publish(out, planned)
             except PublishError as error:
                 print(f"memory salvage: {error}", file=sys.stderr)
                 return 1
