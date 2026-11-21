@@ -3,8 +3,7 @@ Takes force at the cut-over commit that removes `docs/ledgers/`, `evidence/` and
 # Memory rules
 
 Project knowledge lives in Hindsight 1.2.3, read and written only through
-`python3 -m tools.memory` (here `memory`), the project's typed stdlib tool, also
-served as the `memory` stdio MCP server. Nothing else touches the bank; nobody
+`python3 -m tools.memory` (`memory`), also the `memory` stdio MCP server. Nothing else touches the bank; nobody
 authors or reads the journal by hand.
 
 ## Model
@@ -25,14 +24,14 @@ authors or reads the journal by hand.
 One instance, one bank `icarus`, `HINDSIGHT_API_LLM_PROVIDER=none`. Settings:
 retain mode `chunks`, chunk size 1,800; observations and auto-consolidation
 off; file upload, document import and bank config APIs off; Hindsight MCP off;
-LLM trace off; reranker candidates capped at 50 (setting `ICARUS_MEMORY_RERANKER`:
-`off` or a cap, `service install --reranker`); loopback; one key; a pinned
+LLM trace off; fused ranking, the reranker off (`service install --reranker N`
+turns it on with N candidates); loopback; one key; a pinned
 worker ID; `fsync=on&synchronous_commit=on` in the pg0 URL; raw service logs
 discarded (tracebacks can carry database URIs). No extension code.
-`memory check --bank` asserts the effective config (`GET .../config`, since bank
-`PUT`/`PATCH` and template import can still change it), that `icarus` is the
-only bank, that no mental model, directive, page or webhook exists, and that the
-journal explains every document.
+`memory check --bank` asserts the effective config (`GET .../config`; bank
+`PUT`/`PATCH` and template import can change it), `icarus` as the only bank, no
+mental model, directive, page or webhook, and a journal that explains every
+document.
 
 ## Record types
 
@@ -63,9 +62,8 @@ journal explains every document.
   identities, start, end, environment, thresholds, outcome (pass, fail,
   aborted), deviations.
 - IDs are permanent per prefix, never renumbered or reused once accepted. The
-  tool allocates under a host lock above the highest ID in the bank, the journals
-  and the legacy ledgers and shards of every ref and worktree; CI enforces
-  uniqueness. An ID that never reached `origin/main` may be reallocated after a
+  tool allocates under a host lock above the highest ID in the bank, journals
+  and legacy ledgers and shards of every ref and worktree; CI checks uniqueness. An ID that never reached `origin/main` may be reallocated after a
   rebuild.
 - Migrated records keep `legacy` (verbatim source cells and path); CP and RP IDs
   are marked as assigned at migration. Enum values outside the vocabulary are
@@ -152,8 +150,8 @@ Supersession is acyclic.
 
 | Command | Guarantee |
 | --- | --- |
-| `get ID[/selector] [--history] [--offline]` | Exact document GET, verified; state, partition, derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: from the journal. |
-| `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence] [--limit N] [--full]` | Strict tags; partitioned; deduplicated by document; retired hits under their terminal successor; 1-hop links and resolvers by exact GET. Compact: pointers, a REF's matching passage, about 6 KB; `--full` prints whole texts. `--text`: substring search. |
+| `get ID[/selector] [--history] [--offline]` | Exact GET, verified; state, partition (none for evidence), derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: from the journal. |
+| `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence] [--limit N] [--refs] [--full]` | Strict tags; partitioned; one hit per document; retired hits under their terminal successor; 1-hop links by exact GET. Compact, about 6 KB: records, then at most 3 REF passages; `--refs` only REFs, `--full` whole texts. `--text`: substring hits first. |
 | `area AREA` | Records by status and partition, open unknowns, link closure. |
 | `status` | Pin; counts by type, status, partition; cited records not current; open unknowns; unverified evidence. |
 | `propose TYPE`, `revise ID`, `supersede OLD --by NEW`, `resolve ID --by F-N` | Schema, scope, link targets and selector membership checked before the segment is written. |
@@ -167,19 +165,18 @@ Supersession is acyclic.
 
 ## Reading
 
-- Look up a known ID with `get`, never recall. IDs named in a query are fetched
-  by exact GET first (the keyword index splits hyphenated IDs).
+- Look up a known ID with `get`, never recall; recall fetches IDs named in a
+  query by exact GET first.
 - Partitions against a release (default: the REL record whose `server_build` is
   `config/release.toml` `build_id`): `current` (explicit scope whose every
   listed role matches the release, a `verified_on` for it, or a
   build-independent decision); `other-build` (explicit, different build);
-  `legacy-scope` (legacy-text, shown with its literal tokens and whether one
-  names the pin; never counted as verified); `native` (commit, with whether
+  `legacy-scope` (legacy-text, shown with its literal tokens, "text names" on a
+  REF, and whether one names the pin; never verified); `native` (commit, with whether
   HEAD descends from it); `unscoped`.
-- Default recall: accepted records plus this worktree's proposals; excludes
-  `type:evidence`, orphaned documents and pending revisions; pins
-  `query_timestamp`. Other worktrees' proposals appear only with
-  `--all-proposals`, listed separately.
+- Default recall: accepted records plus this worktree's proposals; no evidence,
+  orphaned documents or pending revisions; pinned `query_timestamp`. Other
+  worktrees' proposals only with `--all-proposals`, listed apart.
 
 ## Procedures
 
@@ -197,7 +194,7 @@ Engineering loop:
 
 1. Read `memory status` and the plan; recall the topic; `get` each ID you will
    rely on; check `docs/gates.md`.
-2. Rely on `current` records; anything else needs research or an unknown first.
+2. Rely on `current` records; anything else needs research or an unknown.
 3. Cite the ID where code depends on it, for example `(F-1162)`. New citations
    must name accepted or same-branch records and must not name retired ones.
 4. Record test results: receipts as evidence, native properties as `measured`
@@ -212,8 +209,8 @@ behaviour in scope; `implemented` cites native code at a commit and its tests;
 thresholds and verified artifacts match the claim's scope. A loopback run never
 validates stock-client interoperability.
 
-Pin move: propose the REL record with the `config/release.toml` change.
-Re-scope nothing; `check --pin` lists what to re-verify.
+Pin move: propose the REL record with the `config/release.toml` change;
+re-scope nothing; `check --pin` lists what to re-verify.
 
 Milestone: `verify --all`, `check --bank --pin`, a restore drill, then the
 work-rules milestone routine.
@@ -225,7 +222,7 @@ work-rules milestone routine.
   (0600). Never print, log or pass the key as an argument. The free-disk floor
   gates backups, drills and rebuilds, never the service.
 - Use the `memory` MCP server where its registration is qualified for that
-  client and checkout; otherwise the same CLI.
+  client and checkout, else the CLI.
 - Every agent may propose; the lead commits. No agent calls the Hindsight API.
 - No automatic capture (coding-agents plugin, transcripts, git ingestion).
 - A fresh clone has `check --ci` and `get --offline`; `rebuild` creates the
@@ -249,9 +246,9 @@ work-rules milestone routine.
 - Relative evidence paths resolve against the primary checkout (from the Git
   common directory), never the linked worktree. Directory locators, manifest
   pins and removal receipts are kept as they are.
-- `verify` fails only for an active record: `mismatched`, or `unavailable` for an active
-  local-private one; a retired or missing record's outcome is reported, never
-  failed. The 119 rows without a digest are `legacy-unverifiable`.
+- `verify` fails only for an active record (`mismatched`, or `unavailable` if
+  local-private); for a retired or missing one it reports, never fails. The 119
+  rows without a digest are `legacy-unverifiable`.
 - `protected-paths` is the union of every worktree's journal and, while any
   worktree has one, its legacy `evidence/` shards. `tools/work_gc.py` and
   `tools/cargo_guard.py` read it offline; unreadable input holds everything.
@@ -260,8 +257,7 @@ work-rules milestone routine.
   weekly under `$XDG_STATE_HOME/icarus-memory/backups/`. `restore` checks the
   watermark, then replays forward.
 - The drill covers both restore from a dump and rebuild from a clean clone.
-- Evidence bytes have no off-host copy; after a disk loss `verify` reports them
-  `unavailable`.
+- Evidence bytes have no off-host copy: after a disk loss they are `unavailable`.
 
 ## Later
 

@@ -33,9 +33,12 @@ Migration moves records; it never upgrades, invents or fills. Every rule is mech
   - a commit is a 7 to 40 character lowercase hex word with at least one digit and one letter, not
     glued to a word, ``-`` or ``.`` (``COMMIT``), found only in the cells the legacy schema reserves for
     source revisions and limits (a finding's Evidence and Scope and limits cells, the Evidence cell of a
-    compatibility row, a lead's Static evidence, a spec's Scope section). Elsewhere such words are pawn
+    compatibility row, a lead's Static evidence). Elsewhere such words are pawn
     IDs, tag hashes or GUID parts. A row with several distinct commits keeps none and names them in a gap,
     ``scope.commit: several commits in row (a, b)``.
+    A finding's claim is not such a cell: 8 findings name a commit-like word only there (F-497's feature
+    commit, but also F-702's tag hashes), and nothing mechanical tells which is a commit; the migration
+    report lists them as a known limit (``claim_commits``).
 
   Builds named only in a cited evidence label are never copied. A row without tokens has no scope;
   ``scope`` is then a gap where the type requires it.

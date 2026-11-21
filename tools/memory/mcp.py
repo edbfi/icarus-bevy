@@ -149,13 +149,15 @@ TOOLS: tuple[Tool, ...] = (
          lambda c, a: online.get(c.bank(), c.root, text(a, "id"), history=flag(a, "history"), all_proposals=flag(a, "all_proposals"), full=flag(a, "full"))),
     Tool("recall", "Ranked search with strict tags, partitioned against a release (default the pin); IDs named in the query are fetched by exact " +
          "GET first. Accepted records plus this worktree's proposals; other worktrees' with all_proposals; evidence with include_evidence; " +
-         "text adds a substring search. Compact by default (at most 12 hits, about 6 KB; a REF shows only its matching passage): get reads a " +
-         "record; limit ranks more hits, full prints every hit's whole text.",
-         {"query": STRING, "release": STRING, "text": STRING, "all_proposals": BOOLEAN, "include_evidence": BOOLEAN, "limit": INTEGER, "full": BOOLEAN},
+         "text adds a substring search (its hits first). Compact by default (at most 12 hits, about 6 KB; records before reference " +
+         "documents, at most 3 of those, each only its matching passage): get reads a record; limit ranks more hits, refs lists only " +
+         "reference documents with longer passages, full prints every hit's whole text.",
+         {"query": STRING, "release": STRING, "text": STRING, "all_proposals": BOOLEAN, "include_evidence": BOOLEAN, "limit": INTEGER, "full": BOOLEAN,
+          "refs": BOOLEAN},
          ("query",),
          lambda c, a: online.recall(c.bank(), c.root, text(a, "query"), release=optional(a, "release"), text=optional(a, "text"),
                                     all_proposals=flag(a, "all_proposals"), include_evidence=flag(a, "include_evidence"), limit=number(a, "limit"),
-                                    full=flag(a, "full"))),
+                                    full=flag(a, "full"), refs=flag(a, "refs"))),
     Tool("area", "One area's records by status and partition, its open unknowns and the closure of their links; compact by default, " +
          "full lists every record.", {"area": STRING, "full": BOOLEAN}, ("area",),
          lambda c, a: online.area(c.bank(), c.root, text(a, "area"), full=flag(a, "full"))),

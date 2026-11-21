@@ -17,9 +17,16 @@
 
 A REF's title is the text of the file's first ``# `` line (a gap otherwise); its area the folder under
 ``docs/specs/`` or ``docs/research/``, or the catalog topic of a ledger; its ``legacy`` cells the first
-line verbatim (``heading``) and the full commit ID (``revision``). Scope is ``legacy-text``: a spec's
-tokens come from its ``## Scope`` section (commits included); any other body's builds and releases come
-from the whole text, and no commit is taken, since prose has no source-revision cell.
+line verbatim (``heading``) and the full commit ID (``revision``). Scope is ``legacy-text`` and lists every
+build and release the text literally names, role-tagged by the row rule (``legacy_rules.extract``), and
+never a commit (prose has no source-revision cell; a spec's hex words are provenance lines such as
+``Full text: <sha>:<path>``, not scope):
+
+- a spec: the union of its ``## Status`` and ``## Scope`` sections (the spec format puts its applicability
+  in both: Status states the build the observations come from, Scope what the spec covers); the whole
+  body when it has neither section;
+- a digest, ledger prose, the status file, the evidence README: the whole text, since none has a section
+  that states applicability.
 
 ``account(root, revision, records)`` classifies every byte (each line with its LF) of every file under
 ``ACCOUNTED`` at ``revision``: ``record`` (a table row or shard line reproduced by a record's verbatim
@@ -154,7 +161,8 @@ def references(root: Path, revision: str) -> list[Migrated]:
         area = parts[2] if kind in ("spec", "digest") and len(parts) == 4 else topic(path) if kind == "ledger" else None
         if area:
             data["area"] = area
-        extraction = extract({"scope": section(body, "Scope")}, ("scope",)) if kind == "spec" else extract({"body": body})
+        sections = {name.lower(): section(body, name) for name in ("Status", "Scope")} if kind == "spec" else {}
+        extraction = extract(sections if any(sections.values()) else {"body": body})
         if extraction.scope is not None:
             data["scope"] = extraction.scope
         data["body_sha256"] = sha256_hex(body.encode())

@@ -31,6 +31,7 @@ from tools.memory.check import CITATION
 from tools.memory.gitio import git, read_blobs
 from tools.memory.journal import JOURNAL, Revision, Segment
 from tools.memory.legacy import Export
+from tools.memory.legacy_rules import COMMIT
 from tools.memory.model import LEGACY, Record, id_key
 from tools.memory.state import partition, replay
 
@@ -171,6 +172,18 @@ def text_citations(result: Export) -> dict[str, int]:
     return dict(counts)
 
 
+def claim_commits(records: Iterable[Record]) -> list[tuple[str, list[str]]]:
+    """Findings whose claim holds a commit-like word (``COMMIT``, a digit and a letter) and whose scope has no commit: the
+    claim is not a commit cell, since such words there are as often tag hashes or IDs (``legacy_rules``)."""
+    found: list[tuple[str, list[str]]] = []
+    for record in sorted(records, key=lambda item: id_key(item.id)):
+        claim = record.text("claim") or ""
+        words = [match[1] for match in COMMIT.finditer(claim) if re.search(r"[0-9]", match[1]) and re.search(r"[a-f]", match[1])]
+        if record.type == "finding" and words and (record.scope is None or record.scope.commit is None):
+            found.append((record.id, list(dict.fromkeys(words))))
+    return found
+
+
 def _ids(identifiers: Iterable[str]) -> str:
     return ", ".join(sorted(identifiers, key=id_key))
 
@@ -205,6 +218,8 @@ def render(result: Export, root: Path) -> str:
     lines.extend(f"- {link.old} superseded by {link.new}: {link.path}:{link.line}: {link.text}" for link in result.prose_links)
     lines.extend(["", "## Rows with several commits (scope keeps none)", ""])
     lines.extend(f"- {identifier}: {', '.join(commits)}" for identifier, commits in sorted(result.commits.items(), key=lambda item: id_key(item[0])))
+    lines.extend(["", "## Known limit: commit-like words only in a finding's claim (scope keeps none)", ""])
+    lines.extend(f"- {identifier}: {', '.join(words)}" for identifier, words in claim_commits(result.records().values()))
     lines.extend(["", "## Judgments the rows force", ""])
     by_type: dict[str, list[str]] = defaultdict(list)
     for record in records:

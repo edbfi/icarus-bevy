@@ -122,7 +122,7 @@ SPEC = """# Widget framing
 
 ## Status
 
-Candidate.
+Candidate; observed with client build 29990002 only.
 
 ## Scope
 
@@ -376,7 +376,8 @@ class ExportTests(LegacyRepository):
         widget = self.record("REF-002")
         self.assertEqual((widget.text("title"), widget.body, widget.text("area")), ("Widget framing", SPEC, "net"))
         assert widget.scope is not None and widget.legacy is not None
-        self.assertEqual((widget.scope.builds, widget.scope.releases, widget.scope.commit), (("server:29990001",), ("3.0.91",), "c0ffee3"))
+        # Status and Scope both state applicability: their builds and releases are unioned; a spec's hex word is never a commit.
+        self.assertEqual((widget.scope.builds, widget.scope.releases, widget.scope.commit), (("client:29990002", "server:29990001"), ("3.0.91",), None))
         self.assertEqual(self.record("REF-001").text("title"), "Another")
         assert widget.legacy is not None
         self.assertEqual(widget.legacy.cells["revision"], run_git(self.root, "rev-parse", "HEAD").strip())

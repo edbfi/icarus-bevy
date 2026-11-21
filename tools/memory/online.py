@@ -613,11 +613,16 @@ def release_for(universe: Universe, root: Path, name: str | None) -> tuple[Recor
 
 
 def place(root: Path, record: Record, release: Record | None, reason: str) -> tuple[dict[str, JSON], str]:
-    """A record's partition as JSON and as one text phrase."""
+    """A record's partition as JSON and as one text phrase. Evidence is an artifact, not a claim: it has no
+    partition (the name ``evidence`` and an empty phrase). A REF's legacy tokens read "text names", since a
+    document's tokens say what its text mentions, not where it applies."""
+    if record.type == "evidence":
+        return {"name": "evidence"}, ""
     if release is None:
         return {"name": "unknown", "reason": reason}, f"unknown ({reason})"
     placed = partition(record, release, lambda commit: descends(root, commit))
-    detail = [f"tokens {', '.join(placed.tokens)}"] if placed.tokens else []
+    label = "text names:" if record.type == "reference" and placed.name == "legacy-scope" else "tokens"
+    detail = [f"{label} {', '.join(placed.tokens)}"] if placed.tokens else []
     if placed.name == "legacy-scope":
         detail.append(f"names the pin: {'yes' if placed.names_pin else 'no'}")
     if placed.name == "native":
@@ -752,7 +757,7 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
             "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
         }
         lines = [target.item.content, "", f"state: {target.state}", f"status: {target.status}" + (f" (stored {record.status})" if target.status != record.status else ""),
-                 f"partition: {phrase}", f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
+                 *([f"partition: {phrase}"] if phrase else []), f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
         if "/" in citation:
             data["selector"], data["member"] = citation, resolution.member
             lines.insert(0, f"{citation}: " + (f"listed member {resolution.member}" if resolution.member else "legacy case note") + f" of {identifier}\n")
@@ -838,10 +843,13 @@ class Shown:
 RECALL_LIMIT = 12
 RECALL_BUDGET = 6 * 1024
 LINE_CAP = 300
-PASSAGE_CAP = 600
+PASSAGE_CAP = 400
+REFS_PASSAGE_CAP = 1200
+# Reference documents a default recall shows; the rest are named (``--refs`` lists only references).
+REF_HITS = 3
 LINK_CAP = 8
 # Partitions as recall prints them: what can be relied on first.
-DISPLAY = ("current", "native", "legacy-scope", "other-build", "unscoped", "unknown", "not-in-journal")
+DISPLAY = ("current", "native", "legacy-scope", "other-build", "unscoped", "unknown", "evidence", "not-in-journal")
 TERM = re.compile(r"[\w-]{3,}")
 
 
@@ -851,16 +859,16 @@ def capped(names: Sequence[str], cap: int = LINK_CAP) -> str:
     return shown + (f" (+{len(names) - cap} more)" if len(names) > cap else "")
 
 
-def passage(query: str, units: Sequence[str], body: str | None) -> tuple[str, str | None]:
-    """The returned unit that best matches the query, trimmed to ``PASSAGE_CAP`` characters around its first
+def passage(query: str, units: Sequence[str], body: str | None, cap: int = PASSAGE_CAP) -> tuple[str, str | None]:
+    """The returned unit that best matches the query, trimmed to ``cap`` characters around its first
     query term, and the Markdown heading of ``body`` it falls under (when the unit is found in the body)."""
     terms = [match[0].casefold() for match in TERM.finditer(query)]
     best = max(units, key=lambda unit: sum(unit.casefold().count(term) for term in terms), default="")
     folded = best.casefold()
     first = min((index for term in terms if (index := folded.find(term)) >= 0), default=0)
-    begin = max(0, min(first - PASSAGE_CAP // 3, len(best) - PASSAGE_CAP))
-    excerpt = " ".join(best[begin:begin + PASSAGE_CAP].split())
-    excerpt = ("…" if begin else "") + excerpt + ("…" if begin + PASSAGE_CAP < len(best) else "")
+    begin = max(0, min(first - cap // 3, len(best) - cap))
+    excerpt = " ".join(best[begin:begin + cap].split())
+    excerpt = ("…" if begin else "") + excerpt + ("…" if begin + cap < len(best) else "")
     # The heading the match falls under: the last one before it inside the unit, else the last one before the unit in the body.
     line_end = best.find("\n", first)
     heading = next((line.lstrip("#").strip() for line in reversed(best[:line_end if line_end >= 0 else len(best)].split("\n"))
@@ -871,7 +879,8 @@ def passage(query: str, units: Sequence[str], body: str | None) -> tuple[str, st
 
 
 def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, text: str | None = None,
-           all_proposals: bool = False, include_evidence: bool = False, limit: int | None = None, full: bool = False) -> Output:
+           all_proposals: bool = False, include_evidence: bool = False, limit: int | None = None, full: bool = False,
+           refs: bool = False) -> Output:
     """The rules' Reading section: exact GET of named IDs first, strict-tag recall, partitions, retired
     hits under their terminal successor, one hop of links and resolvers by exact GET. Retirement and
     derived links are the accepted ones (as the bank shows them); this worktree's proposed superseders and
@@ -879,8 +888,10 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
 
     Recall ranks pointers; ``get`` reads. By default each hit is a compact block (header, the claim,
     question, label or title, for a REF the returned passage, capped link lines) and the text stops at
-    ``RECALL_BUDGET`` bytes, naming the hits it did not show. ``full`` prints every record's whole text
-    and every link, as ``--full``."""
+    ``RECALL_BUDGET`` bytes, naming the hits it did not show. Within a partition claim-bearing records come
+    before reference documents, and at most ``REF_HITS`` references are shown (passages of ``PASSAGE_CAP``);
+    ``refs`` lists only references, with passages of ``REFS_PASSAGE_CAP``. ``text`` hits rank first.
+    ``full`` prints every record's whole text and every link, as ``--full``."""
     limit = RECALL_LIMIT if limit is None else max(1, limit)
     with session(bank, root, read=True) as current:
         universe, state, settled = current.universe, current.universe.state, current.universe.settled
@@ -897,16 +908,19 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         def ranked(others: bool) -> list[str]:
             groups = visibility(mine, include_evidence=include_evidence, others=others)
             order: list[str] = []
+            if text is not None:
+                # Substring hits first: an exact phrase is the strongest signal a caller can give.
+                for unit in sorted(bank.units(text=text), key=lambda found: id_key(found.document_id or "")):
+                    if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others):
+                        units.setdefault(unit.document_id, []).append(unit.text)
+                        if unit.document_id not in order:
+                            order.append(unit.document_id)
             for hit in bank.recall(query, groups, query_timestamp=stamp):
                 if hit.document_id is None or (text is not None and text.casefold() not in hit.text.casefold()):
                     continue
                 units.setdefault(hit.document_id, []).append(hit.text)
                 if hit.document_id not in order:
                     order.append(hit.document_id)
-            if text is not None:
-                extra = {unit.document_id for unit in bank.units(text=text)
-                         if unit.document_id is not None and visible(unit.tags, mine, include_evidence=include_evidence, others=others)}
-                order.extend(sorted(extra - set(order), key=id_key))
             return order
 
         documents = ranked(False)[:limit]
@@ -923,7 +937,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 if heads:
                     item.retired.append(identifier)
         sections: dict[str, list[JSON]] = {name: [] for name in DISPLAY}
-        blocks: list[tuple[int, str, str, str]] = []
+        blocks: list[tuple[bool, int, str, str, str]] = []
         listed = set(shown)
 
         def links_of(item: Shown, target: Desired) -> list[str]:
@@ -956,15 +970,18 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             target = wanted.get(item.document)
             if target is None:
                 sections["not-in-journal"].append({"id": item.identifier, "document": item.document})
-                blocks.append((item.rank, "not-in-journal", item.identifier, f"{item.document}: in the bank but not in any gathered journal"))
+                if not refs:
+                    blocks.append((False, item.rank, "not-in-journal", item.identifier, f"{item.document}: in the bank but not in any gathered journal"))
                 continue
             record = target.revision.record
+            if refs and not full and record.type != "reference":
+                continue
             verified = checked.get(item.document, False)
             placed, phrase = place(root, record, rel, reason)
             name = str(placed["name"])
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
             retired = [summary(fetched, wanted, old) for old in sorted(set(item.retired), key=id_key)]
-            header = f"{item.identifier} [{record.type}; {target.state}, {target.status}; {phrase}]" + ("" if verified else " (differs from the journal)")
+            header = f"{item.identifier} [{record.type}; {target.state}, {target.status}{f'; {phrase}' if phrase else ''}]" + ("" if verified else " (differs from the journal)")
             derived = [(label, list(names)) for label, names in (
                 ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", settled.resolved_by.get(item.identifier, ()))) if names]
             if full:
@@ -992,7 +1009,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 }
                 block = [header, f"  {line}"]
                 if record.type == "reference":
-                    excerpt, heading = passage(query, units.get(target.document_id, []), record.body)
+                    excerpt, heading = passage(query, units.get(target.document_id, []), record.body, REFS_PASSAGE_CAP if refs else PASSAGE_CAP)
                     entry_json["passage"], entry_json["heading"] = excerpt, heading
                     block.append(f"  passage{f' (under {heading!r})' if heading else ''}: {excerpt}")
                 kinds: dict[str, JSON] = {}
@@ -1006,17 +1023,26 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 block += [f"  {entry.line()}" for entry in proposed]
                 block += [f"  retired under it: {retired_line[:LINE_CAP]}" for _, retired_line in retired]
                 sections[name].append(entry_json)
-            blocks.append((item.rank, name, item.identifier, "\n".join(block)))
-        shown_blocks: list[tuple[int, str, str, str]] = []
+            blocks.append((record.type == "reference", item.rank, name, item.identifier, "\n".join(block)))
+        # Claim-bearing records first, by rank, then at most REF_HITS reference documents; then the budget.
+        candidates = sorted(blocks)
+        extra_refs: list[str] = []
+        if not full and not refs:
+            references = [block for block in candidates if block[0]]
+            extra_refs = [block[3] for block in references[REF_HITS:]]
+            candidates = [block for block in candidates if not block[0]] + references[:REF_HITS]
+        shown_blocks: list[tuple[bool, int, str, str, str]] = []
         used = sum(len(line.encode()) + 1 for line in lines)
-        for block in sorted(blocks):
-            size = len(block[3].encode()) + 1
+        for block in candidates:
+            size = len(block[4].encode()) + 1
             if full or not shown_blocks or used + size <= RECALL_BUDGET:
                 shown_blocks.append(block)
                 used += size
-        hidden = [identifier for _rank, _name, identifier, _text in sorted(blocks) if all(identifier != kept[2] for kept in shown_blocks)]
+        kept = {block[3] for block in shown_blocks}
+        hidden = [block[3] for block in candidates if block[3] not in kept and not block[0]]
+        extra_refs += [block[3] for block in candidates if block[3] not in kept and block[0]]
         for name in DISPLAY:
-            if chosen := [text_block for _rank, part, _identifier, text_block in sorted(shown_blocks) if part == name]:
+            if chosen := [block[4] for block in sorted(shown_blocks) if block[2] == name]:
                 lines.append(f"== {name} ==")
                 lines.extend(chosen)
         config, _overrides = bank.config()
@@ -1027,13 +1053,16 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         lines.extend(f"repaired: {document}: differed from the journal; rewritten from it (something wrote to the bank outside the tool)" for document in repaired)
         if hidden:
             lines.append(f"not shown ({len(hidden)} over the {RECALL_BUDGET // 1024} KB budget): {capped(hidden, 12)}; memory get ID reads one, --full prints all")
+        if extra_refs:
+            lines.append(f"+{len(extra_refs)} more reference documents: {capped(sorted(extra_refs, key=id_key), 12)}; use --refs or get")
         if len(documents) >= limit:
             lines.append(f"hits limited to {limit}; --limit N shows more")
         lines.append(f"ranking: {ranker}")
         data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact, "ranking": {
             "reranking": reranking, "candidates": cap if reranking else None, "scope": "instance"},
                                  "partitions": {name: items for name, items in sections.items() if items}, "repaired": list[JSON](repaired),
-                                 "documents": list[JSON](documents), "not_shown": list[JSON](hidden), "full": full}
+                                 "documents": list[JSON](documents), "not_shown": list[JSON](hidden),
+                                 "more_references": list[JSON](extra_refs), "full": full, "refs": refs}
         if all_proposals:
             others = ranked(True)[:limit]
             listing = [summary(bank, wanted, document_id.split("@", 1)[0]) for document_id in others]
@@ -1061,7 +1090,8 @@ def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], rele
         rows.append({"id": identifier, "status": status, "state": states.get(identifier, "unknown"), "partition": placed, "line": headline(render_text(record)),
                      "proposed": [item.json() for item in proposed]})
         note = "".join(f"; {item.line()}" for item in proposed)
-        lines.append(f"  {identifier} [{states.get(identifier, 'unknown')}, {status}; {phrase}{note}]: {headline(render_text(record)).split(' | ', 1)[-1]}")
+        where = f"; {phrase}" if phrase else ""
+        lines.append(f"  {identifier} [{states.get(identifier, 'unknown')}, {status}{where}{note}]: {headline(render_text(record)).split(' | ', 1)[-1]}")
     return rows, lines
 
 
@@ -1145,6 +1175,12 @@ def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
         return Output(data, lines)
 
 
+def claim_bearing(record: Record) -> bool:
+    """Whether a partition means anything for the record: findings, compatibility rows and references, and
+    any other record that carries a scope. Evidence is an artifact; releases define the partitions."""
+    return record.type in ("finding", "compatibility", "reference") or (record.type not in ("evidence", "release") and record.scope is not None)
+
+
 def cited_not_current(root: Path, universe: Universe, release: Record | None, reason: str) -> list[tuple[str, str, str]]:
     """``(ID, why, first location)`` of each record cited in code and documents that is retired or not ``current``."""
     view = universe.view
@@ -1164,6 +1200,8 @@ def cited_not_current(root: Path, universe: Universe, release: Record | None, re
             record = view.entries[identifier].record
             if view.retired(identifier):
                 found[identifier] = (view.status(identifier), f"{path}:{number}")
+            elif not claim_bearing(record):
+                continue
             elif release is None:
                 found[identifier] = (f"partition unknown ({reason})", f"{path}:{number}")
             else:
@@ -1197,7 +1235,7 @@ def status(bank: Bank, root: Path) -> Output:
                 continue
             if record.type == "unknown" and shown in OPEN_UNKNOWN:
                 unknowns.append(identifier)
-            if release is not None and record.type != "release":
+            if release is not None and claim_bearing(record):
                 name = partition(record, release, lambda commit: descends(root, commit)).name
                 by_partition[name] = by_partition.get(name, 0) + 1
         cited = cited_not_current(root, universe, release, reason)
@@ -1205,7 +1243,7 @@ def status(bank: Bank, root: Path) -> Output:
                  f"bank: {current.applied.retained} retained, {current.applied.retagged} re-tagged, {current.applied.deleted} deleted by replay"]
         for kind in sorted(by_type):
             lines.append(f"{kind}: " + ", ".join(f"{count} {name}" for name, count in sorted(by_type[kind].items())))
-        lines.append("partitions (records other than evidence and releases): " + ", ".join(f"{by_partition.get(name, 0)} {name}" for name in PARTITIONS))
+        lines.append("partitions (findings, compatibility rows, references, scoped records): " + ", ".join(f"{by_partition.get(name, 0)} {name}" for name in PARTITIONS))
         # Startup reading: the text gives counts and what to act on; ``--json`` and ``check --pin`` list every record.
         reasons: dict[str, int] = {}
         for _identifier, why, _where in cited:
@@ -1409,6 +1447,7 @@ def register(subparsers: Subcommands) -> None:
     _ = recall_parser.add_argument("--include-evidence", action="store_true")
     _ = recall_parser.add_argument("--limit", type=int, help=f"hits to rank (default {RECALL_LIMIT})")
     _ = recall_parser.add_argument("--full", action="store_true", help="every hit's whole text and every link, no size budget")
+    _ = recall_parser.add_argument("--refs", action="store_true", help="only reference documents, with longer passages")
     area_parser = subparsers.add_parser("area", help="one area's records, unknowns and links")
     _ = area_parser.add_argument("area")
     _ = area_parser.add_argument("--full", action="store_true", help="every record and every linked record")
@@ -1515,7 +1554,8 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
         case "recall":
             return recall(bank, root, _string(values, "query") or "", release=_string(values, "release"), text=_string(values, "text"),
                           all_proposals=_flag(values, "all_proposals"), include_evidence=_flag(values, "include_evidence"),
-                          limit=limit if isinstance(limit := values.get("limit"), int) else None, full=_flag(values, "full"))
+                          limit=limit if isinstance(limit := values.get("limit"), int) else None, full=_flag(values, "full"),
+                          refs=_flag(values, "refs"))
         case "area":
             return area(bank, root, _string(values, "area") or "", full=_flag(values, "full"))
         case "status":
