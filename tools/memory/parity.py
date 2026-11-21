@@ -196,7 +196,7 @@ def compare_evidence(result: Parity, state: State, entry: Entry, record: Record,
         result.fail(f"{identifier}: status {record.status}, legacy {row.status}")
     if record.items("members") != (*row.ev, *row.unk):
         result.fail(f"{identifier}: members differ from the listed ev and unk IDs")
-    reference = sources.get(row.path) if row.klass == "tracked" else None
+    reference = sources.get(row.path.partition("#")[0]) if row.klass == "tracked" else None
     if record.notes != (*((row.note,) if row.note is not None else ()), *((TRACKED_NOTE.format(reference),) if reference else ())):
         result.fail(f"{identifier}: notes differ from the legacy note and the tracked-file note")
     if record.links.refs != ((reference,) if reference else ()) or record.links.cites:
