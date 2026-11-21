@@ -882,9 +882,8 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
         "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved, "proposed": [item.json() for item in proposed],
         "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
     }
-    lines = [target.item.content, ""]
-    if moved is not None:
-        lines.append(f"content: {moved} (the tracked file {record.text('path')} was migrated there)")
+    # A tracked file migrated into a REF: where its content now is comes first.
+    lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, ""]
     lines += [f"state: {target.state}", f"status: {status_text(settled, record, target.status)}", *([f"partition: {phrase}"] if phrase else []),
               f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]
     if "/" in citation:

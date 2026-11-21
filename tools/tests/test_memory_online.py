@@ -761,7 +761,7 @@ class SharedFormatterTests(Online):
         self.put("docs/live.md", "# Live\n\n## Other heading\n")
         self.assertEqual("M-152: unavailable (missing: docs/live.md#wire-format)", online.verify(self.root, ["M-152"]).lines[0])
         got = online.get(self.bank, self.root, "M-151")
-        self.assertEqual("content: REF-101 (the tracked file docs/specs/invented.md was migrated there)", got.lines[got.lines.index("") + 1])
+        self.assertEqual("content: REF-101 (the tracked file docs/specs/invented.md was migrated there)", got.lines[0])
         self.assertEqual("REF-101", got.data["content"])
         self.assertEqual({"#a", "a", "a-1", "x"}, online.anchors('# A\n## a\n<a id="x"></a>\n') | {"#a"})
 
