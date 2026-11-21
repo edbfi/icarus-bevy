@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -15,15 +17,16 @@ from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
-from tools.memory import bank as bank_module, durability, journal, online, service
+from tools.memory import bank as bank_module, cli, durability, journal, online, service
 from tools.memory.bank import Applied, Bank, BankError, Desired, Universe, desired, gather
 from tools.memory.durability import Watermark
 from tools.memory.gitio import GitError, run_git as run_git_tool
 from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
+from tools.memory.canonical import RENDERING
 from tools.memory.journal import Revision, read_tree, write_change_set
-from tools.memory.model import JSON, Record, load_json, sha256_hex
+from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
@@ -56,7 +59,7 @@ class FakeBank:
         self.fail_retains: bool = False
         self.extra_banks: tuple[str, ...] = ()
         self.objects: dict[str, int] = {}
-        self.settings: dict[str, object] = dict(online.EXPECTED_CONFIG)
+        self.settings: dict[str, object] = dict(online.EXPECTED_CONFIG) | {"enable_reranking": False}
         self.extra_units: list[Unit] = []
         self.async_calls: int = 0
 
@@ -387,12 +390,12 @@ class RevisionTests(Online):
         self.assertEqual("active", from_b.data["status"])
         self.assertNotIn("proposed", "\n".join(from_b.lines))
         recall_b = "\n".join(online.recall(self.bank, other, "lock follows the key re-read").lines)
-        self.assertIn("F-106 [accepted, active;", recall_b)
+        self.assertIn("F-106 [finding; accepted, active (stored);", recall_b)
         self.assertNotIn(new, recall_b)
         everything = online.get(self.bank, other, "F-106", all_proposals=True)
         self.assertIn(f"proposed superseder: {new} (proposed, another worktree or branch)", everything.lines)
         from_a = "\n".join(online.recall(self.bank, self.root, "lock follows the key re-read").lines)
-        self.assertIn("F-106 [accepted, active;", from_a)
+        self.assertIn(f"F-106 [finding; accepted, active (stored; proposed link from {new} in this worktree);", from_a)
         self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", from_a)
         self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", online.get(self.bank, self.root, "F-106").lines)
 
@@ -563,10 +566,10 @@ class EvidenceTests(Online):
         self.assertEqual(0, output.status)
         with self.assertRaisesRegex(Refused, "matches 0 listed members"):
             _ = self.new_finding("Invented: cites a member of the unlisted bundle", cites=["M-001/ev_a1b2c3d4e5f6"])
-        self.assertEqual("verified", online.verify_record(self.root, record).outcome)
+        self.assertEqual("verified", online.verify_record(self.root, record, "active").outcome)
 
     def test_add_bundle_and_verify_outcomes(self) -> None:
-        bundle = {"records": [{"evidence_id": MEMBER}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
+        bundle = {"records": [{"evidence_id": MEMBER, "score": 4.0947}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
         self.put("work/case/rea-bundle.json", json.dumps(bundle))
         self.put("work/case/receipt.txt", "invented receipt")
         self.put("work/case/dir/x.txt", "x")
@@ -598,6 +601,41 @@ class EvidenceTests(Online):
         _ = run_git(self.root, "worktree", "add", "-q", "--detach", str(linked))
         self.assertIn("M-001: verified", online.verify(linked, ["M-001"]).lines[0])
 
+    def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        _ = online.revise(self.bank, self.root, "M-001", Changes({"status": "retired"}, note="Invented: superseded"), now=self.tick())
+        self.put("work/case/receipt.txt", "changed after retirement")
+        result = online.verify(self.root, ["M-001"])
+        self.assertEqual((0, "M-001: mismatched (sha256 differs: work/case/receipt.txt)"), (result.status, result.lines[0]))
+        self.assertTrue(result.lines[-1].endswith("; 0 failing"))
+        with self.assertRaisesRegex(RecordError, "duplicate key"):
+            _ = online.bundle_members(b'{"records": [], "records": [], "unknowns": []}')
+
+    def test_an_accepted_superseder_releases_pruned_bytes_and_a_proposed_one_does_not(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented directory record", now=self.tick())
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented replacing record", now=self.tick())
+        commit_all(self.root)
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        (self.root / "work/case/receipt.txt").unlink()
+        proposed = online.verify(self.root, ["M-001"])
+        self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (proposed.status, proposed.lines[0]),
+                         "a proposed superseder releases nothing")
+        self.assertIn("  M-001: missing: work/case/receipt.txt", online.status(self.bank, self.root).lines)
+        commit_all(self.root)
+        accepted = online.verify(self.root, ["M-001"])
+        self.assertEqual((0, "M-001: unavailable (missing: work/case/receipt.txt)"), (accepted.status, accepted.lines[0]))
+        everything = online.verify(self.root, (), every=True)
+        self.assertEqual(0, everything.status, everything.lines)
+        summary = online.status(self.bank, self.root)
+        self.assertNotIn("  M-001: missing: work/case/receipt.txt", summary.lines)
+        self.assertIn("evidence: 1 active, 1 superseded", summary.lines)
+        got = online.get(self.bank, self.root, "M-001")
+        self.assertEqual("superseded", got.data["status"])
+        self.assertIn("evidence: unavailable (missing: work/case/receipt.txt)", got.lines)
+
 
 class ReadingTests(Online):
     def test_get_verifies_against_the_journal(self) -> None:
@@ -623,25 +661,25 @@ class ReadingTests(Online):
         _ = online.revise(self.bank, self.root, "U-101", changes(status="investigating"), now=self.tick())
         output = online.recall(self.bank, self.root, "listing lock key F-104", all_proposals=True)
         text = "\n".join(output.lines)
-        self.assertTrue(output.lines[0].startswith("named: F-104 [accepted, active]"))
+        self.assertTrue(output.lines[0].startswith("named: F-104 [accepted, active (stored)]"))
         self.assertIn("== current ==", text)
-        self.assertIn(f"{mine} [proposed, active; current against REL-9.0.2", text)
-        self.assertIn("F-106 [accepted, active; other-build against REL-9.0.2", text)
-        self.assertIn("retired under it: F-101 [accepted, superseded]", text)
-        self.assertIn("retired under it: F-102 [accepted, superseded]", text)
+        self.assertIn(f"{mine} [finding; proposed, active (stored); current against REL-9.0.2", text)
+        self.assertIn("F-106 [finding; accepted, active (stored); other-build against REL-9.0.2", text)
+        self.assertIn("retired under it: F-101 [accepted, superseded (link from F-102)]", text)
+        self.assertIn("retired under it: F-102 [accepted, superseded (link from F-106)]", text)
         self.assertNotRegex(text, r"(?m)^F-10[12] \[")
-        self.assertNotIn("M-102 [accepted, active;", text)
+        self.assertNotIn("M-102 [evidence; accepted, active;", text)
         self.assertNotIn("U-101@", text)
-        self.assertIn("== proposals of other worktrees ==\nF-150 [proposed, active]", text)
+        self.assertIn("== proposals of other worktrees ==\nF-150 [proposed, active (stored)]", text)
         partitions = output.data["partitions"]
         assert isinstance(partitions, dict)
         self.assertEqual({"current", "other-build"}, set(partitions) - {"native", "unscoped"})
         default = "\n".join(online.recall(self.bank, self.root, "listing lock").lines)
         self.assertNotIn("F-150", default)
         evidence_hits = "\n".join(online.recall(self.bank, self.root, "invented report receipt", include_evidence=True).lines)
-        self.assertIn("M-102 [accepted, active", evidence_hits)
+        self.assertIn("M-102 [evidence; accepted, active", evidence_hits)
         texts = "\n".join(online.recall(self.bank, self.root, "nothing ranks this", text="handler table").lines)
-        self.assertIn(f"{mine} [proposed", texts)
+        self.assertIn(f"{mine} [finding; proposed", texts)
         others = online.recall(self.bank, self.root, "nothing ranks this", text="listing lock", all_proposals=True)
         listed = others.data["other_proposals"]
         assert isinstance(listed, list)
@@ -659,10 +697,226 @@ class ReadingTests(Online):
         state = online.status(self.bank, self.root)
         summary = "\n".join(state.lines)
         self.assertIn("pin: REL-9.0.2", summary)
-        self.assertIn("F-101: superseded (first cited at src/lib.rs:1)", summary)
-        self.assertNotIn("F-103: ", summary)
+        self.assertIn("cited records not current: 1 (1 superseded); memory check --pin lists each", summary)
+        self.assertEqual([{"id": "F-101", "why": "superseded", "where": "src/lib.rs:1"}], state.data["cited_not_current"])
+        self.assertIn("F-101: superseded (first cited at src/lib.rs:1)", "\n".join(online.check_pin(self.root).lines))
         self.assertIn("M-101: missing: work/invented-case/rea-bundle.json", summary)
         self.assertEqual(state.data, online.status(self.bank, self.root).data)
+
+
+class SharedFormatterTests(Online):
+    """``get --offline`` prints ``online.describe`` as ``get`` does; tracked locators; legacy-resolved unknowns."""
+
+    def migrated(self) -> None:
+        """A migrated REF holding a deleted spec, tracked evidence pointing at it and at a live file, and a
+        legacy-resolved unknown listing findings, all accepted."""
+        body = "# Invented spec\n\n## Wire format\n\nInvented bytes.\n"
+        ref: dict[str, JSON] = {"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                "scope": {"basis": "explicit", "subjects": ["tooling"]}, "body_sha256": sha256_hex(body.encode()),
+                                "legacy": {"path": "docs/specs/invented.md", "cells": {"document": "docs/specs/invented.md"}}}
+        tracked: dict[str, JSON] = {"class": "tracked"}
+        moved = evidence("M-151", "docs/specs/invented.md", kind="report", **tracked, refs=["REF-101"], gaps=["sha256"],
+                         legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+        anchored = evidence("M-152", "docs/live.md#wire-format", kind="report", **tracked, gaps=["sha256"],
+                            legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+        lost = evidence("M-153", "docs/gone.md", kind="report", **tracked, gaps=["sha256"], legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+        old = unknown("U-151", "Which invented field wins?", status="open", refs=["F-103", "F-104", "F-106"],
+                      legacy={"path": "docs/ledgers/unknowns.md", "cells": {"status": "resolved", "findings": "F-103..F-104"},
+                              "implied_status": "resolved"})
+        for item in (moved, anchored, lost):
+            del item["sha256"]
+        _ = write(self.root, chain())
+        _ = write_change_set(self.root, CREATED.replace(second=30), [Revision.of(Record.from_json(ref, body))]
+                             + [Revision.of(Record.from_json(item)) for item in (moved, anchored, lost, old)])
+        self.put("docs/live.md", "# Live\n\n## Wire format\n\nInvented.\n")
+        commit_all(self.root)
+
+    def offline(self, *args: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(0, cli.main(["get", *args, "--offline"]))
+        text = output.getvalue()
+        self.assertTrue(text.endswith("\n"))
+        return text[:-1].split("\n")
+
+    def test_offline_and_online_get_print_the_same_lines(self) -> None:
+        self.migrated()
+        for identifier in ("F-102", "M-102", "M-151", "REF-101", "U-151"):
+            for flags in ((), ("--history",), ("--history", "--full")):
+                with self.subTest(identifier=identifier, flags=flags):
+                    online_text = "\n".join(online.get(self.bank, self.root, identifier, history=bool(flags), full="--full" in flags).lines)
+                    self.assertEqual(online_text.split("\n"), self.offline(identifier, *flags))
+        evidence_lines = self.offline("M-102")
+        self.assertFalse(any(line.startswith("partition:") for line in evidence_lines), "evidence has no partition")
+        self.assertIn("partition: unscoped against REL-9.0.2", self.offline("REF-101"))
+        self.assertEqual(1, sum(1 for line in self.offline("F-102", "--history") if line.startswith("  ") and " in memory/journal/" in line),
+                         "--history without --full prints one line per revision")
+
+    def test_a_tracked_locator_is_checked_without_a_digest(self) -> None:
+        self.migrated()
+        result = online.verify(self.root, ["M-151", "M-152", "M-153"])
+        self.assertEqual(["M-151: legacy-unverifiable (tracked file migrated to REF-101; content: REF-101)",
+                          "M-152: legacy-unverifiable (no sha256)", "M-153: unavailable (missing: docs/gone.md)"], result.lines[:3])
+        self.assertEqual(0, result.status, "a tracked record never fails verify")
+        self.put("docs/live.md", "# Live\n\n## Other heading\n")
+        self.assertEqual("M-152: unavailable (missing: docs/live.md#wire-format)", online.verify(self.root, ["M-152"]).lines[0])
+        got = online.get(self.bank, self.root, "M-151")
+        self.assertEqual("content: REF-101 (the tracked file docs/specs/invented.md was migrated there)", got.lines[0])
+        self.assertEqual("REF-101", got.data["content"])
+        self.assertEqual({"#a", "a", "a-1", "x"}, online.anchors('# A\n## a\n<a id="x"></a>\n') | {"#a"})
+
+    def test_a_legacy_resolved_unknown_lists_findings_and_only_stated_resolvers_resolve(self) -> None:
+        self.migrated()
+        lines = online.get(self.bank, self.root, "U-151").lines
+        self.assertIn("status: resolved (legacy status)", lines)
+        self.assertIn("findings listed: F-103, F-104", lines)
+        self.assertIn("refs: F-106", lines, "a ref the Findings cell does not list stays a ref")
+        self.assertFalse(any(line.startswith("resolved by:") for line in lines))
+        recalled = "\n".join(online.recall(self.bank, self.root, "which invented field wins").lines)
+        self.assertIn("U-151 [unknown; accepted, resolved (legacy status);", recalled)
+        self.assertIn("  findings listed: F-103, F-104", recalled)
+        stated = online.get(self.bank, self.root, "U-101").lines
+        self.assertIn("resolved by: F-103", stated)
+        self.assertIn("status: resolved (link from F-103)", stated)
+
+
+class AreaUnknownTests(Online):
+    def test_area_derives_the_open_unknowns_its_records_refs_name(self) -> None:
+        legacy: JSON = {"path": "docs/ledgers/unknowns.md", "cells": {"Status": "open"}}
+        open_one = unknown("U-160", "Invented: which handler owns the gadget?", legacy=legacy, gaps=["area"])
+        closed = unknown("U-161", "Invented: closed question", status="blocked", legacy=legacy, gaps=["area"])
+        elsewhere = unknown("U-162", "Invented: never named by the area", legacy=legacy, gaps=["area"])
+        for item in (open_one, closed, elsewhere):
+            del item["area"]
+        _ = write(self.root, [*chain(), open_one, closed, elsewhere,
+                              finding("F-160", "Invented: gadget handler", refs=["U-160", "U-101", "F-101"]),
+                              finding("F-161", "Invented: other area", area="gadgets", refs=["U-162"])])
+        commit_all(self.root)
+        _ = online.revise(self.bank, self.root, "U-161", changes(status="investigating"), now=self.tick())
+        for full in (False, True):
+            with self.subTest(full=full):
+                output = online.area(self.bank, self.root, "listing", full=full)
+                self.assertEqual(["U-160"], output.data["open_unknowns_referenced"])
+                self.assertIn("open unknowns referenced by this area's records (derived from their refs; not an area of the unknowns): U-160",
+                              output.lines)
+                self.assertEqual([], output.data["open_unknowns"], "U-101 is resolved; migrated unknowns have no area")
+
+
+class CompactReadTests(Online):
+    def reference(self) -> str:
+        body = "# Invented reference\n\n" + "".join(f"## Section {number}\n\nInvented filler paragraph {number} about nothing in particular.\n\n" for number in range(60))
+        body += "## Lock rules\n\nInvented: the listing lock key is checked here.\n"
+        output = online.propose(self.bank, self.root, "reference", Changes({"title": "Invented long reference", "scope": {
+            "basis": "explicit", "subjects": ["tooling"]}}, body=body), now=self.tick())
+        self.assertEqual(0, output.status)
+        return body
+
+    def test_recall_prints_pointers_a_passage_and_capped_links_within_a_budget(self) -> None:
+        self.accepted_chain()
+        body = self.reference()
+        compact = online.recall(self.bank, self.root, "listing lock key")
+        text = "\n".join(compact.lines)
+        self.assertIn("REF-001 [reference; proposed, current (stored);", text)
+        self.assertIn("REF-001 [reference; proposed, current (stored); unscoped against REL-9.0.2]\n  Invented long reference\n  passage (under 'Lock rules'):", text)
+        self.assertIn("passage", text)
+        self.assertIn("listing lock key", text)
+        self.assertNotIn("Invented filler paragraph 30", text, "a REF hit never prints its body")
+        self.assertLessEqual(len(text.encode()), online.RECALL_BUDGET + 1024)
+        partitions = compact.data["partitions"]
+        assert isinstance(partitions, dict)
+        self.assertFalse(any("text" in item for items in partitions.values() if isinstance(items, list) for item in items if isinstance(item, dict)))
+        full = "\n".join(online.recall(self.bank, self.root, "listing lock key", full=True).lines)
+        self.assertIn("Invented filler paragraph 30", full)
+        self.assertIn(body.split("\n")[0], full)
+        _ = self.enterContext(patch.object(online, "RECALL_BUDGET", 200))
+        tight = online.recall(self.bank, self.root, "listing lock key")
+        self.assertTrue(tight.data["not_shown"])
+        self.assertIn("not shown (", "\n".join(tight.lines))
+        ranked = online.recall(self.bank, self.root, "listing lock key", limit=1).data["documents"]
+        assert isinstance(ranked, list)
+        self.assertEqual(1, len(ranked))
+
+    def test_records_come_before_at_most_three_references_and_refs_lists_only_references(self) -> None:
+        self.accepted_chain()
+        for number in range(4):
+            body = f"# Invented reference {number}\n\n## Rules\n\nInvented: the listing lock note number {number}.\n"
+            _ = online.propose(self.bank, self.root, "reference", Changes({"title": f"Invented reference {number}", "scope": {
+                "basis": "explicit", "subjects": ["tooling"]}}, body=body), now=self.tick())
+        compact = online.recall(self.bank, self.root, "listing lock")
+        text = "\n".join(compact.lines)
+        self.assertEqual(3, text.count("[reference;"))
+        self.assertRegex(text, r"\+1 more reference documents: REF-00[1-4]; use --refs or get")
+        unscoped = text.split("== unscoped ==", 1)[1]
+        self.assertLess(unscoped.index("U-101 ["), unscoped.index("REF-"), "claims before references within a partition")
+        only = "\n".join(online.recall(self.bank, self.root, "listing lock", refs=True).lines)
+        self.assertEqual(4, only.count("[reference;"))
+        self.assertNotIn("[finding;", only)
+        first = online.recall(self.bank, self.root, "nothing ranks this", text="note number 3").data["documents"]
+        assert isinstance(first, list)
+        self.assertEqual("REF-004", first[0], "substring hits rank first")
+
+    def test_refs_filters_by_tag_before_the_limit_in_both_modes(self) -> None:
+        self.accepted_chain()
+        for number in range(online.RECALL_LIMIT + 2):
+            _ = self.new_finding(f"Invented: listing lock gadget widget sprocket number {number}")
+        _ = online.propose(self.bank, self.root, "reference", Changes({"title": "Invented sprocket reference", "scope": {
+            "basis": "explicit", "subjects": ["tooling"]}}, body="# Invented\n\nThe sprocket is described here.\n"), now=self.tick())
+        query = "listing lock gadget widget sprocket"
+        crowded = online.recall(self.bank, self.root, query).data["documents"]
+        assert isinstance(crowded, list)
+        self.assertNotIn("REF-001", crowded, "the fixture's top hits are all records")
+        for full in (False, True):
+            with self.subTest(full=full):
+                found = online.recall(self.bank, self.root, query, refs=True, full=full)
+                text = "\n".join(found.lines)
+                self.assertEqual(["REF-001"], found.data["documents"])
+                self.assertIn("REF-001 [reference;", text)
+                self.assertNotIn("[finding;", text)
+        none = online.recall(self.bank, self.root, "gadget widget", refs=True)
+        self.assertEqual([], none.data["documents"])
+        self.assertIn("no hits", none.lines)
+        texts = online.recall(self.bank, self.root, "nothing ranks this", text="sprocket", refs=True).data["documents"]
+        self.assertEqual(["REF-001"], texts, "substring hits are filtered the same way")
+
+    def test_recall_names_the_ranking_and_never_an_unset_cap(self) -> None:
+        self.accepted_chain()
+        self.bank.settings["enable_reranking"] = True
+        with patch.object(online, "reranker_cap", return_value=None):
+            text = "\n".join(online.recall(self.bank, self.root, "listing lock").lines)
+        self.assertIn("ranking: reranker on although the service settings say off (Hindsight's own default candidate count); run memory service install", text)
+        self.assertNotIn("None", text)
+        with patch.object(online, "reranker_cap", return_value=10):
+            self.assertIn("ranking: reranker on, at most 10 candidates", "\n".join(online.recall(self.bank, self.root, "listing lock").lines))
+        self.bank.settings["enable_reranking"] = False
+        self.assertIn("ranking: reranker off (bank config); fused ranking only", "\n".join(online.recall(self.bank, self.root, "listing lock").lines))
+
+    def test_evidence_is_not_partitioned(self) -> None:
+        self.accepted_chain()
+        got = online.get(self.bank, self.root, "M-102")
+        self.assertFalse(any(line.startswith("partition:") for line in got.lines))
+        self.assertIn("M-102 [evidence; accepted, active (stored)]", "\n".join(online.recall(self.bank, self.root, "invented report receipt", include_evidence=True).lines))
+
+    def test_the_passage_is_trimmed_around_the_query_under_its_heading(self) -> None:
+        unit = "x " * 1000 + "the listing lock key is here " + "y " * 1000
+        excerpt, heading = online.passage("listing lock", [unit], "# Doc\n\n## Lock rules\n\n" + unit)
+        self.assertIn("listing lock", excerpt)
+        self.assertLessEqual(len(excerpt), online.PASSAGE_CAP + 2)
+        self.assertEqual("Lock rules", heading)
+        self.assertEqual("A, B (+2 more)", online.capped(["A", "B", "C", "D"], 2))
+
+    def test_area_and_history_are_bounded_unless_full(self) -> None:
+        self.accepted_chain()
+        _ = self.enterContext(patch.object(online, "AREA_BUDGET", 400))
+        compact = "\n".join(online.area(self.bank, self.root, "listing").lines)
+        self.assertIn("more record(s) not shown; memory area listing --full", compact)
+        self.assertIn("by status:", compact)
+        full = "\n".join(online.area(self.bank, self.root, "listing", full=True).lines)
+        self.assertIn("linked records outside the area (", full)
+        self.assertGreater(len(full), len(compact))
+        _ = online.revise(self.bank, self.root, "U-101", changes(status="investigating"), now=self.tick())
+        history = online.get(self.bank, self.root, "U-101", history=True)
+        self.assertEqual(2, sum(1 for line in history.lines if line.startswith("  ") and " in memory/journal/" in line))
+        self.assertGreater(len("\n".join(online.get(self.bank, self.root, "U-101", history=True, full=True).lines)), len("\n".join(history.lines)))
 
 
 class SyncAndRebuildTests(Online):
@@ -764,7 +1018,7 @@ class ClientTests(unittest.TestCase):
     def test_the_client_reads_the_service_connection_file(self) -> None:
         """One connection file (the service's, 0600 enforced), found through ``ICARUS_MEMORY_HOME``."""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": directory}):
-            path = Path(directory) / "config" / "connection.env"
+            path = Path(directory) / "config" / "connection-v2.env"
             with self.assertRaisesRegex(ServiceError, "install"):
                 _ = connection()
             settings = service.ensure_settings(service.home())
@@ -830,6 +1084,246 @@ class DurabilitySeamTests(Online):
         self.assertIn("no origin/main", durability.watermark_problems(self.top, Watermark("a" * 40, ()))[0])
 
 
+class OlderToolTests(Online):
+    """A bank a newer tool rendered: reads go on by exact GET of the journal's revision, writes and check --bank refuse."""
+
+    def newer_bank(self) -> None:
+        self.accepted_chain()
+        _ = online.get(self.bank, self.root, "F-101")
+        marker = self.doc(bank_module.MARKER)
+        self.bank.held[bank_module.MARKER] = Document(marker.id, f"memory stamp {'1' * 64} rendering {RENDERING + 1}", marker.content_hash,
+                                                      marker.tags, {"stamp": "1" * 64}, marker.entities, marker.event_date)
+        held = self.doc("F-102")
+        text = (held.text or "") + "\nrendered by a newer tool"
+        self.bank.held["F-102"] = Document(held.id, text, sha256_hex(text.encode()), held.tags, held.metadata, held.entities, held.event_date)
+
+    def test_reads_accept_the_journal_s_revision_and_say_the_tool_is_older(self) -> None:
+        self.newer_bank()
+        got = online.get(self.bank, self.root, "F-102")
+        self.assertEqual((0, True, []), (got.status, got.data["verified"], got.data["problems"]))
+        self.assertRegex(got.lines[-1], r"^notice: this tool renders records at version [0-9]+, older than the bank's [0-9]+: .*merge main")
+        self.assertIn("rendered by a newer tool", self.doc("F-102").text or "", "a read never rewrites the newer document")
+        recalled = online.recall(self.bank, self.root, "any listing locked")
+        self.assertNotIn("(differs from the journal)", "\n".join(recalled.lines))
+        self.assertTrue(recalled.lines[-1].startswith("notice: this tool renders records"))
+        self.assertIn("notice: this tool renders records", "\n".join(online.status(self.bank, self.root).lines))
+        tampered = self.doc("F-101")
+        self.bank.held["F-101"] = Document(tampered.id, "tampered", sha256_hex(b"tampered"), tampered.tags, {**tampered.metadata, "rev": "0" * 64},
+                                           tampered.entities, tampered.event_date)
+        self.assertEqual(1, online.get(self.bank, self.root, "F-101").status, "other metadata is still a problem")
+
+    def test_writes_sync_and_check_bank_refuse(self) -> None:
+        self.newer_bank()
+        def no_floor(_path: Path) -> None:
+            return None
+
+        _ = self.enterContext(patch.object(online, "require_floor", no_floor))
+        for name, command in (("propose", lambda: self.new_finding("Invented: written by an older tool")),
+                              ("sync", lambda: online.sync(self.bank, self.root)),
+                              ("rebuild", lambda: online.rebuild(self.bank, self.root)),
+                              ("check --bank", lambda: online.check_bank(self.bank, self.root))):
+            with self.subTest(name), self.assertRaisesRegex(bank_module.OlderTool, "merge main"):
+                _ = command()
+        self.assertNotIn("F-107", self.bank.held)
+        self.assertEqual((), tuple(path for path in read_tree(self.root) if "F-107" in path.path), "nothing was written")
+
+
+class OneDerivedStatusTests(Online):
+    """Every surface reports the derived status ``State.status_at`` gives the revision it shows, for each history
+    of a migrated evidence row retired with ``superseded_by`` M-202 (migration status ``retired``)."""
+
+    @staticmethod
+    def receipt(status: str, notes: tuple[str, ...] = ()) -> Record:
+        data: dict[str, JSON] = {**evidence("M-201", "work/case/a.txt", status=status, area="listing", label="Invented gadget receipt"),
+                                 "legacy": {"path": "evidence/x.jsonl", "cells": {"row": "{}"}, "superseded_by": ["M-202"]}}
+        if notes:
+            data["notes"] = list[JSON](notes)
+        return Record.from_json(data)
+
+    def history(self, name: str) -> str:
+        """Write the history ``name``; the derived status of the revision this checkout reads (its view head)."""
+        root = Revision.of(self.receipt("retired"))
+        newer = Revision.of(Record.from_json(evidence("M-202", "work/case/b.txt", area="listing")))
+        active = Revision.of(self.receipt("active", ("Invented: back",)), [root.rev])
+        again = Revision.of(self.receipt("retired", ("Invented: back", "Invented: done")), [active.rev])
+        noted = Revision.of(self.receipt("retired", ("Invented: note",)), [root.rev])
+        accepted, local, expected = {
+            "first": ([root, newer], [], "superseded"),
+            "notes": ([root, newer, noted], [], "superseded"),
+            "override": ([root, newer, active], [], "active"),
+            "restore": ([root, newer, active, again], [], "retired"),
+            "override here": ([root, newer], [active], "active"),
+            "restore here": ([root, newer], [active, again], "retired"),
+            "fork": ([root, newer, active, noted], [], ""),
+            "reconciled": ([root, newer, active, noted, Revision.of(self.receipt("retired", ("Invented: back", "Invented: note")),
+                                                                    [active.rev, noted.rev])], [], "retired"),
+        }[name]
+        for number, revision in enumerate(accepted):
+            _ = write_change_set(self.root, CREATED.replace(second=number), [revision])
+        commit_all(self.root)
+        for number, revision in enumerate(local, start=30):
+            _ = write_change_set(self.root, CREATED.replace(second=number), [revision])
+        return expected
+
+    def offline(self, identifier: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(0, cli.main(["get", identifier, "--offline"]))
+        return output.getvalue().split("\n")
+
+    def test_every_surface_reports_the_same_derived_status(self) -> None:
+        for name in ("first", "notes", "override", "restore", "override here", "restore here", "fork", "reconciled"):
+            with self.subTest(name):
+                self.setUp()
+                expected = self.history(name)
+                universe = gather(self.root)
+                view = universe.view.entries["M-201"]
+                head = view.heads[0]
+                shown = universe.settled.status_at(view, head)
+                if expected:
+                    self.assertEqual(expected, shown)
+                self.assertEqual(shown, universe.state.status("M-201"), "replay of the union")
+                documents = {item.document_id: item for item in desired(universe).values() if item.record_id == "M-201"}
+                holding = next(item for item in documents.values() if item.revision.rev == head)
+                self.assertEqual(shown, holding.status, "the bank document of that revision")
+                for lines in (online.get(self.bank, self.root, "M-201").lines, self.offline("M-201")):
+                    if holding.document_id == "M-201":
+                        self.assertTrue(any(line.startswith(f"status: {shown}") for line in lines), lines)
+                    else:
+                        self.assertIn(f"status {shown}", next(line for line in lines if line.startswith(f"pending revision: {holding.document_id}")))
+                recalled = "\n".join(online.recall(self.bank, self.root, "invented gadget receipt", include_evidence=True).lines)
+                # Recall shows the M-201 document (retired ones under their successor), never a pending revision.
+                self.assertRegex(recalled, rf"M-201 \[(evidence; )?{documents['M-201'].state}, {documents['M-201'].status} \(")
+                listing = online.area(self.bank, self.root, "listing").data["statuses"]
+                assert isinstance(listing, dict)
+                self.assertIn("M-201", [row.get("id") for row in cast(list[dict[str, JSON]], listing[shown])])
+                counts = online.status(self.bank, self.root).data["by_type"]
+                assert isinstance(counts, dict)
+                expected_counts = {"active": 2} if shown == "active" else {"active": 1, shown: 1}
+                self.assertEqual(expected_counts, counts["evidence"])
+
+
+def legacy_of(status_cell: str, *, implied: str | None = None, superseded_by: tuple[str, ...] = ()) -> dict[str, JSON]:
+    legacy: dict[str, JSON] = {"path": "docs/ledgers/invented.md", "cells": {"status": status_cell}}
+    if implied is not None:
+        legacy["implied_status"] = implied
+    if superseded_by:
+        legacy["superseded_by"] = list(superseded_by)
+    return legacy
+
+
+# How each status reads in get, recall and area: the derived status, then where it comes from.
+WORDING: tuple[tuple[str, str, str], ...] = (
+    # (ID, how the status arises, the exact wording)
+    ("F-301", "finding, stored", "active (stored)"),
+    ("F-302", "finding, legacy cell superseded-by F-301", "superseded (legacy status)"),
+    ("F-303", "finding, legacy cell retired: receipt", "retired (legacy status)"),
+    ("F-304", "finding, accepted F-305 states supersedes", "superseded (link from F-305)"),
+    ("F-306", "finding, F-307 proposes supersedes in this worktree", "active (stored; proposed link from F-307 in this worktree)"),
+    ("F-307", "finding, proposed in this worktree", "active (stored)"),
+    ("F-308", "finding, legacy retired, then a revision stores active", "active (stored; legacy status withdrawn)"),
+    ("F-309", "finding, fork of two heads", "active (stored)"),
+    ("U-301", "unknown, stored", "open (stored)"),
+    ("U-302", "unknown, legacy cell resolved", "resolved (legacy status)"),
+    ("U-303", "unknown, accepted F-310 states resolves", "resolved (link from F-310)"),
+    ("U-304", "unknown, legacy resolved, then a revision stores open", "open (stored; legacy status withdrawn)"),
+    ("M-301", "evidence, stored", "active (stored)"),
+    ("M-302", "evidence, legacy row superseded_by M-301", "superseded (legacy status)"),
+    ("M-303", "evidence, stored retired", "retired (stored)"),
+)
+LABEL = r"\[(?:[a-z]+; )?[a-z]+, ([a-z]+ \([^()]*\))"
+
+
+class StatusWordingTests(Online):
+    """One wording of every status origin, identical in online and offline get, recall and area (``WORDING``)."""
+
+    def histories(self) -> None:
+        def migrated(data: dict[str, JSON], status: str, legacy: dict[str, JSON]) -> Record:
+            return Record.from_json({**data, "status": status, "legacy": legacy})
+
+        def again(record: Record, prev: Revision, **changes: JSON) -> Revision:
+            return Revision.of(Record.from_json({**record.to_json(), **changes}), [prev.rev])
+
+        f303 = migrated(finding("F-303", "Invented gadget three"), "legacy:retired: receipt", legacy_of("retired: receipt", implied="retired"))
+        f308 = migrated(finding("F-308", "Invented gadget eight"), "legacy:retired: old", legacy_of("retired: old", implied="retired"))
+        f309 = Record.from_json(finding("F-309", "Invented gadget nine"))
+        u304 = migrated(unknown("U-304", "Invented gadget question four?"), "legacy:resolved", legacy_of("resolved", implied="resolved"))
+        first = {record.id: Revision.of(record) for record in (f308, f309, u304)}
+        accepted = [
+            Revision.of(Record.from_json(finding("F-301", "Invented gadget one"))),
+            Revision.of(migrated(finding("F-302", "Invented gadget two"), "legacy:superseded-by F-301",
+                                 legacy_of("superseded-by F-301", implied="superseded", superseded_by=("F-301",)))),
+            Revision.of(f303),
+            Revision.of(Record.from_json(finding("F-304", "Invented gadget four"))),
+            Revision.of(Record.from_json(finding("F-305", "Invented gadget five", supersedes=["F-304"]))),
+            Revision.of(Record.from_json(finding("F-306", "Invented gadget six"))),
+            *first.values(),
+            again(f308, first["F-308"], status="active"),
+            again(f309, first["F-309"], notes=["Invented: one side"]),
+            again(f309, first["F-309"], notes=["Invented: other side"]),
+            Revision.of(Record.from_json(finding("F-310", "Invented gadget ten", resolves=["U-303"]))),
+            Revision.of(Record.from_json(unknown("U-301", "Invented gadget question one?"))),
+            Revision.of(migrated(unknown("U-302", "Invented gadget question two?"), "legacy:resolved", legacy_of("resolved", implied="resolved"))),
+            Revision.of(Record.from_json(unknown("U-303", "Invented gadget question three?"))),
+            again(u304, first["U-304"], status="open"),
+            Revision.of(Record.from_json(evidence("M-301", "work/case/one.txt", area="listing", label="Invented gadget receipt one"))),
+            Revision.of(migrated(evidence("M-302", "work/case/two.txt", area="listing", label="Invented gadget receipt two"), "retired",
+                                 {"path": "evidence/x.jsonl", "cells": {"row": "{}"}, "superseded_by": ["M-301"]})),
+            Revision.of(Record.from_json(evidence("M-303", "work/case/three.txt", status="retired", area="listing", label="Invented gadget receipt three"))),
+        ]
+        for number, revision in enumerate(accepted):
+            _ = write_change_set(self.root, CREATED.replace(second=number), [revision])
+        commit_all(self.root)
+        _ = write_change_set(self.root, CREATED.replace(second=50), [Revision.of(Record.from_json(finding("F-307", "Invented gadget seven", supersedes=["F-306"])))])
+
+    def offline(self, identifier: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(0, cli.main(["get", identifier, "--offline"]))
+        return output.getvalue().split("\n")
+
+    def test_every_status_origin_reads_the_same_in_get_recall_and_area(self) -> None:
+        self.histories()
+        recalled = "\n".join(online.recall(self.bank, self.root, "invented gadget question receipt", include_evidence=True, limit=50, full=True).lines)
+        area = "\n".join(online.area(self.bank, self.root, "listing", full=True).lines)
+        for identifier, origin, wording in WORDING:
+            with self.subTest(identifier=identifier, origin=origin):
+                for lines in (online.get(self.bank, self.root, identifier).lines, self.offline(identifier)):
+                    self.assertIn(f"status: {wording}", lines)
+                for name, text in (("recall", recalled), ("area", area)):
+                    found = re.findall(rf"(?<![\w-]){identifier} {LABEL}", text)
+                    self.assertTrue(found, f"{identifier} not in {name}")
+                    self.assertEqual({wording}, set(found), name)
+        self.assertIn("state: conflict", online.get(self.bank, self.root, "F-309").lines)
+        self.assertIn("superseded by: F-301 (terminal: F-301)", online.get(self.bank, self.root, "F-302").lines)
+
+
+class TerminalTests(Online):
+    def test_terminal_successors_follow_the_superseders_shown(self) -> None:
+        self.accepted_chain()
+        old = Record.from_json({**finding("F-401", "Invented proposed old"), "status": "legacy:superseded-by F-402",
+                                "legacy": legacy_of("superseded-by F-402", implied="superseded", superseded_by=("F-402",))})
+        _ = write_change_set(self.root, CREATED.replace(second=40), [Revision.of(old), Revision.of(Record.from_json(finding("F-402", "Invented proposed new")))])
+        got = online.get(self.bank, self.root, "F-401")
+        self.assertIn("superseded by: F-402 (terminal: F-402)", got.lines)
+        self.assertEqual(["F-402"], got.data["successors"])
+        self.assertFalse(any("(terminal: )" in line for line in got.lines))
+
+
+class NamedDocumentTests(Online):
+    def test_get_routes_a_document_a_legacy_cell_names_to_the_ref_holding_it(self) -> None:
+        body = "# Invented spec\n"
+        ref = Record.from_json({"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                "scope": {"basis": "explicit", "subjects": ["tooling"]}, "body_sha256": sha256_hex(body.encode()),
+                                "legacy": {"path": "docs/specs/net/invented.md", "cells": {"document": "docs/specs/net/invented.md"}}}, body)
+        row = Record.from_json({**finding("F-501", "Invented row naming a spec"), "legacy": {
+            "path": "docs/ledgers/findings/invented.md", "cells": {"evidence": "spec; [spec](../../specs/net/invented.md)", "status": "active"}}})
+        _ = write_change_set(self.root, CREATED, [Revision.of(ref), Revision.of(row), Revision.of(Record.from_json(finding("F-502", "Invented plain row")))])
+        commit_all(self.root)
+        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", online.get(self.bank, self.root, "F-501").lines)
+        self.assertFalse(any(line.startswith("content:") for line in online.get(self.bank, self.root, "F-502").lines))
+
+
 class StampTests(Online):
     """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
 
@@ -887,8 +1381,22 @@ class StampTests(Online):
         self.assertEqual(["F-104: not applied (missing or differing content)", "F-104: 1 memory unit(s); expected one holding the document text"],
                          checked.data_problems())
         self.assertNotIn(bank_module.MARKER, "\n".join(checked.lines))
-        self.assertEqual(0, online.get(self.bank, self.root, "F-104").status, "the trusted read heals what it verifies")
+        healed = online.get(self.bank, self.root, "F-104")
+        self.assertEqual(0, healed.status, "the trusted read heals what it verifies")
+        self.assertEqual(["F-104: text differs from the journal"], healed.data["repaired"])
+        self.assertIn("repaired: F-104: text differs from the journal; rewritten from the journal", "\n".join(healed.lines))
         self.assertEqual(0, online.check_bank(self.bank, self.root).status)
+        self.assertEqual([], online.get(self.bank, self.root, "F-104").data["repaired"], "nothing to repair the second time")
+        self.bank.held["F-104"] = Document("F-104", "tampered", sha256_hex(b"tampered"), held.tags, held.metadata, (), None)
+        hit = Hit("F-104", "tampered", held.tags, held.metadata, 1.0)
+
+        def only_the_tampered_hit(*_args: object, **_kwargs: object) -> list[Hit]:
+            return [hit]
+
+        _ = self.enterContext(patch.object(self.bank, "recall", only_the_tampered_hit))
+        recalled = online.recall(self.bank, self.root, "invented")
+        self.assertEqual(["F-104"], recalled.data["repaired"])
+        self.assertIn("repaired: F-104: differed from the journal", "\n".join(recalled.lines))
 
 
 class ParseCacheTests(unittest.TestCase):

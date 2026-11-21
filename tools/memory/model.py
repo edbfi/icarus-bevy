@@ -18,7 +18,8 @@ Invariants of every parsed ``Record``:
 - No ``null``, no ``false`` flag and no empty list is ever stored: absent means omitted.
 - Link, scope and gap lists are sorted (``id_key``) and unique; ``members``, ``notes``,
   ``verified_on`` and other text lists keep their order and are unique.
-- New records only: a derived or inferred finding names ``refs``; a decision finding quotes
+- New records only: a finding may state its ``limits`` (free text; a migrated finding's limits are its
+  verbatim legacy cell, so it never has the field); a derived or inferred finding names ``refs``; a decision finding quotes
   ``instruction`` with ``instruction_date`` and ``instruction_source`` (no other finding may); an
   explicit ``native`` scope names its ``commit``; ``run`` evidence carries ``run``.
 
@@ -115,7 +116,7 @@ COMMON: Final[dict[str, Spec]] = {"date": DATE, "area": TEXT}
 TYPES: Final[dict[str, TypeSpec]] = {
     "finding": TypeSpec("F", ("active", "retired"), "claim", {
         **COMMON, "claim": TEXT, "kind": enum(*FINDING_KINDS), "confidence": enum(*CONFIDENCES),
-        "standing": enum(*STANDINGS), "negative": Spec("flag"),
+        "standing": enum(*STANDINGS), "negative": Spec("flag"), "limits": TEXT,
         "instruction": TEXT, "instruction_date": DATE, "instruction_source": TEXT,
     }, ("claim", "kind", "confidence", "standing", "scope", "area")),
     "unknown": TypeSpec("U", ("open", "investigating", "blocked", "contradicted"), "question", {
@@ -383,6 +384,24 @@ class Record:
         return result
 
 
+def regap(data: dict[str, JSON], name: str) -> None:
+    """On a migrated record's JSON, after a revision filled or cleared the field ``name``: list it in ``gaps``
+    exactly when it is absent and required, so the record validates."""
+    if "legacy" not in data:
+        return
+    held = data.get("gaps")
+    gaps = {item for item in held if isinstance(item, str)} if isinstance(held, list) else set[str]()
+    kind = data.get("type")
+    if name in data or not isinstance(kind, str) or kind not in TYPES or name not in TYPES[kind].required:
+        gaps.discard(name)
+    else:
+        gaps.add(name)
+    if gaps:
+        data["gaps"] = list[JSON](sorted(gaps, key=id_key))
+    else:
+        _ = data.pop("gaps", None)
+
+
 def _dump(value: Value) -> JSON:
     if isinstance(value, tuple):
         return list(value)
@@ -631,6 +650,8 @@ def _validate(reader: _Reader, record: Record) -> None:
                 reader.fail(name, "only a decision quotes an instruction")
             if decision and not migrated and name not in record.fields:
                 reader.fail(name, "a decision quotes the owner's instruction verbatim with its date and where it was given")
+        if migrated and "limits" in record.fields:
+            reader.fail("limits", "a migrated finding keeps its limits in its legacy cell")
         if not migrated and record.text("kind") in ("derived", "inferred") and not record.links.refs:
             reader.fail("refs", "a derived or inferred finding names its sources")
     if record.type == "evidence":

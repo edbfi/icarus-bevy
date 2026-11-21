@@ -7,10 +7,18 @@ else reads the key or knows where state lives.
 
 State lives outside every checkout. ``home()`` gives three directories, each owner-only (0700):
 
-- ``config``: ``$XDG_CONFIG_HOME/icarus-memory`` with ``connection.env``, the ONE file holding the
+- ``config``: ``$XDG_CONFIG_HOME/icarus-memory`` with ``connection-v2.env``, the ONE file holding the
   service's API key, its loopback port and the pg0 database URL (with its password). It is 0600, in
   systemd ``EnvironmentFile`` syntax, read by the unit and by ``connection()``; any group or world
   permission makes it unreadable to the tool.
+
+  The name carries the bank rendering guard (``bank.OlderTool``): a tool released before the guard reads
+  ``connection.env`` and would re-render every document in its older rendering. ``install`` therefore
+  moves an old ``connection.env`` to the new name with a NEW API key (``rotate_connection``; ports,
+  database password and reranker setting kept) and restarts the unit, and leaves a tombstone named
+  ``connection.env`` (on a fresh host too) that such a tool cannot parse: its every command, ``service
+  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything, and
+  a process still holding the old key is refused by the service. A second ``install`` rotates nothing.
 - ``data``: ``$XDG_DATA_HOME/icarus-memory`` with ``pg0/`` (``PG0_HOME``) and the service's private
   ``home/`` and ``tmp/``.
 - ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/`` and ``memory.lock``, the host lock every
@@ -51,10 +59,11 @@ import sys
 import time
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast
 
+from tools.memory.gitio import GitError, git
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 
 BANK = "icarus"
@@ -63,7 +72,12 @@ FLOOR = 30 * 1024**3
 UNIT = "icarus-memory.service"
 BACKUP_UNIT = "icarus-memory-backup.service"
 BACKUP_TIMER = "icarus-memory-backup.timer"
-CONNECTION_FILE = "connection.env"
+CONNECTION_FILE = "connection-v2.env"
+# The connection file of tools without the bank rendering guard (released before it); never read, only retired to
+# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse, saying what to do.
+LEGACY_CONNECTION_FILE = "connection.env"
+TOMBSTONE = (b"retired: this checkout's memory tool is older than the bank. Merge main, then run"
+             + b" python3 -m tools.memory service install from it.\n")
 HOME_VARIABLE = "ICARUS_MEMORY_HOME"
 READY_SECONDS = 300.0
 LOCK_FILE = "memory.lock"
@@ -74,9 +88,17 @@ EMBEDDING = "models--intfloat--multilingual-e5-small/snapshots/614241f622f53c4ee
 RERANKER = "models--hindsight-ai--hs-rerank-1/snapshots/927f5be31280298a51cf29af8a29cb111ed812c5"
 PG_VERSION = "18.1.0"
 
-# Reranker candidates per recall. Hindsight 1.2.3's recall request has no per-request cap (its ``rerank``
-# options are prune and dedup only), so this is instance-wide, set in the unit's environment below.
-RERANKER_CANDIDATES = 50
+# The ``ICARUS_MEMORY_RERANKER`` setting: ``off`` (the default: fused ranking only) or a cap on the candidates the
+# cross-encoder scores per recall. Hindsight 1.2.3's recall request has no per-request cap (its ``rerank`` options
+# are prune and dedup only), so it is instance-wide: the connection file carries the setting and the Hindsight
+# variables it implies. On the real corpus (3,093 records, 4 cores) reranking cost recall p50 12 s at cap 50 and
+# 1.7 s at cap 10 with 4 threads against 0.37 s off, and answered the held-out questions no better.
+RERANKER_DEFAULT = "off"
+RERANKER_THREADS = "4"
+RERANKER_VARIABLE = "ICARUS_MEMORY_RERANKER"
+# Hindsight's own reranking switch. Its 1.2.3 default is on (``DEFAULT_ENABLE_RERANKING = True``), so "off" is
+# always written, never assumed.
+RERANKING_VARIABLE = "HINDSIGHT_API_ENABLE_RERANKING"
 # Every Hindsight setting the instance depends on; values are checked against config.py of 1.2.3.
 SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_LLM_PROVIDER": "none",
@@ -90,13 +112,14 @@ SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_ENABLE_BANK_CONFIG_API": "false",
     "HINDSIGHT_API_MCP_ENABLED": "false",
     "HINDSIGHT_API_LLM_TRACE_ENABLED": "false",
-    "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": str(RERANKER_CANDIDATES),
     "HINDSIGHT_API_WORKER_ID": "icarus-memory",
     "HINDSIGHT_API_TENANT_EXTENSION": "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension",
     "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
     "HINDSIGHT_API_EMBEDDINGS_ONNX_DEVICE": "cpu",
     "HINDSIGHT_API_RERANKER_PROVIDER": "onnx",
-    "HINDSIGHT_API_RERANKER_ONNX_THREADS": "2",
+    # The floor: the connection file overrides it (``EnvironmentFile=`` wins over ``Environment=``, systemd.exec(5)),
+    # so only a file that turns reranking on turns it on.
+    RERANKING_VARIABLE: "false",
     "HINDSIGHT_API_LOG_LEVEL": "WARNING",
     "HF_HUB_OFFLINE": "1",
     "HF_HUB_DISABLE_TELEMETRY": "1",
@@ -211,6 +234,7 @@ class Settings:
     pg_port: int
     pg_password: str = field(repr=False)
     bank: str
+    reranker: str = RERANKER_DEFAULT
 
     @property
     def url(self) -> str:
@@ -227,7 +251,31 @@ class Settings:
             "HINDSIGHT_API_TENANT_API_KEY": self.key,
             "HINDSIGHT_API_DATABASE_URL": f"pg0://hindsight:{self.pg_password}@hindsight:{self.pg_port}?{DATABASE_QUERY}",
             "ICARUS_MEMORY_BANK": self.bank,
+            **reranker_environment(self.reranker),
         }
+
+    @property
+    def reranker_cap(self) -> int | None:
+        """Candidates the reranker scores per recall; ``None`` when reranking is off."""
+        return None if self.reranker == "off" else int(self.reranker)
+
+
+def reranker_setting(value: str) -> str:
+    """``off`` or a cap from 1 to 500, normalised; anything else is a ``ServiceError``."""
+    if value == "off":
+        return value
+    if not (value.isascii() and value.isdigit()) or not 1 <= int(value) <= 500:
+        raise ServiceError(f"{RERANKER_VARIABLE} must be off or a candidate cap from 1 to 500, not {value!r}")
+    return str(int(value))
+
+
+def reranker_environment(setting: str) -> dict[str, str]:
+    """The setting and the Hindsight variables it implies (the unit's EnvironmentFile passes them): reranking on
+    also takes the cap and 4 ONNX threads (cap 10: p50 2.5 s on 2 threads, 1.7 s on 4)."""
+    if setting == "off":
+        return {RERANKER_VARIABLE: setting, RERANKING_VARIABLE: "false"}
+    return {RERANKER_VARIABLE: setting, RERANKING_VARIABLE: "true", "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": setting,
+            "HINDSIGHT_API_RERANKER_ONNX_THREADS": RERANKER_THREADS}
 
 
 def render_settings(settings: Settings) -> str:
@@ -236,8 +284,8 @@ def render_settings(settings: Settings) -> str:
     return "\n".join(lines) + "\n"
 
 
-def parse_settings(text: str) -> Settings:
-    """Strict parse of the connection file; only the exact generated shape is accepted."""
+def file_variables(text: str) -> dict[str, str]:
+    """The variables of a connection file as written (``NAME=value`` lines; comments and blank lines skipped)."""
     values: dict[str, str] = {}
     for number, line in enumerate(text.splitlines(), 1):
         if not line or line.startswith("#"):
@@ -246,9 +294,19 @@ def parse_settings(text: str) -> Settings:
         if not separator or name in values:
             raise ServiceError(f"{CONNECTION_FILE}:{number}: malformed or repeated line")
         values[name] = value
+    return values
+
+
+def parse_settings(text: str) -> Settings:
+    """Strict parse of the connection file; only the exact generated shape is accepted."""
+    values = file_variables(text)
     expected = ("HINDSIGHT_API_HOST", "HINDSIGHT_API_PORT", "HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_DATABASE_URL", "ICARUS_MEMORY_BANK")
-    if sorted(values) != sorted(expected):
-        raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)}")
+    # A file written before the reranker setting existed holds only the five; it means the default, which
+    # ``install`` then writes out (Hindsight's own default is on).
+    reranker = reranker_setting(values.get(RERANKER_VARIABLE, RERANKER_DEFAULT))
+    implied = reranker_environment(reranker) if RERANKER_VARIABLE in values else {}
+    if sorted(values) != sorted((*expected, *implied)) or any(values[name] != value for name, value in implied.items()):
+        raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
     database = _DATABASE_URL.fullmatch(values["HINDSIGHT_API_DATABASE_URL"])
     port = values["HINDSIGHT_API_PORT"]
     if values["HINDSIGHT_API_HOST"] != "127.0.0.1" or not port.isdigit() or not 1024 <= int(port) <= 65535:
@@ -262,12 +320,12 @@ def parse_settings(text: str) -> Settings:
         raise ServiceError(f"{CONNECTION_FILE}: the database port must be distinct and between 1024 and 65535")
     if values["ICARUS_MEMORY_BANK"] != BANK:
         raise ServiceError(f"{CONNECTION_FILE}: the bank must be {BANK}")
-    return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK)
+    return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK, reranker)
 
 
-def read_settings(where: Home) -> Settings:
-    """The connection file, refused unless it is a regular file owned by this user with no group or world bits."""
-    path = where.connection_file
+def read_settings(where: Home, path: Path | None = None) -> Settings:
+    """The connection file (or ``path``), refused unless it is a regular file owned by this user with no group or world bits."""
+    path = where.connection_file if path is None else path
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as error:
@@ -317,15 +375,68 @@ def write_private(path: Path, data: bytes) -> None:
         os.close(directory)
 
 
-def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT) -> Settings:
-    """The existing connection file, or a new one with a fresh key and database password."""
+def tombstoned(path: Path) -> bool:
+    """Whether ``path`` is exactly ``TOMBSTONE``: a regular file of this user's, read without following a link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        return stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and handle.read(len(TOMBSTONE) + 1) == TOMBSTONE
+
+
+def rotate_connection(where: Home) -> bool:
+    """Retire ``connection.env`` (tools without the rendering guard read it) for ``CONNECTION_FILE`` with a new API
+    key, keeping ports, database password and reranker setting, and leave ``TOMBSTONE`` in its place; True when it
+    rotated. The tombstone is not a settings file, so such a tool's every command, its ``service install``
+    included, stops at "connection.env:1: malformed or repeated line" before writing anything, and the line says
+    why. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
+    never the one to create ``connection.env``. An old file beside the new one is tombstoned once it reads as
+    settings; a file that is neither is refused (``read_settings``), never overwritten."""
+    legacy = where.config / LEGACY_CONNECTION_FILE
+    if tombstoned(legacy):
+        return False
+    rotated = False
+    if legacy.exists() or legacy.is_symlink():
+        old = read_settings(where, legacy)
+        if not where.connection_file.exists():
+            write_private(where.connection_file, render_settings(replace(old, key=secrets.token_hex(32))).encode())
+            rotated = True
+    write_private(legacy, TOMBSTONE)
+    return rotated
+
+
+def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT, reranker: str = RERANKER_DEFAULT) -> Settings:
+    """The existing connection file, or a new one with a fresh key and database password and the ``reranker``
+    setting (the drill's scratch instance passes the live one, which its comparison checks against)."""
     for directory in (where.config, where.data, where.state, where.backups):
         make_directory(directory)
     if where.connection_file.exists():
         return read_settings(where)
-    settings = Settings(port, secrets.token_hex(32), pg_port, secrets.token_hex(32), BANK)
+    settings = Settings(port, secrets.token_hex(32), pg_port, secrets.token_hex(32), BANK, reranker_setting(reranker))
     write_private(where.connection_file, render_settings(settings).encode())
     return read_settings(where)
+
+
+def set_reranker(where: Home, value: str) -> tuple[Settings, bool]:
+    """Write ``value`` as the reranker setting (key, ports and password kept) in the generated shape, so a file
+    that predates the setting gains its explicit variables; True when the file changed."""
+    current = read_settings(where)
+    wanted = replace(current, reranker=reranker_setting(value))
+    text = render_settings(wanted)
+    if where.connection_file.read_text(encoding="utf-8") == text:
+        return current, False
+    write_private(where.connection_file, text.encode())
+    return read_settings(where), True
+
+
+def reranker_cap(where: Home | None = None) -> int | None:
+    """The configured candidate cap (``None``: reranking off); the default when the file is unreadable."""
+    try:
+        return read_settings(home() if where is None else where).reranker_cap
+    except ServiceError:
+        return None
 
 
 def free_bytes(path: Path) -> int:
@@ -480,10 +591,11 @@ TimeoutStopSec=60
 Restart=on-failure
 RestartSec=5
 CPUQuota=400%
-# Measured at 3,500 records: API steady 2.05 GiB after recalls (1.6 GiB idle), PostgreSQL 0.16 GiB;
-# a rebuild's bulk retain peaks near 2.75 + 0.6 GiB. Reclaim above 3.5 GiB; never more than 4.5 GiB.
-MemoryHigh=3584M
-MemoryMax=4608M
+# Measured on the real corpus (3,093 records): a full rebuild peaks at API 2,966 + PostgreSQL 525 MiB (3,491 MiB);
+# recall with reranking off at 1,776 MiB; a session with a rebuild and cap-50 reranking at 3,515 + 531 MiB (4,046 MiB).
+# Reclaim only above the rebuild peak plus a third; never more than 6 GiB.
+MemoryHigh=4608M
+MemoryMax=6144M
 Nice=10
 LimitCORE=0
 # Raw output can carry the database URI; it is discarded.
@@ -689,11 +801,38 @@ def health(settings: Settings, runtime: Assets) -> list[Check]:
         checks.append(Check("authenticated", True, f"banks: {', '.join(str(bank.get('bank_id')) for bank in banks) or 'none'}"))
         problems = feature_problems(api.get("/version"))
         checks.append(Check("features", not problems, "; ".join(problems) or f"{API_VERSION}; " + ", ".join(f"{name}={value}".lower() for name, value in EXPECTED_FEATURES.items())))
-        problems = bank_config_problems(api.get(f"/v1/default/banks/{settings.bank}/config"))
+        config = api.get(f"/v1/default/banks/{settings.bank}/config")
+        effective = config.get("config")
+        reranking = cast(dict[object, object], effective).get("enable_reranking") if isinstance(effective, dict) else None
+        checks.append(reranker_check(settings, reranking))
+        problems = bank_config_problems(config)
         checks.append(Check("bank config", not problems, "; ".join(problems) or f"{settings.bank}: no overrides; " + ", ".join(f"{name}={value}" for name, value in EXPECTED_BANK_CONFIG.items())))
     except ServiceError as error:
         checks.append(Check("authenticated", False, str(error)))
     return checks
+
+
+def reranker_check(settings: Settings, reranking: object) -> Check:
+    """Whether the service's effective reranking (the bank config's ``enable_reranking``) is what the settings say."""
+    wanted = settings.reranker_cap is not None
+    detail = f"{RERANKER_VARIABLE}={settings.reranker}; bank enable_reranking={reranking}" + (f", at most {settings.reranker_cap} candidates" if wanted else "")
+    if reranking is not wanted:
+        effective = "on" if reranking is True else "off" if reranking is False else f"unreported ({reranking!r})"
+        detail = f"reranking is {effective} in the service but the settings say {'on' if wanted else 'off'}; run memory service install ({detail})"
+    return Check("reranker", reranking is wanted, detail)
+
+
+def settings_check(where: Home) -> Check:
+    """Whether the connection file is in the generated shape; a file written before the reranker setting existed
+    leaves Hindsight's own default (reranking on) to the service until ``install`` rewrites it."""
+    try:
+        text = where.connection_file.read_text(encoding="utf-8")
+        settings = parse_settings(text)
+    except (OSError, UnicodeDecodeError, ServiceError) as error:
+        return Check("settings", False, str(error))
+    if text != render_settings(settings):
+        return Check("settings", False, f"{CONNECTION_FILE} predates the reranker setting (no {RERANKING_VARIABLE}); run memory service install")
+    return Check("settings", True, f"{RERANKER_VARIABLE}={settings.reranker}, {RERANKING_VARIABLE}={settings.environment()[RERANKING_VARIABLE]}")
 
 
 def wait_ready(api: Api, *, alive: Callable[[], bool], seconds: float = READY_SECONDS) -> float:
@@ -745,6 +884,7 @@ def status_lines(where: Home, settings: Settings, runtime: Assets, checkout: Pat
     expected = unit_files(where, runtime, primary_checkout_of(checkout), installed_interpreter(backup_unit) or backup_interpreter())
     stale = [name for name, path in installed.items() if not path.is_file() or path.read_text(encoding="utf-8") != expected[name]]
     checks.append(Check("unit files", not stale, f"stale or missing: {', '.join(stale)}" if stale else "current"))
+    checks.append(settings_check(where))
     active = unit_property("ActiveState")
     checks.append(Check("unit", active == "active", f"{UNIT} {active}, restarts {unit_property('NRestarts') or '?'}"))
     timer = systemctl("is-active", BACKUP_TIMER, check=False).stdout.strip()
@@ -782,16 +922,23 @@ def backup_interpreter(environ: Mapping[str, str] | None = None) -> str:
     return sys.executable
 
 
-def install(where: Home, runtime: Assets, checkout: Path) -> float:
-    """Write the connection file (once) and the units, enable them, start the service; returns seconds to ready."""
+def install(where: Home, runtime: Assets, checkout: Path, reranker: str | None = None) -> float:
+    """Write the connection file (key, ports and password once; an old ``connection.env`` is rotated to it with a
+    new key, ``rotate_connection``) and the units, enable them, start the service; returns seconds to ready. The connection file is rewritten in the generated shape every time, with
+    ``reranker`` (``off`` or a cap) or else the setting it holds (``off`` when it predates the setting), so
+    the service's reranking is always set explicitly; any change restarts the service."""
+    wanted = None if reranker is None else reranker_setting(reranker)
     if where.scratch:
         raise ServiceError(f"{HOME_VARIABLE} is set: a scratch home is never managed by systemd")
-    settings = ensure_settings(where)
+    for directory in (where.config, where.data, where.state, where.backups):
+        make_directory(directory)
+    rotated = rotate_connection(where)
+    settings, changed = set_reranker(where, ensure_settings(where).reranker if wanted is None else wanted)
+    changed = changed or rotated
     prepare_runtime_directories(where)
     make_directory(where.pg0_home)
     directory = unit_directory()
     directory.mkdir(parents=True, exist_ok=True)
-    changed = False
     for name, text in unit_files(where, runtime, primary_checkout_of(checkout), backup_interpreter()).items():
         path = directory / name
         if not path.is_file() or path.read_text(encoding="utf-8") != text:
@@ -823,10 +970,10 @@ def uninstall() -> list[Path]:
 
 
 def repository_root() -> Path:
-    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise ServiceError("run the memory tool inside a checkout")
-    return Path(result.stdout.strip())
+    try:
+        return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
+    except GitError as error:
+        raise ServiceError("run the memory tool inside a checkout") from error
 
 
 def checked_assets(root: Path) -> Assets:
@@ -857,7 +1004,8 @@ def run_service(options: argparse.Namespace) -> int:
         root = repository_root()
         runtime = checked_assets(root)
         if action == "install":
-            seconds = install(where, runtime, root)
+            setting = argument(options, "reranker")
+            seconds = install(where, runtime, root, setting if isinstance(setting, str) else None)
             print(f"memory service: installed; ready after {seconds:.1f} s" if seconds else "memory service: installed; already running")
         elif action == "start":
             settings = read_settings(where)
