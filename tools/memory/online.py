@@ -955,16 +955,18 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     shown_terminal = terminal(universe, entry, target.revision.rev)
     resolvers, listed = stated_resolvers(settled, identifier), listed_findings(settled, record, target.status, holds)
     moved = migrated_to(state, record)
+    named = named_documents(state, record)
     data: dict[str, JSON] = {
         "id": identifier, "document": target.document_id, "state": target.state, "status": target.status, "stored_status": record.status,
         "legacy_status": from_legacy(settled, record, target.status, holds), "sha256": target.revision.sha256, "rev": target.revision.rev,
         "segment": target.segment, "text": target.item.content, "record": record.to_json(), "partition": placed,
         "superseded_by": list(shown_superseders), "successors": list(shown_terminal),
-        "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved, "proposed": [item.json() for item in proposed],
+        "resolved_by": list(resolvers), "findings_listed": list(listed), "content": moved,
+        "named_documents": [{"id": name, "path": path} for name, path in named], "proposed": [item.json() for item in proposed],
         "pending": [{"document": item.document_id, "rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment} for item in pending],
     }
     # A tracked file migrated into a REF: where its content now is comes first.
-    routes = [f"content: {name} (holds {path}, which its legacy cells name)" for name, path in named_documents(state, record)]
+    routes = [f"content: {name} (holds {path}, which its legacy cells name)" for name, path in named]
     lines = [*([f"content: {moved} (the tracked file {record.text('path')} was migrated there)", ""] if moved is not None else []), target.item.content, "", *routes]
     lines += [f"state: {target.state}", f"status: {status_label(universe, entry, target.revision.rev, proposed)}", *([f"partition: {phrase}"] if phrase else []),
               f"document: {target.document_id} rev {target.revision.rev} in {target.segment}"]

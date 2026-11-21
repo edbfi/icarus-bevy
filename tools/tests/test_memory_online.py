@@ -1320,7 +1320,9 @@ class NamedDocumentTests(Online):
             "path": "docs/ledgers/findings/invented.md", "cells": {"evidence": "spec; [spec](../../specs/net/invented.md)", "status": "active"}}})
         _ = write_change_set(self.root, CREATED, [Revision.of(ref), Revision.of(row), Revision.of(Record.from_json(finding("F-502", "Invented plain row")))])
         commit_all(self.root)
-        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", online.get(self.bank, self.root, "F-501").lines)
+        got = online.get(self.bank, self.root, "F-501")
+        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", got.lines)
+        self.assertEqual([{"id": "REF-101", "path": "docs/specs/net/invented.md"}], got.data["named_documents"], "the JSON of get and the MCP result")
         self.assertFalse(any(line.startswith("content:") for line in online.get(self.bank, self.root, "F-502").lines))
 
 
