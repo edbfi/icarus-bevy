@@ -603,8 +603,9 @@ def relink(record: Record, mapping: Mapping[str, str]) -> Record:
 def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record]) -> tuple[list[dict[str, Record]], dict[str, str], set[str]]:
     """Each export with its migration-assigned IDs translated to the accepted journal's, by ``identity``.
 
-    A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID. A record
-    with no accepted counterpart gets a provisional number above every accepted one, the same in every export. Records
+    A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID. A REF with
+    no accepted counterpart by path takes the ID of the one accepted REF without ``legacy`` (proposed by hand with the
+    command salvage prints) whose body equals its body, when exactly one does. A record with no accepted counterpart gets a provisional number above every accepted one, the same in every export. Records
     that share an identity within one export cannot be told apart, so none of them is mapped: EACH gets its own
     provisional number (the k-th record of that identity, in the export's order, the same in every export) and is
     returned in the third set, so that it and every row citing it are held. Every record survives under a distinct
@@ -615,6 +616,11 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
         if (key := identity(record)) is not None:
             counts[key] = counts.get(key, 0) + 1
     known = {key: record.id for record in accepted.values() if (key := identity(record)) is not None and counts[key] == 1}
+    # A REF proposed by hand (``memory propose reference``) has no legacy path: a branch document maps to it by body.
+    by_body: dict[str, list[str]] = {}
+    for record in accepted.values():
+        if record.type == "reference" and record.legacy is None and record.body is not None:
+            by_body.setdefault(record.body, []).append(record.id)
     top = {prefix: max((int(name.split("-", 1)[1]) for name in accepted if name.split("-", 1)[0] == prefix), default=0) for prefix in ASSIGNED}
     provisional: dict[tuple[str, int], str] = {}
     unmapped: dict[str, str] = {}
@@ -633,6 +639,8 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
                 continue
             if key in known and seen[key] == 1:
                 target = known[key]
+            elif record.type == "reference" and key not in counts and seen[key] == 1 and len(found := by_body.get(record.body or "", [])) == 1:
+                target = found[0]
             else:
                 place = (key, ordinal.get(key, 0) if seen[key] > 1 else -1)
                 ordinal[key] = ordinal.get(key, 0) + 1

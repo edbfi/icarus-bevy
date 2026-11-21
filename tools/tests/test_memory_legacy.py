@@ -1203,9 +1203,17 @@ class SalvageTests(LegacyRepository):
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Scope\n\nInvented: new.\n", encoding="utf-8")
+        # A tracked evidence row on the branch points at the new document: it cites the REF that document becomes.
+        shard = self.root / "evidence/widgets/001.jsonl"
+        _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/third.md", "sha256": "d" * 64, "class": "tracked",
+                                                             "kind": "report", "date": "2026-01-07", "label": "The new spec", "status": "active"},
+                                                            separators=(",", ":")) + "\n")
         _ = run_git(self.root, "add", "-A")
         _ = run_git(self.root, "commit", "-q", "-m", "add a spec")
         _ = self.journal_on_main(remove_legacy=True)
+        first = salvage(self.root, "new-doc")
+        self.assertEqual("undecided", first.kinds["M-105"])
+        self.assertIn("it cites the new document docs/specs/net/third.md", first.undecided["M-105"])
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
         self.assertIn("new-doc: docs/specs/net/third.md: new document; salvage --out writes its body", stdout)
@@ -1227,7 +1235,11 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "commit", "-q", "-m", "propose the new spec as a REF")
         self.publish()
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
-        self.assertEqual((0, True), (status, "0 pending document(s)" in stdout), stdout)
+        self.assertIn("0 pending document(s)", stdout)
+        # Run 2: the document maps to the REF proposed by hand (by body), so the row citing it is proposed with that ID.
+        second = salvage(self.root, "new-doc")
+        self.assertEqual("new", second.kinds["M-105"])
+        self.assertEqual(("REF-900",), next(item.record for item in second.proposals if item.record.id == "M-105").links.refs)
 
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")

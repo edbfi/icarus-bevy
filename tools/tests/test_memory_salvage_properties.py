@@ -186,6 +186,21 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertEqual({name: "accepted" for name in proposed}, {name: again.kinds.get(name) for name in proposed},
                              f"seed {seed}: what run 1 proposed is accepted in run 2")
             self.assertEqual(set[str](), {name for name, kind in again.kinds.items() if kind == "conflict"} - set(held), f"seed {seed}: new conflicts")
+            if "M-501" in raw_after:
+                # The new document proposed by hand (no legacy, same body) and accepted: the row citing it now translates.
+                body = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/a.md")
+                assert body is not None
+                hand = Revision.of(Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "docs/specs/a.md",
+                                                     "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest()}, body))
+                with_hand = (*merged, Segment("memory/journal/hand.jsonl", "", (hand,)))
+                state = replay(with_hand)
+                later = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
+                                 {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", with_hand)
+                (after_hand, before_hand), unmapped_hand, shared_hand = renumber((raw_after, raw_before), later.records)
+                third = Salvage("generated", "f" * 40, "b" * 40, "c" * 40)
+                _ = classify(third, after_hand, before_hand, later, unmapped_hand, shared_hand)
+                self.assertEqual("new", third.kinds["M-501"], f"seed {seed}: run after the document is accepted")
+                self.assertEqual(("REF-900",), next(item.record for item in third.proposals if item.record.id == "M-501").links.refs, f"seed {seed}")
 
 
 if __name__ == "__main__":
