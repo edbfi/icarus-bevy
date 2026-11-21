@@ -21,6 +21,7 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -656,7 +657,8 @@ class SalvageTests(LegacyRepository):
         # A changed claim is not revisable: the row needs a superseding record and is never proposed.
         self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
         self.assertEqual("supersede", result.kinds["F-107"])
-        self.assertIn("docs/ledgers/findings/widgets.md: changed on feature; revise the body of REF-007 by hand", result.notices)
+        self.assertTrue(any(notice.startswith("docs/ledgers/findings/widgets.md: changed document; revise REF-007 with the body salvage --out writes")
+                            for notice in result.notices), result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
         self.assertEqual(sorted(result.unsalvaged), ["F-107", "F-111", "F-112", "M-105"])
@@ -1156,7 +1158,13 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "commit", "-q", "-m", "revise the spec's REF")
         self.publish()
 
-    def test_check_lists_a_pending_document_until_the_accepted_body_equals_the_branch_file(self) -> None:
+    def ref_body(self, ref: str, path: str) -> str:
+        body = next(record.body for record in export(self.root, ref).records().values()
+                    if record.type == "reference" and record.legacy is not None and record.legacy.path == path)
+        assert body is not None
+        return body
+
+    def test_check_lists_a_pending_document_and_out_writes_the_body_that_clears_it(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "spec-only")
         spec = self.root / "docs/specs/net/another.md"
         _ = spec.write_text(spec.read_text() + "\nInvented: one more line.\n", encoding="utf-8")
@@ -1164,15 +1172,18 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual(1, status)
-        self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: changed document; memory revise REF-[0-9]+ --body docs/specs/net/another.md "
-                         + r"\(listed until the accepted body equals this file; a body merged by hand into other text stays listed\)")
+        self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: changed document; revise REF-[0-9]+ with the body salvage --out writes "
+                         + r"\(listed until the accepted body equals the branch's; a body merged by hand into other text stays listed\)")
+        self.assertNotIn("--body", stdout, "no path that does not exist")
         self.assertIn("0 unsalvaged row(s), 1 pending document(s) on spec-only", stdout)
-        branch_body = next(record.body for record in export(self.root, "spec-only").records().values()
-                           if record.type == "reference" and record.legacy is not None and record.legacy.path == "docs/specs/net/another.md")
-        assert branch_body is not None
-        self.revise_spec_on_main(branch_body.replace("one more line", "a different line"))
+        out = self.top / "out"
+        status, _stdout, stderr = self.run_salvage("spec-only", out=out)
+        written = out / "documents/docs/specs/net/another.md"
+        self.assertEqual(self.ref_body("spec-only", "docs/specs/net/another.md").encode(), written.read_bytes(), "the exporter's body at the tip")
+        self.assertRegex(stderr, rf"docs/specs/net/another.md: memory revise REF-[0-9]+ --body {re.escape(str(written))}")
+        self.revise_spec_on_main(written.read_text(encoding="utf-8").replace("one more line", "a different line"))
         self.assertEqual(1, self.run_salvage("spec-only", check=True)[0], "a body merged into other text stays listed")
-        self.revise_spec_on_main(branch_body)
+        self.revise_spec_on_main(written.read_text(encoding="utf-8"))
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout))
 

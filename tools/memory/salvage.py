@@ -53,7 +53,9 @@ is not yet in ``ref``'s own journal.
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out``; notices, conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
 unsalvaged row and each pending document (its path and the REF to revise; done when the accepted body equals the
-branch's file) and exits 1 if there is any. Exit status: 0 success; 1 a conflict or an error; 2 usage;
+branch's) and exits 1 if there is any. ``--out`` also
+writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
+``DIR/documents/<legacy path>``, and prints the ``memory revise`` command that uses it. Exit status: 0 success; 1 a conflict or an error; 2 usage;
 ``EXIT_SUPERSEDE`` (4) some row needs a superseding record or a decision by hand (and none conflicts; the other proposals are
 still printed or written); ``EXIT_PREMERGE`` (5) ``ref`` merged the cut-over: salvage the named pre-merge
 parent instead (nothing is printed or written).
@@ -62,6 +64,7 @@ parent instead (nothing is printed or written).
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,7 +107,31 @@ class Salvage:
     premerge: str | None = None
     merge: str | None = None
     # Pending documents: (path, the REF whose body to revise, or None for a new document).
-    documents: list[tuple[str, str | None]] = field(default_factory=list[tuple[str, str | None]])
+    documents: list[Pending] = field(default_factory=list["Pending"])
+
+
+@dataclass(frozen=True)
+class Pending:
+    """A document the branch changed or added: its legacy path, the accepted REF whose body to revise (``None`` for
+    a new document), and the body and title the exporter gives its REF at the salvaged tip."""
+
+    path: str
+    target: str | None
+    body: str
+    title: str
+
+    def command(self, file: str) -> str:
+        """What the operator runs once ``--out`` wrote the body to ``file``."""
+        if self.target is not None:
+            return f"memory revise {self.target} --body {shlex.quote(file)}"
+        return f"propose a REF for it by hand with the body in {shlex.quote(file)}"
+
+    def line(self) -> str:
+        """The pending document without ``--out``: no path is named that does not exist."""
+        if self.target is not None:
+            return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
+                    + " branch's; a body merged by hand into other text stays listed)")
+        return "new document; propose a REF for it by hand"
 
 
 @dataclass(frozen=True)
@@ -496,12 +523,13 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
     for path, record in sorted(documents(after).items()):
         on_main = main_refs.get(path)
+        body, title = record.body or "", record.text("title") or path
         if on_main is None:
-            result.documents.append((path, None))
-            result.notices.append(f"{path}: new document; propose a REF for it by hand")
+            result.documents.append(Pending(path, None, body, title))
+            result.notices.append(f"{path}: {result.documents[-1].line()}")
         elif record.body not in (on_main.body, base_bodies.get(path)):
-            result.documents.append((path, on_main.id))
-            result.notices.append(f"{path}: changed on {ref}; revise the body of {on_main.id} by hand")
+            result.documents.append(Pending(path, on_main.id, body, title))
+            result.notices.append(f"{path}: {result.documents[-1].line()}")
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
     result.unsalvaged += [new.id for _old, new in result.conflicts]
@@ -672,10 +700,8 @@ def run(options: argparse.Namespace) -> int:
         if check:
             for identifier in result.unsalvaged:
                 print(f"{ref}: {identifier}: {result.kinds[identifier]} legacy row not yet salvaged")
-            for path, target in result.documents:
-                print(f"{ref}: {path}: " + (f"changed document; memory revise {target} --body {path} (listed until the accepted body equals "
-                                            + "this file; a body merged by hand into other text stays listed)" if target is not None
-                                            else "new document; propose a REF for it"))
+            for document in result.documents:
+                print(f"{ref}: {document.path}: {document.line()}")
             print(f"memory salvage --check: {len(result.unsalvaged)} unsalvaged row(s), {len(result.documents)} pending document(s) on {ref} "
                   + f"(merge-base {result.base[:12]})")
             return 1 if result.unsalvaged or result.documents else 0
@@ -694,6 +720,12 @@ def run(options: argparse.Namespace) -> int:
               + f"{len(result.undecided)} needing a decision by hand, "
               + f"{len(result.conflicts)} conflict(s), {len(accepted)} row(s) already accepted "
               + f"(against {main} {result.main[:12]}'s {'journal' if result.source == 'journal' else 'legacy export'})", file=sys.stderr)
+        if out is not None:
+            for document in result.documents:
+                target = out / "documents" / document.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _ = target.write_bytes(document.body.encode())
+                print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)
         if result.proposals:
             created = commit_time(root, result.head)
             if out is not None:
