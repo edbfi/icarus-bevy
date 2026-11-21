@@ -56,7 +56,7 @@ class FakeBank:
         self.fail_retains: bool = False
         self.extra_banks: tuple[str, ...] = ()
         self.objects: dict[str, int] = {}
-        self.settings: dict[str, object] = dict(online.EXPECTED_CONFIG) | {"enable_reranking": True}
+        self.settings: dict[str, object] = dict(online.EXPECTED_CONFIG) | {"enable_reranking": False}
         self.extra_units: list[Unit] = []
         self.async_calls: int = 0
 
@@ -725,6 +725,31 @@ class CompactReadTests(Online):
         ranked = online.recall(self.bank, self.root, "listing lock key", limit=1).data["documents"]
         assert isinstance(ranked, list)
         self.assertEqual(1, len(ranked))
+
+    def test_records_come_before_at_most_three_references_and_refs_lists_only_references(self) -> None:
+        self.accepted_chain()
+        for number in range(4):
+            body = f"# Invented reference {number}\n\n## Rules\n\nInvented: the listing lock note number {number}.\n"
+            _ = online.propose(self.bank, self.root, "reference", Changes({"title": f"Invented reference {number}", "scope": {
+                "basis": "explicit", "subjects": ["tooling"]}}, body=body), now=self.tick())
+        compact = online.recall(self.bank, self.root, "listing lock")
+        text = "\n".join(compact.lines)
+        self.assertEqual(3, text.count("[reference;"))
+        self.assertRegex(text, r"\+1 more reference documents: REF-00[1-4]; use --refs or get")
+        unscoped = text.split("== unscoped ==", 1)[1]
+        self.assertLess(unscoped.index("U-101 ["), unscoped.index("REF-"), "claims before references within a partition")
+        only = "\n".join(online.recall(self.bank, self.root, "listing lock", refs=True).lines)
+        self.assertEqual(4, only.count("[reference;"))
+        self.assertNotIn("[finding;", only)
+        first = online.recall(self.bank, self.root, "nothing ranks this", text="note number 3").data["documents"]
+        assert isinstance(first, list)
+        self.assertEqual("REF-004", first[0], "substring hits rank first")
+
+    def test_evidence_is_not_partitioned(self) -> None:
+        self.accepted_chain()
+        got = online.get(self.bank, self.root, "M-102")
+        self.assertFalse(any(line.startswith("partition:") for line in got.lines))
+        self.assertIn("M-102 [evidence; accepted, active]", "\n".join(online.recall(self.bank, self.root, "invented report receipt", include_evidence=True).lines))
 
     def test_the_passage_is_trimmed_around_the_query_under_its_heading(self) -> None:
         unit = "x " * 1000 + "the listing lock key is here " + "y " * 1000

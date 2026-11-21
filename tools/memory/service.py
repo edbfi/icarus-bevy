@@ -74,10 +74,13 @@ EMBEDDING = "models--intfloat--multilingual-e5-small/snapshots/614241f622f53c4ee
 RERANKER = "models--hindsight-ai--hs-rerank-1/snapshots/927f5be31280298a51cf29af8a29cb111ed812c5"
 PG_VERSION = "18.1.0"
 
-# Reranker candidates per recall, the default of the ``ICARUS_MEMORY_RERANKER`` setting. Hindsight 1.2.3's recall
-# request has no per-request cap (its ``rerank`` options are prune and dedup only), so it is instance-wide: the
-# connection file carries the setting (``off`` or a cap) and the two Hindsight variables it implies.
-RERANKER_CANDIDATES = 50
+# The ``ICARUS_MEMORY_RERANKER`` setting: ``off`` (the default: fused ranking only) or a cap on the candidates the
+# cross-encoder scores per recall. Hindsight 1.2.3's recall request has no per-request cap (its ``rerank`` options
+# are prune and dedup only), so it is instance-wide: the connection file carries the setting and the Hindsight
+# variables it implies. On the real corpus (3,093 records, 4 cores) reranking cost recall p50 12 s at cap 50 and
+# 1.7 s at cap 10 with 4 threads against 0.37 s off, and answered the held-out questions no better.
+RERANKER_DEFAULT = "off"
+RERANKER_THREADS = "4"
 RERANKER_VARIABLE = "ICARUS_MEMORY_RERANKER"
 # Every Hindsight setting the instance depends on; values are checked against config.py of 1.2.3.
 SETTINGS: dict[str, str] = {
@@ -97,7 +100,6 @@ SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
     "HINDSIGHT_API_EMBEDDINGS_ONNX_DEVICE": "cpu",
     "HINDSIGHT_API_RERANKER_PROVIDER": "onnx",
-    "HINDSIGHT_API_RERANKER_ONNX_THREADS": "2",
     "HINDSIGHT_API_LOG_LEVEL": "WARNING",
     "HF_HUB_OFFLINE": "1",
     "HF_HUB_DISABLE_TELEMETRY": "1",
@@ -212,7 +214,7 @@ class Settings:
     pg_port: int
     pg_password: str = field(repr=False)
     bank: str
-    reranker: str = str(RERANKER_CANDIDATES)
+    reranker: str = RERANKER_DEFAULT
 
     @property
     def url(self) -> str:
@@ -248,10 +250,12 @@ def reranker_setting(value: str) -> str:
 
 
 def reranker_environment(setting: str) -> dict[str, str]:
-    """The setting and the Hindsight variables it implies (the unit's EnvironmentFile passes all three)."""
+    """The setting and the Hindsight variables it implies (the unit's EnvironmentFile passes them): reranking on
+    also takes the cap and 4 ONNX threads (cap 10: p50 2.5 s on 2 threads, 1.7 s on 4)."""
     if setting == "off":
         return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "false"}
-    return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "true", "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": setting}
+    return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "true", "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": setting,
+            "HINDSIGHT_API_RERANKER_ONNX_THREADS": RERANKER_THREADS}
 
 
 def render_settings(settings: Settings) -> str:
@@ -272,7 +276,7 @@ def parse_settings(text: str) -> Settings:
         values[name] = value
     expected = ("HINDSIGHT_API_HOST", "HINDSIGHT_API_PORT", "HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_DATABASE_URL", "ICARUS_MEMORY_BANK")
     # A file written before the reranker setting existed holds only the five; it means the default.
-    reranker = reranker_setting(values.get(RERANKER_VARIABLE, str(RERANKER_CANDIDATES)))
+    reranker = reranker_setting(values.get(RERANKER_VARIABLE, RERANKER_DEFAULT))
     implied = reranker_environment(reranker) if RERANKER_VARIABLE in values else {}
     if sorted(values) != sorted((*expected, *implied)) or any(values[name] != value for name, value in implied.items()):
         raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
@@ -371,7 +375,7 @@ def reranker_cap(where: Home | None = None) -> int | None:
     try:
         return read_settings(home() if where is None else where).reranker_cap
     except ServiceError:
-        return RERANKER_CANDIDATES
+        return None
 
 
 def free_bytes(path: Path) -> int:
@@ -526,10 +530,11 @@ TimeoutStopSec=60
 Restart=on-failure
 RestartSec=5
 CPUQuota=400%
-# Measured at 3,500 records: API steady 2.05 GiB after recalls (1.6 GiB idle), PostgreSQL 0.16 GiB;
-# a rebuild's bulk retain peaks near 2.75 + 0.6 GiB. Reclaim above 3.5 GiB; never more than 4.5 GiB.
-MemoryHigh=3584M
-MemoryMax=4608M
+# Measured on the real corpus (3,093 records): a full rebuild peaks at API 2,966 + PostgreSQL 525 MiB (3,491 MiB);
+# recall with reranking off at 1,776 MiB; a session with a rebuild and cap-50 reranking at 3,515 + 531 MiB (4,046 MiB).
+# Reclaim only above the rebuild peak plus a third; never more than 6 GiB.
+MemoryHigh=4608M
+MemoryMax=6144M
 Nice=10
 LimitCORE=0
 # Raw output can carry the database URI; it is discarded.

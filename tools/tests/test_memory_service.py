@@ -111,18 +111,21 @@ class ConnectionFile(Scratch):
                 _ = parse_settings(broken)
 
 
-    def test_the_reranker_setting_is_off_or_a_cap_and_defaults_for_older_files(self) -> None:
+    def test_the_reranker_setting_is_off_by_default_or_a_cap_with_four_threads(self) -> None:
         default = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus"))
-        self.assertIn("ICARUS_MEMORY_RERANKER=50\nHINDSIGHT_API_ENABLE_RERANKING=true\nHINDSIGHT_API_RERANKER_MAX_CANDIDATES=50\n", default)
+        self.assertIn("ICARUS_MEMORY_RERANKER=off\nHINDSIGHT_API_ENABLE_RERANKING=false\n", default)
+        self.assertNotIn("MAX_CANDIDATES", default)
+        self.assertNotIn("ONNX_THREADS", default)
         older = "".join(line + "\n" for line in default.splitlines() if "RERANK" not in line)
-        self.assertEqual((50, 50), (parse_settings(default).reranker_cap, parse_settings(older).reranker_cap))
-        off = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus", "off"))
-        self.assertIn("HINDSIGHT_API_ENABLE_RERANKING=false\n", off)
-        self.assertNotIn("MAX_CANDIDATES", off)
-        self.assertIsNone(parse_settings(off).reranker_cap)
-        for broken in (default.replace("ICARUS_MEMORY_RERANKER=50", "ICARUS_MEMORY_RERANKER=0"),
-                       default.replace("MAX_CANDIDATES=50", "MAX_CANDIDATES=20"),
-                       off.replace("ENABLE_RERANKING=false", "ENABLE_RERANKING=true")):
+        self.assertEqual((None, None), (parse_settings(default).reranker_cap, parse_settings(older).reranker_cap))
+        on = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus", "10"))
+        self.assertIn("ICARUS_MEMORY_RERANKER=10\nHINDSIGHT_API_ENABLE_RERANKING=true\nHINDSIGHT_API_RERANKER_MAX_CANDIDATES=10\n"
+                      + "HINDSIGHT_API_RERANKER_ONNX_THREADS=4\n", on)
+        self.assertEqual(10, parse_settings(on).reranker_cap)
+        for broken in (on.replace("ICARUS_MEMORY_RERANKER=10", "ICARUS_MEMORY_RERANKER=0"),
+                       on.replace("MAX_CANDIDATES=10", "MAX_CANDIDATES=20"),
+                       on.replace("ONNX_THREADS=4", "ONNX_THREADS=2"),
+                       default.replace("ENABLE_RERANKING=false", "ENABLE_RERANKING=true")):
             with self.assertRaises(ServiceError):
                 _ = parse_settings(broken)
         settings = ensure_settings(self.where)
@@ -144,7 +147,7 @@ class Units(Scratch):
         for name, value in SETTINGS.items():
             self.assertIn(f"Environment={name}={value}\n", service)
         for line in ("StartLimitBurst=10", "RestartSec=5", f"EnvironmentFile={self.where.connection_file}", "KillMode=control-group", "Restart=on-failure", "CPUQuota=400%",
-                     "MemoryHigh=3584M", "MemoryMax=4608M", "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
+                     "MemoryHigh=4608M", "MemoryMax=6144M", "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
                      f"ExecStartPre=-{self.root}/runtime/venv/lib/python3.14/site-packages/pg0/bin/pg0 stop --name hindsight --timeout 30",
                      f"ExecStart=/usr/bin/flock --shared --nonblock {self.root}/runtime/assets.lock {self.root}/runtime/venv/bin/python -m hindsight_api.main"):
             self.assertIn(line + "\n", service)
