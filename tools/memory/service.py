@@ -737,9 +737,16 @@ def bank_config_problems(body: Mapping[str, object]) -> list[str]:
     return found
 
 
+class Unauthorized(ServiceError):
+    """The service refused the connection file's key."""
+
+
 def ensure_bank(api: Api, bank: str = BANK) -> None:
-    """Create the bank with no overrides when absent (first start); idempotent."""
+    """Create the bank with no overrides when absent (first start); idempotent. ``Unauthorized`` when the service
+    refuses the key."""
     status, _ = api.call("GET", f"/v1/default/banks/{bank}/config")
+    if status in (401, 403):
+        raise Unauthorized(f"bank {bank}: HTTP {status}: the service refused the key in {CONNECTION_FILE}")
     if status == 404:
         status, _ = api.call("PUT", f"/v1/default/banks/{bank}", {})
     if status != 200:
@@ -949,7 +956,11 @@ def install(where: Home, runtime: Assets, checkout: Path, reranker: str | None =
     _ = systemctl("start", BACKUP_TIMER)
     if changed or not unit_active():
         return start_unit(settings)
-    ensure_bank(Api(settings.connection()), settings.bank)
+    try:
+        ensure_bank(Api(settings.connection()), settings.bank)
+    except Unauthorized:
+        # An install stopped after writing a new key but before its restart: the old process still holds the old key.
+        return start_unit(settings)
     return 0.0
 
 

@@ -29,7 +29,7 @@ from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compa
 from tools.memory.service import (
     API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, Api, Connection, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
     backup_interpreter, connection, ensure_settings, feature_problems, file_variables, home, install, installed_interpreter, parse_settings, read_settings, render_settings,
-    LEGACY_CONNECTION_FILE, TOMBSTONE, require_floor, reranker_cap, reranker_check, rotate_connection, set_reranker, settings_check, unit_files, unit_word,
+    LEGACY_CONNECTION_FILE, TOMBSTONE, Unauthorized, require_floor, reranker_cap, reranker_check, rotate_connection, set_reranker, settings_check, unit_files, unit_word,
 )
 
 from tools.tests.memory_fixtures import clean_git_environment, commit_all, new_repository, run_git
@@ -309,6 +309,29 @@ class Units(Scratch):
         with self.assertRaisesRegex(ServiceError, "malformed or repeated line"):
             _ = rotate_connection(where)
         self.assertEqual("anything", legacy.read_text(encoding="utf-8"))
+
+    def test_a_retry_after_an_interrupted_install_restarts_a_process_holding_the_old_key(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        _ = self.install_with(where, None)
+        runtime = Assets(self.root / "runtime")
+        for failure, restarts in ((Unauthorized("bank icarus: HTTP 401"), 1), (ServiceError("bank icarus: HTTP 500"), 0)):
+            with self.subTest(failure=str(failure)):
+                started: list[Settings] = []
+
+                def start(settings: Settings) -> float:
+                    started.append(settings)
+                    return 1.0
+
+                with (patch("tools.memory.service.systemctl"), patch("tools.memory.service.unit_directory", return_value=self.root / "units"),
+                      patch("tools.memory.service.unit_active", return_value=True), patch("tools.memory.service.start_unit", side_effect=start),
+                      patch("tools.memory.service.ensure_bank", side_effect=[failure, None]), patch("tools.memory.service.primary_checkout_of", return_value=self.root),
+                      patch("tools.memory.service.backup_interpreter", return_value="/usr/bin/python3")):
+                    if restarts:
+                        self.assertEqual(1.0, install(where, runtime, self.root, None))
+                    else:
+                        with self.assertRaisesRegex(ServiceError, "HTTP 500"):
+                            _ = install(where, runtime, self.root, None)
+                self.assertEqual(restarts, len(started))
 
     def test_a_fresh_install_leaves_the_tombstone_too(self) -> None:
         where = Home(self.root / "config", self.root / "data", self.root / "state")
