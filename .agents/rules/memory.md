@@ -23,7 +23,8 @@ authors or reads the journal by hand.
 One instance, one bank `icarus`, `HINDSIGHT_API_LLM_PROVIDER=none`. Settings:
 retain mode `chunks`, chunk size 1,800; observations and auto-consolidation
 off; file upload, document import and bank config APIs off; Hindsight MCP off;
-LLM trace off; reranker candidates capped at 50; loopback; one key; a pinned
+LLM trace off; reranker candidates capped at 50 (setting `ICARUS_MEMORY_RERANKER`:
+`off` or a cap, `service install --reranker`); loopback; one key; a pinned
 worker ID; `fsync=on&synchronous_commit=on` in the pg0 URL; raw service logs
 discarded (tracebacks can carry database URIs). No extension code.
 `memory check --bank` asserts the effective config (`GET .../config`, since bank
@@ -150,7 +151,7 @@ Supersession is acyclic.
 | Command | Guarantee |
 | --- | --- |
 | `get ID[/selector] [--history] [--offline]` | Exact document GET, verified; state, partition, derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: from the journal. |
-| `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence]` | Strict tags; partitioned; deduplicated by document; retired hits under their terminal successor; 1-hop links and resolvers by exact GET. `--text`: substring search. |
+| `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence] [--limit N] [--full]` | Strict tags; partitioned; deduplicated by document; retired hits under their terminal successor; 1-hop links and resolvers by exact GET. Compact: pointers, a REF's matching passage, about 6 KB; `--full` prints whole texts. `--text`: substring search. |
 | `area AREA` | Records by status and partition, open unknowns, link closure. |
 | `status` | Pin; counts by type, status, partition; cited records not current; open unknowns; unverified evidence. |
 | `propose TYPE`, `revise ID`, `supersede OLD --by NEW`, `resolve ID --by F-N` | Schema, scope, link targets and selector membership checked before the segment is written. |
@@ -248,8 +249,9 @@ work-rules milestone routine.
 - Relative evidence paths resolve against the primary checkout (from the Git
   common directory), never the linked worktree. Directory locators, manifest
   pins and removal receipts are kept as they are.
-- `verify` exits non-zero on `mismatched`, or `unavailable` for an active
-  local-private record. The 119 rows without a digest are `legacy-unverifiable`.
+- `verify` fails only for an active record: `mismatched`, or `unavailable` for an active
+  local-private one; a retired or missing record's outcome is reported, never
+  failed. The 119 rows without a digest are `legacy-unverifiable`.
 - `protected-paths` is the union of every worktree's journal and, while any
   worktree has one, its legacy `evidence/` shards. `tools/work_gc.py` and
   `tools/cargo_guard.py` read it offline; unreadable input holds everything.

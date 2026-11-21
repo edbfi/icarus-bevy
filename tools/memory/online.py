@@ -48,7 +48,7 @@ from tools.memory.model import (
     ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, sha256_hex,
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
-from tools.memory.service import RERANKER_CANDIDATES, ServiceError, Subcommands, connection, home, host_lock, require_floor
+from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor, reranker_cap
 from tools.memory.state import PARTITIONS, RELEASE_CONFIG, State, partition, pinned_build, replay
 
 FETCH_TIMEOUT = 120
@@ -59,7 +59,7 @@ OUTCOMES = ("verified", "unavailable", "mismatched", "legacy-unverifiable")
 # Expected effective bank config (rules, Instance). Keys absent here are not asserted.
 EXPECTED_CONFIG: Final[dict[str, object]] = {
     "retain_extraction_mode": "chunks", "retain_chunk_size": 1800, "enable_observations": False,
-    "enable_auto_consolidation": False, "store_document_text": True, "enable_reranking": True, "memory_defense": None,
+    "enable_auto_consolidation": False, "store_document_text": True, "memory_defense": None,
     "entity_labels": None, "retain_strategies": None, "retain_default_strategy": None, "mcp_enabled_tools": None,
 }
 QUERY_ID = re.compile(ID.pattern, re.IGNORECASE)
@@ -734,7 +734,7 @@ def check_document(bank: Bank, target: Desired) -> list[str]:
     return problems
 
 
-def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_proposals: bool = False) -> Output:
+def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_proposals: bool = False, full: bool = False) -> Output:
     """Exact document GET, verified against the replayed journal, with state, partition, derived links
     (accepted ones; this worktree's proposals overlaid, every worktree's with ``all_proposals``), pending
     revisions, conflicts and evidence status."""
@@ -800,7 +800,9 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
                                 "record": item.revision.record.to_json()} for item in entry.history()]
             lines.append("history:")
             for item in entry.history():
-                lines.extend(["", f"{item.revision.rev} in {item.segment}", render_text(item.revision.record)])
+                record_line = f"{item.revision.rev} in {item.segment}; prev {', '.join(rev[:12] for rev in item.revision.prev) or 'none'}; status {item.revision.record.status}"
+                # One line per revision by default; ``full`` adds each revision's whole text.
+                lines.extend(["", record_line, render_text(item.revision.record)] if full else [f"  {record_line}"])
         lines.extend(f"repaired: {problem}; rewritten from the journal (something wrote to the bank outside the tool)" for problem in repaired)
         lines.extend(f"problem: {problem}" for problem in problems)
         return Output(data, lines, 1 if problems else 0)
@@ -848,12 +850,50 @@ class Shown:
     retired: list[str] = field(default_factory=list[str])
 
 
+RECALL_LIMIT = 12
+RECALL_BUDGET = 6 * 1024
+LINE_CAP = 300
+PASSAGE_CAP = 600
+LINK_CAP = 8
+# Partitions as recall prints them: what can be relied on first.
+DISPLAY = ("current", "native", "legacy-scope", "other-build", "unscoped", "unknown", "not-in-journal")
+TERM = re.compile(r"[\w-]{3,}")
+
+
+def capped(names: Sequence[str], cap: int = LINK_CAP) -> str:
+    """The first ``cap`` names, then ``+N more``."""
+    shown = ", ".join(names[:cap])
+    return shown + (f" (+{len(names) - cap} more)" if len(names) > cap else "")
+
+
+def passage(query: str, units: Sequence[str], body: str | None) -> tuple[str, str | None]:
+    """The returned unit that best matches the query, trimmed to ``PASSAGE_CAP`` characters around its first
+    query term, and the Markdown heading of ``body`` it falls under (when the unit is found in the body)."""
+    terms = [match[0].casefold() for match in TERM.finditer(query)]
+    best = max(units, key=lambda unit: sum(unit.casefold().count(term) for term in terms), default="")
+    folded = best.casefold()
+    first = min((index for term in terms if (index := folded.find(term)) >= 0), default=0)
+    begin = max(0, min(first - PASSAGE_CAP // 3, len(best) - PASSAGE_CAP))
+    excerpt = " ".join(best[begin:begin + PASSAGE_CAP].split())
+    excerpt = ("…" if begin else "") + excerpt + ("…" if begin + PASSAGE_CAP < len(best) else "")
+    heading = None
+    if body is not None and (at := body.find(best.strip()[:80])) >= 0:
+        heading = next((line.lstrip("#").strip() for line in reversed(body[:at].split("\n")) if line.startswith("#")), None)
+    return excerpt, heading
+
+
 def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, text: str | None = None,
-           all_proposals: bool = False, include_evidence: bool = False, limit: int = 10) -> Output:
+           all_proposals: bool = False, include_evidence: bool = False, limit: int | None = None, full: bool = False) -> Output:
     """The rules' Reading section: exact GET of named IDs first, strict-tag recall, partitions, retired
     hits under their terminal successor, one hop of links and resolvers by exact GET. Retirement and
     derived links are the accepted ones (as the bank shows them); this worktree's proposed superseders and
-    resolvers are overlaid, every worktree's with ``all_proposals``."""
+    resolvers are overlaid, every worktree's with ``all_proposals``.
+
+    Recall ranks pointers; ``get`` reads. By default each hit is a compact block (header, the claim,
+    question, label or title, for a REF the returned passage, capped link lines) and the text stops at
+    ``RECALL_BUDGET`` bytes, naming the hits it did not show. ``full`` prints every record's whole text
+    and every link, as ``--full``."""
+    limit = RECALL_LIMIT if limit is None else max(1, limit)
     with session(bank, root, read=True) as current:
         universe, state, settled = current.universe, current.universe.state, current.universe.settled
         wanted = Wanted(universe)
@@ -864,12 +904,16 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
         named = list(dict.fromkeys(match[0].upper() for match in QUERY_ID.finditer(query)))
         exact: list[JSON] = []
         lines: list[str] = []
+        units: dict[str, list[str]] = {}
 
         def ranked(others: bool) -> list[str]:
             groups = visibility(mine, include_evidence=include_evidence, others=others)
             order: list[str] = []
             for hit in bank.recall(query, groups, query_timestamp=stamp):
-                if hit.document_id is not None and hit.document_id not in order and (text is None or text.casefold() in hit.text.casefold()):
+                if hit.document_id is None or (text is not None and text.casefold() not in hit.text.casefold()):
+                    continue
+                units.setdefault(hit.document_id, []).append(hit.text)
+                if hit.document_id not in order:
                     order.append(hit.document_id)
             if text is not None:
                 extra = {unit.document_id for unit in bank.units(text=text)
@@ -890,8 +934,8 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 item = shown.setdefault(successor, Shown(successor, successor, rank))
                 if heads:
                     item.retired.append(identifier)
-        sections: dict[str, list[JSON]] = {name: [] for name in (*PARTITIONS, "unknown", "not-in-journal")}
-        texts: dict[str, list[str]] = {name: [] for name in sections}
+        sections: dict[str, list[JSON]] = {name: [] for name in DISPLAY}
+        blocks: list[tuple[int, str, str, str]] = []
         listed = set(shown)
 
         def links_of(item: Shown, target: Desired) -> list[str]:
@@ -899,7 +943,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                            *settled.resolved_by.get(item.identifier, ())} - listed - set(item.retired), key=id_key)
 
         needed = [*named, *(name for item in shown.values() if (want := wanted.get(item.document)) is not None
-                            for name in (want.document_id, *links_of(item, want), *item.retired))]
+                            for name in (want.document_id, *(links_of(item, want) if full else ()), *item.retired))]
 
         def verify_hits() -> tuple[Fetched, dict[str, bool]]:
             fetched = Fetched(bank, needed)
@@ -924,42 +968,83 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
             target = wanted.get(item.document)
             if target is None:
                 sections["not-in-journal"].append({"id": item.identifier, "document": item.document})
-                texts["not-in-journal"].append(f"{item.document}: in the bank but not in any gathered journal")
+                blocks.append((item.rank, "not-in-journal", item.identifier, f"{item.document}: in the bank but not in any gathered journal"))
                 continue
+            record = target.revision.record
             verified = checked.get(item.document, False)
-            placed, phrase = place(root, target.revision.record, rel, reason)
+            placed, phrase = place(root, record, rel, reason)
             name = str(placed["name"])
-            links = links_of(item, target)
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
-            linked = [summary(fetched, wanted, link) for link in links]
             retired = [summary(fetched, wanted, old) for old in sorted(set(item.retired), key=id_key)]
-            sections[name].append({
-                "id": item.identifier, "document": target.document_id, "state": target.state, "status": target.status, "partition": placed,
-                "text": target.item.content, "verified": verified, "retired": [data for data, _ in retired], "links": [data for data, _ in linked],
-                "proposed": [entry.json() for entry in proposed],
-            })
-            block = [f"{item.identifier} [{target.state}, {target.status}; {phrase}]" + ("" if verified else " (differs from the journal)"),
-                     *(f"  {line}" for line in target.item.content.split("\n"))]
-            derived = [f"  {label}: {', '.join(names)}" for label, names in (
+            header = f"{item.identifier} [{record.type}; {target.state}, {target.status}; {phrase}]" + ("" if verified else " (differs from the journal)")
+            derived = [(label, list(names)) for label, names in (
                 ("superseded by", settled.superseded_by.get(item.identifier, ())), ("resolved by", settled.resolved_by.get(item.identifier, ()))) if names]
-            block += derived
-            block += [f"  {entry.line()}" for entry in proposed]
-            block += [f"  retired under it: {line}" for _, line in retired]
-            block += [f"  link: {line}" for _, line in linked]
-            texts[name].append("\n".join(block))
-        for name, blocks in texts.items():
-            if blocks:
+            if full:
+                links = links_of(item, target)
+                linked = [summary(fetched, wanted, link) for link in links]
+                sections[name].append({
+                    "id": item.identifier, "document": target.document_id, "state": target.state, "status": target.status, "partition": placed,
+                    "text": target.item.content, "verified": verified, "retired": [data for data, _ in retired],
+                    "links": [data for data, _ in linked], "proposed": [entry.json() for entry in proposed],
+                })
+                block = [header, *(f"  {line}" for line in target.item.content.split("\n"))]
+                block += [f"  {label}: {', '.join(names)}" for label, names in derived]
+                block += [f"  {entry.line()}" for entry in proposed]
+                block += [f"  retired under it: {line}" for _, line in retired]
+                block += [f"  link: {line}" for _, line in linked]
+            else:
+                rendered = target.item.content.split("\n")
+                line = rendered[1][:LINE_CAP] if len(rendered) > 1 else ""
+                entry_json: dict[str, JSON] = {
+                    "id": item.identifier, "document": target.document_id, "type": record.type, "state": target.state, "status": target.status,
+                    "partition": placed, "line": line, "verified": verified,
+                    "retired": [{"id": data.get("id"), "status": data.get("status"), "line": str(data.get("line", ""))[:LINE_CAP]} for data, _ in retired],
+                    "proposed": [entry.json() for entry in proposed],
+                }
+                block = [header, f"  {line}"]
+                if record.type == "reference":
+                    excerpt, heading = passage(query, units.get(target.document_id, []), record.body)
+                    entry_json["passage"], entry_json["heading"] = excerpt, heading
+                    block.append(f"  passage{f' (under {heading!r})' if heading else ''}: {excerpt}")
+                kinds: dict[str, JSON] = {}
+                for label, names in [*((link, list(record.links.named(link))) for link in ("supersedes", "resolves", "cites", "refs")), *derived]:
+                    if names:
+                        kinds[label] = list[JSON](names[:LINK_CAP])
+                        block.append(f"  {label}: {capped(names)}")
+                        if len(names) > LINK_CAP:
+                            kinds[f"{label} (more)"] = len(names) - LINK_CAP
+                entry_json["links"] = kinds
+                block += [f"  {entry.line()}" for entry in proposed]
+                block += [f"  retired under it: {retired_line[:LINE_CAP]}" for _, retired_line in retired]
+                sections[name].append(entry_json)
+            blocks.append((item.rank, name, item.identifier, "\n".join(block)))
+        shown_blocks: list[tuple[int, str, str, str]] = []
+        used = sum(len(line.encode()) + 1 for line in lines)
+        for block in sorted(blocks):
+            size = len(block[3].encode()) + 1
+            if full or not shown_blocks or used + size <= RECALL_BUDGET:
+                shown_blocks.append(block)
+                used += size
+        hidden = [identifier for _rank, _name, identifier, _text in sorted(blocks) if all(identifier != kept[2] for kept in shown_blocks)]
+        for name in DISPLAY:
+            if chosen := [text_block for _rank, part, _identifier, text_block in sorted(shown_blocks) if part == name]:
                 lines.append(f"== {name} ==")
-                lines.extend(blocks)
+                lines.extend(chosen)
         config, _overrides = bank.config()
         reranking = config.get("enable_reranking") is not False
-        ranker = (f"reranker on, at most {RERANKER_CANDIDATES} candidates (instance-wide; Hindsight 1.2.3 takes no per-request cap)"
+        cap = reranker_cap()
+        ranker = (f"reranker on, at most {cap} candidates (instance-wide; Hindsight 1.2.3 takes no per-request cap)"
                   if reranking else "reranker off (bank config); fused ranking only")
         lines.extend(f"repaired: {document}: differed from the journal; rewritten from it (something wrote to the bank outside the tool)" for document in repaired)
+        if hidden:
+            lines.append(f"not shown ({len(hidden)} over the {RECALL_BUDGET // 1024} KB budget): {capped(hidden, 12)}; memory get ID reads one, --full prints all")
+        if len(documents) >= limit:
+            lines.append(f"hits limited to {limit}; --limit N shows more")
         lines.append(f"ranking: {ranker}")
         data: dict[str, JSON] = {"query": query, "query_timestamp": stamp, "named": exact, "ranking": {
-            "reranking": reranking, "candidates": RERANKER_CANDIDATES if reranking else None, "scope": "instance"},
-                                 "partitions": {name: items for name, items in sections.items() if items}, "repaired": list[JSON](repaired)}
+            "reranking": reranking, "candidates": cap if reranking else None, "scope": "instance"},
+                                 "partitions": {name: items for name, items in sections.items() if items}, "repaired": list[JSON](repaired),
+                                 "documents": list[JSON](documents), "not_shown": list[JSON](hidden), "full": full}
         if all_proposals:
             others = ranked(True)[:limit]
             listing = [summary(bank, wanted, document_id.split("@", 1)[0]) for document_id in others]
@@ -991,8 +1076,16 @@ def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], rele
     return rows, lines
 
 
-def area(bank: Bank, root: Path, name: str) -> Output:
-    """Records of one area by status and partition, its open unknowns and the closure of their links."""
+AREA_BUDGET = 7 * 1024
+ROW_CAP = 160
+# Statuses an area lists first: what is still in force before what was replaced or closed.
+TERMINAL = ("superseded", "retired", "resolved", "refuted", "fixed", "past", "missing")
+
+
+def area(bank: Bank, root: Path, name: str, *, full: bool = False) -> Output:
+    """Records of one area by status and partition, its open unknowns and the closure of their links. By
+    default the text is counts, the open unknowns and as many record rows (in-force statuses first) as fit
+    in ``AREA_BUDGET``; ``full`` lists every record and every linked record."""
     with session(bank, root, read=True) as current:
         universe = current.universe
         view = universe.view
@@ -1001,18 +1094,21 @@ def area(bank: Bank, root: Path, name: str) -> Output:
         by_status: dict[str, list[str]] = {}
         for identifier in members:
             by_status.setdefault(derived_status(universe.settled, view.entries[identifier].record), []).append(identifier)
-        data: dict[str, JSON] = {"area": name, "release": release.id if release is not None else None}
+        data: dict[str, JSON] = {"area": name, "release": release.id if release is not None else None, "full": full}
         lines = [f"area {name}: {len(members)} record(s); partitions against {release.id if release is not None else 'unknown (' + reason + ')'}"]
         statuses: dict[str, JSON] = {}
-        for status in sorted(by_status):
+        texts: dict[str, list[str]] = {}
+        partitions: dict[str, int] = {}
+        for status in sorted(by_status, key=lambda value: (value in TERMINAL, value)):
             rows, text = record_rows(universe, root, by_status[status], release, reason)
             statuses[status] = rows
-            lines.append(f"{status}:")
-            lines.extend(text)
+            texts[status] = text
+            for row in rows:
+                if is_object(row) and is_object(placed := row.get("partition")):
+                    partitions[str(placed.get("name"))] = partitions.get(str(placed.get("name")), 0) + 1
         data["statuses"] = statuses
         unknowns = [identifier for identifier in members if view.entries[identifier].record.type == "unknown" and derived_status(universe.settled, view.entries[identifier].record) in OPEN_UNKNOWN]
         data["open_unknowns"] = list[JSON](unknowns)
-        lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
         closure: set[str] = set()
         pending = list(members)
         while pending:
@@ -1025,10 +1121,38 @@ def area(bank: Bank, root: Path, name: str) -> Output:
                     closure.add(target)
                     pending.append(target)
         outside = sorted(closure, key=id_key)
-        rows, text = record_rows(universe, root, outside, release, reason)
-        data["closure"] = rows
-        lines.append(f"linked records outside the area ({len(outside)}):")
-        lines.extend(text)
+        if full:
+            for status, text in texts.items():
+                lines.append(f"{status}:")
+                lines.extend(text)
+            lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
+            rows, text = record_rows(universe, root, outside, release, reason)
+            data["closure"] = rows
+            lines.append(f"linked records outside the area ({len(outside)}):")
+            lines.extend(text)
+            return Output(data, lines)
+        data["closure"] = list[JSON](outside)
+        lines.append("by status: " + ", ".join(f"{len(by_status[status])} {status}" for status in texts))
+        lines.append("by partition: " + ", ".join(f"{partitions.get(part, 0)} {part}" for part in PARTITIONS))
+        open_rows = [line for status in texts for line in texts[status] if line.split(" [", 1)[0].strip() in unknowns]
+        lines.append(f"open unknowns ({len(unknowns)}):" if unknowns else "open unknowns: none")
+        lines.extend(row[:ROW_CAP] for row in open_rows)
+        used = sum(len(line.encode()) + 1 for line in lines)
+        shown = 0
+        rows_text = [(status, row) for status in texts for row in texts[status] if row not in open_rows]
+        for status, row in rows_text:
+            row = row[:ROW_CAP]
+            if used + len(row.encode()) + len(status) + 4 > AREA_BUDGET:
+                break
+            if not shown or rows_text[shown - 1][0] != status:
+                lines.append(f"{status}:")
+                used += len(status) + 2
+            lines.append(row)
+            used += len(row.encode()) + 1
+            shown += 1
+        if shown < len(rows_text):
+            lines.append(f"... {len(rows_text) - shown} more record(s) not shown; memory area {name} --full lists every one, memory get ID reads one")
+        lines.append(f"linked records outside the area: {len(outside)}" + (f": {capped(outside, 12)} (--full lists them)" if outside else ""))
         return Output(data, lines)
 
 
@@ -1102,7 +1226,10 @@ def status(bank: Bank, root: Path) -> Output:
         lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
         undigested = sum(1 for _identifier, why in unverified if why == "no sha256")
         lines.append(f"active evidence not known good on disk: {len(unverified)} ({undigested} without a digest); verify --all checks digests")
-        lines.extend(f"  {identifier}: {why}" for identifier, why in unverified if why != "no sha256")
+        missing = [f"  {identifier}: {why}" for identifier, why in unverified if why != "no sha256"]
+        lines.extend(missing[:20])
+        if len(missing) > 20:
+            lines.append(f"  ... {len(missing) - 20} more; memory verify --all lists each")
         lines.extend(f"notice: {notice}" for notice in current.applied.notices)
         data: dict[str, JSON] = {
             "pin": release.id if release is not None else None, "reason": reason,
@@ -1178,6 +1305,9 @@ def compare_bank(bank: Bank, root: Path) -> Output:
     for key, expected in EXPECTED_CONFIG.items():
         if config.get(key) != expected:
             problems.append(f"config {key} is {config.get(key)!r}, expected {expected!r}")
+    # Reranking follows the service setting (off, or on with a cap the bank config does not report).
+    if config.get("enable_reranking") is not (reranker_cap() is not None):
+        problems.append(f"config enable_reranking is {config.get('enable_reranking')!r}; the service setting says {'on' if reranker_cap() is not None else 'off'}")
     if overrides:
         problems.append(f"bank-level config overrides present: {', '.join(sorted(overrides))}")
     if (banks := bank.banks()) != (bank.bank,):
@@ -1289,8 +1419,11 @@ def register(subparsers: Subcommands) -> None:
     _ = recall_parser.add_argument("--text")
     _ = recall_parser.add_argument("--all-proposals", action="store_true")
     _ = recall_parser.add_argument("--include-evidence", action="store_true")
+    _ = recall_parser.add_argument("--limit", type=int, help=f"hits to rank (default {RECALL_LIMIT})")
+    _ = recall_parser.add_argument("--full", action="store_true", help="every hit's whole text and every link, no size budget")
     area_parser = subparsers.add_parser("area", help="one area's records, unknowns and links")
     _ = area_parser.add_argument("area")
+    _ = area_parser.add_argument("--full", action="store_true", help="every record and every linked record")
     status_parser = subparsers.add_parser("status", help="pin, counts, cited records not current, open unknowns")
     sync_parser = subparsers.add_parser("sync", help="fetch origin main, then reconcile states (lead only)")
     rebuild_parser = subparsers.add_parser("rebuild", help="rebuild the bank from the journal (lead only; needs the free-disk floor)")
@@ -1389,12 +1522,14 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
             return evidence_add(bank, root, _string(values, "path") or "", _string(values, "kind") or "", _string(values, "label") or "", run=run,
                                 without_members=_flag(values, "without_members"))
         case "get":
-            return get(bank, root, _string(values, "id") or "", history=_flag(values, "history"), all_proposals=_flag(values, "all_proposals"))
+            return get(bank, root, _string(values, "id") or "", history=_flag(values, "history"), all_proposals=_flag(values, "all_proposals"),
+                       full=_flag(values, "full"))
         case "recall":
             return recall(bank, root, _string(values, "query") or "", release=_string(values, "release"), text=_string(values, "text"),
-                          all_proposals=_flag(values, "all_proposals"), include_evidence=_flag(values, "include_evidence"))
+                          all_proposals=_flag(values, "all_proposals"), include_evidence=_flag(values, "include_evidence"),
+                          limit=limit if isinstance(limit := values.get("limit"), int) else None, full=_flag(values, "full"))
         case "area":
-            return area(bank, root, _string(values, "area") or "")
+            return area(bank, root, _string(values, "area") or "", full=_flag(values, "full"))
         case "status":
             return status(bank, root)
         case "sync":

@@ -40,6 +40,7 @@ class Options(argparse.Namespace):
     offline: bool = False
     history: bool = False
     all_proposals: bool = False
+    full: bool = False
     json: bool = False
     ci: bool = False
     bank: bool = False
@@ -57,6 +58,7 @@ def parser() -> argparse.ArgumentParser:
     _ = get.add_argument("--offline", action="store_true", help="read the journal in this worktree; no service")
     _ = get.add_argument("--history", action="store_true", help="also list every revision")
     _ = get.add_argument("--all-proposals", action="store_true", help="also show other worktrees' proposed superseders and resolvers")
+    _ = get.add_argument("--full", action="store_true", help="with --history: each revision's whole text")
     _ = get.add_argument("--json", action="store_true", help="print JSON")
     get.set_defaults(handler=run_get)
     check = commands.add_parser("check", help="journal, citations, forks, notices; --bank and --pin need the bank or the pin")

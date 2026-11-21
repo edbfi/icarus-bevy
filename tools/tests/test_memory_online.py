@@ -56,7 +56,7 @@ class FakeBank:
         self.fail_retains: bool = False
         self.extra_banks: tuple[str, ...] = ()
         self.objects: dict[str, int] = {}
-        self.settings: dict[str, object] = dict(online.EXPECTED_CONFIG)
+        self.settings: dict[str, object] = dict(online.EXPECTED_CONFIG) | {"enable_reranking": True}
         self.extra_units: list[Unit] = []
         self.async_calls: int = 0
 
@@ -387,12 +387,12 @@ class RevisionTests(Online):
         self.assertEqual("active", from_b.data["status"])
         self.assertNotIn("proposed", "\n".join(from_b.lines))
         recall_b = "\n".join(online.recall(self.bank, other, "lock follows the key re-read").lines)
-        self.assertIn("F-106 [accepted, active;", recall_b)
+        self.assertIn("F-106 [finding; accepted, active;", recall_b)
         self.assertNotIn(new, recall_b)
         everything = online.get(self.bank, other, "F-106", all_proposals=True)
         self.assertIn(f"proposed superseder: {new} (proposed, another worktree or branch)", everything.lines)
         from_a = "\n".join(online.recall(self.bank, self.root, "lock follows the key re-read").lines)
-        self.assertIn("F-106 [accepted, active;", from_a)
+        self.assertIn("F-106 [finding; accepted, active;", from_a)
         self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", from_a)
         self.assertIn(f"proposed superseder: {new} (proposed, this worktree)", online.get(self.bank, self.root, "F-106").lines)
 
@@ -651,12 +651,12 @@ class ReadingTests(Online):
         text = "\n".join(output.lines)
         self.assertTrue(output.lines[0].startswith("named: F-104 [accepted, active]"))
         self.assertIn("== current ==", text)
-        self.assertIn(f"{mine} [proposed, active; current against REL-9.0.2", text)
-        self.assertIn("F-106 [accepted, active; other-build against REL-9.0.2", text)
+        self.assertIn(f"{mine} [finding; proposed, active; current against REL-9.0.2", text)
+        self.assertIn("F-106 [finding; accepted, active; other-build against REL-9.0.2", text)
         self.assertIn("retired under it: F-101 [accepted, superseded]", text)
         self.assertIn("retired under it: F-102 [accepted, superseded]", text)
         self.assertNotRegex(text, r"(?m)^F-10[12] \[")
-        self.assertNotIn("M-102 [accepted, active;", text)
+        self.assertNotIn("M-102 [evidence; accepted, active;", text)
         self.assertNotIn("U-101@", text)
         self.assertIn("== proposals of other worktrees ==\nF-150 [proposed, active]", text)
         partitions = output.data["partitions"]
@@ -665,9 +665,9 @@ class ReadingTests(Online):
         default = "\n".join(online.recall(self.bank, self.root, "listing lock").lines)
         self.assertNotIn("F-150", default)
         evidence_hits = "\n".join(online.recall(self.bank, self.root, "invented report receipt", include_evidence=True).lines)
-        self.assertIn("M-102 [accepted, active", evidence_hits)
+        self.assertIn("M-102 [evidence; accepted, active", evidence_hits)
         texts = "\n".join(online.recall(self.bank, self.root, "nothing ranks this", text="handler table").lines)
-        self.assertIn(f"{mine} [proposed", texts)
+        self.assertIn(f"{mine} [finding; proposed", texts)
         others = online.recall(self.bank, self.root, "nothing ranks this", text="listing lock", all_proposals=True)
         listed = others.data["other_proposals"]
         assert isinstance(listed, list)
@@ -690,6 +690,62 @@ class ReadingTests(Online):
         self.assertIn("F-101: superseded (first cited at src/lib.rs:1)", "\n".join(online.check_pin(self.root).lines))
         self.assertIn("M-101: missing: work/invented-case/rea-bundle.json", summary)
         self.assertEqual(state.data, online.status(self.bank, self.root).data)
+
+
+class CompactReadTests(Online):
+    def reference(self) -> str:
+        body = "# Invented reference\n\n" + "".join(f"## Section {number}\n\nInvented filler paragraph {number} about nothing in particular.\n\n" for number in range(60))
+        body += "## Lock rules\n\nInvented: the listing lock key is checked here.\n"
+        output = online.propose(self.bank, self.root, "reference", Changes({"title": "Invented long reference", "scope": {
+            "basis": "explicit", "subjects": ["tooling"]}}, body=body), now=self.tick())
+        self.assertEqual(0, output.status)
+        return body
+
+    def test_recall_prints_pointers_a_passage_and_capped_links_within_a_budget(self) -> None:
+        self.accepted_chain()
+        body = self.reference()
+        compact = online.recall(self.bank, self.root, "listing lock key")
+        text = "\n".join(compact.lines)
+        self.assertIn("REF-001 [reference; proposed, current;", text)
+        self.assertIn("passage", text)
+        self.assertIn("listing lock key", text)
+        self.assertNotIn("Invented filler paragraph 30", text, "a REF hit never prints its body")
+        self.assertLessEqual(len(text.encode()), online.RECALL_BUDGET + 1024)
+        partitions = compact.data["partitions"]
+        assert isinstance(partitions, dict)
+        self.assertFalse(any("text" in item for items in partitions.values() if isinstance(items, list) for item in items if isinstance(item, dict)))
+        full = "\n".join(online.recall(self.bank, self.root, "listing lock key", full=True).lines)
+        self.assertIn("Invented filler paragraph 30", full)
+        self.assertIn(body.split("\n")[0], full)
+        _ = self.enterContext(patch.object(online, "RECALL_BUDGET", 200))
+        tight = online.recall(self.bank, self.root, "listing lock key")
+        self.assertTrue(tight.data["not_shown"])
+        self.assertIn("not shown (", "\n".join(tight.lines))
+        ranked = online.recall(self.bank, self.root, "listing lock key", limit=1).data["documents"]
+        assert isinstance(ranked, list)
+        self.assertEqual(1, len(ranked))
+
+    def test_the_passage_is_trimmed_around_the_query_under_its_heading(self) -> None:
+        unit = "x " * 1000 + "the listing lock key is here " + "y " * 1000
+        excerpt, heading = online.passage("listing lock", [unit], "# Doc\n\n## Lock rules\n\n" + unit)
+        self.assertIn("listing lock", excerpt)
+        self.assertLessEqual(len(excerpt), online.PASSAGE_CAP + 2)
+        self.assertEqual("Lock rules", heading)
+        self.assertEqual("A, B (+2 more)", online.capped(["A", "B", "C", "D"], 2))
+
+    def test_area_and_history_are_bounded_unless_full(self) -> None:
+        self.accepted_chain()
+        _ = self.enterContext(patch.object(online, "AREA_BUDGET", 400))
+        compact = "\n".join(online.area(self.bank, self.root, "listing").lines)
+        self.assertIn("more record(s) not shown; memory area listing --full", compact)
+        self.assertIn("by status:", compact)
+        full = "\n".join(online.area(self.bank, self.root, "listing", full=True).lines)
+        self.assertIn("linked records outside the area (", full)
+        self.assertGreater(len(full), len(compact))
+        _ = online.revise(self.bank, self.root, "U-101", changes(status="investigating"), now=self.tick())
+        history = online.get(self.bank, self.root, "U-101", history=True)
+        self.assertEqual(2, sum(1 for line in history.lines if line.startswith("  ") and " in memory/journal/" in line))
+        self.assertGreater(len("\n".join(online.get(self.bank, self.root, "U-101", history=True, full=True).lines)), len("\n".join(history.lines)))
 
 
 class SyncAndRebuildTests(Online):
