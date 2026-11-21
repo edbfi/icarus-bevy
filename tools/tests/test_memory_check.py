@@ -273,7 +273,7 @@ class GetTests(Repository):
         _ = write(self.root, [finding("F-405", "Invented proposal")], second=1)
         status, output, _ = self.run_get("F-101", "--offline")
         self.assertEqual(0, status)
-        self.assertTrue(output.startswith("F-101 finding active\nInvented: the prompt"))
+        self.assertTrue(output.startswith("F-101 finding superseded\nInvented: the prompt"), "the text renders the derived status, as the bank holds it")
         for line in ("state: accepted", "status: superseded (stored active)", "partition: other-build against REL-9.0.2; tokens server:90000001",
                      "superseded by: F-102 (terminal: F-106)"):
             self.assertIn(line, output)

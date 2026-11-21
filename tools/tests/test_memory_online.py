@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -15,7 +17,7 @@ from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
-from tools.memory import bank as bank_module, durability, journal, online, service
+from tools.memory import bank as bank_module, cli, durability, journal, online, service
 from tools.memory.bank import Applied, Bank, BankError, Desired, Universe, desired, gather
 from tools.memory.durability import Watermark
 from tools.memory.gitio import GitError, run_git as run_git_tool
@@ -699,6 +701,80 @@ class ReadingTests(Online):
         self.assertIn("F-101: superseded (first cited at src/lib.rs:1)", "\n".join(online.check_pin(self.root).lines))
         self.assertIn("M-101: missing: work/invented-case/rea-bundle.json", summary)
         self.assertEqual(state.data, online.status(self.bank, self.root).data)
+
+
+class SharedFormatterTests(Online):
+    """``get --offline`` prints ``online.describe`` as ``get`` does; tracked locators; legacy-resolved unknowns."""
+
+    def migrated(self) -> None:
+        """A migrated REF holding a deleted spec, tracked evidence pointing at it and at a live file, and a
+        legacy-resolved unknown listing findings, all accepted."""
+        body = "# Invented spec\n\n## Wire format\n\nInvented bytes.\n"
+        ref: dict[str, JSON] = {"id": "REF-101", "type": "reference", "status": "current", "title": "Invented spec",
+                                "scope": {"basis": "explicit", "subjects": ["tooling"]}, "body_sha256": sha256_hex(body.encode()),
+                                "legacy": {"path": "docs/specs/invented.md", "cells": {"document": "docs/specs/invented.md"}}}
+        tracked: dict[str, JSON] = {"class": "tracked"}
+        moved = evidence("M-151", "docs/specs/invented.md", kind="report", **tracked, refs=["REF-101"], gaps=["sha256"],
+                         legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+        anchored = evidence("M-152", "docs/live.md#wire-format", kind="report", **tracked, gaps=["sha256"],
+                            legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+        lost = evidence("M-153", "docs/gone.md", kind="report", **tracked, gaps=["sha256"], legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+        old = unknown("U-151", "Which invented field wins?", status="open", refs=["F-103", "F-104"],
+                      legacy={"path": "docs/ledgers/unknowns.md", "cells": {"Status": "resolved"}, "implied_status": "resolved"})
+        for item in (moved, anchored, lost):
+            del item["sha256"]
+        _ = write(self.root, chain())
+        _ = write_change_set(self.root, CREATED.replace(second=30), [Revision.of(Record.from_json(ref, body))]
+                             + [Revision.of(Record.from_json(item)) for item in (moved, anchored, lost, old)])
+        self.put("docs/live.md", "# Live\n\n## Wire format\n\nInvented.\n")
+        commit_all(self.root)
+
+    def offline(self, *args: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(output):
+            self.assertEqual(0, cli.main(["get", *args, "--offline"]))
+        text = output.getvalue()
+        self.assertTrue(text.endswith("\n"))
+        return text[:-1].split("\n")
+
+    def test_offline_and_online_get_print_the_same_lines(self) -> None:
+        self.migrated()
+        for identifier in ("F-102", "M-102", "M-151", "REF-101", "U-151"):
+            for flags in ((), ("--history",), ("--history", "--full")):
+                with self.subTest(identifier=identifier, flags=flags):
+                    online_text = "\n".join(online.get(self.bank, self.root, identifier, history=bool(flags), full="--full" in flags).lines)
+                    self.assertEqual(online_text.split("\n"), self.offline(identifier, *flags))
+        evidence_lines = self.offline("M-102")
+        self.assertFalse(any(line.startswith("partition:") for line in evidence_lines), "evidence has no partition")
+        self.assertIn("partition: unscoped against REL-9.0.2", self.offline("REF-101"))
+        self.assertEqual(1, sum(1 for line in self.offline("F-102", "--history") if line.startswith("  ") and " in memory/journal/" in line),
+                         "--history without --full prints one line per revision")
+
+    def test_a_tracked_locator_is_checked_without_a_digest(self) -> None:
+        self.migrated()
+        result = online.verify(self.root, ["M-151", "M-152", "M-153"])
+        self.assertEqual(["M-151: legacy-unverifiable (tracked file migrated to REF-101; content: REF-101)",
+                          "M-152: legacy-unverifiable (no sha256)", "M-153: unavailable (missing: docs/gone.md)"], result.lines[:3])
+        self.assertEqual(0, result.status, "a tracked record never fails verify")
+        self.put("docs/live.md", "# Live\n\n## Other heading\n")
+        self.assertEqual("M-152: unavailable (missing: docs/live.md#wire-format)", online.verify(self.root, ["M-152"]).lines[0])
+        got = online.get(self.bank, self.root, "M-151")
+        self.assertEqual("content: REF-101 (the tracked file docs/specs/invented.md was migrated there)", got.lines[got.lines.index("") + 1])
+        self.assertEqual("REF-101", got.data["content"])
+        self.assertEqual({"#a", "a", "a-1", "x"}, online.anchors('# A\n## a\n<a id="x"></a>\n') | {"#a"})
+
+    def test_a_legacy_resolved_unknown_lists_findings_and_only_stated_resolvers_resolve(self) -> None:
+        self.migrated()
+        lines = online.get(self.bank, self.root, "U-151").lines
+        self.assertIn("status: resolved (legacy status)", lines)
+        self.assertIn("findings listed: F-103, F-104", lines)
+        self.assertFalse(any(line.startswith(("resolved by:", "refs:")) for line in lines))
+        recalled = "\n".join(online.recall(self.bank, self.root, "which invented field wins").lines)
+        self.assertIn("U-151 [unknown; accepted, resolved (legacy status);", recalled)
+        self.assertIn("  findings listed: F-103, F-104", recalled)
+        stated = online.get(self.bank, self.root, "U-101").lines
+        self.assertIn("resolved by: F-103", stated)
+        self.assertIn("status: resolved (stored open)", stated)
 
 
 class CompactReadTests(Online):
