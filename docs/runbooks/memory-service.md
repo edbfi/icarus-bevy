@@ -101,7 +101,9 @@ stops being protected as soon as its `evidence/` leaves the working tree.
    `memory salvage <branch> --check`, then
    `memory salvage <branch> --out work/<case>/salvage`.
    `--out` writes the proposals under `<out>/memory/journal/` and each pending
-   document's body under `<out>/documents/<path>`. Salvage resolves
+   document's body under `<out>/documents/<path>`; it leaves an identical file
+   alone and refuses a file with other content (`… exists with other content;
+   nothing written (move it away or use another --out)`). Salvage resolves
    `origin/main` (`--main REF` names another); REF, CP and RP numbers in the
    report are `origin/main`'s. A tip that already merged the cut-over is
    refused with the pre-merge tip to use.
@@ -112,22 +114,29 @@ stops being protected as soon as its `evidence/` leaves the working tree.
      output segments;
    - `needs a superseding record: …`: `memory propose` the branch's content as
      a new record, then `memory supersede <old> --by <new>`;
-   - `needs a decision by hand: …`: settle it with the record's owner; one
-     that says `it cites … (a provisional number), whose record must be
-     accepted first` waits for that new document or CP/RP row: get it
-     accepted, then run salvage again; one that names `one of N records
-     sharing the …` is settled by hand, as is any row citing it;
+   - `needs a decision by hand: …`: settle it with the record's owner. One
+     that says `it cites the new document <path> (REF-N, a provisional
+     number), whose record must be accepted first` (or a new CP/RP row) waits:
+     get that record accepted, then run salvage again, which finds the
+     accepted REF by its body and proposes the row with its ID. Rows that say
+     `one of N records sharing the …`, `which the accepted journal holds N
+     times` or `a rename needs a superseding record; decide by hand` are
+     settled by hand, as is any row citing one;
    - `conflict: …: origin/main holds other content under this ID`: when both
      sides allocated the number (as M-1623 to M-1625 on one existing branch), add the
      branch's record under a new ID (`memory evidence add`, `memory propose`)
      and rewrite the branch's citations; when `main` took an earlier draft,
      reconcile by hand with `memory revise` or a superseding record;
    - a pending document: `--out` prints the command that uses the body it
-     wrote, `memory revise REF-N --body <out>/documents/<path>` for a changed
-     document or `memory propose reference --set 'title=…' --set-json
-     'scope={"basis": "explicit"}' --body <out>/documents/<path>` for a new
-     one; run it as printed. Without `--out` the line names only the REF
-     (`changed document; revise REF-N with the body salvage --out writes`).
+     wrote. A changed document: `memory revise REF-N --body
+     <out>/documents/<path>`, run as printed. A new one: `memory propose
+     reference --set 'title=…' --set-json 'scope=<STATE THE SCOPE>' --body
+     <out>/documents/<path>`, which is refused until `<STATE THE SCOPE>` is
+     replaced by a JSON scope you state; the line under it (`the scope must
+     be stated by whoever proposes it: … the text names: …`) lists the build,
+     release and commit tokens in the text, which salvage neither keeps nor
+     upgrades. Without `--out` a line names only the REF (`changed document;
+     revise REF-N with the body salvage --out writes`).
 4. On a new branch from `main`, copy the output's `memory/journal/` segments
    into `memory/journal/`, add the records from step 3, run
    `memory check --ci`, commit and open the pull request. After it merges, the
