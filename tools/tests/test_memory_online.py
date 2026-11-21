@@ -1484,6 +1484,14 @@ class PendingTerminalTests(Online):
         self.assertIn("superseded by: F-603 (terminal: F-603)", online.get(self.bank, self.root, "F-602").lines)
 
 
+class BodyFileTests(unittest.TestCase):
+    def test_a_body_file_is_read_without_newline_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "body.md"
+            _ = path.write_bytes(b"# Title\r\n\r\nLine.\r\n")
+            self.assertEqual("# Title\r\n\r\nLine.\r\n", online.changes_from({"body": str(path)}).body)
+
+
 class StampTests(Online):
     """Reads skip the bank diff only when the reconcile stamp shows nothing new; check --bank never trusts it."""
 

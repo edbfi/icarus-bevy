@@ -74,7 +74,6 @@ or written).
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shlex
 import sys
@@ -85,15 +84,18 @@ from typing import Protocol
 
 from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
-from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set, write_change_set
+from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set
 from tools.memory.legacy import SALVAGED, TRACKED_NOTE, commit_time, export
 from tools.memory.legacy_reader import CatalogError, has_legacy
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
+from tools.memory.service import write_private
 from tools.memory.state import State, replay
 
 ACCEPTANCE_REF = "origin/main"
 EXIT_SUPERSEDE = 4
+# A new document's printed command carries this in place of a scope: not JSON, so the tool refuses it until replaced.
+SCOPE_PLACEHOLDER = "<STATE THE SCOPE>"
 # The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.
 STATUS_NOTE = "status cell (salvaged legacy row): {}"
 EXIT_PREMERGE = 5
@@ -128,13 +130,22 @@ class Pending:
     target: str | None
     body: str
     title: str
+    names: tuple[str, ...] = ()
 
     def command(self, file: str) -> str:
-        """What the operator runs once ``--out`` wrote the body to ``file``."""
+        """What the operator runs once ``--out`` wrote the body to ``file``. For a new document the scope is the
+        operator's statement: the command carries ``SCOPE_PLACEHOLDER``, which the tool's parser refuses (not JSON),
+        so it cannot run until they replace it; ``scope_line`` says what the exporter read from the text."""
         if self.target is not None:
             return f"memory revise {self.target} --body {shlex.quote(file)}"
-        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + json.dumps({'basis': 'explicit'}))}"
+        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                 + f" --body {shlex.quote(file)}")
+
+    def scope_line(self) -> str:
+        """For a new document: who states the scope, and the build, release and commit tokens its text names."""
+        named = f"the text names: {', '.join(self.names)}" if self.names else "the text names no build, release or commit"
+        return (f"the scope must be stated by whoever proposes it: replace {SCOPE_PLACEHOLDER} with a JSON scope"
+                + f" (salvage neither keeps nor upgrades the text's tokens); {named}")
 
     def line(self) -> str:
         """The pending document without ``--out``: no path is named that does not exist."""
@@ -425,7 +436,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         proposals[target] = linked
                     else:
                         carriers[target] = linked
-                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "revision", "superseded"):
+                elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "cosmetic", "revision", "superseded"):
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
@@ -438,7 +449,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
         failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing})
         if not failing:
             for target in carriers:
-                if result.kinds.get(target) in (None, "accepted", "superseded"):
+                if result.kinds.get(target) in (None, "accepted", "cosmetic", "superseded"):
                     result.kinds[target] = "revision"
             return everything, unlinkable
         for identifier, reason in failing.items():
@@ -542,7 +553,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
         on_main = main_refs.get(path)
         body, title = record.body or "", record.text("title") or path
         if on_main is None and body not in held_bodies:
-            result.documents.append(Pending(path, None, body, title))
+            result.documents.append(Pending(path, None, body, title, record.scope.tokens if record.scope is not None else ()))
             result.notices.append(f"{path}: {result.documents[-1].line()}")
         elif on_main is not None and record.body not in (on_main.body, base_bodies.get(path)):
             result.documents.append(Pending(path, on_main.id, body, title))
@@ -568,6 +579,11 @@ def identity(record: Record) -> str | None:
     if record.type == "report":
         return f"report row {record.text('problem')!r}"
     return None
+
+
+def name_of(record: Record) -> str:
+    """The cell a CP or RP row is known by (its identity, without the table)."""
+    return record.text("name") or record.text("problem") or record.id
 
 
 def relink(record: Record, mapping: Mapping[str, str]) -> Record:
@@ -596,11 +612,13 @@ def relink(record: Record, mapping: Mapping[str, str]) -> Record:
 def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record]) -> tuple[list[dict[str, Record]], dict[str, str], set[str]]:
     """Each export with its migration-assigned IDs translated to the accepted journal's, by ``identity``.
 
-    A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID. A record
-    with no accepted counterpart gets a provisional number above every accepted one, the same in every export. Records
-    that share an identity within one export cannot be told apart, so none of them is mapped: EACH gets its own
-    provisional number (the k-th record of that identity, in the export's order, the same in every export) and is
-    returned in the third set, so that it and every row citing it are held. Every record survives under a distinct
+    A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID. A REF with
+    no accepted counterpart by path takes the ID of the one accepted REF without ``legacy`` (proposed by hand with the
+    command salvage prints) whose body equals its body, when exactly one does. A record with no accepted counterpart gets a provisional number above every accepted one, the same in every export. Records
+    that share an identity within one export, or whose identity the accepted journal holds more than once, cannot be
+    told apart, so none of them is mapped: EACH gets its own provisional number (the k-th record of that identity,
+    in the export's order, the same in every export) and is returned in the third set, so that it and every row
+    citing it are held. Every record survives under a distinct
     ID; a collision raises ``SalvageError`` naming the two IDs. Returns the exports, the provisional IDs with what
     each is, and the provisional IDs of records sharing an identity."""
     counts: dict[str, int] = {}
@@ -608,6 +626,11 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
         if (key := identity(record)) is not None:
             counts[key] = counts.get(key, 0) + 1
     known = {key: record.id for record in accepted.values() if (key := identity(record)) is not None and counts[key] == 1}
+    # A REF proposed by hand (``memory propose reference``) has no legacy path: a branch document maps to it by body.
+    by_body: dict[str, list[str]] = {}
+    for record in accepted.values():
+        if record.type == "reference" and record.legacy is None and record.body is not None:
+            by_body.setdefault(record.body, []).append(record.id)
     top = {prefix: max((int(name.split("-", 1)[1]) for name in accepted if name.split("-", 1)[0] == prefix), default=0) for prefix in ASSIGNED}
     provisional: dict[tuple[str, int], str] = {}
     unmapped: dict[str, str] = {}
@@ -626,16 +649,26 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
                 continue
             if key in known and seen[key] == 1:
                 target = known[key]
+            elif record.type == "reference" and key not in counts and seen[key] == 1 and len(found := by_body.get(record.body or "", [])) == 1:
+                target = found[0]
             else:
-                place = (key, ordinal.get(key, 0) if seen[key] > 1 else -1)
+                # Ambiguity on either side is ambiguity: the export or the accepted journal holding the identity twice.
+                ambiguous = seen[key] > 1 or counts.get(key, 0) > 1
+                place = (key, ordinal.get(key, 0) if ambiguous else -1)
                 ordinal[key] = ordinal.get(key, 0) + 1
                 if place not in provisional:
                     prefix = record.id.split("-", 1)[0]
                     top[prefix] += 1
                     provisional[place] = f"{prefix}-{top[prefix]:03d}"
-                    unmapped[provisional[place]] = f"one of {seen[key]} records sharing the {key}" if seen[key] > 1 else f"the new {key}"
+                    if counts.get(key, 0) > 1:
+                        holders = sorted((name for name, other in accepted.items() if identity(other) == key), key=id_key)
+                        unmapped[provisional[place]] = f"a record of the {key}, which the accepted journal holds {len(holders)} times ({', '.join(holders)})"
+                    elif seen[key] > 1:
+                        unmapped[provisional[place]] = f"one of {seen[key]} records sharing the {key}"
+                    else:
+                        unmapped[provisional[place]] = f"the new {key}"
                 target = provisional[place]
-                if seen[key] > 1:
+                if ambiguous:
                     shared.add(target)
             if target != record.id:
                 mapping[record.id] = target
@@ -675,9 +708,29 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         if identifier in after:
             superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
 
+    # Within one table, a lost accepted identity beside a gained one may be a rename (a name or problem cell edited):
+    # salvage cannot tell a rename from a delete and an add, so it proposes neither and holds both.
+    renamed: dict[str, str] = {}
+    for kind in ("compatibility", "report"):
+        lost = sorted((name for name, other in before.items() if other.type == kind and name in accepted and name not in after), key=id_key)
+        gained = sorted((name for name, other in after.items() if other.type == kind and name in unmapped and name not in shared and name not in before),
+                        key=id_key)
+        if lost and gained:
+            for name in lost:
+                renamed[name] = (f"it is gone from the branch and new {kind} rows appeared ({', '.join(f'{name_of(after[item])!r} as {item}' for item in gained)}): "
+                                 + "a rename needs a superseding record; decide by hand")
+            for name in gained:
+                renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
+                                 + "a rename needs a superseding record; decide by hand")
     changed: list[str] = []
+    for name in sorted(set(renamed) - set(after), key=id_key):
+        hold(name, "undecided", renamed[name])
     for identifier in sorted(after, key=id_key):
         record = after[identifier]
+        if identifier in renamed:
+            changed.append(identifier)
+            hold(identifier, "undecided", renamed[identifier])
+            continue
         if record.type not in SALVAGED or before.get(identifier) == record:
             continue
         changed.append(identifier)
@@ -756,7 +809,6 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                    if (held := accepted.get(target)) is None or identifier not in held.links.supersedes]
         if edit.empty:
             result.kinds[identifier] = "cosmetic"
-            result.notices.append(f"{identifier}: only verbatim legacy text changed on {ref}; nothing to propose")
         elif revision is None and not pending:
             result.kinds[identifier] = "accepted"
         elif on_main != origin and on_main != apply(edit, origin):
@@ -783,9 +835,12 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {outcome}")
     for target, reason in sorted(unlinkable.items()):
         result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
+    # A cosmetic row that ends up carrying a link is a revision now; the notice is for rows still cosmetic.
+    result.notices.extend(f"{identifier}: only verbatim legacy text changed on {ref}; nothing to propose"
+                          for identifier in changed if result.kinds.get(identifier) == "cosmetic")
     shared_keys = {identity(after[name]) for name in shared if name in after}
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
-                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys)
+                          if before[identifier].type in SALVAGED and identity(before[identifier]) not in shared_keys and identifier not in renamed)
     result.proposals.sort(key=lambda revision: (revision.record.type, id_key(revision.record.id)))
     invariants(result, changed, on_accepted)
     return superseding
@@ -852,21 +907,30 @@ def run(options: argparse.Namespace) -> int:
               + f"{len(result.undecided)} needing a decision by hand, "
               + f"{len(result.conflicts)} conflict(s), {len(accepted)} row(s) already accepted "
               + f"(against {main} {result.main[:12]}'s {'journal' if result.source == 'journal' else 'legacy export'})", file=sys.stderr)
+        segments = split_change_set(commit_time(root, result.head), result.proposals) if result.proposals else []
         if out is not None:
+            planned = [(out / "documents" / document.path, document.body.encode()) for document in result.documents]
+            planned += [(out / path, data) for path, data in segments]
+            # Never overwrite: an existing file with the same bytes is left alone; one with other bytes (an operator's
+            # edit, an earlier run's other output) refuses the whole run before anything is written.
+            if differing := [target for target, data in planned if target.exists() and target.read_bytes() != data]:
+                print(f"memory salvage: {differing[0]} exists with other content; nothing written (move it away or use another --out)", file=sys.stderr)
+                return 1
+            for target, data in planned:
+                if not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    write_private(target, data)
             for document in result.documents:
                 target = out / "documents" / document.path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _ = target.write_bytes(document.body.encode())
                 print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)
-        if result.proposals:
-            created = commit_time(root, result.head)
-            if out is not None:
-                written = write_change_set(out, created, result.proposals)
-                print(f"memory salvage: wrote {len(written)} segment(s) under {out}", file=sys.stderr)
-            else:
-                for path, data in split_change_set(created, result.proposals):
-                    print(f"# {path}")
-                    print(data.decode(), end="")
+                if document.target is None:
+                    print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
+            if segments:
+                print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)
+        else:
+            for path, data in segments:
+                print(f"# {path}")
+                print(data.decode(), end="")
     except SalvageError as error:
         print(f"memory salvage: internal error, nothing written: {error}", file=sys.stderr)
         return 1

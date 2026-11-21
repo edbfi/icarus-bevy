@@ -1817,9 +1817,12 @@ def _strings(values: Mapping[str, object], name: str) -> list[str]:
 
 
 def _read(path: str) -> str:
+    """A ``--body`` or ``--file`` argument's text, exactly as written: no newline translation, so a body with CRLF
+    keeps its bytes (salvage decides a document is done by comparing bodies exactly)."""
     if path == "-":
-        return sys.stdin.read()
-    return Path(path).read_text(encoding="utf-8")
+        return sys.stdin.buffer.read().decode("utf-8")
+    with Path(path).open(encoding="utf-8", newline="") as handle:
+        return handle.read()
 
 
 def changes_from(values: Mapping[str, object]) -> Changes:

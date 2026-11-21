@@ -17,18 +17,21 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import SALVAGED, TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import Accepted, Salvage, SalvageError, classify, renumber
+from tools.memory.salvage import Accepted, Salvage, SalvageError, classify, identity, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
 SEEDS = range(300)
 
 
-def row(identifier: str, cell: str, claim: str = "Invented claim", successors: tuple[str, ...] = ()) -> Record:
+def row(identifier: str, cell: str, claim: str = "Invented claim", successors: tuple[str, ...] = (), original: str | None = None) -> Record:
     """A migrated finding as the exporter writes one: stored status from the cell, implied status and successors."""
     lowered = cell.lower()
     implied = "superseded" if "superseded" in lowered else "retired" if lowered.startswith("retired") and lowered != "retired" else None
-    legacy: dict[str, JSON] = {"path": "docs/ledgers/findings/generated.md", "cells": {"claim": f"{claim} {identifier}", "status": cell}}
+    cells: dict[str, JSON] = {"claim": f"{claim} {identifier}", "status": cell}
+    if original is not None:
+        cells["original"] = original  # the raw line: a change to it alone is cosmetic
+    legacy: dict[str, JSON] = {"path": "docs/ledgers/findings/generated.md", "cells": cells}
     if implied is not None:
         legacy["implied_status"] = implied
     if successors:
@@ -93,6 +96,13 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
             after[identifier] = row(identifier, rng.choice(["active", "retired", "retired: replaced", "parked"]))
         else:
             after[identifier] = row(identifier, "active", claim="Changed claim")
+    if rng.random() < 0.25 and len(base_ids) >= 2:
+        # A cosmetic-only successor of a superseded row: the raw line changed, nothing else.
+        successor, old = base_ids[-1], base_ids[-2]
+        held = before[successor].legacy
+        before_cell = held.cells["status"] if held is not None else "active"
+        after[successor] = row(successor, str(before_cell), original=f"|  {successor}  | spaced |")
+        after[old] = row(old, f"superseded-by {successor}", successors=(successor,))
     for identifier in fresh_ids:
         if rng.random() < 0.4:
             other = rng.choice([item for item in candidates if item != identifier])
@@ -101,9 +111,17 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
             after[identifier] = row(identifier, "active")
     # Migration-assigned records: the branch may insert a document sorting first and a compatibility row in the middle,
     # renumbering the rest in its export; an unchanged tracked row and a finding cite later ones by those numbers.
-    main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma"]
+    # Main may itself hold one name twice (two accepted rows of one identity).
+    twins = rng.random() < 0.2
+    main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
-    branch_names = ["Alpha", "Beta", "Gamma"] if rng.random() < 0.5 else main_names
+    branch_names = ["Alpha", "Beta", *main_names[1:]] if rng.random() < 0.5 else list(main_names)
+    if twins and rng.random() < 0.4:
+        branch_names.remove("Gamma")  # the branch drops one of main's twins: the other is still ambiguous on main
+    if rng.random() < 0.25:
+        branch_names[0] = "Alpha renamed"  # a rename: an accepted name lost, a new one gained
+    if rng.random() < 0.25:
+        branch_names.append("Delta")  # an unrelated new row
     # A repeated name: two new rows of one name, or a second row of an accepted name.
     repeated = rng.choice([[], [], ["Dup", "Dup"], ["Gamma"]])
     branch_names = [*branch_names, *repeated]
@@ -111,8 +129,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         refs, cps = numbered(paths, names)
         export.update({refs[path]: document(refs[path], path) for path in paths})
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
+        if twins and export is after and rng.random() < 0.5:
+            # The branch changes one of main's twin rows.
+            last = max(f"CP-{number:03d}" for number, name in enumerate(names, 1) if name == "Gamma")
+            export[last] = Record.from_json(export[last].to_json() | {"status": "observed"})
         export["M-500"] = tracked("M-500", "docs/specs/e.md", refs["docs/specs/e.md"])
-        cited = export[base_ids[0]].to_json() | {"refs": [cps["Gamma"]]}
+        cited = export[base_ids[0]].to_json() | {"refs": [cps["Gamma" if not twins else names[1] if names[1] != "Gamma" else names[0]]]}
         export[base_ids[0]] = Record.from_json(cited)
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.5:
         after["M-501"] = tracked("M-501", "docs/specs/a.md", numbered(branch_paths, branch_names)[0]["docs/specs/a.md"])
@@ -157,7 +179,18 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
-            if sum(1 for record in raw_after.values() if record.text("name") == "Gamma") > 1:
+            self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
+                             f"seed {seed}: a cosmetic row refused as a successor")
+            lost = {identity(record) for record in accepted.records.values() if record.type in ("compatibility", "report")} \
+                - {identity(record) for record in raw_after.values()}
+            if lost:
+                self.assertEqual([], [item.record.id for item in result.proposals if item.record.type in ("compatibility", "report")],
+                                 f"seed {seed}: an accepted identity disappeared while a new row of its table is proposed")
+            held_identities = {identity(record) for record in accepted.records.values()} - {None}
+            self.assertEqual([], [item.record.id for item in result.proposals
+                                  if result.kinds.get(item.record.id) == "new" and identity(item.record) in held_identities],
+                             f"seed {seed}: a new record whose identity the accepted journal already has")
+            if sum(1 for record in raw_after.values() if record.text("name") == "Gamma") > 1 == sum(1 for record in raw_before.values() if record.text("name") == "Gamma"):
                 self.assertEqual("undecided", result.kinds[base_ids(raw_before)[0]], f"seed {seed}: a row citing a shared name")
             if "M-501" in after:
                 self.assertEqual("undecided", result.kinds["M-501"], f"seed {seed}: a row citing a new document")
@@ -179,13 +212,33 @@ class GeneratedSalvageTests(unittest.TestCase):
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
             self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
-            held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict")}
+            # Held rows keep their class; a provisional number may move once other records are accepted, so those compare by identity.
+            held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict") and name not in unmapped}
             self.assertEqual(held, {name: kind for name, kind in again.kinds.items() if name in held}, f"seed {seed}: second run")
+            held_new = sorted(str(identity(after[name])) for name, kind in result.kinds.items() if kind == "undecided" and name in unmapped and name in after)
+            again_new = sorted(str(identity(after_again[name])) for name, kind in again.kinds.items() if kind == "undecided" and name in unmapped_again and name in after_again)
+            self.assertEqual(held_new, again_new, f"seed {seed}: second run, provisional rows")
             changed = {name for name, record in after.items() if before.get(name) != record}
             proposed = {revision.record.id for revision in result.proposals} & changed
-            self.assertEqual({name: "accepted" for name in proposed}, {name: again.kinds.get(name) for name in proposed},
+            # Accepted, or (a cosmetic row that carried a link in run 1, now accepted) cosmetic: nothing left to propose either way.
+            self.assertEqual(set[str](), {name for name in proposed if again.kinds.get(name) not in ("accepted", "cosmetic")},
                              f"seed {seed}: what run 1 proposed is accepted in run 2")
             self.assertEqual(set[str](), {name for name, kind in again.kinds.items() if kind == "conflict"} - set(held), f"seed {seed}: new conflicts")
+            if "M-501" in raw_after:
+                # The new document proposed by hand (no legacy, same body) and accepted: the row citing it now translates.
+                body = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/a.md")
+                assert body is not None
+                hand = Revision.of(Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "docs/specs/a.md",
+                                                     "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest()}, body))
+                with_hand = (*merged, Segment("memory/journal/hand.jsonl", "", (hand,)))
+                state = replay(with_hand)
+                later = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
+                                 {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", with_hand)
+                (after_hand, before_hand), unmapped_hand, shared_hand = renumber((raw_after, raw_before), later.records)
+                third = Salvage("generated", "f" * 40, "b" * 40, "c" * 40)
+                _ = classify(third, after_hand, before_hand, later, unmapped_hand, shared_hand)
+                self.assertEqual("new", third.kinds["M-501"], f"seed {seed}: run after the document is accepted")
+                self.assertEqual(("REF-900",), next(item.record for item in third.proposals if item.record.id == "M-501").links.refs, f"seed {seed}")
 
 
 if __name__ == "__main__":
