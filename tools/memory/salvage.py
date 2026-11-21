@@ -130,37 +130,81 @@ class Salvage:
 
 @dataclass(frozen=True)
 class Pending:
-    """A document the branch changed or added: its legacy path, the accepted REF whose body to revise (``None`` for
-    a new document), and the body and title the exporter gives its REF at the salvaged tip."""
+    """A document the branch changed or added: its legacy path, what it needs (``kind``: ``new``, ``revise`` the body
+    of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope, or
+    ``ambiguous`` when the accepted journal holds the path more than once, ``holders``), and the body, title and
+    scope tokens (``names``) the exporter gives its REF at the salvaged tip."""
 
     path: str
-    target: str | None
+    kind: str
     body: str
     title: str
     names: tuple[str, ...] = ()
+    target: str | None = None
+    holders: tuple[str, ...] = ()
+    scope: tuple[str, ...] = ()
 
-    def command(self, file: str) -> str:
-        """What the operator runs once ``--out`` wrote the body to ``file``. For a new document the scope is the
-        operator's statement: the command carries ``SCOPE_PLACEHOLDER``, which the tool's parser refuses (not JSON),
-        so it cannot run until they replace it; ``scope_line`` says what the exporter read from the text."""
-        if self.target is not None:
-            return f"memory revise {self.target} --body {shlex.quote(file)}"
-        return (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
-                + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
+    def commands(self, file: str) -> list[str]:
+        """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
+        scope is the operator's statement: the command carries ``SCOPE_PLACEHOLDER``, which the tool's parser refuses
+        (not JSON) until replaced; ``scope_line`` says what the exporter read from the text."""
+        if self.kind == "revise":
+            return [f"memory revise {self.target} --body {shlex.quote(file)}"]
+        if self.kind == "ambiguous":
+            return []
+        propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
+                   + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
+        return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
 
     def scope_line(self) -> str:
-        """For a new document: who states the scope, and the build, release and commit tokens its text names."""
-        named = f"the text names: {', '.join(self.names)}" if self.names else "the text names no build, release or commit"
+        """For a new REF: who states the scope, and the build, release and commit tokens its text names."""
         return (f"the scope must be stated by whoever proposes it: replace {SCOPE_PLACEHOLDER} with a JSON scope"
-                + f" (salvage neither keeps nor upgrades the text's tokens); {named}")
+                + f" (salvage neither keeps nor upgrades the text's tokens); {spoken(self.names, 'the text names')}")
 
     def line(self) -> str:
         """The pending document without ``--out``: no path is named that does not exist."""
-        if self.target is not None:
+        if self.kind == "revise":
             return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
                     + " branch's; a body merged by hand into other text stays listed)")
+        if self.kind == "supersede":
+            return (f"changed document; {spoken(self.names, 'its text names')}, {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
+                    + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
+                    + " (salvage --out writes its body and the commands)")
+        if self.kind == "ambiguous":
+            return f"changed document; the accepted journal holds {', '.join(self.holders)} for this path: decide by hand (no command)"
         return ("new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
                 + " path, by legacy path or that command's note, with this body)")
+
+
+def spoken(tokens: Sequence[str], subject: str) -> str:
+    return f"{subject}: {', '.join(tokens)}" if tokens else f"{subject} no build, release or commit"
+
+
+def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted) -> list[Pending]:
+    """The documents the branch changed or added, matched by identity only (``document_path``; never by body) against
+    the accepted REFs still in force. Done when the accepted REF of that path holds the branch's body; a changed body
+    is a body revision only when the text's tokens equal that REF's scope tokens, else a superseding REF; a path two
+    accepted REFs name gets no command."""
+    holders: dict[str, list[Record]] = {}
+    for record in on_accepted.records.values():
+        if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
+            holders.setdefault(path, []).append(record)
+    base_bodies = {path: record.body for path, record in documents(before).items()}
+    found: list[Pending] = []
+    for path, record in sorted(documents(after).items()):
+        body, title = record.body or "", record.text("title") or path
+        names = record.scope.tokens if record.scope is not None else ()
+        on_main = holders.get(path, [])
+        if not on_main:
+            found.append(Pending(path, "new", body, title, names))
+        elif len(on_main) > 1:
+            if body not in {other.body for other in on_main}:
+                found.append(Pending(path, "ambiguous", body, title, names, holders=tuple(sorted((other.id for other in on_main), key=id_key))))
+        elif record.body not in (on_main[0].body, base_bodies.get(path)):
+            held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
+            kind = "revise" if sorted(names) == sorted(held) else "supersede"
+            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held))
+    return found
 
 
 @dataclass(frozen=True)
@@ -172,6 +216,8 @@ class Accepted:
     heads: dict[str, tuple[str, ...]]
     source: str
     segments: tuple[Segment, ...] = ()
+    # Records superseded or retired on main: a REF among them no longer stands for its document.
+    retired: frozenset[str] = frozenset()
 
 
 def accepted_on(root: Path, main: str) -> Accepted:
@@ -179,7 +225,8 @@ def accepted_on(root: Path, main: str) -> Accepted:
     if segments := read_git(root, main):
         state = replay(segments)
         return Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                        {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments)
+                        {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments,
+                        frozenset(identifier for identifier in state.entries if state.retired(identifier)))
     records = export(root, main).records()
     revisions = tuple(Revision.of(record) for record in records.values())
     return Accepted(records, {revision.record.id: (revision.rev,) for revision in revisions}, "legacy",
@@ -564,20 +611,10 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     before = export(root, base).records() if has_legacy(root, base) else {}
     on_accepted = accepted_on(root, accepted_commit)
     raw = (after, before)
-    (after, before), unmapped, shared = renumber((after, before), on_accepted.records)
+    (after, before), unmapped, shared = renumber((after, before), on_accepted.records, on_accepted.retired)
     superseding = classify(result, after, before, on_accepted, unmapped, shared, raw)
-    accepted = on_accepted.records
-    main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
-    # A document is matched by identity only (its legacy path, or a REF's "salvaged document:" note), never by body.
-    for path, record in sorted(documents(after).items()):
-        on_main = main_refs.get(path)
-        body, title = record.body or "", record.text("title") or path
-        if on_main is None:
-            result.documents.append(Pending(path, None, body, title, record.scope.tokens if record.scope is not None else ()))
-            result.notices.append(f"{path}: {result.documents[-1].line()}")
-        elif record.body not in (on_main.body, base_bodies.get(path)):
-            result.documents.append(Pending(path, on_main.id, body, title))
-            result.notices.append(f"{path}: {result.documents[-1].line()}")
+    result.documents = pending_documents(after, before, on_accepted)
+    result.notices.extend(f"{document.path}: {document.line()}" for document in result.documents)
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
     result.unsalvaged += [new.id for _old, new in result.conflicts]
@@ -640,7 +677,8 @@ def relink(record: Record, mapping: Mapping[str, str]) -> Record:
     return Record.from_json(data, record.body)
 
 
-def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record]) -> tuple[list[dict[str, Record]], dict[str, str], set[str]]:
+def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Record],
+             retired: Collection[str] = ()) -> tuple[list[dict[str, Record]], dict[str, str], set[str]]:
     """Each export with its migration-assigned IDs translated to the accepted journal's, by ``identity``.
 
     A record whose identity the accepted journal holds once, and the export holds once, takes the accepted ID (a REF's
@@ -652,11 +690,13 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
     citing it are held. Every record survives under a distinct
     ID; a collision raises ``SalvageError`` naming the two IDs. Returns the exports, the provisional IDs with what
     each is, and the provisional IDs of records sharing an identity."""
+    # A REF superseded or retired on main no longer stands for its document (a superseding REF replaced it).
+    standing = {name: record for name, record in accepted.items() if not (record.type == "reference" and name in retired)}
     counts: dict[str, int] = {}
-    for record in accepted.values():
+    for record in standing.values():
         if (key := identity(record)) is not None:
             counts[key] = counts.get(key, 0) + 1
-    known = {key: record.id for record in accepted.values() if (key := identity(record)) is not None and counts[key] == 1}
+    known = {key: record.id for record in standing.values() if (key := identity(record)) is not None and counts[key] == 1}
     top = {prefix: max((int(name.split("-", 1)[1]) for name in accepted if name.split("-", 1)[0] == prefix), default=0) for prefix in ASSIGNED}
     provisional: dict[tuple[str, int], str] = {}
     unmapped: dict[str, str] = {}
@@ -685,7 +725,7 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
                     top[prefix] += 1
                     provisional[place] = f"{prefix}-{top[prefix]:03d}"
                     if counts.get(key, 0) > 1:
-                        holders = sorted((name for name, other in accepted.items() if identity(other) == key), key=id_key)
+                        holders = sorted((name for name, other in standing.items() if identity(other) == key), key=id_key)
                         unmapped[provisional[place]] = f"a record of the {key}, which the accepted journal holds {len(holders)} times ({', '.join(holders)})"
                     elif seen[key] > 1:
                         unmapped[provisional[place]] = f"one of {seen[key]} records sharing the {key}"
@@ -994,9 +1034,12 @@ def run(options: argparse.Namespace) -> int:
                 return 1
             for document in result.documents:
                 target = out / "documents" / document.path
-                print(f"memory salvage: {document.path}: {document.command(str(target))}", file=sys.stderr)
-                if document.target is None:
+                for command in document.commands(str(target)):
+                    print(f"memory salvage: {document.path}: {command}", file=sys.stderr)
+                if document.kind in ("new", "supersede"):
                     print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
+                elif document.kind == "ambiguous":
+                    print(f"memory salvage: {document.path}: {document.line()}", file=sys.stderr)
             if segments:
                 print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)
         else:

@@ -1330,6 +1330,52 @@ class SalvageTests(LegacyRepository):
         self.assertIn("specs: docs/specs/net/third.md: new document;", stdout)
         self.assertIn("specs: M-105: undecided legacy row not yet salvaged", stdout)
 
+    def test_a_changed_document_naming_other_tokens_needs_a_superseding_ref(self) -> None:
+        # The widget spec's text names client:29990002 and server:29990001; the branch re-observes it on build 29990003.
+        self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
+                                "Candidate; observed with client build 29990003 only."))
+        result = salvage(self.root, "retoken")
+        (document,) = result.documents
+        self.assertEqual(("supersede", "docs/specs/net/widget.md"), (document.kind, document.path))
+        self.assertIn("client:29990003", document.names)
+        self.assertIn("client:29990002", document.scope)
+        self.assertIn(f"a body revision cannot change scope; propose it as a new reference and supersede {document.target}", document.line())
+        commands = document.commands("FILE")
+        self.assertEqual(2, len(commands))
+        self.assertIn("--set-json 'scope=<STATE THE SCOPE>' --note 'salvaged document: docs/specs/net/widget.md'", commands[0])
+        self.assertEqual(f"memory supersede {document.target} --by <the new REF>", commands[1])
+        self.setUp()
+        self.edited("same-tokens", ("docs/specs/net/widget.md", "Candidate; observed", "Candidate, still; observed"))
+        self.assertEqual(["revise"], [item.kind for item in salvage(self.root, "same-tokens").documents])
+
+    def test_a_hand_proposed_ref_takes_a_body_revision_only_under_the_same_tokens(self) -> None:
+        scopes: list[tuple[JSON, str]] = [({"basis": "explicit", "builds": ["server:29990001"]}, "revise"), ({"basis": "explicit"}, "supersede")]
+        for scope, kind in scopes:
+            with self.subTest(kind):
+                self.setUp()
+                _ = run_git(self.root, "checkout", "-q", "-b", "hand")
+                spec = self.root / "docs/specs/net/third.md"
+                _ = spec.write_text("# Third\n\n## Status\n\nObserved with server build 29990001.\n", encoding="utf-8")
+                _ = run_git(self.root, "add", "-A")
+                _ = run_git(self.root, "commit", "-q", "-m", "add a spec")
+                _ = self.journal_on_main(remove_legacy=True)
+                self.accept_reference(online.Changes({"title": "Third", "scope": scope}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                                     self.ref_body("hand", "docs/specs/net/third.md")), "REF-900")
+                _ = run_git(self.root, "checkout", "-q", "hand")
+                _ = spec.write_text(spec.read_text() + "\nMore text.\n", encoding="utf-8")
+                _ = run_git(self.root, "commit", "-q", "-am", "more text")
+                (document,) = salvage(self.root, "hand").documents
+                self.assertEqual((kind, "REF-900"), (document.kind, document.target))
+
+    def test_a_path_two_accepted_refs_name_gets_no_command(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md", cite=False)
+        for identifier in ("REF-900", "REF-901"):
+            self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}},
+                                                 salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"), f"# Other {identifier}\n"), identifier)
+        (document,) = salvage(self.root, "specs").documents
+        self.assertEqual(("ambiguous", ("REF-900", "REF-901"), []), (document.kind, document.holders, document.commands("FILE")))
+        self.assertIn("the accepted journal holds REF-900, REF-901 for this path: decide by hand (no command)", document.line())
+
     def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
