@@ -267,15 +267,15 @@ def proof_problems(universe: Universe, after: State, record: Record) -> list[str
         values = run.run
         listed = [item for key in ("targets", "identities") if isinstance(value := values.get(key), tuple) for item in value]
         environment = str(values.get("environment", ""))
-        if run.status != "active":
-            reasons.append(f"{name} is {run.status}")
+        if (run_status := derived_status(universe.settled, run)) != "active":
+            reasons.append(f"{name} is {run_status}")
         elif values.get("outcome") != "pass":
             reasons.append(f"{name} outcome is {values.get('outcome')}")
         elif scope is not None and "original-client" in scope.subjects and "loopback" in environment.casefold():
             reasons.append(f"{name} ran on loopback ({environment}); a loopback run never validates stock-client interoperability")
         elif missing := sorted(build for build in builds if not any(build in item for item in listed)):
             reasons.append(f"{name} does not name {', '.join(missing)} among its targets or identities")
-        elif (verdict := verify_record(primary, run)).outcome != "verified":
+        elif (verdict := verify_record(primary, run, run_status)).outcome != "verified":
             reasons.append(f"{name} artifacts are {verdict.outcome} ({verdict.detail})")
         else:
             return []
@@ -499,7 +499,8 @@ def evidence_add(bank: Bank, root: Path, path: str, kind: str, label: str, *, ru
     with session(bank, root, now=now) as current:
         for entry in current.universe.view.entries.values():
             record = entry.record
-            if record.type == "evidence" and record.text("path") == relative and record.text("sha256") == digest and record.status == "active":
+            if (record.type == "evidence" and record.text("path") == relative and record.text("sha256") == digest
+                    and derived_status(current.universe.settled, record) == "active"):
                 raise Refused(f"{relative} with these bytes is {record.id} already")
         notices: list[str] = []
         data["id"] = allocate(current.universe, bank.documents(), "M", notices)
@@ -518,15 +519,19 @@ class Verdict:
     failing: bool
 
 
-def verify_record(primary: Path, record: Record) -> Verdict:
-    """One evidence record against the bytes under the primary checkout, as the legacy ``--local`` lint reads them."""
+def verify_record(primary: Path, record: Record, status: str) -> Verdict:
+    """One evidence record against the bytes under the primary checkout, as the legacy ``--local`` lint reads them.
+
+    ``status`` is the record's DERIVED status (``derived_status``: accepted supersession, legacy retirement, else
+    stored): superseding writes no revision of the old record, so its stored status stays ``active`` although
+    the scratch routine may prune its bytes once the supersession is accepted."""
     path, digest = record.text("path"), record.text("sha256")
-    active_private = record.status == "active" and record.text("class") == "local-private"
+    active_private = status == "active" and record.text("class") == "local-private"
 
     def verdict(outcome: str, detail: str) -> Verdict:
-        # As ``unavailable``, ``mismatched`` fails only while the record is active: a retired or missing record's
-        # artifact may have been changed or removed after retirement (the legacy ``--local`` lint checked active rows only).
-        failing = (outcome == "mismatched" and record.status == "active") or (outcome == "unavailable" and active_private)
+        # As ``unavailable``, ``mismatched`` fails only while the record is active: a superseded, retired or missing
+        # record's artifact may have been changed or removed since (the legacy ``--local`` lint checked active rows only).
+        failing = (outcome == "mismatched" and status == "active") or (outcome == "unavailable" and active_private)
         return Verdict(record.id, outcome, detail, failing)
 
     if path is None or digest is None:
@@ -571,9 +576,9 @@ def verify_record(primary: Path, record: Record) -> Verdict:
 
 def verify(root: Path, identifiers: Sequence[str], *, every: bool = False) -> Output:
     """``verified``, ``unavailable``, ``mismatched`` or ``legacy-unverifiable`` per evidence record; exit 1 on
-    ``mismatched`` or an active local-private record ``unavailable``."""
+    ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``)."""
     universe = gather(root)
-    view = universe.view
+    view, settled = universe.view, universe.settled
     primary = primary_checkout(root)
     if every:
         names = sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key)
@@ -584,7 +589,7 @@ def verify(root: Path, identifiers: Sequence[str], *, every: bool = False) -> Ou
         record = view.record(name)
         if record is None or record.type != "evidence":
             raise Refused(f"{name}: no evidence record in this checkout")
-        verdicts.append(verify_record(primary, record))
+        verdicts.append(verify_record(primary, record, derived_status(settled, record)))
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
     failing = sum(1 for item in verdicts if item.failing)
@@ -775,7 +780,7 @@ def get(bank: Bank, root: Path, citation: str, *, history: bool = False, all_pro
             data["heads"] = list(entry.heads)
         primary = primary_checkout(root)
         if record.type == "evidence":
-            verdict = verify_record(primary, record)
+            verdict = verify_record(primary, record, target.status)
             data["evidence"] = {"outcome": verdict.outcome, "detail": verdict.detail}
             lines.append(f"evidence: {verdict.outcome} ({verdict.detail})")
         cited: list[JSON] = []
@@ -1237,7 +1242,7 @@ def status(bank: Bank, root: Path) -> Output:
             counts[shown] = counts.get(shown, 0) + 1
             if record.type == "evidence":
                 path = record.text("path")
-                if record.status == "active" and (record.text("sha256") is None or path is None or not (primary / path).exists()):
+                if shown == "active" and (record.text("sha256") is None or path is None or not (primary / path).exists()):
                     unverified.append((identifier, "no sha256" if record.text("sha256") is None else f"missing: {path}"))
                 continue
             if record.type == "unknown" and shown in OPEN_UNKNOWN:

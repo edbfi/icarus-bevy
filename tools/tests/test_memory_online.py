@@ -563,7 +563,7 @@ class EvidenceTests(Online):
         self.assertEqual(0, output.status)
         with self.assertRaisesRegex(Refused, "matches 0 listed members"):
             _ = self.new_finding("Invented: cites a member of the unlisted bundle", cites=["M-001/ev_a1b2c3d4e5f6"])
-        self.assertEqual("verified", online.verify_record(self.root, record).outcome)
+        self.assertEqual("verified", online.verify_record(self.root, record, "active").outcome)
 
     def test_add_bundle_and_verify_outcomes(self) -> None:
         bundle = {"records": [{"evidence_id": MEMBER, "score": 4.0947}, {"evidence_id": MEMBER}], "unknowns": [{"unknown_id": OTHER_MEMBER}]}
@@ -608,6 +608,30 @@ class EvidenceTests(Online):
         self.assertTrue(result.lines[-1].endswith("; 0 failing"))
         with self.assertRaisesRegex(RecordError, "duplicate key"):
             _ = online.bundle_members(b'{"records": [], "records": [], "unknowns": []}')
+
+    def test_an_accepted_superseder_releases_pruned_bytes_and_a_proposed_one_does_not(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented directory record", now=self.tick())
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented replacing record", now=self.tick())
+        commit_all(self.root)
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        (self.root / "work/case/receipt.txt").unlink()
+        proposed = online.verify(self.root, ["M-001"])
+        self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (proposed.status, proposed.lines[0]),
+                         "a proposed superseder releases nothing")
+        self.assertIn("  M-001: missing: work/case/receipt.txt", online.status(self.bank, self.root).lines)
+        commit_all(self.root)
+        accepted = online.verify(self.root, ["M-001"])
+        self.assertEqual((0, "M-001: unavailable (missing: work/case/receipt.txt)"), (accepted.status, accepted.lines[0]))
+        everything = online.verify(self.root, (), every=True)
+        self.assertEqual(0, everything.status, everything.lines)
+        summary = online.status(self.bank, self.root)
+        self.assertNotIn("  M-001: missing: work/case/receipt.txt", summary.lines)
+        self.assertIn("evidence: 1 active, 1 superseded", summary.lines)
+        got = online.get(self.bank, self.root, "M-001")
+        self.assertEqual("superseded", got.data["status"])
+        self.assertIn("evidence: unavailable (missing: work/case/receipt.txt)", got.lines)
 
 
 class ReadingTests(Online):
