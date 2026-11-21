@@ -11,8 +11,12 @@ Conversions follow ``tools.memory.legacy_rules`` (verbatim cells, ``legacy:`` va
   Evidence | Remaining gate``) become ``CP-001...`` in file order: name from the first cell,
   ``required_proof`` from the last, ``qualifier`` a gap. ``bugs.md`` campaign rows (``Priority | Reported
   problem | Status | Next evidence``) become ``RP-001...`` in file order and static-lead rows (``Lead |
-  ...``) keep the ``SL-NNN`` that opens their Lead cell; the lead text is the rest of that cell. Any
-  other table in these two files, except the catalog's own N table, is an error.
+  ...``) keep the ``SL-NNN`` that opens their Lead cell; the lead text is the rest of that cell, the
+  status ``legacy:unstated`` with the table's ``framing`` as the ``table`` cell. Any other table in these
+  two files, except the catalog's own N table, is an error. Each row links the IDs of its cells
+  (``table_links``).
+- **Framing** (``framing``): the lines from the nearest ``#`` heading above a table to the line before
+  its header, verbatim, trailing blank lines dropped: where a status the table does not state would come from.
 - Specs and other documents become references in ``tools.memory.legacy_prose``.
 - **Releases** (``releases``): ``REL-x.y.z`` from explicit statements only, each kept in ``sources``:
   the ``[release]`` table of ``config/release.toml`` (status ``current``) and of each
@@ -33,11 +37,15 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.evidence_catalog_model import PIPE, Index
+from tools.evidence_catalog_model import PIPE, Entry, Index, references
 from tools.evidence_catalog_store import Catalog
 from tools.memory.gitio import read_blobs, tree_files
-from tools.memory.legacy_rules import BUILD, RELEASE, ROLE, Migrated, MigrationError, extract, finish, vocabulary
+from tools.memory.legacy_rules import (
+    BUILD, EVIDENCE_CELL, RELEASE, REVISION_CELLS, ROLE, SELECTOR_SUFFIX, SELECTORS, UNSTATED, UNSTATED_NOTE, Migrated, MigrationError, extract, finish,
+    vocabulary,
+)
 from tools.memory.model import JSON, TYPES, as_mapping, id_key
+
 
 COMPATIBILITY = "docs/ledgers/compatibility.md"
 BUGS = "docs/ledgers/bugs.md"
@@ -118,7 +126,46 @@ def text_lines(catalog: Catalog, path: str) -> Iterator[tuple[int, str]]:
         yield number, line if isinstance(line, str) else ""
 
 
-def tables(catalog: Catalog) -> list[Migrated]:
+def framing(catalog: Catalog, path: str, line: int) -> str:
+    """The heading and preamble of the table holding ``path:line`` (module docstring)."""
+    document = catalog.documents.get(path)
+    # A row the catalog parsed is a record, not text: it is a table row too.
+    lines = [text if isinstance(text, str) else "|" for text in (document.lines if document is not None else ())]
+    index = line - 1
+    while index > 0 and lines[index - 1].startswith("|"):
+        index -= 1
+    start = index
+    while start > 0 and not lines[start - 1].startswith("#"):
+        start -= 1
+    kept = lines[max(start - 1, 0):index]
+    while kept and not kept[-1].strip():
+        _ = kept.pop()
+    return "\n".join(kept)
+
+
+def table_links(cells: dict[str, str], evidence_cell: str | None, known: dict[str, Entry]) -> dict[str, JSON]:
+    """``cites`` and ``refs`` of a table row: every selector, and every evidence ID of ``evidence_cell``, is
+    cited; every other ID the catalog defines is a ref (ranges expand over defined IDs only)."""
+    cites: set[str] = set()
+    refs: set[str] = set()
+    for name, text in cells.items():
+        stripped = text
+        for pattern in SELECTORS:
+            cites.update(match[0] for match in pattern.finditer(text))
+            stripped = pattern.sub(" ", stripped)
+        bases = {match[1] for pattern in SELECTORS for match in pattern.finditer(text)}
+        bare = set(references(stripped, known)) | (set(references(SELECTOR_SUFFIX.sub(r"\1", text), known)) - bases)
+        for target in bare & known.keys():
+            (cites if target.startswith("M-") and name == evidence_cell else refs).add(target)
+    links: dict[str, JSON] = {}
+    if cites:
+        links["cites"] = list[JSON](sorted(cites, key=id_key))
+    if refs:
+        links["refs"] = list[JSON](sorted(refs, key=id_key))
+    return links
+
+
+def tables(catalog: Catalog, index: Index) -> list[Migrated]:
     """CP, RP and SL records of the compatibility and bug ledgers (see the module docstring)."""
     result: list[Migrated] = []
     counters = {"CP": 0, "RP": 0}
@@ -132,9 +179,11 @@ def tables(catalog: Catalog) -> list[Migrated]:
             "status": vocabulary(named["Status"], TYPES["compatibility"].statuses), "name": row.cells[0],
             "required_proof": row.cells[-1],
         }
-        extraction = extract({slug(name): cell for name, cell in named.items()}, ("evidence",))
+        cells = {slug(name): cell for name, cell in named.items()}
+        extraction = extract(cells, (), REVISION_CELLS["CP"])
         if extraction.scope is not None:
             data["scope"] = extraction.scope
+        data.update(table_links(cells, EVIDENCE_CELL["CP"], index.entries))
         result.append(Migrated(finish(data, legacy_of(row), extraction), f"{row.path}:{row.line}", extraction))
     for row in table_rows(BUGS, text_lines(catalog, BUGS)):
         named = dict(zip(row.header, row.cells, strict=True))
@@ -149,22 +198,30 @@ def tables(catalog: Catalog) -> list[Migrated]:
             if named["Priority"].isdigit():
                 data["priority"] = int(named["Priority"])
             extraction = extract(cells)
+            data.update(table_links(cells, None, index.entries))
+            legacy = legacy_of(row)
         elif row.header == LEADS:
             match = LEAD_ID.fullmatch(named["Lead"])
             if match is None:
                 raise MigrationError(f"{row.path}:{row.line}: a lead cell must open with SL-NNN: ")
             data = {
-                "id": match[1], "type": "lead", "status": "open", "lead": match[2],
+                "id": match[1], "type": "lead", "status": UNSTATED, "lead": match[2],
                 "static_evidence": named["Static evidence"], "refute_by": named["What would establish or refute a problem"],
+                "notes": [UNSTATED_NOTE],
             }
-            extraction = extract(cells, ("static_evidence",))
+            extraction = extract(cells, (), REVISION_CELLS["SL"])
+            data.update(table_links(cells, EVIDENCE_CELL["SL"], index.entries))
+            legacy = legacy_of(row)
+            cell_map = legacy["cells"]
+            assert isinstance(cell_map, dict)
+            cell_map["table"] = framing(catalog, row.path, row.line)
         elif row.header == NATIVE:
             raise MigrationError(f"{row.path}:{row.line}: a native defect row the catalog did not parse")
         else:
             raise MigrationError(f"{row.path}:{row.line}: unrecognised table {' | '.join(row.header)}")
         if extraction.scope is not None:
             data["scope"] = extraction.scope
-        result.append(Migrated(finish(data, legacy_of(row), extraction), f"{row.path}:{row.line}", extraction))
+        result.append(Migrated(finish(data, legacy, extraction), f"{row.path}:{row.line}", extraction))
     return result
 
 

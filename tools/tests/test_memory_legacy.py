@@ -3,11 +3,12 @@
 
 Every row below is invented; builds are fictitious ``2999xxxx`` numbers and releases ``3.0.9x``. The
 fixture carries each hazard of the legacy data: free-text and role-less builds, glued builds, digits
-inside selectors, tool versions, commits in claims, several commits in one row, a confidence slot
-holding a build, ``unknown`` kind, bare ``retired``/``superseded`` and compound statuses, cross-file
-supersession, prose supersessions, ranges over an unallocated number and ending in a selector, a
-resolved unknown, compatibility/bug/lead tables whose citations stay text, a non-canonically spaced
-row, legacy evidence without digest or date, directory and descriptive paths, a bundle whose record
+inside selectors, tool versions, commits in claims, source revisions in evidence cells, several
+commits in one row, an all-digit commit candidate beside a commit, a confidence slot holding a build,
+``unknown`` kind, bare ``retired``/``superseded`` and compound statuses, cross-file supersession, prose
+supersessions, ranges over an unallocated number and ending in a selector, a resolved unknown,
+compatibility/bug/lead tables whose cells link IDs and whose framing states no status, a tracked
+evidence row whose file becomes a REF, a non-canonically spaced row, legacy evidence without digest or date, directory and descriptive paths, a bundle whose record
 count differs from its listed members, shared members, IDs in labels, and a client build stored under
 the server app in a release profile.
 """
@@ -26,18 +27,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
 
+from tools.memory.canonical import render_text
 from tools.memory.journal import Revision, Segment, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
 from tools.memory.legacy_rules import extract, standing
 from tools.memory.legacy_prose import account
 from tools.memory.legacy_report import inbound, render, residue
-from tools.memory.model import JSON, Legacy, Record, RecordError
+from tools.memory.model import JSON, Record, RecordError
 from tools.memory import migrate
 from tools.memory.parity import parity
 from tools.memory.paths import ProtectedPathsError
 from tools.memory import salvage as salvage_command
 from tools.memory.salvage import salvage
-from tools.memory.state import partition, replay
+from tools.memory.state import legacy_listed, partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
 
 MEMBER_A = "ev_29990001aaaa" + "1" * 52
@@ -58,7 +60,7 @@ F-106 is retired in favor of F-107.
 | F-105 | Gadget 3.0.91 run ends; tool 0.20.0 used; commit-like deadbee9 in claim | measured | live; M-102..M-104/ev_bbbbbbbbbbbb; a1b2c3d | 29990001; one run; 1,299,900,010 bytes | U-101, U-102 | active |
 | F-107 | Decision text without tokens | derived | review | bounded; candidate; owner said so | | active |
 | F-108 | Native loop at abc1234 then def5678 | observed | authored-test; abc1234, def5678 | medium; loopback |  | active |
-|  F-109 | Spaced row | observed | review | low; none | | active |
+|  F-109 | Spaced row | observed | review | low; build 1234567, c0ffee4 | | active |
 """
 RETIRED = """# Retired findings: Widgets
 
@@ -240,13 +242,32 @@ class ExtractionTests(unittest.TestCase):
         scope = extract({"claim": "29990001 here; server 29990001 there"}).scope
         self.assertEqual(scope, {"basis": "legacy-text", "builds": ["server:29990001"]})
 
-    def test_commits_only_from_the_named_cells_and_only_when_single(self) -> None:
+    def test_a_commit_only_from_a_scope_cell_and_only_when_alone(self) -> None:
         self.assertIsNone(extract({"claim": "pawn c0ffee1"}, ()).scope)
-        self.assertEqual(extract({"evidence": "x; c0ffee1"}, ("evidence",)).scope, {"basis": "legacy-text", "commit": "c0ffee1"})
-        several = extract({"evidence": "abc1234, def5678"}, ("evidence",))
+        self.assertEqual(extract({"scope_and_limits": "x; c0ffee1"}, ("scope_and_limits",)).scope, {"basis": "legacy-text", "commit": "c0ffee1"})
+        several = extract({"scope_and_limits": "abc1234, def5678"}, ("scope_and_limits",))
         self.assertIsNone(several.scope)
-        self.assertEqual(several.commits, ("abc1234", "def5678"))
-        self.assertIsNone(extract({"evidence": "deadbeef cafebabe 1234567"}, ("evidence",)).scope)
+        self.assertEqual(several.unplaced, ("abc1234", "def5678"))
+        self.assertEqual(several.notes, ("scope commit not set: the limits cell names abc1234, def5678 (several commits)",))
+
+    def test_an_all_digit_candidate_is_named_and_keeps_any_commit_out_of_scope(self) -> None:
+        # 1234567 may be a commit or a number; 29990001 is a build, not a candidate.
+        beside = extract({"scope_and_limits": "high; builds 1234567, 591d40f; server 29990001"}, ("scope_and_limits",))
+        self.assertEqual(beside.scope, {"basis": "legacy-text", "builds": ["server:29990001"]})
+        self.assertEqual(beside.unplaced, ("1234567", "591d40f"))
+        self.assertEqual(beside.notes, ("scope commit not set: the limits cell names 1234567, 591d40f; all-digit 1234567 is a commit or a number,"
+                                        + " not decided at migration",))
+        alone = extract({"scope_and_limits": "branch build 6286752"}, ("scope_and_limits",))
+        self.assertIsNone(alone.scope)
+        self.assertEqual(alone.unplaced, ("6286752",))
+
+    def test_an_evidence_cell_revision_is_a_note_never_scope(self) -> None:
+        found = extract({"evidence": "static; M-101; c0ffee1"}, (), ("evidence",))
+        self.assertIsNone(found.scope)
+        self.assertEqual((found.revisions, found.notes), (("c0ffee1",), ("source revision (evidence cell): c0ffee1",)))
+        mixed = extract({"evidence": "authored-test; M-101; ebd38a67, 12760573; 1178518/b1e1697; M-1545; 2026-01-01"}, (), ("evidence",))
+        self.assertEqual(mixed.notes, ("source revision candidates (evidence cell): ebd38a67, 12760573, 1178518, b1e1697; all-digit 12760573,"
+                                       + " 1178518 are a commit or a number, not decided at migration",))
 
     def test_standing_only_in_so_many_words(self) -> None:
         self.assertEqual(standing(["high; candidate; x"]), "candidate")
@@ -254,40 +275,32 @@ class ExtractionTests(unittest.TestCase):
         self.assertIsNone(standing(["confirmed", "refuted"]))
 
 
-class LegacyResolverTests(unittest.TestCase):
-    def test_only_an_unknown_lead_or_report_names_resolvers(self) -> None:
+class ReleasedModelTests(unittest.TestCase):
+    def test_a_legacy_resolver_list_and_a_scope_part_gap_are_refused_as_main_refuses_them(self) -> None:
         data: dict[str, JSON] = {"id": "U-101", "type": "unknown", "status": "legacy:resolved", "question": "Which?",
                                  "legacy": {"path": "x.md", "cells": {"status": "resolved"}, "resolved_by": ["F-101"], "implied_status": "resolved"},
                                  "gaps": ["area", "next_probe", "severity"]}
-        self.assertEqual(Record.from_json(data).legacy, Legacy("x.md", {"status": "resolved"}, resolved_by=("F-101",), implied_status="resolved"))
-        data.update({"id": "F-102", "type": "finding", "claim": "x", "gaps": ["area", "confidence", "kind", "scope", "standing"]})
-        _ = data.pop("question")
-        with self.assertRaisesRegex(RecordError, "only an unknown, lead or report is resolved"):
+        with self.assertRaisesRegex(RecordError, "legacy: unknown fields resolved_by"):
             _ = Record.from_json(data)
-
-
-class GapTests(unittest.TestCase):
-    @staticmethod
-    def finding(*gaps: str, scope: JSON = None) -> dict[str, JSON]:
-        data: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
-                                 "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": list[JSON](gaps)}
-        if scope is not None:
-            data["scope"] = scope
-        return data
-
-    def test_a_gap_may_name_a_scope_part_with_detail(self) -> None:
-        record = Record.from_json(self.finding("scope.commit: several commits in row (abc1234, def5678)", "standing",
-                                               scope={"basis": "legacy-text", "releases": ["3.0.91"]}))
-        self.assertEqual(record.gaps, ("scope.commit: several commits in row (abc1234, def5678)", "standing"))
-        _ = Record.from_json(self.finding("scope", "scope.commit: several commits in row (a, b)", "standing"))
-
-    def test_a_gap_names_an_absent_field(self) -> None:
-        with self.assertRaisesRegex(RecordError, "listed as missing but present"):
-            _ = Record.from_json(self.finding("scope.commit: x", "standing", scope={"basis": "legacy-text", "commit": "abc1234"}))
+        finding: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                    "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": ["scope", "scope.commit: x", "standing"]}
         with self.assertRaisesRegex(RecordError, "is not a field"):
-            _ = Record.from_json(self.finding("scope.other: x", "scope", "standing"))
+            _ = Record.from_json(finding)
+
+    def test_a_gap_names_an_absent_required_field(self) -> None:
+        finding: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                    "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": ["area", "scope", "standing"]}
+        with self.assertRaisesRegex(RecordError, "listed as missing but present"):
+            _ = Record.from_json(finding)
+        finding["gaps"] = ["scope"]
         with self.assertRaisesRegex(RecordError, "standing: required field missing"):
-            _ = Record.from_json(self.finding("scope"))
+            _ = Record.from_json(finding)
+
+    def test_limits_belong_to_new_findings(self) -> None:
+        finding: dict[str, JSON] = {"id": "F-101", "type": "finding", "status": "active", "claim": "x", "kind": "observed", "confidence": "high",
+                                    "area": "a", "legacy": {"path": "x.md", "cells": {"claim": "x"}}, "gaps": ["scope", "standing"], "limits": "one run"}
+        with self.assertRaisesRegex(RecordError, "limits: a migrated finding keeps its limits in its legacy cell"):
+            _ = Record.from_json(finding)
 
 
 class ExportTests(LegacyRepository):
@@ -306,7 +319,7 @@ class ExportTests(LegacyRepository):
         self.assertEqual(record.gaps, ("standing",))
         spaced = self.record("F-109")
         assert spaced.legacy is not None
-        self.assertEqual(spaced.legacy.cells["original"], "|  F-109 | Spaced row | observed | review | low; none | | active |")
+        self.assertEqual(spaced.legacy.cells["original"], "|  F-109 | Spaced row | observed | review | low; build 1234567, c0ffee4 | | active |")
 
     def test_vocabulary_and_legacy_values(self) -> None:
         self.assertEqual(self.record("F-103").text("kind"), "legacy:unknown")
@@ -320,14 +333,18 @@ class ExportTests(LegacyRepository):
     def test_scope_tokens(self) -> None:
         f102 = self.record("F-102").scope
         assert f102 is not None
+        # The Evidence cell's hash is the revision of the sources read: a note, never scope.
         self.assertEqual((f102.basis, f102.builds, f102.commit, f102.subjects),
-                         ("legacy-text", ("any:29990003", "any:29990004", "client:29990002", "server:29990001"), "c0ffee1", ()))
+                         ("legacy-text", ("any:29990003", "any:29990004", "client:29990002", "server:29990001"), None, ()))
+        self.assertEqual(self.record("F-102").notes, ("source revision (evidence cell): c0ffee1",))
         f105 = self.record("F-105").scope
         assert f105 is not None
-        self.assertEqual((f105.builds, f105.releases, f105.commit), (("any:29990001",), ("3.0.91",), "a1b2c3d"))
+        self.assertEqual((f105.builds, f105.releases, f105.commit), (("any:29990001",), ("3.0.91",), None))
         self.assertIsNone(self.record("F-108").scope)
-        self.assertEqual(self.result.commits["F-108"], ("abc1234", "def5678"))
-        self.assertEqual(self.record("F-108").gaps, ("scope", "scope.commit: several commits in row (abc1234, def5678)", "standing"))
+        self.assertEqual(self.record("F-108").notes, ("source revision (evidence cell): abc1234, def5678",))
+        self.assertEqual(self.record("F-108").gaps, ("scope", "standing"))
+        f109 = self.record("F-109")
+        self.assertEqual((f109.scope, f109.gaps, self.result.unplaced), (None, ("scope", "standing"), {"F-109": ("1234567", "c0ffee4")}))
         self.assertIn("scope", self.record("F-107").gaps)
         # M-101's label names server 29990001; F-101 cites M-101 but states no build.
         self.assertIn("scope", self.record("F-101").gaps)
@@ -349,10 +366,13 @@ class ExportTests(LegacyRepository):
         state = replay(self.segments())
         u101 = self.record("U-101")
         assert u101.legacy is not None
-        # F-101 to F-105 expands over defined IDs only; F-103 is defined, an unallocated number would not be.
-        self.assertEqual(u101.legacy.resolved_by, ("F-101", "F-102", "F-103", "F-104", "F-105", "F-107"))
+        # The Findings column lists related findings, never a resolver: they are refs, and U-101 is resolved by its
+        # legacy status alone. F-101 to F-105 expands over defined IDs only.
+        self.assertEqual(u101.links.refs, ("F-101", "F-102", "F-103", "F-104", "F-105", "F-107"))
+        self.assertEqual(legacy_listed(u101, "findings"), ("F-101", "F-102", "F-103", "F-104", "F-105", "F-107"))
+        self.assertEqual(legacy_listed(u101, "next_probe"), ("F-102",))
         self.assertEqual(u101.links.cites, ("M-101/ev_bbbbbbbbbbbb",))
-        self.assertEqual(state.status("U-101"), "resolved")
+        self.assertEqual((state.status("U-101"), state.resolved_by.get("U-101")), ("resolved", None))
         self.assertEqual(self.record("U-102").links.refs, ("F-105",))
         self.assertEqual(state.status("U-102"), "open")
         f105 = self.record("F-105")
@@ -361,18 +381,23 @@ class ExportTests(LegacyRepository):
         self.assertEqual(self.record("F-101").links.refs, ("F-102", "U-101"))
         self.assertEqual(state.link_problems(), ())
 
-    def test_tables_keep_citations_as_text(self) -> None:
+    def test_tables_link_their_ids_and_state_no_status_they_lack(self) -> None:
         cp = self.record("CP-002")
         self.assertTrue(cp.assigned_at_migration)
-        self.assertEqual((cp.text("name"), cp.links.targets()), ("Widgets", ()))
+        self.assertEqual((cp.text("name"), cp.links.refs, cp.links.cites), ("Widgets", ("F-102", "F-105", "U-101"), ()))
         lead = self.record("SL-001")
-        self.assertEqual((lead.text("lead"), lead.links.targets(), lead.status), ("Reader differs", (), "open"))
-        scope = lead.scope
-        assert scope is not None
-        self.assertEqual(scope.commit, "c0ffee2")
+        self.assertEqual((lead.text("lead"), lead.links.cites, lead.links.refs, lead.status),
+                         ("Reader differs", ("M-101", "M-103/E-010"), ("F-102",), "legacy:unstated"))
+        self.assertIsNone(lead.scope)
+        self.assertEqual(lead.notes[-1], "source revision (static evidence cell): c0ffee2")
+        assert lead.legacy is not None
+        self.assertEqual(lead.legacy.cells["table"], "## Static leads on the original")
         report = self.record("RP-001")
-        self.assertEqual((report.number("priority"), report.status, report.links.targets()), (1, "unreproduced", ()))
-        self.assertEqual((self.record("N-101").status, self.record("N-101").gaps), ("fixed", ("tests",)))
+        self.assertEqual((report.number("priority"), report.status, report.links.refs), (1, "unreproduced", ("F-102",)))
+        bug = self.record("N-101")
+        assert bug.legacy is not None
+        self.assertEqual((bug.status, bug.gaps, bug.legacy.cells["table"]), ("legacy:unstated", ("tests",), "## Native foundation defects"))
+        self.assertTrue(bug.notes[0].startswith("status unstated"))
 
     def test_references_are_verbatim_specs(self) -> None:
         widget = self.record("REF-002")
@@ -422,6 +447,10 @@ class ExportTests(LegacyRepository):
                          ("retired", ("M-104",), ("see M-104 and F-105",), ()))
         line = (self.root / "evidence/widgets/001.jsonl").read_text().split("\n")[2]
         self.assertEqual(retired.legacy.cells, {"row": line})
+        # M-104 is tracked and its file becomes REF-002 at cut-over: linked, its locator kept.
+        tracked = self.record("M-104")
+        self.assertEqual((tracked.text("path"), tracked.links.refs, tracked.notes),
+                         ("docs/specs/net/widget.md", ("REF-002",), ("tracked file migrated to REF-002 at cut-over (link assigned at migration)",)))
 
     def test_segments_are_deterministic_and_bounded(self) -> None:
         out = self.top
@@ -456,7 +485,10 @@ class ExportTests(LegacyRepository):
         self.assertIn("finding `standing` set from the row's own words on 1 of 10: F-107", text)
         self.assertIn("no active finding is `current` for REL-3.0.92", text)
         self.assertIn("- REL-3.0.92 (current): states version_string 3.0.92.100-rel-Test, server_build 29990010; lacks client_build, dates", text)
-        self.assertIn("finding `scope.commit`: 1: F-108 (several commits in row (abc1234, def5678))", text)
+        self.assertIn("- F-109: scope commit not set: the limits cell names 1234567, c0ffee4; all-digit 1234567 is a commit or a number", text)
+        self.assertIn("- M-104 (active): docs/specs/net/widget.md -> REF-002", text)
+        self.assertIn("- lead status `legacy:unstated` on 1", text)
+        self.assertIn("- compatibility refs: 3", text)
 
     def segments(self) -> tuple[Segment, ...]:
         out = self.top / "segments"
@@ -465,11 +497,27 @@ class ExportTests(LegacyRepository):
 
 
 class ParityTests(LegacyRepository):
+    def release_model(self, source: str) -> None:
+        """Point ``origin/main`` at a commit whose ``tools/memory/model.py`` is ``source``."""
+        released = self.top / f"released-{len(list(self.top.glob('released-*')))}"
+        released.mkdir()
+        new_repository(released)
+        target = released / "tools/memory/model.py"
+        target.parent.mkdir(parents=True)
+        _ = target.write_text(source, encoding="utf-8")
+        _ = run_git(released, "add", "-A")
+        _ = run_git(released, "commit", "-q", "-m", "released")
+        _ = run_git(self.root, "fetch", "-q", "-f", str(released), "main:refs/remotes/origin/main")
+
     def test_the_export_passes_and_a_changed_record_fails(self) -> None:
+        model = (Path(__file__).parents[1] / "memory/model.py").read_text(encoding="utf-8")
+        self.release_model(model)
         out = self.top / "journal"
         _ = write(self.result, out)
         result = parity(self.root, "HEAD", out)
         self.assertEqual(result.mismatches, [])
+        self.assertRegex(result.measured["released model"], r"^origin/main [0-9a-f]{12}: 34 revision\(s\) parsed, 0 rejected$")
+        self.assertEqual(result.measured["edges compatibility, lead and report rows"], "7 (raw table lines 7)")
         self.assertIn("finding 10", result.measured["counts"])
         self.assertIn("reference 10", result.measured["counts"])
         accounting = account(self.root, "HEAD", self.records)
@@ -493,12 +541,30 @@ class ParityTests(LegacyRepository):
                 data["refs"] = ["F-102"]
             elif revision.record.id == "M-102":
                 data["path"] = "work/elsewhere/"
+            elif revision.record.id == "CP-002":
+                data["refs"] = ["F-102"]
             changed.append(Revision.of(Record.from_json(data, revision.record.body)))
         _ = write_change_set(tampered, datetime(2026, 1, 5, tzinfo=UTC), changed)
         mismatches = "\n".join(parity(self.root, "HEAD", tampered).mismatches)
         self.assertIn("F-102: claim", mismatches)
         self.assertIn("U-102: links", mismatches)
         self.assertIn("M-102: path", mismatches)
+        self.assertIn("CP-002: links ['F-105', 'U-101'] differ from its cells", mismatches)
+        self.assertIn("edges of compatibility, lead and report rows: journal 5, raw table lines 7", mismatches)
+
+    def test_an_unseen_legacy_cell_and_a_record_main_rejects_fail(self) -> None:
+        out = self.top / "journal"
+        _ = write(self.result, out)
+        model = (Path(__file__).parents[1] / "memory/model.py").read_text(encoding="utf-8")
+        self.release_model(model.replace('{"path", "cells", "superseded_by", "implied_status"}', '{"path", "cells", "implied_status"}'))
+
+        def without_limits(record: Record) -> str:
+            return "\n".join(line for line in render_text(record).split("\n") if not line.startswith("limits: "))
+
+        with mock.patch("tools.memory.parity.render_text", without_limits):
+            mismatches = "\n".join(parity(self.root, "HEAD", out).mismatches)
+        self.assertIn("F-102: legacy cell 'scope_and_limits' not in its text: 'high; build 29990003; build29990004 too'", mismatches)
+        self.assertRegex(mismatches, r"released model: memory/journal/[0-9/]+/[^:]+:[0-9]+: F-101: legacy: unknown fields superseded_by")
 
     def test_an_unreadable_manifest_is_a_reported_failure_not_a_traceback(self) -> None:
         options = argparse.Namespace(rev="HEAD", journal=self.top / "journal")
