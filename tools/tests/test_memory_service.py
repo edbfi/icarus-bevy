@@ -29,7 +29,7 @@ from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compa
 from tools.memory.service import (
     API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, Api, Connection, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
     backup_interpreter, connection, ensure_settings, feature_problems, file_variables, home, install, installed_interpreter, parse_settings, read_settings, render_settings,
-    require_floor, reranker_cap, reranker_check, set_reranker, settings_check, unit_files, unit_word,
+    LEGACY_CONNECTION_FILE, require_floor, reranker_cap, reranker_check, rotate_connection, set_reranker, settings_check, unit_files, unit_word,
 )
 
 from tools.tests.memory_fixtures import clean_git_environment, commit_all, new_repository, run_git
@@ -63,7 +63,7 @@ class Homes(unittest.TestCase):
     def test_icarus_memory_home_is_one_scratch_root(self) -> None:
         chosen = home({"HOME": "/h", "XDG_CONFIG_HOME": "/c", "ICARUS_MEMORY_HOME": "/s"})
         self.assertEqual((chosen.config, chosen.data, chosen.state, chosen.scratch), (Path("/s/config"), Path("/s/data"), Path("/s/state"), True))
-        self.assertEqual((chosen.connection_file, chosen.pg0_home, chosen.backups), (Path("/s/config/connection.env"), Path("/s/data/pg0"), Path("/s/state/backups")))
+        self.assertEqual((chosen.connection_file, chosen.pg0_home, chosen.backups), (Path("/s/config/connection-v2.env"), Path("/s/data/pg0"), Path("/s/state/backups")))
 
 
 class ConnectionFile(Scratch):
@@ -279,6 +279,29 @@ class Units(Scratch):
         capped = reranker_check(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus", "10"), False)
         self.assertTrue(capped.detail.startswith("reranking is off in the service but the settings say on"))
         self.assertIn("unreported", reranker_check(off, None).detail)
+
+    def test_install_retires_the_released_connection_file_with_a_new_key_once(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        old = ensure_settings(where)
+        legacy = where.config / LEGACY_CONNECTION_FILE
+        _ = where.connection_file.rename(legacy)
+        environment, restarted = self.install_with(where, None)
+        new = read_settings(where)
+        self.assertTrue(restarted, "the unit restarts with the new key")
+        self.assertFalse(legacy.exists(), "a tool without the rendering guard finds no connection file")
+        self.assertNotEqual(old.key, new.key)
+        self.assertEqual((old.port, old.pg_port, old.pg_password, old.reranker), (new.port, new.pg_port, new.pg_password, new.reranker))
+        self.assertEqual(new.key, environment["HINDSIGHT_API_TENANT_API_KEY"], "the unit reads the new file")
+        self.assertEqual(where.connection_file.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(self.install_with(where, None)[1], "a second install rotates nothing")
+        self.assertEqual(new, read_settings(where))
+        with self.assertRaisesRegex(ServiceError, "connection.env: cannot open"):
+            _ = read_settings(where, legacy)
+        # An old file left beside the new one is removed, never read.
+        _ = legacy.write_text("anything", encoding="utf-8")
+        self.assertFalse(rotate_connection(where))
+        self.assertFalse(legacy.exists())
+        self.assertEqual(new, read_settings(where))
 
     def test_install_never_manages_a_scratch_home(self) -> None:
         with self.assertRaisesRegex(ServiceError, "ICARUS_MEMORY_HOME"):
@@ -581,7 +604,7 @@ class CommandLine(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": root}):
             created = ensure_settings(home())
             self.assertEqual(read_settings(home()), created)
-            self.assertTrue(Path(root, "config/connection.env").is_file())
+            self.assertTrue(Path(root, "config/connection-v2.env").is_file())
 
 
 if __name__ == "__main__":

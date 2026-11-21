@@ -1018,7 +1018,7 @@ class ClientTests(unittest.TestCase):
     def test_the_client_reads_the_service_connection_file(self) -> None:
         """One connection file (the service's, 0600 enforced), found through ``ICARUS_MEMORY_HOME``."""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": directory}):
-            path = Path(directory) / "config" / "connection.env"
+            path = Path(directory) / "config" / "connection-v2.env"
             with self.assertRaisesRegex(ServiceError, "install"):
                 _ = connection()
             settings = service.ensure_settings(service.home())

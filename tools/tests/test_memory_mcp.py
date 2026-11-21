@@ -234,4 +234,4 @@ class StdioSession(unittest.TestCase):
         content = status["content"]
         assert isinstance(content, list) and isinstance(content[0], dict)
         self.assertTrue(status["isError"])
-        self.assertIn("connection.env", str(content[0]["text"]))
+        self.assertIn("connection-v2.env", str(content[0]["text"]))
