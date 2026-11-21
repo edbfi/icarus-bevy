@@ -561,8 +561,9 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     after = export(root, head).records()
     before = export(root, base).records() if has_legacy(root, base) else {}
     on_accepted = accepted_on(root, accepted_commit)
+    raw = (after, before)
     (after, before), unmapped, shared = renumber((after, before), on_accepted.records)
-    superseding = classify(result, after, before, on_accepted, unmapped, shared)
+    superseding = classify(result, after, before, on_accepted, unmapped, shared, raw)
     accepted = on_accepted.records
     main_refs, base_bodies = documents(accepted), {path: record.body for path, record in documents(before).items()}
     # A document is matched by identity only (its legacy path, or a REF's "salvaged document:" note), never by body.
@@ -707,12 +708,14 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
 
 
 def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
-             unmapped: Mapping[str, str] | None = None, shared: Collection[str] = ()) -> list[Revision]:
+             unmapped: Mapping[str, str] | None = None, shared: Collection[str] = (),
+             raw: tuple[Mapping[str, Record], Mapping[str, Record]] | None = None) -> list[Revision]:
     """Classify every row ``after`` (the branch's export) changes against ``before`` (the merge base's) and the
     accepted journal, filling ``result``; checked by ``invariants`` before it returns. Returns the revisions of the
     rows held or in conflict (for ``unsalvaged``). Pure: no Git, no files. ``unmapped``: the provisional numbers
     ``renumber`` gave records with no accepted counterpart; a row linking to one is held until that record is accepted.
-    ``shared``: those of records sharing an identity, each held with every row citing it."""
+    ``shared``: those of records sharing an identity, each held with every row citing it. ``raw``: the untranslated
+    branch and merge-base exports, on which a possible rename is decided."""
     ref = result.ref
     unmapped = unmapped or {}
     result.source, accepted = on_accepted.source, on_accepted.records
@@ -730,20 +733,36 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         if identifier in after:
             superseding.append(Revision.of(after[identifier], on_accepted.heads.get(identifier, ())))
 
-    # Within one table, a lost accepted identity beside a gained one may be a rename (a name or problem cell edited):
-    # salvage cannot tell a rename from a delete and an add, so it proposes neither and holds both.
+    # Within one table, an accepted identity the branch lost beside one it gained may be a rename (a name or problem
+    # cell edited): salvage cannot tell a rename from a delete and an add, so it proposes neither and holds both.
+    # Lost and gained are decided on the untranslated exports (merge base against branch), before any numbering.
     renamed: dict[str, str] = {}
+    raw_after, raw_before = raw if raw is not None else (after, before)
     for kind in ("compatibility", "report"):
-        lost = sorted((name for name, other in before.items() if other.type == kind and name in accepted and name not in after), key=id_key)
-        gained = sorted((name for name, other in after.items() if other.type == kind and name in unmapped and name not in shared and name not in before),
-                        key=id_key)
-        if lost and gained:
-            for name in lost:
-                renamed[name] = (f"it is gone from the branch and new {kind} rows appeared ({', '.join(f'{name_of(after[item])!r} as {item}' for item in gained)}): "
-                                 + "a rename needs a superseding record; decide by hand")
-            for name in gained:
-                renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
-                                 + "a rename needs a superseding record; decide by hand")
+        def counted(export: Mapping[str, Record]) -> dict[str, int]:
+            found: dict[str, int] = {}
+            for other in export.values():
+                if other.type == kind and (key := identity(other)) is not None:
+                    found[key] = found.get(key, 0) + 1
+            return found
+
+        # Counted, not as sets: renaming one of two rows of a name loses one of that name.
+        base_counts, branch_counts = counted(raw_before), counted(raw_after)
+        held_keys = {identity(other) for other in accepted.values() if other.type == kind}
+        lost_keys = {key for key, count in base_counts.items() if count > branch_counts.get(key, 0)} & held_keys
+        gained_keys = {key for key, count in branch_counts.items() if count > base_counts.get(key, 0)}
+        if not (lost_keys and gained_keys):
+            continue
+        lost = sorted((name for name, other in accepted.items() if identity(other) in lost_keys), key=id_key)
+        gone = sorted((name for name, other in before.items() if identity(other) in lost_keys and name not in after), key=id_key)
+        gained = sorted((name for name, other in after.items() if identity(other) in gained_keys), key=id_key)
+        appeared = ", ".join(f"{name_of(after[item])!r} as {item}" for item in gained)
+        for name in sorted({*lost, *gone}, key=id_key):
+            renamed[name] = (f"it is gone from the branch (accepted as {', '.join(lost)}) and new {kind} rows appeared ({appeared}): "
+                             + "a rename needs a superseding record; decide by hand")
+        for name in gained:
+            renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
+                             + "a rename needs a superseding record; decide by hand")
     changed: list[str] = []
     for name in sorted(set(renamed) - set(after), key=id_key):
         hold(name, "undecided", renamed[name])

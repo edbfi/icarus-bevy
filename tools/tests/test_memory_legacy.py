@@ -605,6 +605,12 @@ class ParityTests(LegacyRepository):
         self.assertNotIn("Traceback", stderr.getvalue())
 
 
+def surface_record(identifier: str, name: str) -> Record:
+    """A compatibility row as proposed on main (not migrated)."""
+    return Record.from_json({"id": identifier, "type": "compatibility", "status": "unknown", "name": name, "qualifier": "Invented",
+                             "required_proof": "Invented proof", "scope": {"basis": "explicit", "subjects": ["original-server"]}})
+
+
 class SalvageTests(LegacyRepository):
     def publish(self) -> None:
         """Point ``origin/main``, the acceptance ref salvage classifies against, at ``main``."""
@@ -1060,7 +1066,7 @@ class SalvageTests(LegacyRepository):
         self.assertEqual(2, len(cps), cps)
         self.assertEqual({"undecided"}, set(cps.values()))
         self.assertIn("CP-001", cps)
-        self.assertIn("is gone from the branch and new compatibility rows appeared ('Discovery renamed' as", result.undecided["CP-001"])
+        self.assertIn("is gone from the branch (accepted as CP-001) and new compatibility rows appeared ('Discovery renamed' as", result.undecided["CP-001"])
         new = next(name for name in cps if name != "CP-001")
         self.assertIn("new compatibility row 'Discovery renamed', and CP-001 is gone from the branch", result.undecided[new])
         self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
@@ -1075,6 +1081,37 @@ class SalvageTests(LegacyRepository):
         self.assertEqual({}, result.undecided)
         self.assertFalse(any(notice.startswith("F-105: only verbatim") for notice in result.notices), result.notices)
         _ = self.legal(result)
+
+    def test_a_rename_of_a_name_main_holds_twice_is_held_naming_both(self) -> None:
+        table = self.root / "docs/ledgers/compatibility.md"
+        _ = table.write_text(table.read_text().replace("| Discovery | Unknown | Browser behavior |\n",
+                                                       "| Discovery | Unknown | Browser behavior |\n| Discovery | Unknown | Twin |\n"))
+        _ = run_git(self.root, "commit", "-q", "-am", "main holds Discovery twice")
+        self.edited("rename-twin", ("docs/ledgers/compatibility.md", "| Discovery | Unknown | Twin |", "| Discovery renamed | Unknown | Twin |"))
+        result = salvage(self.root, "rename-twin")
+        self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"], result.kinds)
+        self.assertFalse(any("removed on" in notice and notice.startswith("CP-") for notice in result.notices), result.notices)
+        renamed = [reason for reason in result.undecided.values() if "new compatibility row 'Discovery renamed'" in reason]
+        self.assertEqual(1, len(renamed), result.undecided)
+        self.assertIn("CP-001, CP-002 is gone from the branch", renamed[0])
+
+    def test_a_rename_to_a_name_main_added_meanwhile_is_held(self) -> None:
+        _ = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", "rename-new", "main")
+        table = self.root / "docs/ledgers/compatibility.md"
+        _ = table.write_text(table.read_text().replace("| Discovery | Unknown |", "| Gadgets | Unknown |"))
+        _ = run_git(self.root, "commit", "-q", "-am", "rename Discovery to Gadgets")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        gadgets = surface_record("CP-900", "Gadgets")
+        _ = write_change_set(self.root, datetime(2026, 2, 4, tzinfo=UTC), [Revision.of(gadgets)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main adds Gadgets")
+        self.publish()
+        result = salvage(self.root, "rename-new")
+        self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"], result.kinds)
+        self.assertEqual("undecided", result.kinds.get("CP-900"), result.kinds)
+        self.assertIn("CP-001 is gone from the branch", result.undecided["CP-900"])
+        self.assertIn("it is gone from the branch (accepted as CP-001)", result.undecided["CP-001"])
 
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.

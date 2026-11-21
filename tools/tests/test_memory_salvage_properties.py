@@ -125,7 +125,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     branch_names = ["Alpha", "Beta", *main_names[1:]] if rng.random() < 0.5 else list(main_names)
     if twins and rng.random() < 0.4:
         branch_names.remove("Gamma")  # the branch drops one of main's twins: the other is still ambiguous on main
-    if rng.random() < 0.25:
+    omega = rng.random() < 0.15
+    if omega:
+        branch_names[0] = "Omega"  # a rename to a name main added after the merge base
+    elif twins and rng.random() < 0.3 and "Gamma" in branch_names:
+        branch_names[branch_names.index("Gamma")] = "Gamma renamed"  # a rename of one of main's twins
+    elif rng.random() < 0.25:
         branch_names[0] = "Alpha renamed"  # a rename: an accepted name lost, a new one gained
     if rng.random() < 0.25:
         branch_names.append("Delta")  # an unrelated new row
@@ -137,7 +142,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         export.update({refs[path]: document(refs[path], path, SAME_BODY if same_body and path in ("docs/specs/a.md", "docs/specs/b.md") else None)
                        for path in paths})
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
-        if twins and export is after and rng.random() < 0.5:
+        if twins and export is after and "Gamma" in names and rng.random() < 0.5:
             # The branch changes one of main's twin rows.
             last = max(f"CP-{number:03d}" for number, name in enumerate(names, 1) if name == "Gamma")
             export[last] = Record.from_json(export[last].to_json() | {"status": "observed"})
@@ -149,6 +154,10 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    if omega:
+        revisions["CP-900"] = Revision.of(Record.from_json({"id": "CP-900", "type": "compatibility", "status": "unknown", "name": "Omega",
+                                                            "qualifier": "Generated", "required_proof": "Generated proof",
+                                                            "scope": {"basis": "explicit", "subjects": ["original-server"]}}))
     if same_body:
         # An unrelated accepted REF with the same body and no document identity: it must never stand for a.md or b.md.
         unrelated = Record.from_json({"id": "REF-950", "type": "reference", "status": "current", "title": "Unrelated", "scope": {"basis": "explicit"},
@@ -195,8 +204,16 @@ class GeneratedSalvageTests(unittest.TestCase):
             # (Invariant (f) checks no proposal cites a REF, CP or RP whose identity differs from the branch record it stood for.)
             self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
                              f"seed {seed}: a cosmetic row refused as a successor")
-            lost = {identity(record) for record in accepted.records.values() if record.type in ("compatibility", "report")} \
-                - {identity(record) for record in raw_after.values()}
+            def counted(export: dict[str, Record]) -> dict[str | None, int]:
+                found: dict[str | None, int] = {}
+                for record in export.values():
+                    if record.type in ("compatibility", "report"):
+                        found[identity(record)] = found.get(identity(record), 0) + 1
+                return found
+
+            accepted_keys = {identity(record) for record in accepted.records.values() if record.type in ("compatibility", "report")}
+            base_counts, branch_counts = counted(raw_before), counted(raw_after)
+            lost = {key for key, count in base_counts.items() if count > branch_counts.get(key, 0)} & accepted_keys
             if lost:
                 self.assertEqual([], [item.record.id for item in result.proposals if item.record.type in ("compatibility", "report")],
                                  f"seed {seed}: an accepted identity disappeared while a new row of its table is proposed")
