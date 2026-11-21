@@ -51,7 +51,7 @@ import sys
 import time
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -74,9 +74,11 @@ EMBEDDING = "models--intfloat--multilingual-e5-small/snapshots/614241f622f53c4ee
 RERANKER = "models--hindsight-ai--hs-rerank-1/snapshots/927f5be31280298a51cf29af8a29cb111ed812c5"
 PG_VERSION = "18.1.0"
 
-# Reranker candidates per recall. Hindsight 1.2.3's recall request has no per-request cap (its ``rerank``
-# options are prune and dedup only), so this is instance-wide, set in the unit's environment below.
+# Reranker candidates per recall, the default of the ``ICARUS_MEMORY_RERANKER`` setting. Hindsight 1.2.3's recall
+# request has no per-request cap (its ``rerank`` options are prune and dedup only), so it is instance-wide: the
+# connection file carries the setting (``off`` or a cap) and the two Hindsight variables it implies.
 RERANKER_CANDIDATES = 50
+RERANKER_VARIABLE = "ICARUS_MEMORY_RERANKER"
 # Every Hindsight setting the instance depends on; values are checked against config.py of 1.2.3.
 SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_LLM_PROVIDER": "none",
@@ -90,7 +92,6 @@ SETTINGS: dict[str, str] = {
     "HINDSIGHT_API_ENABLE_BANK_CONFIG_API": "false",
     "HINDSIGHT_API_MCP_ENABLED": "false",
     "HINDSIGHT_API_LLM_TRACE_ENABLED": "false",
-    "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": str(RERANKER_CANDIDATES),
     "HINDSIGHT_API_WORKER_ID": "icarus-memory",
     "HINDSIGHT_API_TENANT_EXTENSION": "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension",
     "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "onnx",
@@ -211,6 +212,7 @@ class Settings:
     pg_port: int
     pg_password: str = field(repr=False)
     bank: str
+    reranker: str = str(RERANKER_CANDIDATES)
 
     @property
     def url(self) -> str:
@@ -227,7 +229,29 @@ class Settings:
             "HINDSIGHT_API_TENANT_API_KEY": self.key,
             "HINDSIGHT_API_DATABASE_URL": f"pg0://hindsight:{self.pg_password}@hindsight:{self.pg_port}?{DATABASE_QUERY}",
             "ICARUS_MEMORY_BANK": self.bank,
+            **reranker_environment(self.reranker),
         }
+
+    @property
+    def reranker_cap(self) -> int | None:
+        """Candidates the reranker scores per recall; ``None`` when reranking is off."""
+        return None if self.reranker == "off" else int(self.reranker)
+
+
+def reranker_setting(value: str) -> str:
+    """``off`` or a cap from 1 to 500, normalised; anything else is a ``ServiceError``."""
+    if value == "off":
+        return value
+    if not value.isdigit() or not 1 <= int(value) <= 500:
+        raise ServiceError(f"{RERANKER_VARIABLE} must be off or a candidate cap from 1 to 500, not {value!r}")
+    return str(int(value))
+
+
+def reranker_environment(setting: str) -> dict[str, str]:
+    """The setting and the Hindsight variables it implies (the unit's EnvironmentFile passes all three)."""
+    if setting == "off":
+        return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "false"}
+    return {RERANKER_VARIABLE: setting, "HINDSIGHT_API_ENABLE_RERANKING": "true", "HINDSIGHT_API_RERANKER_MAX_CANDIDATES": setting}
 
 
 def render_settings(settings: Settings) -> str:
@@ -247,8 +271,11 @@ def parse_settings(text: str) -> Settings:
             raise ServiceError(f"{CONNECTION_FILE}:{number}: malformed or repeated line")
         values[name] = value
     expected = ("HINDSIGHT_API_HOST", "HINDSIGHT_API_PORT", "HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_DATABASE_URL", "ICARUS_MEMORY_BANK")
-    if sorted(values) != sorted(expected):
-        raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)}")
+    # A file written before the reranker setting existed holds only the five; it means the default.
+    reranker = reranker_setting(values.get(RERANKER_VARIABLE, str(RERANKER_CANDIDATES)))
+    implied = reranker_environment(reranker) if RERANKER_VARIABLE in values else {}
+    if sorted(values) != sorted((*expected, *implied)) or any(values[name] != value for name, value in implied.items()):
+        raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
     database = _DATABASE_URL.fullmatch(values["HINDSIGHT_API_DATABASE_URL"])
     port = values["HINDSIGHT_API_PORT"]
     if values["HINDSIGHT_API_HOST"] != "127.0.0.1" or not port.isdigit() or not 1024 <= int(port) <= 65535:
@@ -262,7 +289,7 @@ def parse_settings(text: str) -> Settings:
         raise ServiceError(f"{CONNECTION_FILE}: the database port must be distinct and between 1024 and 65535")
     if values["ICARUS_MEMORY_BANK"] != BANK:
         raise ServiceError(f"{CONNECTION_FILE}: the bank must be {BANK}")
-    return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK)
+    return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK, reranker)
 
 
 def read_settings(where: Home) -> Settings:
@@ -326,6 +353,25 @@ def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT
     settings = Settings(port, secrets.token_hex(32), pg_port, secrets.token_hex(32), BANK)
     write_private(where.connection_file, render_settings(settings).encode())
     return read_settings(where)
+
+
+def set_reranker(where: Home, value: str) -> tuple[Settings, bool]:
+    """Write ``value`` as the reranker setting (key, ports and password kept); True when the file changed."""
+    current = read_settings(where)
+    wanted = replace(current, reranker=reranker_setting(value))
+    text = render_settings(wanted)
+    if where.connection_file.read_text(encoding="utf-8") == text:
+        return current, False
+    write_private(where.connection_file, text.encode())
+    return read_settings(where), True
+
+
+def reranker_cap(where: Home | None = None) -> int | None:
+    """The configured candidate cap (``None``: reranking off); the default when the file is unreadable."""
+    try:
+        return read_settings(home() if where is None else where).reranker_cap
+    except ServiceError:
+        return RERANKER_CANDIDATES
 
 
 def free_bytes(path: Path) -> int:
@@ -689,7 +735,13 @@ def health(settings: Settings, runtime: Assets) -> list[Check]:
         checks.append(Check("authenticated", True, f"banks: {', '.join(str(bank.get('bank_id')) for bank in banks) or 'none'}"))
         problems = feature_problems(api.get("/version"))
         checks.append(Check("features", not problems, "; ".join(problems) or f"{API_VERSION}; " + ", ".join(f"{name}={value}".lower() for name, value in EXPECTED_FEATURES.items())))
-        problems = bank_config_problems(api.get(f"/v1/default/banks/{settings.bank}/config"))
+        config = api.get(f"/v1/default/banks/{settings.bank}/config")
+        effective = config.get("config")
+        reranking = cast(dict[object, object], effective).get("enable_reranking") if isinstance(effective, dict) else None
+        wanted = settings.reranker_cap is not None
+        checks.append(Check("reranker", reranking is wanted,
+                            f"{RERANKER_VARIABLE}={settings.reranker}; bank enable_reranking={reranking}" + (f", at most {settings.reranker_cap} candidates" if wanted else "")))
+        problems = bank_config_problems(config)
         checks.append(Check("bank config", not problems, "; ".join(problems) or f"{settings.bank}: no overrides; " + ", ".join(f"{name}={value}" for name, value in EXPECTED_BANK_CONFIG.items())))
     except ServiceError as error:
         checks.append(Check("authenticated", False, str(error)))
@@ -782,16 +834,19 @@ def backup_interpreter(environ: Mapping[str, str] | None = None) -> str:
     return sys.executable
 
 
-def install(where: Home, runtime: Assets, checkout: Path) -> float:
-    """Write the connection file (once) and the units, enable them, start the service; returns seconds to ready."""
+def install(where: Home, runtime: Assets, checkout: Path, reranker: str | None = None) -> float:
+    """Write the connection file (once) and the units, enable them, start the service; returns seconds to ready.
+    ``reranker`` (``off`` or a cap) rewrites that setting in the connection file and restarts the service."""
     if where.scratch:
         raise ServiceError(f"{HOME_VARIABLE} is set: a scratch home is never managed by systemd")
     settings = ensure_settings(where)
+    changed = False
+    if reranker is not None:
+        settings, changed = set_reranker(where, reranker)
     prepare_runtime_directories(where)
     make_directory(where.pg0_home)
     directory = unit_directory()
     directory.mkdir(parents=True, exist_ok=True)
-    changed = False
     for name, text in unit_files(where, runtime, primary_checkout_of(checkout), backup_interpreter()).items():
         path = directory / name
         if not path.is_file() or path.read_text(encoding="utf-8") != text:
@@ -857,7 +912,8 @@ def run_service(options: argparse.Namespace) -> int:
         root = repository_root()
         runtime = checked_assets(root)
         if action == "install":
-            seconds = install(where, runtime, root)
+            setting = argument(options, "reranker")
+            seconds = install(where, runtime, root, setting if isinstance(setting, str) else None)
             print(f"memory service: installed; ready after {seconds:.1f} s" if seconds else "memory service: installed; already running")
         elif action == "start":
             settings = read_settings(where)

@@ -28,7 +28,7 @@ from tools.memory.journal import JournalError
 from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compare, restore, retained, rotate, verify
 from tools.memory.service import (
     API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, Api, Connection, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
-    backup_interpreter, connection, ensure_settings, feature_problems, home, install, installed_interpreter, parse_settings, read_settings, render_settings, require_floor, unit_files,
+    backup_interpreter, connection, ensure_settings, feature_problems, home, install, installed_interpreter, parse_settings, read_settings, render_settings, require_floor, reranker_cap, set_reranker, unit_files,
     unit_word,
 )
 
@@ -109,6 +109,30 @@ class ConnectionFile(Scratch):
         ):
             with self.assertRaises(ServiceError):
                 _ = parse_settings(broken)
+
+
+    def test_the_reranker_setting_is_off_or_a_cap_and_defaults_for_older_files(self) -> None:
+        default = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus"))
+        self.assertIn("ICARUS_MEMORY_RERANKER=50\nHINDSIGHT_API_ENABLE_RERANKING=true\nHINDSIGHT_API_RERANKER_MAX_CANDIDATES=50\n", default)
+        older = "".join(line + "\n" for line in default.splitlines() if "RERANK" not in line)
+        self.assertEqual((50, 50), (parse_settings(default).reranker_cap, parse_settings(older).reranker_cap))
+        off = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus", "off"))
+        self.assertIn("HINDSIGHT_API_ENABLE_RERANKING=false\n", off)
+        self.assertNotIn("MAX_CANDIDATES", off)
+        self.assertIsNone(parse_settings(off).reranker_cap)
+        for broken in (default.replace("ICARUS_MEMORY_RERANKER=50", "ICARUS_MEMORY_RERANKER=0"),
+                       default.replace("MAX_CANDIDATES=50", "MAX_CANDIDATES=20"),
+                       off.replace("ENABLE_RERANKING=false", "ENABLE_RERANKING=true")):
+            with self.assertRaises(ServiceError):
+                _ = parse_settings(broken)
+        settings = ensure_settings(self.where)
+        changed, written = set_reranker(self.where, "20")
+        self.assertTrue(written)
+        self.assertEqual((changed.key, changed.reranker_cap), (settings.key, 20))
+        self.assertFalse(set_reranker(self.where, "20")[1], "an unchanged setting is not rewritten")
+        self.assertEqual(20, reranker_cap(self.where))
+        with self.assertRaises(ServiceError):
+            _ = set_reranker(self.where, "many")
 
 
 class Units(Scratch):
