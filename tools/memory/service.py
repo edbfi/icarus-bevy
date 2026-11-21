@@ -362,13 +362,14 @@ def write_private(path: Path, data: bytes) -> None:
         os.close(directory)
 
 
-def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT) -> Settings:
-    """The existing connection file, or a new one with a fresh key and database password."""
+def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT, reranker: str = RERANKER_DEFAULT) -> Settings:
+    """The existing connection file, or a new one with a fresh key and database password and the ``reranker``
+    setting (the drill's scratch instance passes the live one, which its comparison checks against)."""
     for directory in (where.config, where.data, where.state, where.backups):
         make_directory(directory)
     if where.connection_file.exists():
         return read_settings(where)
-    settings = Settings(port, secrets.token_hex(32), pg_port, secrets.token_hex(32), BANK)
+    settings = Settings(port, secrets.token_hex(32), pg_port, secrets.token_hex(32), BANK, reranker_setting(reranker))
     write_private(where.connection_file, render_settings(settings).encode())
     return read_settings(where)
 
