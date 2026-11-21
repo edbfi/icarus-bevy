@@ -17,8 +17,9 @@ State lives outside every checkout. ``home()`` gives three directories, each own
   moves an old ``connection.env`` to the new name with a NEW API key (``rotate_connection``; ports,
   database password and reranker setting kept) and restarts the unit, and leaves a tombstone named
   ``connection.env`` (on a fresh host too) that such a tool cannot parse: its every command, ``service
-  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything, and
-  a process still holding the old key is refused by the service. A second ``install`` rotates nothing.
+  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything (the
+  tool names only the file and line; the sentence in the file is for whoever opens it), and a process still
+  holding the old key is refused by the service. A second ``install`` rotates nothing.
 - ``data``: ``$XDG_DATA_HOME/icarus-memory`` with ``pg0/`` (``PG0_HOME``) and the service's private
   ``home/`` and ``tmp/``.
 - ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/`` and ``memory.lock``, the host lock every
@@ -74,7 +75,8 @@ BACKUP_UNIT = "icarus-memory-backup.service"
 BACKUP_TIMER = "icarus-memory-backup.timer"
 CONNECTION_FILE = "connection-v2.env"
 # The connection file of tools without the bank rendering guard (released before it); never read, only retired to
-# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse, saying what to do.
+# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse (naming only the file and line); the
+# sentence tells whoever opens the file what to do.
 LEGACY_CONNECTION_FILE = "connection.env"
 TOMBSTONE = (b"retired: this checkout's memory tool is older than the bank. Merge main, then run"
              + b" python3 -m tools.memory service install from it.\n")
@@ -284,42 +286,43 @@ def render_settings(settings: Settings) -> str:
     return "\n".join(lines) + "\n"
 
 
-def file_variables(text: str) -> dict[str, str]:
-    """The variables of a connection file as written (``NAME=value`` lines; comments and blank lines skipped)."""
+def file_variables(text: str, label: str = CONNECTION_FILE) -> dict[str, str]:
+    """The variables of a connection file as written (``NAME=value`` lines; comments and blank lines skipped);
+    errors name the file ``label``."""
     values: dict[str, str] = {}
     for number, line in enumerate(text.splitlines(), 1):
         if not line or line.startswith("#"):
             continue
         name, separator, value = line.partition("=")
         if not separator or name in values:
-            raise ServiceError(f"{CONNECTION_FILE}:{number}: malformed or repeated line")
+            raise ServiceError(f"{label}:{number}: malformed or repeated line")
         values[name] = value
     return values
 
 
-def parse_settings(text: str) -> Settings:
+def parse_settings(text: str, label: str = CONNECTION_FILE) -> Settings:
     """Strict parse of the connection file; only the exact generated shape is accepted."""
-    values = file_variables(text)
+    values = file_variables(text, label)
     expected = ("HINDSIGHT_API_HOST", "HINDSIGHT_API_PORT", "HINDSIGHT_API_TENANT_API_KEY", "HINDSIGHT_API_DATABASE_URL", "ICARUS_MEMORY_BANK")
     # A file written before the reranker setting existed holds only the five; it means the default, which
     # ``install`` then writes out (Hindsight's own default is on).
     reranker = reranker_setting(values.get(RERANKER_VARIABLE, RERANKER_DEFAULT))
     implied = reranker_environment(reranker) if RERANKER_VARIABLE in values else {}
     if sorted(values) != sorted((*expected, *implied)) or any(values[name] != value for name, value in implied.items()):
-        raise ServiceError(f"{CONNECTION_FILE}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
+        raise ServiceError(f"{label}: expected exactly {', '.join(expected)} and, optionally, {RERANKER_VARIABLE} with the variables it implies")
     database = _DATABASE_URL.fullmatch(values["HINDSIGHT_API_DATABASE_URL"])
     port = values["HINDSIGHT_API_PORT"]
     if values["HINDSIGHT_API_HOST"] != "127.0.0.1" or not port.isdigit() or not 1024 <= int(port) <= 65535:
-        raise ServiceError(f"{CONNECTION_FILE}: the service must listen on a loopback port between 1024 and 65535")
+        raise ServiceError(f"{label}: the service must listen on a loopback port between 1024 and 65535")
     if not _KEY.fullmatch(values["HINDSIGHT_API_TENANT_API_KEY"]):
-        raise ServiceError(f"{CONNECTION_FILE}: the API key must be 64 lowercase hex digits")
+        raise ServiceError(f"{label}: the API key must be 64 lowercase hex digits")
     if database is None:
-        raise ServiceError(f"{CONNECTION_FILE}: the database URL must be pg0://hindsight:<64 hex>@hindsight:<port>?{DATABASE_QUERY}")
+        raise ServiceError(f"{label}: the database URL must be pg0://hindsight:<64 hex>@hindsight:<port>?{DATABASE_QUERY}")
     pg_port = int(database.group(2))
     if not 1024 <= pg_port <= 65535 or pg_port == int(port):
-        raise ServiceError(f"{CONNECTION_FILE}: the database port must be distinct and between 1024 and 65535")
+        raise ServiceError(f"{label}: the database port must be distinct and between 1024 and 65535")
     if values["ICARUS_MEMORY_BANK"] != BANK:
-        raise ServiceError(f"{CONNECTION_FILE}: the bank must be {BANK}")
+        raise ServiceError(f"{label}: the bank must be {BANK}")
     return Settings(int(port), values["HINDSIGHT_API_TENANT_API_KEY"], pg_port, database.group(1), BANK, reranker)
 
 
@@ -338,7 +341,7 @@ def read_settings(where: Home, path: Path | None = None) -> Settings:
             raise ServiceError(f"{path}: mode {stat.S_IMODE(info.st_mode):04o} gives group or world access; it must be 0600")
         data = handle.read(65536)
     try:
-        return parse_settings(data.decode("utf-8"))
+        return parse_settings(data.decode("utf-8"), path.name)
     except UnicodeDecodeError as error:
         raise ServiceError(f"{path}: not UTF-8") from error
 
@@ -390,8 +393,8 @@ def rotate_connection(where: Home) -> bool:
     """Retire ``connection.env`` (tools without the rendering guard read it) for ``CONNECTION_FILE`` with a new API
     key, keeping ports, database password and reranker setting, and leave ``TOMBSTONE`` in its place; True when it
     rotated. The tombstone is not a settings file, so such a tool's every command, its ``service install``
-    included, stops at "connection.env:1: malformed or repeated line" before writing anything, and the line says
-    why. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
+    included, stops at "connection.env:1: malformed or repeated line" before writing anything. It prints only the
+    file and line; the sentence is there for whoever opens the file. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
     never the one to create ``connection.env``. An old file beside the new one is tombstoned once it reads as
     settings; a file that is neither is refused (``read_settings``), never overwritten."""
     legacy = where.config / LEGACY_CONNECTION_FILE
@@ -738,9 +741,16 @@ def bank_config_problems(body: Mapping[str, object]) -> list[str]:
     return found
 
 
+class Unauthorized(ServiceError):
+    """The service refused the connection file's key."""
+
+
 def ensure_bank(api: Api, bank: str = BANK) -> None:
-    """Create the bank with no overrides when absent (first start); idempotent."""
+    """Create the bank with no overrides when absent (first start); idempotent. ``Unauthorized`` when the service
+    refuses the key."""
     status, _ = api.call("GET", f"/v1/default/banks/{bank}/config")
+    if status in (401, 403):
+        raise Unauthorized(f"bank {bank}: HTTP {status}: the service refused the key in {CONNECTION_FILE}")
     if status == 404:
         status, _ = api.call("PUT", f"/v1/default/banks/{bank}", {})
     if status != 200:
@@ -950,7 +960,11 @@ def install(where: Home, runtime: Assets, checkout: Path, reranker: str | None =
     _ = systemctl("start", BACKUP_TIMER)
     if changed or not unit_active():
         return start_unit(settings)
-    ensure_bank(Api(settings.connection()), settings.bank)
+    try:
+        ensure_bank(Api(settings.connection()), settings.bank)
+    except Unauthorized:
+        # An install stopped after writing a new key but before its restart: the old process still holds the old key.
+        return start_unit(settings)
     return 0.0
 
 

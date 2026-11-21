@@ -1416,8 +1416,26 @@ class NamedDocumentTests(Online):
             "path": "docs/ledgers/findings/invented.md", "cells": {"evidence": "spec; [spec](../../specs/net/invented.md)", "status": "active"}}})
         _ = write_change_set(self.root, CREATED, [Revision.of(ref), Revision.of(row), Revision.of(Record.from_json(finding("F-502", "Invented plain row")))])
         commit_all(self.root)
-        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", online.get(self.bank, self.root, "F-501").lines)
+        got = online.get(self.bank, self.root, "F-501")
+        self.assertIn("content: REF-101 (holds docs/specs/net/invented.md, which its legacy cells name)", got.lines)
+        self.assertEqual([{"id": "REF-101", "path": "docs/specs/net/invented.md"}], got.data["named_documents"], "the JSON of get and the MCP result")
         self.assertFalse(any(line.startswith("content:") for line in online.get(self.bank, self.root, "F-502").lines))
+
+
+class PendingTerminalTests(Online):
+    def test_terminal_successors_walk_the_revision_get_shows(self) -> None:
+        def chained(identifier: str, successor: str) -> Record:
+            return Record.from_json({**finding(identifier, f"Invented chain {identifier}"), "status": f"legacy:superseded-by {successor}",
+                                     "legacy": legacy_of(f"superseded-by {successor}", implied="superseded", superseded_by=(successor,))})
+
+        b_record = chained("F-602", "F-603")
+        first_b = Revision.of(b_record)
+        _ = write_change_set(self.root, CREATED, [Revision.of(chained("F-601", "F-602")), first_b, Revision.of(Record.from_json(finding("F-603", "Invented chain end")))])
+        commit_all(self.root)
+        # Pending here only: a revision of F-602 storing retired withdraws its legacy edge to F-603.
+        _ = write_change_set(self.root, CREATED.replace(second=30), [Revision.of(Record.from_json({**b_record.to_json(), "status": "retired"}), [first_b.rev])])
+        self.assertIn("superseded by: F-602 (terminal: F-603)", online.get(self.bank, self.root, "F-601").lines)
+        self.assertIn("superseded by: F-603 (terminal: F-603)", online.get(self.bank, self.root, "F-602").lines)
 
 
 class StampTests(Online):
