@@ -70,12 +70,58 @@ PostgreSQL, about 2 GB), `memory service install`, `memory rebuild`,
 second path; it needs no dump. Evidence bytes have no off-host copy:
 `memory verify --all` then reports them `unavailable`.
 
+## Worktrees that predate the cut-over
+
+A branch cut before the cut-over still has `docs/ledgers/` and `evidence/`, and
+the rows it added there exist nowhere else. Its own tools fail closed first:
+a `memory` command or scratch guard older than `main`'s journal format cannot
+parse that journal, so `tools/work_gc.py` reports `protected paths unknown: …`
+and holds everything, `tools/cargo_guard.py` refuses cleanup with
+`protected evidence unknown: …`, and `memory` commands exit with the segment
+and field they cannot read. A worktree older than the memory tool keeps its own
+legacy hooks and notices nothing until it merges `main`. On `main`,
+`memory check --ci` on such a branch says `this branch predates the cut-over`
+and lists its rows, but its own hooks are old and CI checks the merge commit,
+so do not wait for that message.
+
+Salvage first, merge last. Merging `main` first and resolving the
+modify/delete conflicts by deletion loses the rows, and the branch's evidence
+stops being protected as soon as its `evidence/` leaves the working tree.
+
+1. In the old worktree, commit every legacy row it holds (salvage reads
+   commits, not the working tree). Do not merge `main` yet.
+2. From an up-to-date checkout of `main` in the same repository, list and
+   convert the rows of the branch's pre-merge tip:
+   `memory salvage <branch> --check`, then
+   `memory salvage <branch> --out work/<case>/salvage`.
+3. Act on each line of the report:
+   - a proposal (`new`, or a revision of `main`'s record): kept in the
+     output segments;
+   - `changes …, which a revision may not change; propose a new record that
+     supersedes it`: `memory propose` the branch's content as a new record,
+     then `memory supersede <old> --by <new>`;
+   - `conflict: …: main holds other content under this ID`: when both sides
+     allocated the number (as M-1623 to M-1625 on one existing branch), add the
+     branch's record under a new ID (`memory evidence add`, `memory propose`)
+     and rewrite the branch's citations; when `main` took an earlier draft,
+     reconcile by hand with `memory revise` or a superseding record;
+   - a changed document: `memory revise REF-N --body FILE`.
+4. On a new branch from `main`, copy the output's `memory/journal/` segments
+   into `memory/journal/`, add the records from step 3, run
+   `memory check --ci`, commit and open the pull request. After it merges, the
+   lead runs `memory sync`.
+5. Only then merge `main` into the old branch (deleting the legacy files in
+   the modify/delete conflicts and citing any new IDs), or retire the branch.
+   Keep its worktree until its evidence records are accepted on `origin/main`:
+   until then its legacy shards are what protects its branch-only artifacts.
+
 ## When the service is down
 
 `memory get --offline ID` and `memory check --ci` read the journal and need no
 service; `memory status` prints a journal-only summary (its first line says the
-service is unavailable) and a bare `memory check` skips the bank comparison; `memory verify` and `memory protected-paths` read only the journal and
-the evidence bytes. Writes (`propose`, `revise`, `supersede`, `resolve`,
+service is unavailable) and a bare `memory check` skips the bank comparison;
+`memory verify` and `memory protected-paths` read only the journal and the
+evidence bytes. Writes (`propose`, `revise`, `supersede`, `resolve`,
 `evidence add`) need the service: wait, or restart it.
 
 1. `memory service status`; then `memory service start` (it resets the crash

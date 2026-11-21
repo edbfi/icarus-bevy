@@ -209,9 +209,11 @@ class CheckTests(Repository):
         _ = run_git(self.root, "checkout", "-q", "old")
         report = self.check(frozen=True)
         self.assertFalse(report.no_journal)
-        self.assertEqual(["this branch predates the cut-over: it holds the legacy ledgers or evidence index and no journal, while origin/main holds the "
-                          + "journal; merge main, then run memory salvage for the legacy rows it adds",
-                          "F-099: legacy finding row added or changed on this branch; memory salvage turns it into a proposal"], report.problems)
+        self.assertEqual(2, len(report.problems))
+        self.assertTrue(report.problems[0].startswith("this branch predates the cut-over: it holds the legacy ledgers or evidence index and no journal, "
+                                                      + "while origin/main holds the journal. Salvage BEFORE merging main"))
+        self.assertIn("run memory salvage <this branch> --out <dir> on this tip, commit the proposals, then merge main", report.problems[0])
+        self.assertEqual(["F-099: legacy finding row added or changed on this branch; memory salvage turns it into a proposal"], report.problems[1:])
 
 
 def revised(old: dict[str, JSON], changes: dict[str, JSON], body: tuple[str, str] | None = None) -> list[str]:

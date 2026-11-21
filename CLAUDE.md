@@ -20,9 +20,12 @@ references, releases, evidence) lives in the memory service and is read and
 written only through `python3 -m tools.memory` (`memory`) or its `memory` MCP
 server, following `.agents/rules/memory.md`. Fetch a known ID with
 `memory get F-487` (also `M-147/ev_<12 hex>`), search with
-`memory recall "question"`, list a topic with `memory area <area>`. Never read or
+`memory recall "question"`, list a topic's records with `memory area <area>`
+(the open unknowns are in `memory status`, not in an area). Never read or
 edit `memory/journal/` by hand. Without the service, `memory get --offline ID`
-reads the journal.
+reads the journal. A branch or worktree older than the cut-over (it still has
+`docs/ledgers/` or `evidence/`) is salvaged from its pre-merge tip before it
+merges `main` ([runbook](docs/runbooks/memory-service.md#worktrees-that-predate-the-cut-over)).
 
 | Task | Entry set |
 | --- | --- |

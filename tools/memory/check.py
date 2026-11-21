@@ -82,9 +82,13 @@ def run_check(
         report.problems.append(str(error))
         return report
     if not segments and accepted_segments and any((root / name).is_dir() for name in LEGACY_DIRS):
-        # A branch cut before the cut-over: "no journal" would hide its real problem, the legacy rows it adds.
+        # A branch cut before the cut-over: "no journal" would hide its real problem, the legacy rows it adds, which must be
+        # salvaged from its pre-merge tip (a merge resolving the modify/delete conflicts by deletion loses them).
         report.problems.append(f"this branch predates the cut-over: it holds the legacy ledgers or evidence index and no journal, while {base} "
-                               + "holds the journal; merge main, then run memory salvage for the legacy rows it adds")
+                               + "holds the journal. Salvage BEFORE merging main (a merge that deletes the legacy trees loses these rows and the protection of "
+                               + "this branch's evidence): from an up-to-date checkout of main run memory salvage <this branch> --out <dir> on this tip, commit "
+                               + "the proposals, then merge main; keep this worktree until its evidence records are accepted (docs/runbooks/memory-service.md, "
+                               + "\"Worktrees that predate the cut-over\")")
         report.problems.extend(predating_rows(root, reference))
         return report
     if not segments and require_journal:
