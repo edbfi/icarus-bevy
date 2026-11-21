@@ -985,6 +985,40 @@ class SalvageTests(LegacyRepository):
         self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
         self.assertIn("F-107: F-105 would supersede it, but F-107 is undecided; F-105 is not revised", result.notices)
 
+    def test_a_notice_about_a_held_row_follows_the_successor_s_actual_links(self) -> None:
+        # Main already links F-105 -> F-107. The branch names F-105 and F-109 as F-107's successors (F-109's claim edit
+        # holds it, so F-107 is held) and F-108 superseded by F-105, so F-105 is revised to carry F-108's link and keeps
+        # the accepted link to F-107.
+        records = self.journal_on_main(remove_legacy=False)
+        f105 = records["F-105"]
+        linked = Revision.of(Record.from_json({**f105.to_json(), "supersedes": ["F-107"]}, f105.body), [Revision.of(f105).rev])
+        _ = write_change_set(self.root, datetime(2026, 2, 3, tzinfo=UTC), [linked])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main links F-105 to F-107")
+        self.publish()
+        _ = run_git(self.root, "checkout", "-q", "-b", "kept", "main~1")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        text = ledger.read_text()
+        text = text.replace("Last reconciled", "F-107 superseded-by F-109.\n\nLast reconciled")
+        text = text.replace("owner said so | | active |", "owner said so | | superseded-by F-105 |")
+        text = text.replace("| medium; loopback |  | active |", "| medium; loopback |  | superseded-by F-105 |")
+        text = text.replace("|  F-109 | Spaced row |", "|  F-109 | Spaced row edited |")
+        _ = ledger.write_text(text)
+        _ = run_git(self.root, "commit", "-q", "-am", "branch edits")
+        result = salvage(self.root, "kept")
+        self.assertEqual("undecided", result.kinds["F-107"])
+        f105_proposal = next(item.record for item in result.proposals if item.record.id == "F-105")
+        self.assertEqual(("F-107", "F-108"), f105_proposal.links.supersedes)
+        self.assertIn("F-107: F-105 would supersede it, but F-107 is undecided; F-105 keeps the link its accepted record already holds", result.notices)
+        self.assertFalse(any("F-105 is proposed without that link" in notice for notice in result.notices))
+
+    def test_invariants_refuse_a_notice_its_proposal_contradicts(self) -> None:
+        self.superseded_by_new_row()
+        result = salvage(self.root, "pair")
+        result.notices.append("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is not revised")
+        with self.assertRaisesRegex(salvage_command.SalvageError, "F-111: a notice says it is not revised"):
+            salvage_command.invariants(result, ["F-107", "F-111"], salvage_command.accepted_on(self.root, "origin/main"))
+
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
         # Two new rows superseding each other: each replays alone, the pair is a cycle check --ci rejects.
         self.edited("cycle", ("docs/ledgers/findings/widgets.md", "owner said so | | active |",

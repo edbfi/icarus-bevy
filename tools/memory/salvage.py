@@ -420,8 +420,8 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted) -
     """Raise ``SalvageError`` (naming the row) unless (a) no proposal links to a row this run holds, reports as a
     conflict or leaves unproposed, unless the accepted journal holds it (and an added ``supersedes``/``resolves``
     names only a row in play); (b) replaying the accepted journal with the proposals adds no problem; (c) every
-    changed row is in exactly one class, its proposal present exactly when the class has one, and every notice
-    that claims a proposal names one in the output."""
+    changed row is in exactly one class, its proposal present exactly when the class has one; (d) every notice
+    about a successor's link agrees with that successor's proposal (absent, with the link, or without it)."""
     accepted = on_accepted.records
     proposed = {revision.record.id: revision.record for revision in result.proposals}
     if len(proposed) != len(result.proposals):
@@ -455,9 +455,17 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted) -
     for identifier in proposed:
         if result.kinds.get(identifier) not in with_proposal:
             raise SalvageError(f"{identifier}: proposed but classed {result.kinds.get(identifier)}")
+    # (d) A notice about a link agrees with the links of the proposal it names.
     for notice in result.notices:
-        if (claim := re.search(r"; ([A-Z]+-[0-9]+) is proposed without that link$", notice)) and claim[1] not in proposed:
-            raise SalvageError(f"{claim[1]}: a notice claims a proposal the output does not hold")
+        claim = re.fullmatch(r"([A-Z]+-[0-9]+): ([A-Z]+-[0-9]+) would supersede it, but .*; \2 (is proposed without that link|is not revised"
+                             + r"|keeps the link its accepted record already holds)", notice)
+        if claim is None:
+            continue
+        old, target, outcome = claim[1], claim[2], claim[3]
+        record = proposed.get(target)
+        holds = record is not None and old in record.links.supersedes
+        if (outcome == "is not revised") != (record is None) or (record is not None and holds != outcome.startswith("keeps")):
+            raise SalvageError(f"{target}: a notice says it {outcome} about {old}, which its proposal contradicts")
 
 
 def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
@@ -606,9 +614,14 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):
-                carried = any(item.record.id == target for item in result.proposals)
-                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; "
-                                      + (f"{target} is proposed without that link" if carried else f"{target} is not revised"))
+                proposal = next((item for item in result.proposals if item.record.id == target), None)
+                if proposal is None:
+                    outcome = f"{target} is not revised"
+                elif old in proposal.record.links.supersedes:
+                    outcome = f"{target} keeps the link its accepted record already holds"
+                else:
+                    outcome = f"{target} is proposed without that link"
+                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {outcome}")
     for target, reason in sorted(unlinkable.items()):
         result.notices.append(f"{target}: not revised to carry supersedes links ({reason})")
     result.notices.extend(f"{identifier}: removed on {ref} (a deletion needs no proposal)" for identifier in sorted(set(before) - set(after), key=id_key)
