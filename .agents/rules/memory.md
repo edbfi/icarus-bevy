@@ -46,7 +46,8 @@ document.
 | evidence | `M-N` | active, retired, missing | path, sha256, size, class, kind, date, label |
 
 - `superseded` and `resolved` are derived from links, or on a migrated record
-  from its legacy status until a revision stores another; never written as a revision.
+  from its legacy status until a revision stores another; never written as a
+  revision.
 - Finding `kind`: observed, measured, derived, inferred, reported, decision;
   `confidence`: high, medium, low; `standing`: confirmed, candidate, refuted;
   `negative: true` marks a negative result. A receipt is evidence. Derived and
@@ -119,7 +120,7 @@ Supersession is acyclic.
 - A REF's text is its body; its canonical JSON holds header fields and the
   body's sha256, never the body.
 - The bank marker holds the rendering version: an older tool never reconciles
-  or writes (merge `main`); a newer one re-renders all and raises it.
+  or writes (merge `main`); a newer one re-renders all, raising it.
 - One retain item per document. `<ID>` holds the accepted head (or the proposal
   if never accepted); `<ID>@<12 hex>` exists only for a pending revision of an
   accepted record. Prior revisions are in the journal.

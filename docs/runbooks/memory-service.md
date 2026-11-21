@@ -111,7 +111,8 @@ stops being protected as soon as its `evidence/` leaves the working tree.
 4. On a new branch from `main`, copy the output's `memory/journal/` segments
    into `memory/journal/`, add the records from step 3, run
    `memory check --ci`, commit and open the pull request. After it merges, the
-   lead runs `memory sync`.
+   lead runs `memory sync`; salvage then counts those rows as accepted, never as
+   conflicts.
 5. Only then merge `main` into the old branch (deleting the legacy files in
    the modify/delete conflicts and citing any new IDs), or retire the branch.
    Keep its worktree until its evidence records are accepted on `origin/main`:
