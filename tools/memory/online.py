@@ -665,31 +665,39 @@ def verify_record(primary: Path, record: Record, status: str, state: State | Non
 
 
 def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revision, Entry]]:
-    """Every evidence revision in the segments staged in Git's index (added or modified), each with its history
-    in what the commit holds: ``accepted`` (``origin/main``) plus every journal segment in the index, never the
-    working tree; only revisions that are a head there. An unreadable segment raises, so the pre-commit hook
-    fails closed."""
-    listed = git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=AM", "--", JOURNAL).decode().split("\0")
-    staged = {path for path in listed if path}
+    """The evidence records a commit of Git's index changes, each at its head(s) in what the commit holds:
+    ``accepted`` (``origin/main``) plus every journal file in the index, never the working tree.
+
+    A record is affected when a staged segment adds, modifies or deletes one of its revisions (a deleted
+    segment is read from ``HEAD``): deleting an unaccepted retirement reactivates the revision before it, which
+    is then judged. An unreadable segment raises, so the pre-commit hook fails closed."""
+    changed = git(root, "diff", "--cached", "--no-renames", "--name-status", "-z", "--diff-filter=AMD", "--", JOURNAL).decode().split("\0")
+    pairs = [(changed[index], changed[index + 1]) for index in range(0, len(changed) - 1, 2)]
+    staged = sorted(path for status, path in pairs if status in ("A", "M"))
+    deleted = sorted(path for status, path in pairs if status == "D")
     indexed = sorted(path for path in git(root, "ls-files", "-z", "--", JOURNAL).decode().split("\0") if path.endswith(".jsonl"))
     committed = {segment.path: segment for segment in accepted}
     for path, data in zip(indexed, read_blobs(root, [f":{path}" for path in indexed]), strict=True):
         if data is None:
             raise JournalError(f"{path}: in the index but unreadable from it")
         committed[path] = parse_segment(path, data)
+    affected = {revision.record.id for path in staged for revision in committed[path].revisions if revision.record.type == "evidence"}
+    for path, data in zip(deleted, read_blobs(root, [f"HEAD:{path}" for path in deleted]), strict=True):
+        if data is None:
+            raise JournalError(f"{path}: deleted in the index but unreadable from HEAD")
+        affected |= {revision.record.id for revision in parse_segment(path, data).revisions if revision.record.type == "evidence"}
     history = replay(committed.values())
-    # A staged revision that a later revision in the same commit replaces is not judged on its own: the
-    # record's head(s) in what is committed decide.
-    return [(revision, history.entries[revision.record.id]) for path in sorted(staged)
-            for revision in committed[path].revisions
-            if revision.record.type == "evidence" and revision.rev in history.entries[revision.record.id].heads]
+    # A revision that a later one in the same commit replaces is not judged on its own: the record's head(s) in
+    # what is committed decide. A record the commit removes entirely (its only segment deleted) has nothing left.
+    return [(history.entries[name].revisions[rev].revision, history.entries[name]) for name in sorted(affected, key=id_key)
+            if name in history.entries for rev in history.entries[name].heads]
 
 
 def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, staged: bool = False) -> Output:
     """``verified``, ``unavailable``, ``mismatched`` or ``legacy-unverifiable`` per evidence record; exit 1 on
     ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``).
-    ``staged``: every evidence revision in the staged segments (the prek hook), each judged as committed, whatever the
-    working tree holds."""
+    ``staged``: every evidence record the staged journal changes add, modify or delete (the prek hook), each at its
+    head as committed, whatever the working tree holds."""
     universe = gather(root)
     view = universe.view
     primary = primary_checkout(root)

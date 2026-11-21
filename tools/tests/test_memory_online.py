@@ -632,6 +632,22 @@ class EvidenceTests(Online):
         _ = run_git(self.root, "add", "memory/journal")
         self.assertEqual(0, online.verify(self.root, (), staged=True).status, "the staged retirement is the revision committed")
 
+    def test_staged_deletion_of_an_unaccepted_retirement_judges_the_revision_it_reactivates(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        commit_all(self.root)
+        before = set((self.root / "memory/journal").rglob("*.jsonl"))
+        _ = online.revise(self.bank, self.root, "M-001", Changes({"status": "retired"}, note="Invented: retired on the branch"), now=self.tick())
+        (retirement,) = set((self.root / "memory/journal").rglob("*.jsonl")) - before
+        _ = run_git(self.root, "add", "memory/journal")
+        _ = run_git(self.root, "commit", "-q", "-m", "retirement, not on origin/main")
+        (self.root / "work/case/receipt.txt").unlink()
+        self.assertEqual(0, online.verify(self.root, (), staged=True).status, "nothing staged yet")
+        _ = run_git(self.root, "rm", "-q", str(retirement.relative_to(self.root)))
+        self.assertEqual(1, online.verify(self.root, ["M-001"]).status)
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (staged.status, staged.lines[0]))
+
     def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
         self.put("work/case/receipt.txt", "invented receipt")
         _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
