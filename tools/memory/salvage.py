@@ -45,14 +45,13 @@ from typing import Protocol
 from tools.memory.check import APPEND_ONLY, REVISABLE
 from tools.memory.gitio import GitError, git
 from tools.memory.journal import JOURNAL, JournalError, Revision, read_git, split_change_set, write_change_set
-from tools.memory.legacy import commit_time, export
-from tools.memory.legacy_reader import LEGACY_ROOTS, CatalogError
+from tools.memory.legacy import SALVAGED, commit_time, export
+from tools.memory.legacy_reader import CatalogError, has_legacy
 from tools.memory.legacy_rules import MigrationError
 from tools.memory.model import Record, RecordError, id_key
 from tools.memory.state import replay
 
 MAIN = "main"
-SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 
 
 @dataclass
@@ -88,11 +87,6 @@ def accepted_on(root: Path, main: str) -> Accepted:
                         {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal")
     records = export(root, main).records()
     return Accepted(records, {identifier: (Revision.of(record).rev,) for identifier, record in records.items()}, "legacy")
-
-
-def has_legacy(root: Path, revision: str) -> bool:
-    """Whether ``revision`` has a legacy ledger or evidence index tree."""
-    return bool(git(root, "ls-tree", "--name-only", "--end-of-options", revision, "--", *LEGACY_ROOTS).strip())
 
 
 def documents(records: dict[str, Record]) -> dict[str, Record]:

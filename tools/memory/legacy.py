@@ -30,6 +30,8 @@ from tools.memory.legacy_rules import (
 )
 from tools.memory.model import CONFIDENCES, EVIDENCE_CLASSES, EVIDENCE_KINDS, FINDING_KINDS, JSON, SEVERITIES, TYPES, Record, id_key
 
+# The record types a branch's legacy rows become (``salvage``, ``check``); references and releases are not rows.
+SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 ORDER = ("evidence", "finding", "unknown", "bug", "lead", "report", "compatibility", "reference", "release")
 
 

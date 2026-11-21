@@ -81,6 +81,12 @@ def run_check(
     except (GitError, JournalError) as error:
         report.problems.append(str(error))
         return report
+    if not segments and accepted_segments and any((root / name).is_dir() for name in LEGACY_DIRS):
+        # A branch cut before the cut-over: "no journal" would hide its real problem, the legacy rows it adds.
+        report.problems.append(f"this branch predates the cut-over: it holds the legacy ledgers or evidence index and no journal, while {base} "
+                               + "holds the journal; merge main, then run memory salvage for the legacy rows it adds")
+        report.problems.extend(predating_rows(root, reference))
+        return report
     if not segments and require_journal:
         report.problems.append("no journal: memory/journal/ holds no segment, and this repository requires one")
     if not segments and not reference_segments:
@@ -200,6 +206,23 @@ def citation_problems(root: Path, base: str, state: State) -> list[str]:
                 hint = f"; cite {', '.join(successors)}" if successors else ""
                 problems.append(f"{path}:{number}: new citation of {state.status(target)} {target}{hint}")
     return problems
+
+
+def predating_rows(root: Path, reference: str) -> list[str]:
+    """The legacy rows ``HEAD`` adds or changes against ``reference`` (the export's conversion, as ``salvage``)."""
+    from tools.memory.legacy import SALVAGED, export
+    from tools.memory.legacy_reader import CatalogError, has_legacy
+    from tools.memory.legacy_rules import MigrationError
+    from tools.memory.model import RecordError, id_key
+
+    try:
+        after = export(root, "HEAD").records() if has_legacy(root, "HEAD") else {}
+        before = export(root, reference).records() if has_legacy(root, reference) else {}
+    except (CatalogError, GitError, MigrationError, RecordError) as error:
+        return [f"the legacy rows of this branch could not be read: {error}"]
+    return [f"{identifier}: legacy {record.type} row added or changed on this branch; memory salvage turns it into a proposal"
+            for identifier, record in sorted(after.items(), key=lambda item: id_key(item[0]))
+            if record.type in SALVAGED and before.get(identifier) != record]
 
 
 def salvage_problems(root: Path, base: str) -> list[str]:

@@ -354,6 +354,11 @@ class Index:
                     yield Link("supersedes_to", match[1], name)
 
 
+def has_legacy(root: Path, revision: str) -> bool:
+    """Whether ``revision`` has a legacy ledger or evidence index tree."""
+    return bool(git(root, "ls-tree", "--name-only", "--end-of-options", revision, "--", *LEGACY_ROOTS).strip())
+
+
 def commit_id(root: Path, rev: str) -> str:
     try:
         return git(root, "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}").decode().strip()

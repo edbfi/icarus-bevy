@@ -195,6 +195,25 @@ class CheckTests(Repository):
                          self.check(frozen=True).problems)
 
 
+    def test_a_branch_from_before_the_cut_over_is_told_so_with_the_rows_it_adds(self) -> None:
+        header = "# Findings: Widgets\n\n| ID | Claim | Kind | Evidence | Scope and limits | Unknowns | Status |\n| --- | --- | --- | --- | --- | --- | --- |\n"
+        self.put("docs/ledgers/findings/widgets.md", header + "| F-090 | Invented old claim | observed | review | high; server 29990001 | | active |\n")
+        commit_all(self.root, "legacy era")
+        _ = run_git(self.root, "checkout", "-q", "-b", "old")
+        self.put("docs/ledgers/findings/widgets.md", header + "| F-090 | Invented old claim | observed | review | high; server 29990001 | | active |\n"
+                 + "| F-099 | Invented row added on the old branch | observed | review | high | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "old branch row")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = run_git(self.root, "rm", "-r", "-q", "docs/ledgers")
+        self.accept_chain()
+        _ = run_git(self.root, "checkout", "-q", "old")
+        report = self.check(frozen=True)
+        self.assertFalse(report.no_journal)
+        self.assertEqual(["this branch predates the cut-over: it holds the legacy ledgers or evidence index and no journal, while origin/main holds the "
+                          + "journal; merge main, then run memory salvage for the legacy rows it adds",
+                          "F-099: legacy finding row added or changed on this branch; memory salvage turns it into a proposal"], report.problems)
+
+
 def revised(old: dict[str, JSON], changes: dict[str, JSON], body: tuple[str, str] | None = None) -> list[str]:
     """Problems of one revision of ``old`` applying ``changes`` (``body``: the REF body before and after)."""
     first = Revision.of(Record.from_json(old, body[0] if body else None))
