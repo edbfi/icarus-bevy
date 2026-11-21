@@ -38,8 +38,10 @@ from tools.memory import migrate
 from tools.memory.parity import parity
 from tools.memory.paths import ProtectedPathsError
 from tools.memory import salvage as salvage_command
-from tools.memory.salvage import salvage
-from tools.memory.state import legacy_listed, partition, replay
+from tools.memory.check import revision_problems
+from tools.memory.journal import read_git
+from tools.memory.salvage import Salvage, salvage
+from tools.memory.state import State, legacy_listed, partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
 
 MEMBER_A = "ev_29990001aaaa" + "1" * 52
@@ -634,8 +636,8 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "feature")
         self.assertEqual("legacy", result.source)
         self.assertEqual({revision.record.id: bool(revision.prev) for revision in result.proposals}, {"F-111": False, "M-105": False})
-        # A changed row changes its verbatim legacy cells, which never change: it needs a superseding record and is never proposed.
-        self.assertEqual(result.unrevisable, {"F-107": ("claim", "legacy")})
+        # A changed claim is not revisable: the row needs a superseding record and is never proposed.
+        self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
         self.assertEqual("supersede", result.kinds["F-107"])
         self.assertIn("docs/ledgers/findings/widgets.md: changed on feature; revise the body of REF-007 by hand", result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
@@ -656,8 +658,8 @@ class SalvageTests(LegacyRepository):
         out = self.top / "salvaged"
         status, stdout, stderr = self.run_salvage("claim-edit", out=out)
         self.assertEqual((salvage_command.EXIT_SUPERSEDE, ""), (status, stdout))
-        self.assertIn("needs a superseding record: F-107: changes claim, legacy, which a revision may not change; not proposed", stderr)
-        self.assertIn("1 proposal(s), 1 needing a superseding record, 0 conflict(s)", stderr)
+        self.assertIn("needs a superseding record: F-107: changes claim, which a revision may not change; not proposed", stderr)
+        self.assertIn("1 proposal(s), 1 needing a superseding record, 0 needing a decision by hand, 0 conflict(s)", stderr)
         written = {revision.record.id for segment in read_tree(out) for revision in segment.revisions}
         self.assertEqual({"F-111"}, written)
 
@@ -673,10 +675,66 @@ class SalvageTests(LegacyRepository):
                          (after.kinds, after.unrevisable, after.notices, after.unsalvaged))
         status, stdout, stderr = self.run_salvage("feature")
         self.assertEqual(1, status, "a conflict fails the command")
-        self.assertIn("memory salvage: feature: 2 proposal(s), 1 needing a superseding record, 1 conflict(s), 0 row(s) already accepted "
+        self.assertIn("memory salvage: feature: 2 proposal(s), 1 needing a superseding record, 0 needing a decision by hand, 1 conflict(s), 0 row(s) already accepted "
                       + "(against origin/main ", stderr)
         self.assertIn("conflict: F-112: origin/main holds other content under this ID", stderr)
         self.assertIn("# memory/journal/", stdout)
+
+    def status_branch(self, name: str, status: str, *, extra: str = "") -> None:
+        """A branch that changes only F-107's Status cell (and may add rows), after the cut-over journalled main."""
+        _ = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", name, "main")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        row = "| F-107 | Decision text without tokens | derived | review | bounded; candidate; owner said so | |"
+        text = ledger.read_text()
+        self.assertIn(f"{row} active |", text)
+        _ = ledger.write_text(text.replace(f"{row} active |", f"{row} {status} |") + extra)
+        _ = run_git(self.root, "commit", "-q", "-am", "status edit")
+
+    def legal(self, result: Salvage) -> State:
+        """The accepted journal plus the proposals, replayed: no illegal revision, no dangling link."""
+        out = self.top / "legal"
+        _ = write_change_set(out, datetime(2026, 2, 1, tzinfo=UTC), result.proposals)
+        state = replay([*read_git(self.root, "origin/main"), *read_tree(out)])
+        self.assertEqual(([], (), ()), (revision_problems(state), state.link_problems(), state.problems))
+        return state
+
+    def test_a_status_cell_superseded_by_a_new_row_is_a_supersedes_link_on_it(self) -> None:
+        self.status_branch("supersede", "superseded-by F-111", extra="| F-111 | Replacement claim | observed | review | high; x | | active |\n")
+        result = salvage(self.root, "supersede")
+        self.assertEqual(({}, {}), (result.unrevisable, result.undecided))
+        self.assertEqual({"F-107": "superseded", "F-111": "new"}, result.kinds)
+        self.assertEqual(["F-111"], [revision.record.id for revision in result.proposals], "no revision of F-107")
+        self.assertEqual(("F-107",), result.proposals[0].record.links.supersedes)
+        state = self.legal(result)
+        self.assertEqual("superseded", state.status("F-107"))
+        status, _stdout, _stderr = self.run_salvage("supersede")
+        self.assertEqual(0, status)
+
+    def test_a_status_cell_superseded_by_an_accepted_record_appends_to_it(self) -> None:
+        self.status_branch("by-accepted", "superseded-by F-105")
+        result = salvage(self.root, "by-accepted")
+        self.assertEqual({"F-107": "superseded", "F-105": "revision"}, result.kinds)
+        (revision,) = result.proposals
+        self.assertEqual(("F-105", ("F-107",)), (revision.record.id, revision.record.links.supersedes))
+        _ = self.legal(result)
+
+    def test_a_retired_status_cell_is_a_status_revision_quoting_the_cell(self) -> None:
+        self.status_branch("retire", "retired: replaced by the invented design")
+        result = salvage(self.root, "retire")
+        (revision,) = result.proposals
+        self.assertEqual(("F-107", "retired"), (revision.record.id, revision.record.status))
+        self.assertEqual("status cell on retire: retired: replaced by the invented design", revision.record.notes[-1])
+        self.assertEqual(self.records["F-107"].legacy, revision.record.legacy, "main's verbatim cells are kept")
+        _ = self.legal(result)
+
+    def test_a_status_cell_outside_the_vocabulary_or_without_a_known_successor_is_undecided(self) -> None:
+        self.status_branch("odd", "parked for later")
+        odd = salvage(self.root, "odd")
+        self.assertEqual(([], {"F-107": "its status cell on odd is outside the finding vocabulary: 'parked for later'"}), (odd.proposals, odd.undecided))
+        status, _stdout, stderr = self.run_salvage("odd")
+        self.assertEqual(salvage_command.EXIT_SUPERSEDE, status)
+        self.assertIn("needs a decision by hand: F-107:", stderr)
 
     def test_the_accepted_ref_is_origin_main_whatever_local_main_says(self) -> None:
         self.branch_and_main()
