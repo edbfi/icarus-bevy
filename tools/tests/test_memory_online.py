@@ -676,6 +676,16 @@ class EvidenceTests(Online):
         with self.assertRaisesRegex(JournalError, r"^memory/journal/2026/11/notes\.txt: not a segment path"):
             _ = online.verify(self.root, (), staged=True)
 
+    def test_staged_removal_of_a_committed_stray_file_is_no_segment_change(self) -> None:
+        stray = self.root / "memory/journal/2026/11/notes.txt"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        _ = stray.write_text("not a segment\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "memory/journal")
+        _ = run_git(self.root, "commit", "-q", "-m", "a stray file slipped in")
+        _ = run_git(self.root, "rm", "-q", "memory/journal/2026/11/notes.txt")
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((0, ["verify: 0 verified, 0 unavailable, 0 mismatched, 0 legacy-unverifiable; 0 failing"]), (staged.status, staged.lines))
+
     def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
         self.put("work/case/receipt.txt", "invented receipt")
         _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())

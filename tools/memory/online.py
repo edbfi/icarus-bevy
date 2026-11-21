@@ -43,7 +43,7 @@ from tools.memory.canonical import RENDERING, render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
 from tools.memory.gitio import GitError, descends, git, listed_files, read_blobs
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags, Unavailable
-from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, write_change_set
+from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, segment_name, write_change_set
 from tools.memory.model import (
     ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, regap, sha256_hex,
 )
@@ -675,7 +675,8 @@ def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revis
     changed = git(root, "diff", "--cached", "--no-renames", "--name-status", "-z", "--diff-filter=AMD", "--", JOURNAL).decode().split("\0")
     pairs = [(changed[index], changed[index + 1]) for index in range(0, len(changed) - 1, 2)]
     staged = sorted(path for status, path in pairs if status in ("A", "M"))
-    deleted = sorted(path for status, path in pairs if status == "D")
+    # Removing a stray file is no segment change: only a deleted path that can name a segment is read.
+    deleted = sorted(path for status, path in pairs if status == "D" and segment_name(path) is not None)
     indexed = sorted(path for path in git(root, "ls-files", "-z", "--", JOURNAL).decode().split("\0") if path)
     committed = {segment.path: segment for segment in accepted}
     for path, data in zip(indexed, read_blobs(root, [f":{path}" for path in indexed]), strict=True):
