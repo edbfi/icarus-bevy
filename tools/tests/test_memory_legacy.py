@@ -845,6 +845,37 @@ class SalvageTests(LegacyRepository):
         again = salvage(self.root, "linked")
         self.assertEqual(([], {"F-107": "accepted"}, []), (again.proposals, again.kinds, again.unsalvaged))
 
+    def test_a_link_from_a_conflicting_row_is_never_attached(self) -> None:
+        records = self.journal_on_main(remove_legacy=False)
+        _ = run_git(self.root, "checkout", "-q", "-b", "supersede", "main")
+        ledger = self.root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("owner said so | | active |", "owner said so | | superseded-by F-111 |")
+                              + "| F-111 | Replacement claim | observed | review | high; x | | active |\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "supersede F-107")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        f107 = records["F-107"]
+        retired = Revision.of(Record.from_json({**f107.to_json(), "status": "retired", "notes": ["Invented: retired on main"]}), [Revision.of(f107).rev])
+        _ = write_change_set(self.root, datetime(2026, 2, 2, tzinfo=UTC), [retired])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main retires F-107")
+        self.publish()
+        result = salvage(self.root, "supersede")
+        self.assertEqual({"F-107": "conflict", "F-111": "new"}, result.kinds)
+        self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
+        self.assertIn("F-107: F-111 would supersede it, but F-107 is conflict; F-111 is proposed without that link", result.notices)
+
+    def test_a_link_from_a_row_held_for_a_stuck_successor_is_never_attached(self) -> None:
+        # F-107's legacy row names F-105 (prose) and the new F-111 (status cell); F-105's claim edit holds it, so F-107 is stuck.
+        ledger = "docs/ledgers/findings/widgets.md"
+        self.edited("stuck", (ledger, "Last reconciled", "F-107 superseded-by F-105.\n\nLast reconciled"),
+                    (ledger, "owner said so | | active |", "owner said so | | superseded-by F-111 |\n| F-111 | Replacement claim | observed | review | high; x | | active |"),
+                    (ledger, "| F-105 | Gadget 3.0.91 run ends;", "| F-105 | Gadget 3.0.91 run ended;"))
+        result = salvage(self.root, "stuck")
+        self.assertEqual(("supersede", "undecided", "new"), (result.kinds["F-105"], result.kinds["F-107"], result.kinds["F-111"]))
+        self.assertIn("names successor F-105", result.undecided["F-107"])
+        self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
+        self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
+
     def test_one_bad_row_never_aborts_the_run(self) -> None:
         self.status_branch("two", "retired: dropped", extra="| F-111 | Unrelated new row | observed | review | high; x | | active |\n")
 

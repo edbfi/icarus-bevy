@@ -408,7 +408,8 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             result.kinds[identifier] = "new"
             if record.type in ("compatibility", "report"):
                 result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
-            result.proposals.append(Revision.of(linked))
+            # Without links: the linking pass below adds each only from an edit that is neither a conflict nor held.
+            result.proposals.append(Revision.of(record))
         elif on_main in (record, linked):
             result.kinds[identifier] = "accepted"
         else:
@@ -455,7 +456,13 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
             else:
                 result.proposals.append(Revision.of(with_supersedes(accepted[target], identifier), on_accepted.heads[target]))
                 result.kinds[target] = "revision"
-    no_op = honoured(on_accepted, result.proposals, edits)
+    for target, olds in sorted(links.items()):
+        proposed = next((item for item in result.proposals if item.record.id == target), None)
+        for old in olds:
+            if proposed is not None and old not in proposed.record.links.supersedes and result.kinds.get(old) in ("conflict", "supersede", "undecided"):
+                result.notices.append(f"{old}: {target} would supersede it, but {old} is {result.kinds[old]}; {target} is proposed without that link")
+    no_op = honoured(on_accepted, result.proposals, {identifier: edit for identifier, edit in edits.items()
+                                                     if result.kinds.get(identifier) in ("revision", "superseded")})
     for identifier, reason in no_op.items():
         result.proposals = [item for item in result.proposals if item.record.id != identifier]
         hold(identifier, "undecided", reason)
