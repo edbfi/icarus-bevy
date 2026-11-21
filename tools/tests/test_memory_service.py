@@ -29,7 +29,7 @@ from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compa
 from tools.memory.service import (
     API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, Api, Connection, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
     backup_interpreter, connection, ensure_settings, feature_problems, file_variables, home, install, installed_interpreter, parse_settings, read_settings, render_settings,
-    LEGACY_CONNECTION_FILE, require_floor, reranker_cap, reranker_check, rotate_connection, set_reranker, settings_check, unit_files, unit_word,
+    LEGACY_CONNECTION_FILE, TOMBSTONE, require_floor, reranker_cap, reranker_check, rotate_connection, set_reranker, settings_check, unit_files, unit_word,
 )
 
 from tools.tests.memory_fixtures import clean_git_environment, commit_all, new_repository, run_git
@@ -288,20 +288,34 @@ class Units(Scratch):
         environment, restarted = self.install_with(where, None)
         new = read_settings(where)
         self.assertTrue(restarted, "the unit restarts with the new key")
-        self.assertFalse(legacy.exists(), "a tool without the rendering guard finds no connection file")
+        self.assertEqual(TOMBSTONE, legacy.read_bytes(), "a tool without the rendering guard finds a tombstone")
+        self.assertEqual(0o600, legacy.stat().st_mode & 0o777)
+        with self.assertRaisesRegex(ServiceError, ":1: malformed or repeated line"):
+            _ = read_settings(where, legacy)
         self.assertNotEqual(old.key, new.key)
         self.assertEqual((old.port, old.pg_port, old.pg_password, old.reranker), (new.port, new.pg_port, new.pg_password, new.reranker))
         self.assertEqual(new.key, environment["HINDSIGHT_API_TENANT_API_KEY"], "the unit reads the new file")
         self.assertEqual(where.connection_file.stat().st_mode & 0o777, 0o600)
+        stamp = legacy.stat().st_mtime_ns
         self.assertFalse(self.install_with(where, None)[1], "a second install rotates nothing")
-        self.assertEqual(new, read_settings(where))
-        with self.assertRaisesRegex(ServiceError, "connection.env: cannot open"):
-            _ = read_settings(where, legacy)
-        # An old file left beside the new one is removed, never read.
-        _ = legacy.write_text("anything", encoding="utf-8")
+        self.assertEqual((new, stamp), (read_settings(where), legacy.stat().st_mtime_ns), "nor rewrites the tombstone")
+        # Valid old settings beside the new file (written by an old install) are tombstoned; anything else is refused, untouched.
+        _ = legacy.write_text(where.connection_file.read_text(encoding="utf-8"), encoding="utf-8")
+        legacy.chmod(0o600)
         self.assertFalse(rotate_connection(where))
-        self.assertFalse(legacy.exists())
-        self.assertEqual(new, read_settings(where))
+        self.assertEqual((TOMBSTONE, new), (legacy.read_bytes(), read_settings(where)))
+        _ = legacy.write_text("anything", encoding="utf-8")
+        legacy.chmod(0o600)
+        with self.assertRaisesRegex(ServiceError, "malformed or repeated line"):
+            _ = rotate_connection(where)
+        self.assertEqual("anything", legacy.read_text(encoding="utf-8"))
+
+    def test_a_fresh_install_leaves_the_tombstone_too(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        _, restarted = self.install_with(where, None)
+        self.assertTrue(restarted)
+        self.assertEqual(TOMBSTONE, (where.config / LEGACY_CONNECTION_FILE).read_bytes())
+        self.assertEqual(where.connection_file.name, "connection-v2.env")
 
     def test_install_never_manages_a_scratch_home(self) -> None:
         with self.assertRaisesRegex(ServiceError, "ICARUS_MEMORY_HOME"):

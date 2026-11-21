@@ -15,9 +15,10 @@ State lives outside every checkout. ``home()`` gives three directories, each own
   The name carries the bank rendering guard (``bank.OlderTool``): a tool released before the guard reads
   ``connection.env`` and would re-render every document in its older rendering. ``install`` therefore
   moves an old ``connection.env`` to the new name with a NEW API key (``rotate_connection``; ports,
-  database password and reranker setting kept, the old file removed) and restarts the unit, so such a tool
-  stops at "connection.env: cannot open" and a process still holding the old key is refused by the
-  service. A second ``install`` rotates nothing.
+  database password and reranker setting kept) and restarts the unit, and leaves a tombstone named
+  ``connection.env`` (on a fresh host too) that such a tool cannot parse: its every command, ``service
+  install`` included, stops at "connection.env:1: malformed or repeated line" before writing anything, and
+  a process still holding the old key is refused by the service. A second ``install`` rotates nothing.
 - ``data``: ``$XDG_DATA_HOME/icarus-memory`` with ``pg0/`` (``PG0_HOME``) and the service's private
   ``home/`` and ``tmp/``.
 - ``state``: ``$XDG_STATE_HOME/icarus-memory`` with ``backups/`` and ``memory.lock``, the host lock every
@@ -72,8 +73,11 @@ UNIT = "icarus-memory.service"
 BACKUP_UNIT = "icarus-memory-backup.service"
 BACKUP_TIMER = "icarus-memory-backup.timer"
 CONNECTION_FILE = "connection-v2.env"
-# The connection file of tools without the bank rendering guard (released before it); never read, only retired.
+# The connection file of tools without the bank rendering guard (released before it); never read, only retired to
+# ``TOMBSTONE``: a first line without ``=`` such a tool refuses to parse, saying what to do.
 LEGACY_CONNECTION_FILE = "connection.env"
+TOMBSTONE = (b"retired: this checkout's memory tool is older than the bank. Merge main, then run"
+             + b" python3 -m tools.memory service install from it.\n")
 HOME_VARIABLE = "ICARUS_MEMORY_HOME"
 READY_SECONDS = 300.0
 LOCK_FILE = "memory.lock"
@@ -371,21 +375,36 @@ def write_private(path: Path, data: bytes) -> None:
         os.close(directory)
 
 
+def tombstoned(path: Path) -> bool:
+    """Whether ``path`` is exactly ``TOMBSTONE``: a regular file of this user's, read without following a link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        return stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and handle.read(len(TOMBSTONE) + 1) == TOMBSTONE
+
+
 def rotate_connection(where: Home) -> bool:
-    """Retire a ``connection.env`` (tools without the rendering guard read it) for ``CONNECTION_FILE`` with a new
-    API key, keeping ports, database password and reranker setting; True when it rotated. Nothing to do when the
-    new file exists (an old file beside it is removed) or when neither does. The old file is checked like the new
-    one (``read_settings``) before anything is written."""
+    """Retire ``connection.env`` (tools without the rendering guard read it) for ``CONNECTION_FILE`` with a new API
+    key, keeping ports, database password and reranker setting, and leave ``TOMBSTONE`` in its place; True when it
+    rotated. The tombstone is not a settings file, so such a tool's every command, its ``service install``
+    included, stops at "connection.env:1: malformed or repeated line" before writing anything, and the line says
+    why. Already tombstoned: nothing to do. No old file (a fresh host): the tombstone alone, so an old checkout is
+    never the one to create ``connection.env``. An old file beside the new one is tombstoned once it reads as
+    settings; a file that is neither is refused (``read_settings``), never overwritten."""
     legacy = where.config / LEGACY_CONNECTION_FILE
-    if not legacy.exists() and not legacy.is_symlink():
+    if tombstoned(legacy):
         return False
-    if where.connection_file.exists():
-        legacy.unlink()
-        return False
-    old = read_settings(where, legacy)
-    write_private(where.connection_file, render_settings(replace(old, key=secrets.token_hex(32))).encode())
-    legacy.unlink()
-    return True
+    rotated = False
+    if legacy.exists() or legacy.is_symlink():
+        old = read_settings(where, legacy)
+        if not where.connection_file.exists():
+            write_private(where.connection_file, render_settings(replace(old, key=secrets.token_hex(32))).encode())
+            rotated = True
+    write_private(legacy, TOMBSTONE)
+    return rotated
 
 
 def ensure_settings(where: Home, *, port: int = API_PORT, pg_port: int = PG_PORT, reranker: str = RERANKER_DEFAULT) -> Settings:
