@@ -502,9 +502,21 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
     return None
 
 
-def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit], branch: Collection[str] = ()) -> dict[str, str]:
+def new_id_cause(identifier: str, kind: str | None) -> str | None:
+    """Why a wait for ``identifier`` would never clear: held as ``supersede`` or ``conflict``, its content is recorded
+    under a new ID (a superseding record, or the branch's record re-added), so a link to it must be rewritten by hand.
+    ``None``: it keeps its ID (proposed here, or held ``undecided``)."""
+    if kind == "supersede":
+        return f"{identifier} needs a superseding record: its content will be recorded under a new ID, and this row's link must name that ID"
+    if kind == "conflict":
+        return f"{identifier} is in conflict: its content will be recorded under a new ID, and this row's link must name that ID"
+    return None
+
+
+def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit], branch: Collection[str] = (),
+             minted: Mapping[str, str] | None = None) -> dict[str, str]:
     """``replay_failures`` as reasons: each row's clauses, ordered wait then decide."""
-    return {identifier: joined(clauses) for identifier, clauses in replay_failures(on_accepted, proposals, edits, branch).items()}
+    return {identifier: joined(clauses) for identifier, clauses in replay_failures(on_accepted, proposals, edits, branch, minted).items()}
 
 
 def joined(clauses: Sequence[tuple[int, str]]) -> str:
@@ -513,14 +525,15 @@ def joined(clauses: Sequence[tuple[int, str]]) -> str:
 
 
 def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit],
-                    branch: Collection[str] = ()) -> dict[str, list[tuple[int, str]]]:
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
     """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly and every edit
     must show. Any replay, revision, link or cycle problem the accepted journal alone does not have (``check
     --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
     derive its status, an edit naming successors must derive ``superseded``, and every proposal must change its
     record's head. Returns the IDs that fail, with why; ``salvage`` repeats it until nothing fails. A problem naming a
-    record this run holds (``branch``: the records it proposes or holds, in any held class) ends by waiting for that
-    record; every other failure is decided by hand, a record the run neither proposes nor holds included."""
+    record that keeps its ID when its hold is resolved (``branch``: proposed here, or held ``undecided``) ends by waiting
+    for that record; one naming a record held as ``supersede`` or ``conflict`` (``minted``: its content is recorded
+    under a new ID) is decided by hand, with that cause; so is every other failure."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
     ids = {revision.record.id for revision in proposals}
@@ -544,10 +557,16 @@ def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits:
         mentioned = {match[0] for match in ID.finditer(problem)}
         named = sorted(mentioned & ids, key=id_key)
         missing = sorted((mentioned & set(branch)) - ids - on_accepted.records.keys(), key=id_key)  # ``branch``: proposed or held here
-        ending = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
-                  + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")) if missing else ": decide by hand"
+        renamed = [cause for name in sorted(mentioned - ids, key=id_key) if (cause := new_id_cause(name, (minted or {}).get(name))) is not None]
+        if renamed:
+            ending, rank = f"; {'; '.join(renamed)}: decide by hand", 2
+        elif missing:
+            ending, rank = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
+                            + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")), 0
+        else:
+            ending, rank = ": decide by hand", 2
         for identifier in named or sorted(ids, key=id_key):
-            add(identifier, 0 if missing else 2, f"it would not replay cleanly: {problem}{ending}")
+            add(identifier, rank, f"it would not replay cleanly: {problem}{ending}")
     for revision in proposals:
         identifier = revision.record.id
         before = accepted_state.entries.get(identifier)
@@ -625,12 +644,14 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     # fails replay, or a record that exists nowhere) leaves the old row to a decision by hand.
                     why = (unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted")
                     why = why.removesuffix(": decide by hand")
-                    held = target not in unlinkable and result.kinds.get(target) in ("undecided", "supersede", "conflict")
+                    held = target not in unlinkable and result.kinds.get(target) == "undecided"
                     if held and result.undecided.get(target, "").endswith(SETTLE):
                         ending = SETTLE
                         for citing in result.cited.values():
                             if target in citing and old not in citing and old not in stuck:
                                 citing.append(old)
+                    elif target not in unlinkable and (cause := new_id_cause(target, result.kinds.get(target))) is not None:
+                        ending = f"; {cause}: decide by hand"
                     else:
                         ending = f"; {target} must be accepted first" if held else ": decide by hand"
                     _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}){ending}")
@@ -639,9 +660,10 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                 hold(old, "undecided", reason)
             continue
         everything = [*proposals.values(), *carriers.values()]
-        in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic")} & set(branch)
+        in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic", "supersede", "conflict")} & set(branch)
+        minted = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "conflict")}
         failures = replay_failures(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
-                                   in_play)
+                                   in_play, minted)
         failing = {identifier: joined(clauses) for identifier, clauses in failures.items()}
         if not failing:
             for target in carriers:
@@ -649,11 +671,12 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     result.kinds[target] = "revision"
             # A row held on replay was held for the failures found while others were still in play: its reason is every
             # failure of its proposal against the final set (records held since then included).
-            final_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic")} & set(branch)
+            final_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic", "supersede", "conflict")} & set(branch)
+            final_minted = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "conflict")}
             for identifier, found in sorted(replayed.items(), key=lambda item: id_key(item[0])):
                 if result.kinds.get(identifier) == "undecided" and identifier in own:
                     alone = {identifier: edits[identifier]} if identifier in edits else {}
-                    later = replay_failures(on_accepted, [*everything, own[identifier]], alone, final_play).get(identifier, [])
+                    later = replay_failures(on_accepted, [*everything, own[identifier]], alone, final_play, final_minted).get(identifier, [])
                     result.undecided[identifier] = joined([*found, *later])
             return everything, unlinkable
         for identifier, reason in failing.items():

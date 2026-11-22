@@ -918,8 +918,8 @@ class SalvageTests(LegacyRepository):
         calls: list[int] = []
 
         def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit],
-                    branch: Collection[str] = ()) -> dict[str, list[tuple[int, str]]]:
-            found = real(on_accepted, proposals, edits, branch)
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
+            found = real(on_accepted, proposals, edits, branch, minted)
             calls.append(len(calls))
             return {**found, identifier: [(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
 
@@ -1713,6 +1713,17 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "chain")
         self.assertEqual("it would not replay cleanly: F-112: refs: no record F-111; it refers to F-111, which this run does not propose: that record must be"
                          + " accepted first; it would not replay cleanly: F-112: refs: no record F-999: decide by hand", result.undecided["F-112"])
+
+    def test_a_row_superseded_by_a_row_needing_a_superseding_record_is_decided_by_hand(self) -> None:
+        # The branch edits F-107's claim (it needs a superseding record, under a new ID) and marks F-108 superseded by F-107:
+        # waiting for F-107 never clears, since F-108's link must name the new ID.
+        ledger = "docs/ledgers/findings/widgets.md"
+        self.edited("minted", (ledger, "| F-107 | Decision text", "| F-107 | Edited decision text"),
+                    (ledger, "medium; loopback |  | active |", "medium; loopback |  | superseded-by F-107 |"))
+        result = salvage(self.root, "minted")
+        self.assertEqual("supersede", result.kinds["F-107"])
+        self.assertEqual("its row on minted names successor F-107, which cannot carry the link (supersede); F-107 needs a superseding record: its content"
+                         + " will be recorded under a new ID, and this row's link must name that ID: decide by hand", result.undecided["F-108"])
 
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))

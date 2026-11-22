@@ -345,7 +345,7 @@ class GeneratedSalvageTests(unittest.TestCase):
         successor this run holds (it waits for it, or settles its document)."""
         listed = {pending.path: pending for pending in pending_documents(after, before, on_accepted, result.cited)}
         proposed = {revision.record.id for revision in result.proposals}
-        held = {name for name, kind in result.kinds.items() if kind in ("undecided", "supersede", "conflict")}
+        held = {name for name, kind in result.kinds.items() if kind == "undecided"}
         for name, reason in result.undecided.items():
             self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
             if reason.endswith("settle the document first"):
