@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 import unittest
 
 from tools.memory.check import revision_problems
@@ -483,6 +484,16 @@ class GeneratedSalvageTests(unittest.TestCase):
                 self.assertIn(result.kinds["M-500"], ("conflict", "undecided"), f"seed {seed}: main and the branch both changed M-500")
             if result.kinds.get("M-503") == "undecided" and "would carry the link" in result.undecided["M-503"]:
                 self.assertIn("M-500 cites ", result.undecided["M-503"], f"seed {seed}")
+            # A held row's reason ends by its strongest action: decide by hand (a record that cannot be told apart), settle the
+            # document first (a document cited as the branch has it), or wait for a record to be accepted.
+            for name, reason in result.undecided.items():
+                if not reason.startswith("it cites ") or "a provisional number" not in reason:
+                    continue
+                numbers = [match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)]
+                documents_first = {match[1] for match in re.finditer(r"as this branch has it \(([A-Z]+-[0-9]+), a provisional number\)", reason)}
+                ending = (": decide by hand" if any(number in shared and number not in documents_first for number in numbers)
+                          else ": settle the document first" if documents_first else " accepted first")
+                self.assertTrue(reason.endswith(ending), f"seed {seed}: {name}: {reason}")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)

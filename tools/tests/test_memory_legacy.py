@@ -1038,6 +1038,9 @@ class SalvageTests(LegacyRepository):
                 held = sorted(name for name, reason in result.undecided.items() if f"records sharing the {shared}" in reason)
                 self.assertEqual(2, len(held), result.undecided)
                 self.assertEqual(2, len(set(held)), "each row under its own number")
+                for name in held:
+                    self.assertEqual(f"it is one of 2 records sharing the {shared} ({name}, a provisional number), which cannot be told apart: decide by hand",
+                                     result.undecided[name])
                 self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
                 self.assertFalse(any("removed on dup" in notice for notice in result.notices), result.notices)
 
@@ -1675,7 +1678,8 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         first = salvage(self.root, "new-doc")
         self.assertEqual("undecided", first.kinds["M-105"])
-        self.assertIn("it cites the document docs/specs/net/third.md, which no accepted REF names", first.undecided["M-105"])
+        self.assertRegex(first.undecided["M-105"], r"^it cites the document docs/specs/net/third\.md, which no accepted REF names \(by legacy path or a note "
+                         + r"'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\); that record must be accepted first$")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
         facts = ["no accepted reference names this path", "this branch changed it since its base: yes", "the exporter reads as its scope, from its Status and Scope sections: server:29990001", "its body also names: any:29990009",

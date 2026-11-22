@@ -575,7 +575,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
-                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why})")
+                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}): decide by hand")
         if stuck:
             for old, reason in stuck.items():
                 hold(old, "undecided", reason)
@@ -975,15 +975,20 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         on_main, origin = accepted.get(identifier), before.get(identifier)
         named = {*record.links.targets(), *(record.legacy.superseded_by if record.legacy is not None else ())}
         if identifier in shared:
-            hold(identifier, "undecided", f"it is {unmapped[identifier]}, which cannot be told apart ({identifier} is a provisional number)")
+            hold(identifier, "undecided", f"it is {unmapped[identifier]} ({identifier}, a provisional number), which cannot be told apart: decide by hand")
             continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
-            # A document cited as the branch has it waits for the document; any other provisional record for its acceptance.
+            # Each group ends by its action, and the reason by the strongest: a new record cited waits for its acceptance
+            # ("accepted first"); a document cited as the branch has it waits for the document ("settle the document
+            # first"); a record that cannot be told apart is decided by hand ("decide by hand").
             standing = {name: sorted((other for other_name, other in accepted.items() if other_name not in on_accepted.retired
                                       and identity(other) == identity(after[name])), key=lambda other: id_key(other.id))
                         for name in cited if name in after and after[name].type == "reference" and identity(after[name]) is not None}
             settle_first = [name for name in cited if standing.get(name)]
             clauses: list[str] = []
+            if waiting := [name for name in cited if name not in settle_first and name not in shared]:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
+                               + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
             for name in settle_first:
                 path, held = document_path(after[name]), standing[name]
                 holding = [other.id for other in held if other.body == after[name].body]
@@ -993,9 +998,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                     state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
                              + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
                 clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}: settle the document first")
-            if others := [name for name in cited if name not in settle_first]:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in others)
-                               + ("; that record must be accepted first" if len(others) == 1 else "; those records must be accepted first"))
+            if ambiguous := [name for name in cited if name not in settle_first and name in shared]:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
+                               + ", which cannot be told apart: decide by hand")
             hold(identifier, "undecided", "; ".join(clauses))
             for name in cited:
                 if name in after and (path := document_path(after[name])) is not None:
