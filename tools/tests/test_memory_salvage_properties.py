@@ -19,7 +19,7 @@ from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.legacy_prose import section
 from tools.memory.legacy_rules import extract
-from tools.memory.model import JSON, Record, id_key
+from tools.memory.model import ID, JSON, Record, id_key
 from tools.memory.salvage import (DOCUMENT_NOTE, SALVAGED, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
                                   pending_documents, relink, renumber)
 from tools.memory.state import State, replay
@@ -328,10 +328,37 @@ ENDINGS = ("must be accepted first", "settle the document first", "decide by han
 
 
 class GeneratedSalvageTests(unittest.TestCase):
-    def assert_endings(self, where: str, result: Salvage, _on_accepted: Accepted) -> None:
-        """Every held row's reason ends by one of the actions."""
+    def waits_for(self, reason: str) -> set[str]:
+        """The records a waiting reason waits for, by its form."""
+        if (successor := re.search(r"names successor (\S+), which cannot carry the link", reason)) is not None:
+            return {successor[1]}
+        if (refers := re.search(r"it refers to (.+?), which this run does not propose", reason)) is not None:
+            return {match[0] for match in ID.finditer(refers[1])}
+        if (citing := re.search(r"its provisional number is cited by (.+?); propose it alone first", reason)) is not None:
+            return {match[0] for match in ID.finditer(citing[1])}
+        return {match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)}
+
+    def assert_endings(self, where: str, result: Salvage, on_accepted: Accepted, after: dict[str, Record], before: dict[str, Record]) -> None:
+        """Every held row's ending names the action that clears it: "settle the document first" names a document this run
+        lists as pending, with the row among those citing it; a waiting ending ("must be accepted first", "propose it alone
+        first") waits only for records this run proposes or holds; "decide by hand" otherwise, and never on a row whose
+        successor this run holds (it waits for it, or settles its document)."""
+        listed = {pending.path: pending for pending in pending_documents(after, before, on_accepted, result.cited)}
+        proposed = {revision.record.id for revision in result.proposals}
+        held = {name for name, kind in result.kinds.items() if kind in ("undecided", "supersede", "conflict")}
         for name, reason in result.undecided.items():
             self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
+            if reason.endswith("settle the document first"):
+                self.assertTrue([path for path, pending in listed.items() if path in reason and name in pending.citing], f"{where}: {name}: {reason}")
+            elif reason.endswith(("must be accepted first", "propose it alone first")):
+                waited = self.waits_for(reason)
+                self.assertTrue(waited, f"{where}: {name}: {reason}")
+                self.assertEqual(set[str](), waited - proposed - held, f"{where}: {name} waits for records this run neither proposes nor holds: {reason}")
+            elif (successor := re.search(r"names successor (\S+), which cannot carry the link", reason)) is not None:
+                # Decided by hand only when the successor cannot carry the link whatever is accepted: it exists nowhere, or
+                # its revision carrying the link fails replay (it is reported as not revised to carry links).
+                unlinkable = any(notice.startswith(f"{successor[1]}: not revised to carry supersedes links") for notice in result.notices)
+                self.assertTrue(unlinkable or successor[1] not in held, f"{where}: {name} is decided by hand though its successor is held here: {reason}")
 
     def assert_documents(self, where: str, raw_after: dict[str, Record], raw_before: dict[str, Record], on_accepted: Accepted) -> None:
         """The document facts of one run against ``on_accepted``: every document that is not done is listed and no done
@@ -460,7 +487,7 @@ class GeneratedSalvageTests(unittest.TestCase):
             except SalvageError as error:
                 self.fail(f"seed {seed}: {error}")
             base = replay(accepted.segments)
-            self.assert_endings(f"seed {seed}, run 1", result, accepted)
+            self.assert_endings(f"seed {seed}, run 1", result, accepted, after, before)
             proposed = replay([*accepted.segments, Segment("memory/journal/proposals.jsonl", "", tuple(result.proposals))])
             self.assertEqual(set[str](), problems(proposed) - problems(base), f"seed {seed}")
             # Another spelling of the ref and another tip (an unrelated commit): byte-identical proposals, same classes.
@@ -541,17 +568,6 @@ class GeneratedSalvageTests(unittest.TestCase):
                 self.assertIn(result.kinds["M-500"], ("conflict", "undecided"), f"seed {seed}: main and the branch both changed M-500")
             if result.kinds.get("M-503") == "undecided" and "would carry the link" in result.undecided["M-503"]:
                 self.assertIn("M-500 cites ", result.undecided["M-503"], f"seed {seed}")
-            # A held row's reason ends by its strongest action: decide by hand (a record that cannot be told apart), settle the
-            # document first (a document cited as the branch has it), or wait for a record to be accepted.
-            for name, reason in result.undecided.items():
-                if not reason.startswith("it cites ") or "a provisional number" not in reason:
-                    continue
-                numbers = [match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)]
-                documents_first = {match[1] for match in re.finditer(r"(?:as this branch has it|which no accepted REF names \(by legacy path or a note '[^']*'\)) "
-                                                                     + r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)}
-                ending = (": decide by hand" if any(number in shared and number not in documents_first for number in numbers)
-                          else ": settle the document first" if documents_first else " accepted first")
-                self.assertTrue(reason.endswith(ending), f"seed {seed}: {name}: {reason}")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)
@@ -568,7 +584,14 @@ class GeneratedSalvageTests(unittest.TestCase):
                 _ = classify(again, after_again, before_again, now, unmapped_again, shared_again)
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
-            self.assert_endings(f"seed {seed}, run 2", again, now)
+            self.assert_endings(f"seed {seed}, run 2", again, now, after_again, before_again)
+            # A row that waited in run 1 for records whose proposals run 2 has accepted does not wait for the same records again.
+            accepted_by_run_2 = {revision.record.id for revision in result.proposals}
+            for name, reason in result.undecided.items():
+                if reason.endswith(("must be accepted first", "propose it alone first")) and (waited := self.waits_for(reason)) <= accepted_by_run_2:
+                    later_reason = again.undecided.get(name, "")
+                    self.assertFalse(later_reason.endswith(("must be accepted first", "propose it alone first")) and self.waits_for(later_reason) == waited,
+                                     f"seed {seed}: {name} waits again for {sorted(waited)}: {later_reason}")
             self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
             # Held rows keep their class; a provisional number may move once other records are accepted, so those compare by identity.
             held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict") and name not in unmapped}
