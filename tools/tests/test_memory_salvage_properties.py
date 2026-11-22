@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 import unittest
 
 from tools.memory.check import revision_problems
@@ -253,6 +254,15 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         # Main superseded e.md's REF by a reference of another path: none stands for e.md any more.
         revisions["REF-985"] = Revision.of(superseding_document("REF-985", "docs/specs/z.md", numbered(main_paths, main_names)[0]["docs/specs/e.md"], "# z.md\n"))
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.25:
+        # a.md, new on the branch, has a history on main: a REF accepted for it (by note), then retired or superseded by
+        # another path's REF; none of it is in force.
+        revisions["REF-971"] = Revision.of(superseding_document("REF-971", "docs/specs/a.md", None, "# a.md, withdrawn on main\n"))
+        if rng.random() < 0.5:
+            held = revisions["REF-971"]
+            main_edits.append(Revision.of(Record.from_json({**held.record.to_json(), "status": "retired"}, held.record.body), [held.rev]))
+        else:
+            revisions["REF-972"] = Revision.of(superseding_document("REF-972", "docs/specs/y.md", "REF-971", "# y.md\n"))
+    elif "docs/specs/a.md" in branch_paths and rng.random() < 0.25:
         # Main added a.md itself since the merge base, by hand, with other text than the branch's.
         revisions["REF-970"] = Revision.of(superseding_document("REF-970", "docs/specs/a.md", None, "# a.md, on main\n"))
     if two_holders:
@@ -330,8 +340,10 @@ class GeneratedSalvageTests(unittest.TestCase):
         self.assertEqual(set[str](), set(by_path) - set(branch), f"{where}: a document the branch does not hold is listed")
         # Every row held because it cites a document's provisional number is named beside that document.
         numbered_as = {path: name for name, record in after.items() if (path := document_path(record)) is not None}
-        waiting = {path: {held for held, reason in result.undecided.items() if reason.startswith("it cites ") and f"({name}, a provisional number)" in reason}
-                   for path, name in numbered_as.items() if name in unmapped}
+        waiting = {path: {held for held, reason in result.undecided.items()
+                          if (name in unmapped and reason.startswith("it cites ") and f"({name}, a provisional number)" in reason)
+                          or reason.endswith((f" of {path} than this branch's: settle the document first", f"no longer stands for {path}: settle the document first"))}
+                   for path, name in numbered_as.items()}
         for path, record in branch.items():
             holding = sorted(standing.get(path, []), key=lambda other: id_key(other.id))
             done = len(holding) == 1 and holding[0].body == record.body
@@ -356,8 +368,6 @@ class GeneratedSalvageTests(unittest.TestCase):
             label = "from its Status and Scope sections" if from_sections else "from its whole text"
             self.assertIn(f"the exporter reads as its scope, {label}: ", pending.line(), f"{where}: {path}")
             self.assertEqual(from_sections, "its body also names" in pending.line(), f"{where}: {path}")
-            self.assertEqual(path not in based and bool(holding) or path in based and [based[path]] != holding, pending.main_changed,
-                             f"{where}: {path}, main changed it")
             self.assertEqual(sorted(waiting.get(path, set())), sorted(pending.citing), f"{where}: {path}, the rows citing it")
             self.assertEqual(changed, pending.branch_changed, f"{where}: {path}, the branch changed it")
             # The base's reference: the REF the cut-over migrated from this path, and what became of it.
@@ -371,6 +381,12 @@ class GeneratedSalvageTests(unittest.TestCase):
                 return ("now in force" if name not in on_accepted.retired else f"superseded by {', '.join(superseders)}" if superseders else "retired")
 
             self.assertEqual(None if path not in based else tuple((name, fate(name)) for name in migrated), pending.based_on, f"{where}: {path}, its base REF")
+            # The path's history on the accepted commit: every REF of this identity no longer in force, whatever the base had.
+            gone = sorted((name for name, other in on_accepted.records.items() if document_path(other) == path and name in on_accepted.retired), key=id_key)
+            self.assertEqual(tuple((name, fate(name)) for name in gone), pending.withdrawn, f"{where}: {path}, its withdrawn REFs")
+            base_refs = migrated if path in based else []
+            self.assertEqual((path not in based and bool(holding) or path in based and [based[path]] != holding)
+                             or any(name not in base_refs for name in gone), pending.main_changed, f"{where}: {path}, main changed it")
             for fact in [*pending.facts("FILE"), pending.line()]:
                 self.assertFalse(fact.startswith("memory "), f"{where}: {path}: {fact}")
         settled_state, settled = settle_documents(on_accepted, listed)
@@ -461,7 +477,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                     self.assertIn("docs/specs/e.md as this branch has it", result.undecided["M-502"], f"seed {seed}")
                     branch_changed_e = branch_e != next(record.body for record in raw_before.values() if document_path(record) == "docs/specs/e.md")
                     if not branch_changed_e:
-                        waiting = tuple(name for name in ("M-500", "M-502") if "docs/specs/e.md as this branch has it" in result.undecided.get(name, ""))
+                        waiting = tuple(name for name in ("M-500", "M-502", "M-503") if result.undecided.get(name, "").startswith("it cites docs/specs/e.md as this branch has it")
+                                        or result.undecided.get(name, "").endswith(" of docs/specs/e.md than this branch's: settle the document first"))
                         self.assertEqual([waiting], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")
             if len(accepted.records["M-500"].links.refs) == 1:
                 self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
@@ -470,6 +487,16 @@ class GeneratedSalvageTests(unittest.TestCase):
                 self.assertIn(result.kinds["M-500"], ("conflict", "undecided"), f"seed {seed}: main and the branch both changed M-500")
             if result.kinds.get("M-503") == "undecided" and "would carry the link" in result.undecided["M-503"]:
                 self.assertIn("M-500 cites ", result.undecided["M-503"], f"seed {seed}")
+            # A held row's reason ends by its strongest action: decide by hand (a record that cannot be told apart), settle the
+            # document first (a document cited as the branch has it), or wait for a record to be accepted.
+            for name, reason in result.undecided.items():
+                if not reason.startswith("it cites ") or "a provisional number" not in reason:
+                    continue
+                numbers = [match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)]
+                documents_first = {match[1] for match in re.finditer(r"as this branch has it \(([A-Z]+-[0-9]+), a provisional number\)", reason)}
+                ending = (": decide by hand" if any(number in shared and number not in documents_first for number in numbers)
+                          else ": settle the document first" if documents_first else " accepted first")
+                self.assertTrue(reason.endswith(ending), f"seed {seed}: {name}: {reason}")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)

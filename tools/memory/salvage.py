@@ -170,6 +170,8 @@ class Pending:
     based_on: tuple[tuple[str, str], ...] | None = None
     # The exporter read its scope from its Status and Scope sections (a spec that has them), else from its whole text.
     from_sections: bool = True
+    # Every accepted REF that named this path and is no longer in force, with what became of it (retired, superseded by).
+    withdrawn: tuple[tuple[str, str], ...] = ()
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
@@ -181,6 +183,8 @@ class Pending:
                    f"its body also names: {', '.join(self.more) or 'nothing'}"] if self.from_sections else
                   [f"the exporter reads as its scope, from its whole text: {', '.join(self.names) or 'nothing'}"]),
                 self.base_fact(),
+                "references that named this path and are no longer in force: "
+                + (", ".join(f"{name} ({fate})" for name, fate in self.withdrawn) or "none"),
                 f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
                 *([f"rows held because they cite it: {', '.join(self.citing)}"] if self.citing else []),
                 f"a new reference for it carries --note {shlex.quote(DOCUMENT_NOTE.format(self.path))}"]
@@ -221,9 +225,13 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
     not done, matched to the accepted REFs in force (not superseded or retired) by identity only (``document_path``;
     never by body). A document the branch did not change is never listed for main's later edits alone."""
     holders: dict[str, list[Record]] = {}
-    for record in on_accepted.records.values():
-        if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
-            holders.setdefault(path, []).append(record)
+    withdrawn: dict[str, list[str]] = {}
+    for record in sorted(on_accepted.records.values(), key=lambda other: id_key(other.id)):
+        if (path := document_path(record)) is not None:
+            if record.id in on_accepted.retired:
+                withdrawn.setdefault(path, []).append(record.id)
+            else:
+                holders.setdefault(path, []).append(record)
     based = documents(before)
     cited = cited or {}
 
@@ -254,11 +262,15 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         # Main changed it since the merge base when what stands for the path is not the very record the base's document
         # maps to: another ID, or the same ID at another revision (body, supersession, note), or none at all.
         main_changed = [exported(base)] != [exported(other) for other in on_main] if base is not None else bool(on_main)
+        # A reference to this path that main accepted and withdrew, other than the base's own: main did something here too.
+        base_refs = based_on(path, base) if base is not None else []
+        main_changed = main_changed or any(name not in base_refs for name in withdrawn.get(path, []))
         found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)) if from_sections else (),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                            () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
                                    for other in on_main), main_changed, tuple(cited.get(path, ())), changed,
-                             None if base is None else tuple((name, fate(name)) for name in based_on(path, base)), from_sections))
+                             None if base is None else tuple((name, fate(name)) for name in base_refs), from_sections,
+                             tuple((name, fate(name)) for name in withdrawn.get(path, []))))
     return found
 
 
@@ -522,7 +534,7 @@ class SalvageError(RuntimeError):
 
 def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[str, list[str]], edits: Mapping[str, Edit],
            on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None],
-           stale: Callable[[Record], str | None] = lambda _record: None) -> tuple[list[Revision], dict[str, str]]:
+           stale: Callable[[Record], tuple[str, str] | None] = lambda _record: None) -> tuple[list[Revision], dict[str, str]]:
     """The proposal set, rebuilt from scratch until nothing more is held: each row's own proposal, then every
     ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
     revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
@@ -549,14 +561,18 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     else:
                         carriers[target] = linked
                 elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "cosmetic", "revision", "superseded"):
-                    if (reason := stale(accepted[target])) is not None:
+                    if (found := stale(accepted[target])) is not None:
+                        # Its cause is the stale citation: the old row waits on that document, listed with it as citing it.
+                        path, reason = found
                         _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which would carry the link, but {target} "
                                              + reason.removeprefix("it "))
+                        if old not in (citing := result.cited.setdefault(path, [])):
+                            citing.append(old)
                         continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
-                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why})")
+                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}): decide by hand")
         if stuck:
             for old, reason in stuck.items():
                 hold(old, "undecided", reason)
@@ -638,7 +654,7 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
         branch = {path: record.body for record in after.values() if (path := document_path(record)) is not None}
         for identifier, record in proposed.items():
             if (stale := stale_citation(record, on_accepted, current, branch)) is not None:
-                raise SalvageError(f"{identifier}: {stale}")
+                raise SalvageError(f"{identifier}: {stale[1]}")
     # (d) A notice about a link agrees with the links of the proposal it names.
     for notice in result.notices:
         claim = re.fullmatch(r"([A-Z]+-[0-9]+): ([A-Z]+-[0-9]+) would supersede it, but .*; \2 (is proposed without that link|is not revised"
@@ -845,9 +861,10 @@ def successors_in_force(accepted: Mapping[str, Record]) -> dict[str, str]:
     return current
 
 
-def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, str], branch: Mapping[str, str | None]) -> str | None:
-    """Why ``record`` may not cite a document as stored: a cited REF that, resolved in force (``current``), does not
-    hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may."""
+def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, str],
+                   branch: Mapping[str, str | None]) -> tuple[str, str] | None:
+    """The document ``record`` may not cite as stored, and why: a cited REF that, resolved in force (``current``), does
+    not hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may."""
     for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
         cited = on_accepted.records.get(target)
         if cited is None or cited.type != "reference" or (path := document_path(cited)) is None or path not in branch:
@@ -856,9 +873,9 @@ def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, 
         held = on_accepted.records[resolved]
         through = f"{target}, in force as {resolved}" if resolved != target else target
         if resolved in on_accepted.retired:
-            return f"it cites {through}, which no longer stands for {path}: settle the document first"
+            return path, f"it cites {through}, which no longer stands for {path}: settle the document first"
         if held.body != branch[path]:
-            return f"it cites {through}, which holds other text of {path} than this branch's: settle the document first"
+            return path, f"it cites {through}, which holds other text of {path} than this branch's: settle the document first"
     return None
 
 
@@ -956,15 +973,20 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         on_main, origin = accepted.get(identifier), before.get(identifier)
         named = {*record.links.targets(), *(record.legacy.superseded_by if record.legacy is not None else ())}
         if identifier in shared:
-            hold(identifier, "undecided", f"it is {unmapped[identifier]}, which cannot be told apart ({identifier} is a provisional number)")
+            hold(identifier, "undecided", f"it is {unmapped[identifier]} ({identifier}, a provisional number), which cannot be told apart: decide by hand")
             continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
-            # A document cited as the branch has it waits for the document; any other provisional record for its acceptance.
+            # Each group ends by its action, and the reason by the strongest: a new record cited waits for its acceptance
+            # ("accepted first"); a document cited as the branch has it waits for the document ("settle the document
+            # first"); a record that cannot be told apart is decided by hand ("decide by hand").
             standing = {name: sorted((other for other_name, other in accepted.items() if other_name not in on_accepted.retired
                                       and identity(other) == identity(after[name])), key=lambda other: id_key(other.id))
                         for name in cited if name in after and after[name].type == "reference" and identity(after[name]) is not None}
             settle_first = [name for name in cited if standing.get(name)]
             clauses: list[str] = []
+            if waiting := [name for name in cited if name not in settle_first and name not in shared]:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
+                               + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
             for name in settle_first:
                 path, held = document_path(after[name]), standing[name]
                 holding = [other.id for other in held if other.body == after[name].body]
@@ -974,9 +996,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                     state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
                              + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
                 clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}: settle the document first")
-            if others := [name for name in cited if name not in settle_first]:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in others)
-                               + ("; that record must be accepted first" if len(others) == 1 else "; those records must be accepted first"))
+            if ambiguous := [name for name in cited if name not in settle_first and name in shared]:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
+                               + ", which cannot be told apart: decide by hand")
             hold(identifier, "undecided", "; ".join(clauses))
             for name in cited:
                 if name in after and (path := document_path(after[name])) is not None:
@@ -1022,7 +1044,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             if linked is not None and old in linked.links.supersedes and old not in record.links.supersedes:
                 linked = without_supersedes(linked, old)
         if on_main is None and (stale := stale_citation(record, on_accepted, current, branch_documents)) is not None:
-            hold(identifier, "undecided", stale)
+            hold(identifier, "undecided", stale[1])
+            result.cited.setdefault(stale[0], []).append(identifier)
         elif on_main is None:
             result.kinds[identifier] = "new"
             if record.type in ("compatibility", "report"):
@@ -1056,7 +1079,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
         elif revision is not None and (stale := stale_citation(revision, on_accepted, current, branch_documents)) is not None:
-            hold(identifier, "undecided", stale)
+            hold(identifier, "undecided", stale[1])
+            result.cited.setdefault(stale[0], []).append(identifier)
         else:
             result.kinds[identifier] = "revision" if revision is not None else "superseded"
             if revision is not None:
