@@ -115,13 +115,16 @@ in its conflicts loses the rows and unprotects the branch's evidence.
      branch's record under a new ID and rewrite its citations; when `main`
      took an earlier draft, reconcile with `memory revise` or a superseding
      record;
-   - `needs a decision by hand: <ID>: <reason>; not proposed`: the end of
-     the reason, just before `; not proposed`, names the action, by its
-     words. `must be accepted first` or `propose it alone first`: wait until
-     that record is accepted, then run salvage again. `settle the document
-     first`: settle it by the document rules below, then run again. `decide
-     by hand`: decide with the record's owner (a rename, records that cannot
-     be told apart, a replay failure, a citation a revision cannot change).
+   - `needs a decision by hand: <ID>: <reason>; not proposed`: the reason is
+     one or more clauses, each naming an action by the words it ends with.
+     `must be accepted first` (`that record`, `those records` or a named
+     record) or `propose it alone first`: wait until that record is accepted.
+     `settle the document first`: settle the document by the rules below (one
+     that no reference names is settled by rule 2). `decide by hand`: decide
+     with the record's owner (a rename, records that cannot be told apart, a
+     replay failure, a citation a revision cannot change). Clauses come in the
+     order wait, settle, decide, so the reason ends with the strongest; do
+     every one, then run salvage again, which reports what is left.
 
    Documents: salvage prints facts, never a command. Apply the first rule
    whose facts fit; `<file>` is the `body written to` path:
@@ -135,10 +138,11 @@ in its conflicts loses the rows and unprotects the branch's evidence.
    2. `no accepted reference names this path`: if `references that named this
       path and are no longer in force` lists any, or `at this branch's base its
       reference was REF-N: retired` (or `superseded by …`, or `none the
-      accepted journal holds`), main withdrew or replaced it: propose nothing;
-      bringing it back is the owner's decision, stated in the pull request.
-      Only with that history `none` and `none (the document is new on this
-      branch)` is it new: propose it as in rule 5, without a supersession.
+      accepted journal holds`), main withdrew or replaced it: propose nothing,
+      and rows citing it stay held; bringing it back is the owner's decision,
+      stated in the pull request. Only with that history `none` and `none (the
+      document is new on this branch)` is it new: propose it as in rule 5,
+      without a supersession; rows citing it are proposed once it is accepted.
    3. Several in `in force:`: decide by hand which stands, supersede the
       others if so decided, run salvage again and apply these rules to the new
       facts. Nothing else.
