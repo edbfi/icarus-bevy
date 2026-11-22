@@ -876,12 +876,20 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
             # A document cited as the branch has it waits for the document; any other provisional record for its acceptance.
-            settle_first = [name for name in cited if name in after and after[name].type == "reference" and (key := identity(after[name])) is not None
-                            and any(identity(other) == key and other_name not in on_accepted.retired for other_name, other in accepted.items())]
-            clauses = [f"it cites {unmapped[name]} ({name}, a provisional number); "
-                       + ", ".join(sorted(other_name for other_name, other in accepted.items() if other_name not in on_accepted.retired
-                                          and identity(other) == identity(after[name])))
-                       + " holds other text: settle the document first" for name in settle_first]
+            standing = {name: sorted((other for other_name, other in accepted.items() if other_name not in on_accepted.retired
+                                      and identity(other) == identity(after[name])), key=lambda other: id_key(other.id))
+                        for name in cited if name in after and after[name].type == "reference" and identity(after[name]) is not None}
+            settle_first = [name for name in cited if standing.get(name)]
+            clauses: list[str] = []
+            for name in settle_first:
+                path, held = document_path(after[name]), standing[name]
+                holding = [other.id for other in held if other.body == after[name].body]
+                if len(held) == 1:
+                    state = f"{held[0].id} holds {'this' if holding else 'other'} text"
+                else:
+                    state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
+                             + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
+                clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}: settle the document first")
             if others := [name for name in cited if name not in settle_first]:
                 clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in others)
                                + ("; that record must be accepted first" if len(others) == 1 else "; those records must be accepted first"))

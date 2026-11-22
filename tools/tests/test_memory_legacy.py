@@ -1375,9 +1375,9 @@ class SalvageTests(LegacyRepository):
         # Not proposed citing main's text: held, and the document it cites listed although the branch never changed it.
         self.assertEqual("undecided", result.kinds["M-105"])
         self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
-        self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another.md as this branch has it \(REF-[0-9]+, a provisional number\); "
-                         + r"REF-[0-9]+ holds other text: settle the document first$")
         (document,) = result.documents
+        self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another\.md as this branch has it \(REF-[0-9]+, a provisional number\); "
+                         + rf"{document.in_force[0].id} holds other text: settle the document first$")
         self.assertEqual((("M-105",), True, False), (document.citing, document.main_changed, document.in_force[0].holds))
         self.assertIn("main changed or replaced its reference since this branch's base: yes; rows held because they cite it: M-105;", document.line())
         status, stdout, _stderr = self.run_salvage("older", check=True)
@@ -1497,6 +1497,17 @@ class SalvageTests(LegacyRepository):
                 (document,) = salvage(self.root, "specs").documents
                 self.assertIn(expected, document.line())
                 self.assertTrue(document.main_changed)
+
+    def test_a_row_citing_a_document_several_refs_stand_for_says_which_holds_its_text(self) -> None:
+        self.new_spec_branch("docs/specs/net/third.md")
+        for identifier, body in (("REF-900", "# Other\n"), ("REF-901", "# Same\n")):
+            self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                                 body), identifier)
+        result = salvage(self.root, "specs")
+        self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/third\.md as this branch has it \(REF-[0-9]+, a provisional number\); "
+                         + r"several REFs in force name docs/specs/net/third\.md: REF-900, REF-901 \(REF-901 holds this text\): settle the document first$")
+        (document,) = result.documents
+        self.assertEqual(("M-105",), document.citing)
 
     def test_the_note_line_round_trips_a_path_with_a_space(self) -> None:
         pending = salvage_command.Pending("docs/specs/net/two words.md", "# Two words\n", (), (), (), False)
