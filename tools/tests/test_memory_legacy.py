@@ -1350,6 +1350,19 @@ class SalvageTests(LegacyRepository):
         self.edited("same-tokens", ("docs/specs/net/widget.md", "Candidate; observed", "Candidate, still; observed"))
         self.assertEqual(["revise"], [item.kind for item in salvage(self.root, "same-tokens").documents])
 
+    def test_a_body_naming_new_tokens_under_an_equal_scope_needs_a_decision(self) -> None:
+        # The scope reads Status and Scope only; the branch adds an observation on another build in a later section.
+        self.edited("newly", ("docs/specs/net/widget.md", "## Confirmed\n", "## Confirmed\n\n- Seen again on build 29990009.\n"))
+        (document,) = salvage(self.root, "newly").documents
+        self.assertEqual(("decide", ("any:29990009",)), (document.kind, document.newly))
+        self.assertIn(f"its body newly names any:29990009; {document.target}'s scope is ", document.line())
+        self.assertIn("a body revision keeps that scope: decide by hand", document.line())
+        commands = document.commands("FILE")
+        self.assertEqual(3, len(commands))
+        self.assertTrue(commands[0].startswith(f"if {document.target}'s scope still holds for the new text: memory revise {document.target} --body FILE"))
+        self.assertIn("otherwise: memory propose reference", commands[1])
+        self.assertEqual(f"otherwise, then: memory supersede {document.target} --by <the new REF>", commands[2])
+
     def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
                                 "Candidate; observed with client build 29990003 only."))

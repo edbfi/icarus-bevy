@@ -128,6 +128,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
+    renewed = not retoken and rng.random() < 0.3  # e.md's body newly names a build outside its (unchanged) scope sections
     # Documents sharing one body: two new ones on the branch; an unrelated REF of that body on main (no identity).
     same_body = rng.random() < 0.3
     if same_body and "docs/specs/a.md" in branch_paths:
@@ -154,6 +155,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         if export is after and retoken:
             # The branch's e.md text changes and names a build the accepted REF's scope does not hold.
             export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md, re-observed\n", ("server:29990001",))
+        if export is after and renewed:
+            export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md\nSeen on build 29990005.\n")
         if export is after and rewrite_c:
             export[refs["docs/specs/c.md"]] = document(refs["docs/specs/c.md"], "docs/specs/c.md", "# c.md, rewritten\n")
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
@@ -235,6 +238,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                     # No command, or (one REF holds this body) only the supersession of the others by it.
                     expected = [f"memory supersede {other} --by {pending.target}" for other in pending.holders if other != pending.target]
                     self.assertEqual(expected if pending.target is not None else [], pending.commands("FILE"), f"seed {seed}: {pending.path}")
+                if pending.path == "docs/specs/e.md" and any(record.body == "# e.md\nSeen on build 29990005.\n" for record in raw_after.values()):
+                    self.assertEqual(("decide", ("any:29990005",)), (pending.kind, pending.newly), f"seed {seed}: e.md newly names a build")
                 if pending.path == "docs/specs/e.md" and retoken_case(raw_after):
                     self.assertEqual("supersede", pending.kind, f"seed {seed}: e.md names a build its REF's scope lacks")
             # Ambiguity before done: c.md changed on the branch with two REFs in force is listed, never done.

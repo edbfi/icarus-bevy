@@ -93,7 +93,7 @@ from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set
 from tools.memory.legacy import TRACKED_NOTE, commit_time, export
-from tools.memory.legacy_rules import MigrationError
+from tools.memory.legacy_rules import MigrationError, commit_words, extract
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
 from tools.memory.state import State, replay
 
@@ -146,6 +146,7 @@ class Pending:
     holders: tuple[str, ...] = ()
     scope: tuple[str, ...] = ()
     scopes: tuple[str, ...] = ()
+    newly: tuple[str, ...] = ()
 
     def commands(self, file: str) -> list[str]:
         """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
@@ -157,6 +158,9 @@ class Pending:
             return [f"memory supersede {other} --by {self.target}" for other in self.holders if other != self.target] if self.target is not None else []
         propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                    + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
+        if self.kind == "decide":
+            return [f"if {self.target}'s scope still holds for the new text: memory revise {self.target} --body {shlex.quote(file)}",
+                    f"otherwise: {propose}", f"otherwise, then: memory supersede {self.target} --by <the new REF>"]
         return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
 
     def scope_line(self) -> str:
@@ -173,6 +177,9 @@ class Pending:
             return (f"changed document; {spoken(self.names, 'its text names')}, {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
                     + " (salvage --out writes its body and the commands)")
+        if self.kind == "decide":
+            return (f"changed document; its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
+                    + " a body revision keeps that scope: decide by hand (salvage --out writes the body and both commands)")
         if self.kind == "ambiguous":
             if self.target is not None:
                 others = ", ".join(other for other in self.holders if other != self.target)
@@ -183,6 +190,15 @@ class Pending:
             return f"changed document; the accepted journal holds {held} for this path: decide by hand (no command)"
         return ("new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
                 + " path, by legacy path or that command's note, with this body)")
+
+
+def body_tokens(body: str) -> set[str]:
+    """The build, release and commit tokens a whole body names, read with the exporter's own rules (``extract``,
+    ``commit_words``) over the body as one cell."""
+    scope = extract({"body": body}).scope or {}
+    named = [item for key in ("builds", "releases") if isinstance(items := scope.get(key), list) for item in items if isinstance(item, str)]
+    commits, _digits = commit_words(body)
+    return {*named, *commits}
 
 
 def spoken(tokens: Sequence[str], subject: str) -> str:
@@ -220,8 +236,10 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
                                               for other in ordered)))
         elif record.body != on_main[0].body:
             held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
-            kind = "revise" if sorted(names) == sorted(held) else "supersede"
-            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held))
+            # The scope reads Status and Scope only (the exporter's rule); the whole body may name more.
+            newly = tuple(sorted(body_tokens(body) - body_tokens(on_main[0].body or ""), key=id_key))
+            kind = "supersede" if sorted(names) != sorted(held) else "decide" if newly else "revise"
+            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held, newly=newly))
     return found
 
 
@@ -1063,7 +1081,7 @@ def run(options: argparse.Namespace) -> int:
                 target = out / "documents" / document.path
                 for command in document.commands(str(target)):
                     print(f"memory salvage: {document.path}: {command}", file=sys.stderr)
-                if document.kind in ("new", "supersede"):
+                if document.kind in ("new", "supersede", "decide"):
                     print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
                 elif document.kind == "ambiguous":
                     print(f"memory salvage: {document.path}: {document.line()}", file=sys.stderr)
