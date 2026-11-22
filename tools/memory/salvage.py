@@ -1051,16 +1051,15 @@ def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
     """Write ``planned`` (paths relative to ``out``) into ``out``, a directory that must not exist: one ``os.mkdir`` creates
     it (its parent must exist; anything at the path, a dangling symlink included, refuses), and every subdirectory and
     file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure or interrupt after the mkdir
-    the whole tree is removed (and the message says whether that worked; an interrupt is re-raised).
+    the whole tree is removed (and the message says whether that worked; an interrupt is re-raised), except in the one
+    window Python cannot close: an interrupt between the mkdir system call returning and the next statement marking the
+    directory as this run's leaves it empty, and the next run refuses it by name.
     A concurrent process of the same user changing that directory during the run, and symlinks in the path leading
     to its parent, are outside what this guards against. Raises ``PublishError``."""
+    created = False
     try:
         os.mkdir(out, 0o700)
-    except FileExistsError as error:
-        raise PublishError(f"{out} exists: --out must name a new directory") from error
-    except OSError as error:
-        raise PublishError(f"{out}: {error.strerror or error}") from error
-    try:
+        created = True
         for relative, data in planned:
             target = out / relative
             for parent in reversed([*target.relative_to(out).parents][:-1]):
@@ -1072,6 +1071,12 @@ def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
                 handle.flush()
                 os.fsync(handle.fileno())
     except BaseException as error:
+        if not created:
+            if isinstance(error, FileExistsError):
+                raise PublishError(f"{out} exists: --out must name a new directory") from error
+            if isinstance(error, OSError):
+                raise PublishError(f"{out}: {error.strerror or error}") from error
+            raise
         # Any failure or interrupt after the mkdir: remove the tree, and say truthfully whether that worked.
         try:
             shutil.rmtree(out)

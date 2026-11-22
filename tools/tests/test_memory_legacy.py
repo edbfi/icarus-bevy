@@ -25,7 +25,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
@@ -1697,6 +1697,34 @@ class SalvageTests(LegacyRepository):
         self.assertIn(f"could not remove {out}: [Errno 13] Permission denied", stderr)
         self.assertIn("remove it by hand", stderr)
         self.assertNotIn(f"removed {out}", stderr)
+
+    def test_an_interrupt_right_after_the_mkdir_removes_the_directory(self) -> None:
+        class Interrupting(list[tuple[str, bytes]]):
+            """What ``--out`` would write; iterating it, the first statement after the mkdir, is interrupted."""
+
+            @override
+            def __iter__(self) -> Iterator[tuple[str, bytes]]:
+                raise KeyboardInterrupt
+
+        out = self.top / "right-after"
+        with self.assertRaises(KeyboardInterrupt):
+            salvage_command.publish(out, Interrupting())
+        self.assertFalse(os.path.lexists(out))
+        # The window Python cannot close: the mkdir returned and the interrupt came before the next statement. The
+        # directory is left empty, and the next run refuses it by name.
+        real = os.mkdir
+
+        def made_then_interrupted(path: str | os.PathLike[str], mode: int = 0o777) -> None:
+            real(path, mode)
+            raise KeyboardInterrupt
+
+        out = self.top / "window"
+        with mock.patch("tools.memory.salvage.os.mkdir", made_then_interrupted), self.assertRaises(KeyboardInterrupt):
+            salvage_command.publish(out, [])
+        self.assertEqual([], os.listdir(out))
+        with self.assertRaises(salvage_command.PublishError) as refused:
+            salvage_command.publish(out, [])
+        self.assertEqual(f"{out} exists: --out must name a new directory", str(refused.exception))
 
     def test_after_its_salvage_is_merged_a_merged_tip_has_nothing_left(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "runbook")
