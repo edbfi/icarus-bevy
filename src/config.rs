@@ -123,6 +123,23 @@ pub struct NetworkConfig {
     /// Refused by `run --private-leave-proof`. Unqualified with a stock client.
     #[serde(default, skip_serializing_if = "is_false")]
     pub checkpoint_location_correction: bool,
+    /// Native policy, default false; requires `enabled`. While no session is
+    /// joined (`sessions.joined == 0`, including before the first join) the
+    /// world clock is paused: no simulation tick completes, so nothing phased
+    /// by the durable tick advances (the authored clock, consumption, modifier
+    /// ticks, replication extraction). A join unpauses in the same update;
+    /// the last close pauses within one update. Fixed-step time keeps
+    /// flowing, so resuming causes no catch-up burst. Wall-time values (the
+    /// GameState world time, a preserved world's `TimeOfDay`, level time),
+    /// autosave and session timeouts keep running. `run` refuses
+    /// `--max-ticks` (and so `--compressed`) with it, since an empty server
+    /// never reaches a tick target. Modelled on observations of other builds,
+    /// carried from their scope and not established for the pinned release:
+    /// build 26613688 (F-1271, legacy scope) and an unscoped run whose evidence
+    /// label names 3.0.31 (F-895) gained about 14 s per 120 s empty, and there a
+    /// joined player lifted the pause. This pause advances 0, not 14.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pause_when_empty: bool,
     pub enabled: bool,
     /// IPv4 address to bind; nonloopback requires authenticated hosting.
     pub bind: Ipv4Addr,
@@ -253,6 +270,7 @@ impl Default for NetworkConfig {
             checkpoint_pawn_before_identity: false,
             checkpoint_saved_locations: false,
             checkpoint_location_correction: false,
+            pause_when_empty: false,
             bind: Ipv4Addr::LOCALHOST,
             port: 17_777,
             max_players: 8,
@@ -337,6 +355,10 @@ impl NetworkConfig {
             !self.checkpoint_location_correction
                 || (self.checkpoint_pawn_before_identity && self.pawn_move_acks),
             "network.checkpoint_location_correction requires network.checkpoint_pawn_before_identity and network.pawn_move_acks"
+        );
+        ensure!(
+            !self.pause_when_empty || self.enabled,
+            "network.pause_when_empty requires network.enabled"
         );
         if let Some(damage) = self.player_depletion_damage {
             damage.validate()?;

@@ -1589,7 +1589,9 @@ pub(crate) fn install_survival(
             }
         })
         .after(crate::simulation::SimulationSet::Gameplay)
-        .before(crate::simulation::SimulationSet::Finish),
+        .before(crate::simulation::SimulationSet::Finish)
+        // A paused tick debits nothing; the next completed tick's boundary does.
+        .run_if(crate::simulation::world_running),
     );
     app.add_systems(
         FixedUpdate,

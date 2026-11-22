@@ -826,6 +826,90 @@ impl Default for TickMetrics {
     }
 }
 
+/// Opt-in `[network] pause_when_empty` state, present only with that option.
+/// Native policy modelled on other builds' empty prospect clocks (F-1271,
+/// F-895), carried from their scope and not claimed for the pinned release.
+/// Refreshed each update after the network poll and before the fixed loop,
+/// so a join unpauses that update and the last close pauses within one.
+#[derive(Resource, Debug)]
+pub struct WorldOccupancy {
+    joined: usize,
+    paused_since: Option<Instant>,
+    paused_total: Duration,
+    pauses: u64,
+}
+
+impl WorldOccupancy {
+    /// Empty and paused: no session is joined before the first poll.
+    #[must_use]
+    pub fn new(now: Instant) -> Self {
+        Self {
+            joined: 0,
+            paused_since: Some(now),
+            paused_total: Duration::ZERO,
+            pauses: 1,
+        }
+    }
+
+    pub fn refresh(&mut self, joined: usize, now: Instant) {
+        self.joined = joined;
+        match (joined == 0, self.paused_since) {
+            (true, None) => {
+                self.paused_since = Some(now);
+                self.pauses = self.pauses.saturating_add(1);
+            }
+            (false, Some(since)) => {
+                self.paused_total = self
+                    .paused_total
+                    .saturating_add(now.saturating_duration_since(since));
+                self.paused_since = None;
+            }
+            _ => {}
+        }
+    }
+
+    #[must_use]
+    pub fn paused(&self) -> bool {
+        self.paused_since.is_some()
+    }
+
+    /// Real time spent paused since start, including the current pause.
+    #[must_use]
+    pub fn paused_for(&self, now: Instant) -> Duration {
+        self.paused_total.saturating_add(
+            self.paused_since
+                .map_or(Duration::ZERO, |since| now.saturating_duration_since(since)),
+        )
+    }
+
+    /// Run-record fields: joined sessions at the last refresh, pause state,
+    /// whole paused milliseconds and how many pauses began (start included).
+    #[must_use]
+    pub fn record(&self, now: Instant) -> serde_json::Value {
+        serde_json::json!({
+            "paused": self.paused(),
+            "joined": self.joined,
+            "paused_ms": u64::try_from(self.paused_for(now).as_millis()).unwrap_or(u64::MAX),
+            "pauses": self.pauses,
+        })
+    }
+}
+
+/// Run condition of tick work: true unless `pause_when_empty` holds the world.
+#[must_use]
+pub fn world_running(occupancy: Option<Res<WorldOccupancy>>) -> bool {
+    occupancy.is_none_or(|occupancy| !occupancy.paused())
+}
+
+fn refresh_world_occupancy(world: &mut World) {
+    let joined = world
+        .get_resource::<crate::experimental::peer_lab::PeerLab>()
+        .map_or(0, crate::experimental::peer_lab::PeerLab::joined_count);
+    if let Some(mut occupancy) = world.get_resource_mut::<WorldOccupancy>() {
+        occupancy.refresh(joined, Instant::now());
+    }
+}
+
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum SimulationSet {
     Begin,
@@ -877,10 +961,10 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
         .configure_sets(
             FixedUpdate,
             (
-                SimulationSet::Begin,
-                SimulationSet::Input,
-                SimulationSet::Gameplay,
-                SimulationSet::Finish,
+                SimulationSet::Begin.run_if(world_running),
+                SimulationSet::Input.run_if(world_running),
+                SimulationSet::Gameplay.run_if(world_running),
+                SimulationSet::Finish.run_if(world_running),
             )
                 .chain(),
         )
@@ -895,6 +979,16 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
     app.world_mut()
         .resource_mut::<Time<Virtual>>()
         .set_max_delta(config.tick_interval() * config.max_catch_up_ticks);
+    if config.network.pause_when_empty {
+        use bevy::app::{RunFixedMainLoop, RunFixedMainLoopSystems};
+        app.insert_resource(WorldOccupancy::new(Instant::now()))
+            .add_systems(
+                RunFixedMainLoop,
+                refresh_world_occupancy
+                    .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop)
+                    .after(crate::experimental::peer_lab::poll_peer_lab),
+            );
+    }
     if let Some(players) = &snapshot.native_players {
         app.insert_resource(
             crate::native_player_runtime::PlayerRegistry::new_with_inventory(
@@ -974,7 +1068,8 @@ pub fn build_app(config: &ServerConfig, snapshot: &WorldSnapshot) -> Result<App>
                 )
             })
             .after(SimulationSet::Input)
-            .before(SimulationSet::Gameplay),
+            .before(SimulationSet::Gameplay)
+            .run_if(world_running),
         );
     }
     if let Some(preserved) = &snapshot.preserved_prospect {

@@ -608,6 +608,133 @@ fn joined_session_expires_after_idle_timeout() {
     drop(client);
 }
 
+/// `[network] pause_when_empty` (native policy carried from other builds'
+/// empty clocks, F-1271/F-895; not claimed for the pinned release): refused
+/// without `enabled`, off by default and omitted from printed configuration.
+#[test]
+fn pause_when_empty_config_requires_networking_and_defaults_off() {
+    assert!(!NetworkConfig::default().pause_when_empty);
+    let parse = |text: &str| toml::from_str::<ServerConfig>(text).unwrap();
+    let error = parse("[network]\npause_when_empty = true\n")
+        .validate()
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("network.pause_when_empty requires network.enabled"),
+        "{error:#}"
+    );
+    let on = parse("[network]\nenabled = true\npause_when_empty = true\n");
+    assert!(on.network.pause_when_empty && on.validate().is_ok());
+    let printed = toml::to_string_pretty(&ServerConfig::default()).unwrap();
+    assert!(!printed.contains("pause_when_empty"), "{printed}");
+    assert!(
+        toml::to_string_pretty(&on)
+            .unwrap()
+            .contains("pause_when_empty = true")
+    );
+}
+
+/// A paused empty world never reaches a tick target, so `run` refuses
+/// `--max-ticks` with the option before any state or socket is opened.
+#[test]
+fn pause_when_empty_run_refuses_max_ticks_before_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("server.toml");
+    fs::write(
+        &path,
+        "[network]\nenabled = true\nport = 0\npause_when_empty = true\n",
+    )
+    .unwrap();
+    let state = directory.path().join("state");
+    let output = Command::new(env!("CARGO_BIN_EXE_icarus-server"))
+        .arg("run")
+        .arg("--config")
+        .arg(&path)
+        .arg("--data-dir")
+        .arg(&state)
+        .args(["--max-ticks", "5"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("refuses --max-ticks"), "{stderr}");
+    assert!(!state.exists());
+}
+
+fn tick(app: &App) -> u64 {
+    app.world()
+        .resource::<icarus_bevy::simulation::SimulationClock>()
+        .tick
+}
+
+/// With `pause_when_empty` the world completes no tick while no session is
+/// joined; the update whose poll admits the Join ticks once, a joined peer
+/// gets one tick per update, and the update that polls the close ticks none.
+/// Off, the same empty world ticks every update and has no occupancy state.
+#[test]
+fn pause_when_empty_ticks_only_while_a_loopback_peer_is_joined() {
+    use icarus_bevy::simulation::WorldOccupancy;
+    for pause in [false, true] {
+        let mut network = enabled(0);
+        network.pause_when_empty = pause;
+        let (mut app, address) = server_app(&network);
+        app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        // Bevy's first update has no elapsed time, so it never ticks.
+        app.update();
+        for _ in 0..5 {
+            app.update();
+        }
+        if !pause {
+            assert_eq!(tick(&app), 5, "option off: unchanged ticking");
+            assert!(app.world().get_resource::<WorldOccupancy>().is_none());
+            continue;
+        }
+        assert_eq!(tick(&app), 0, "empty: no tick");
+        assert!(app.world().resource::<WorldOccupancy>().paused());
+        let (done, result) = mpsc::channel();
+        let worker = thread::spawn(move || done.send(join(address)).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut join_update = None;
+        let client = loop {
+            let before = tick(&app);
+            app.update();
+            let joined = counts(&app).joined;
+            if joined == 0 {
+                assert_eq!(tick(&app), before, "no tick before the Join");
+            } else if join_update.is_none() {
+                join_update = Some(tick(&app) - before);
+            }
+            if let Ok(client) = result.try_recv() {
+                worker.join().unwrap();
+                break client;
+            }
+            assert!(Instant::now() < deadline, "join did not finish");
+            thread::sleep(Duration::from_micros(200));
+        };
+        assert_eq!(join_update, Some(1), "the Join's own update ticks");
+        let joined_at = tick(&app);
+        for step in 1..=4 {
+            app.update();
+            assert_eq!(tick(&app), joined_at + step, "one tick per update");
+        }
+        assert!(!app.world().resource::<WorldOccupancy>().paused());
+        client.close().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let before_close = tick(&app);
+        app.update();
+        assert_eq!(counts(&app).joined, 0);
+        assert_eq!(tick(&app), before_close, "the close's update ticks none");
+        for _ in 0..5 {
+            app.update();
+        }
+        assert_eq!(tick(&app), before_close, "frozen while empty");
+        let occupancy = app.world().resource::<WorldOccupancy>();
+        assert!(occupancy.paused());
+        let record = occupancy.record(Instant::now());
+        assert_eq!(record["pauses"], 2);
+        assert_eq!(record["joined"], 0);
+    }
+}
+
 #[test]
 fn stopped_admission_refuses_new_sessions_and_teardown_is_idempotent() {
     let (mut app, address) = server_app(&enabled(0));
@@ -10202,6 +10329,100 @@ mod authored_progression {
                     .is_err()
             );
         }
+    }
+
+    /// `pause_when_empty` with no joined session: the authored clock sample,
+    /// consumption debit and durable tick stay exactly where a reopened store
+    /// left them, however many fixed steps run. Native policy, carried from
+    /// other builds' empty clocks (F-1271, F-895), not the pinned release.
+    #[test]
+    fn pause_when_empty_freezes_reopened_authored_clock_and_consumption() {
+        let (_directory, mut network) = inputs();
+        network.player_consumption = Some(rules());
+        network.authored_world.as_mut().unwrap().clock = Some(AuthoredClockConfig {
+            initial_minute: 600,
+            seconds_per_day: 3600,
+            tick_hz: 7,
+        });
+        let prepared = prepare(&network, 7);
+        let snapshot = network::fresh_player_snapshot(Some(&prepared));
+        let key = PlayerKey::new(76_561_197_960_265_770, 3).unwrap();
+        let initial = PlayerCheckpoint {
+            location_cm: [10.0, 20.0, 30.0],
+            vitals: prepared.initial_vitals,
+        };
+        let activate = |app: &mut App, epoch| {
+            let mut registry = app.world_mut().resource_mut::<PlayerRegistry>();
+            registry.reserve(key, epoch, initial).unwrap();
+            registry.activate(epoch).unwrap();
+        };
+        let off = ServerConfig {
+            tick_hz: 7,
+            network: network.clone(),
+            ..Default::default()
+        };
+        let mut running = build_app(&off, &snapshot).unwrap();
+        activate(&mut running, 1);
+        for _ in 0..3 {
+            running.world_mut().run_schedule(FixedUpdate);
+        }
+        let saved = capture(running.world_mut()).unwrap();
+        assert_eq!(saved.tick, 3, "option off: ticks advance");
+        let state = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(state.path()).unwrap();
+        store.save(&saved).unwrap();
+        let mut restored = store.load().unwrap().unwrap().snapshot;
+        network::open_player_snapshot(&mut restored, Some(&prepared)).unwrap();
+
+        let mut paused = network.clone();
+        let declaration = paused.player_persistence.clone().unwrap();
+        paused.enabled = true;
+        paused.port = 17_777;
+        paused.pause_when_empty = true;
+        paused.hosting = Some(icarus_bevy::native_hosting::HostingConfig {
+            query_bind: "127.0.0.1".parse().unwrap(),
+            query_port: 27_015,
+            private_ip: "127.0.0.1".parse().unwrap(),
+            seconds: 60,
+            name: "Authored workshop".into(),
+            map_url: declaration.map_url,
+            prospect_id: declaration.prospect_id,
+            prospect_row: declaration.prospect_row,
+            lobby_name: "Workshop".into(),
+            difficulty: declaration.difficulty,
+        });
+        let on = ServerConfig {
+            tick_hz: 7,
+            network: paused,
+            ..Default::default()
+        };
+        let mut reopened = build_app(&on, &restored).unwrap();
+        // An active registry player is not a joined session: still paused.
+        activate(&mut reopened, 2);
+        let before = capture(reopened.world_mut()).unwrap();
+        assert_eq!(before.tick, 3, "reopen keeps the saved tick");
+        for _ in 0..20 {
+            reopened.world_mut().run_schedule(FixedUpdate);
+        }
+        let after = capture(reopened.world_mut()).unwrap();
+        assert_eq!(after, before, "nothing advanced while empty");
+        let clock = network
+            .authored_world
+            .as_ref()
+            .unwrap()
+            .clock
+            .as_ref()
+            .unwrap()
+            .prepare()
+            .unwrap();
+        assert_eq!(
+            clock.sample(after.tick).to_bits(),
+            clock.sample(saved.tick).to_bits(),
+            "authored time of day bit-identical"
+        );
+        // A second save and reopen of the frozen world keeps tick 3.
+        store.save(&after).unwrap();
+        assert_eq!(store.load().unwrap().unwrap().snapshot.tick, 3);
     }
 
     #[test]

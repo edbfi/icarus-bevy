@@ -282,7 +282,8 @@ impl Plugin for ReplicationPlugin {
                 FixedUpdate,
                 ReplicationSet
                     .after(SimulationSet::Gameplay)
-                    .before(SimulationSet::Finish),
+                    .before(SimulationSet::Finish)
+                    .run_if(crate::simulation::world_running),
             )
             .add_systems(FixedUpdate, replicate_actors.in_set(ReplicationSet));
     }

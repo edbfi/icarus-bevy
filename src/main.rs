@@ -1312,6 +1312,11 @@ fn with_native_replication_counts(
         record["native_replication"] = json!(counts);
     }
     if matches!(record["event"].as_str(), Some("status" | "stopped"))
+        && let Some(occupancy) = world.get_resource::<icarus_bevy::simulation::WorldOccupancy>()
+    {
+        record["world_occupancy"] = occupancy.record(Instant::now());
+    }
+    if matches!(record["event"].as_str(), Some("status" | "stopped"))
         && network::session_counts(world).is_some_and(|counts| counts.controller_leave.is_some())
         && let Some(registry) =
             world.get_resource::<icarus_bevy::native_player_runtime::PlayerRegistry>()
@@ -1349,6 +1354,12 @@ fn run(
     ensure!(
         !compressed || max_ticks.is_some(),
         "a compressed run needs max_ticks"
+    );
+    // A paused empty world completes no tick, so a tick target would never be
+    // reached and compressed time (derived from ticks) would never advance.
+    ensure!(
+        max_ticks.is_none() || !config.network.pause_when_empty,
+        "network.pause_when_empty refuses --max-ticks: an empty world never reaches a tick target; stop the run with a signal"
     );
     ensure!(
         !compressed || config.network.hosting.is_none(),
