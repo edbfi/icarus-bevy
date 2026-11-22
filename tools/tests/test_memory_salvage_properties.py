@@ -161,7 +161,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     # renumbering the rest in its export; an unchanged tracked row and a finding cite later ones by those numbers.
     # Main may itself hold one name twice (two accepted rows of one identity).
     twins = rng.random() < 0.2
-    main_paths, main_names = ["docs/research/net/d.md", "docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
+    deleted_g = rng.random() < 0.2  # main deleted g.md before the cut-over; the branch edits it and a new row cites it
+    main_paths, main_names = ["docs/research/net/d.md", "docs/specs/c.md", "docs/specs/e.md", *(["docs/specs/g.md"] if deleted_g else [])], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
     renewed = not retoken and rng.random() < 0.3  # e.md's body newly names a build outside its (unchanged) scope sections
@@ -198,6 +199,9 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         if export is after and digest:
             # A digest: its scope is read from its whole text.
             export[refs["docs/research/net/d.md"]] = document(refs["docs/research/net/d.md"], "docs/research/net/d.md", "# d.md\nSeen on build 29990007.\n")
+        if export is after and deleted_g:
+            export[refs["docs/specs/g.md"]] = document(refs["docs/specs/g.md"], "docs/specs/g.md", "# g.md, edited on the branch\n")
+            export["M-504"] = tracked("M-504", "docs/specs/g.md", refs["docs/specs/g.md"])
         if export is after and rewrite_c:
             export[refs["docs/specs/c.md"]] = document(refs["docs/specs/c.md"], "docs/specs/c.md", "# c.md, rewritten\n")
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
@@ -225,6 +229,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    if deleted_g:
+        _ = revisions.pop(numbered(main_paths, main_names)[0]["docs/specs/g.md"])  # gone before the cut-over: no accepted REF
     main_edits: list[Revision] = []
     if rewrite_c and not two_holders and rng.random() < 0.4:
         # Main changed c.md too since the merge base: a body revision would drop its edit.
@@ -372,8 +378,17 @@ class GeneratedSalvageTests(unittest.TestCase):
                     named = [pending for path, pending in listed.items() if path in clause and name in pending.citing]
                     self.assertTrue(named, f"{where}: {name}: {clause}")
                     for pending in named:
-                        withdrawn = not pending.in_force and (bool(pending.withdrawn) or any(fate != "now in force" for _id, fate in pending.based_on or ()))
-                        self.assertTrue(pending.branch_changed and not withdrawn, f"{where}: {name}: {pending.path} is not the operator's to settle: {clause}")
+                        # Stated from the case itself, not from the document's printed facts: the branch changed it, and some
+                        # reference stands for it, or it is new on the branch (absent from the base export) and no accepted
+                        # reference, in force or not, ever named it.
+                        path = pending.path
+                        in_base = any(document_path(record) == path for record in before.values())
+                        on_main = [other for other in on_accepted.records.values() if document_path(other) == path]
+                        branch_body = next(record.body for record in after.values() if document_path(record) == path)
+                        changed = not in_base or branch_body != next(record.body for record in before.values() if document_path(record) == path)
+                        standing = [other for other in on_main if other.id not in on_accepted.retired]
+                        self.assertTrue(changed and (bool(standing) or (not in_base and not on_main)),
+                                        f"{where}: {name}: {path} is not the operator's to settle: {clause}")
                 elif clause.endswith("must be accepted first"):
                     waited = self.waits_for(clause)
                     self.assertTrue(waited, f"{where}: {name}: {clause}")
