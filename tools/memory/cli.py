@@ -4,12 +4,12 @@
 One dispatch mechanism: every subcommand sets ``handler`` (``set_defaults``), a function from the parsed
 options to the exit status. This module defines ``get``, ``check`` and ``protected-paths``; each other
 module adds its commands with one ``register(commands)`` call below (``online``: the bank commands;
-``durability``: ``service``, ``backup``, ``restore``; ``mcp``: the stdio MCP server).
+``durability``: ``service``, ``backup``, ``restore``; ``mcp``: the stdio MCP server; ``salvage``: legacy rows
+of branches older than the cut-over).
 
 Exit status: 0 success; 1 problems, an unknown ID or unreadable input; 2 usage;
 ``EXIT_NO_JOURNAL`` (3) when ``check`` finds no segment in the working tree or the reference tree.
-Exit 3 is never a pass: a hook or CI step that runs ``check --ci`` must treat every non-zero status,
-3 included, as a failure once it is wired in.
+Exit 3 is never a pass: the hook and the CI step that run ``check --ci`` fail on every non-zero status.
 """
 
 from __future__ import annotations
@@ -22,11 +22,9 @@ from pathlib import Path
 
 from tools.memory.bank import Universe
 from tools.memory.check import run_check
-from tools.memory import durability, mcp, online
+from tools.memory import durability, mcp, online, salvage
 from tools.memory.gitio import GitError, git
 from tools.memory.journal import JournalError, read_git, read_tree
-from tools.memory.migrate import register as register_migration
-from tools.memory.salvage import register as register_salvage
 from tools.memory.paths import ProtectedPathsError, protected_paths
 
 EXIT_NO_JOURNAL = 3
@@ -72,8 +70,7 @@ def parser() -> argparse.ArgumentParser:
     online.register(commands)
     durability.register(commands)
     mcp.register(commands)
-    register_migration(commands)
-    register_salvage(commands)
+    salvage.register(commands)
     return top
 
 

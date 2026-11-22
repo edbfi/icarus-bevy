@@ -23,11 +23,10 @@ import json
 import os
 import posixpath
 import re
-import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -42,9 +41,9 @@ from tools.memory.bank import (
 )
 from tools.memory.canonical import RENDERING, render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
-from tools.memory.gitio import GitError, descends, git, listed_files
-from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags
-from tools.memory.journal import JournalError, Revision, Segment, write_change_set
+from tools.memory.gitio import GitError, descends, git, listed_files, read_blobs
+from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags, Unavailable
+from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, segment_name, write_change_set
 from tools.memory.model import (
     ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, regap, sha256_hex,
 )
@@ -445,7 +444,7 @@ def bundle_json(data: bytes) -> object:
 
 def bundle_members(data: bytes) -> tuple[int, list[str]]:
     """``records`` (distinct ``records[].evidence_id``) and ``members`` (those, then ``unknowns[].unknown_id``,
-    in bundle order) of an REA bundle, read as ``tools/docs_lint.py`` reads bundle membership: a bundle is REA's
+    in bundle order) of an REA bundle, read as the removed ``tools/docs_lint.py`` read bundle membership: a bundle is REA's
     output, so its numbers may be floats (scores); duplicate keys are still refused."""
     raw = bundle_json(data)
     if not is_object(raw):
@@ -665,22 +664,69 @@ def verify_record(primary: Path, record: Record, status: str, state: State | Non
     return verdict("verified", path)
 
 
-def verify(root: Path, identifiers: Sequence[str], *, every: bool = False) -> Output:
+def staged_evidence(root: Path, accepted: Sequence[Segment]) -> list[tuple[Revision, Entry]]:
+    """The evidence records a commit of Git's index changes, each at its head(s) in what the commit holds:
+    ``accepted`` (``origin/main``) plus every journal file in the index, never the working tree.
+
+    A record is affected when a staged segment adds, modifies or deletes one of its revisions, or deletes a
+    revision that supersedes it (a deleted segment is read from ``HEAD``): deleting an unaccepted retirement or
+    superseder reactivates the revision before it, which is then judged. ADDING a superseder reactivates
+    nothing, so the record it names is not judged: the commit that replaces drifted or lost evidence must pass.
+    Every journal file is parsed as a segment, as ``check --ci`` reads the tree, so a stray file or an
+    unreadable one raises ``JournalError`` naming it and the pre-commit hook fails closed."""
+    changed = git(root, "diff", "--cached", "--no-renames", "--name-status", "-z", "--diff-filter=AMD", "--", JOURNAL).decode().split("\0")
+    pairs = [(changed[index], changed[index + 1]) for index in range(0, len(changed) - 1, 2)]
+    staged = sorted(path for status, path in pairs if status in ("A", "M"))
+    # Removing a stray file is no segment change: only a deleted path that can name a segment is read.
+    deleted = sorted(path for status, path in pairs if status == "D" and segment_name(path) is not None)
+    indexed = sorted(path for path in git(root, "ls-files", "-z", "--", JOURNAL).decode().split("\0") if path)
+    committed = {segment.path: segment for segment in accepted}
+    for path, data in zip(indexed, read_blobs(root, [f":{path}" for path in indexed]), strict=True):
+        if data is None:
+            raise JournalError(f"{path}: in the index but unreadable from it")
+        committed[path] = parse_segment(path, data)
+    changes = [revision for path in staged for revision in committed[path].revisions]
+    removed: list[Revision] = []
+    for path, data in zip(deleted, read_blobs(root, [f"HEAD:{path}" for path in deleted]), strict=True):
+        if data is None:
+            raise JournalError(f"{path}: deleted in the index but unreadable from HEAD")
+        removed += parse_segment(path, data).revisions
+    # The changed revisions' own records, and the records a DELETED revision superseded: only deleting an
+    # unaccepted superseder reactivates the record it named.
+    affected = {revision.record.id for revision in [*changes, *removed]} | {name for revision in removed for name in revision.record.links.supersedes}
+    history = replay(committed.values())
+    # A revision that a later one in the same commit replaces is not judged on its own: the record's head(s) in
+    # what is committed decide. A record the commit removes entirely (its only segment deleted) has nothing left.
+    return [(entry.revisions[rev].revision, entry) for name in sorted(affected, key=id_key)
+            if (entry := history.entries.get(name)) is not None and entry.head.revision.record.type == "evidence" for rev in entry.heads]
+
+
+def verify(root: Path, identifiers: Sequence[str], *, every: bool = False, staged: bool = False) -> Output:
     """``verified``, ``unavailable``, ``mismatched`` or ``legacy-unverifiable`` per evidence record; exit 1 on
-    ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``)."""
+    ``mismatched`` or an active local-private record ``unavailable``; active by the derived status (``verify_record``).
+    ``staged``: every evidence record the staged journal changes add, modify or delete (the prek hook), each at its
+    head as committed, whatever the working tree holds."""
     universe = gather(root)
     view = universe.view
     primary = primary_checkout(root)
-    if every:
-        names = sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key)
+    records: list[Record] = []
+    judged: list[str] = []
+    if staged:
+        # The revision being committed is judged on its own history against the accepted links, as the bank
+        # derives status: an unstaged later revision, or a superseder not yet accepted, releases nothing.
+        for revision, entry in staged_evidence(root, universe.main):
+            records.append(revision.record)
+            judged.append(universe.settled.status_at(entry, revision.rev))
     else:
-        names = [name.split("/", 1)[0] for name in identifiers]
-    verdicts: list[Verdict] = []
-    for name in names:
-        record = view.record(name)
-        if record is None or record.type != "evidence":
-            raise Refused(f"{name}: no evidence record in this checkout")
-        verdicts.append(verify_record(primary, record, view_status(universe, name), view))
+        names = (sorted((name for name, entry in view.entries.items() if entry.record.type == "evidence"), key=id_key) if every
+                 else [name.split("/", 1)[0] for name in identifiers])
+        for name in names:
+            record = view.record(name)
+            if record is None or record.type != "evidence":
+                raise Refused(f"{name}: no evidence record in this checkout")
+            records.append(record)
+            judged.append(view_status(universe, name))
+    verdicts = [verify_record(primary, record, status, view) for record, status in zip(records, judged, strict=True)]
     counts = {outcome: sum(1 for item in verdicts if item.outcome == outcome) for outcome in OUTCOMES}
     lines = [f"{item.id}: {item.outcome} ({item.detail})" for item in verdicts]
     failing = sum(1 for item in verdicts if item.failing)
@@ -1468,69 +1514,93 @@ def cited_not_current(root: Path, universe: Universe, release: Record | None, re
 
 
 def status(bank: Bank, root: Path) -> Output:
-    """The pin; counts by type, status and partition; cited records not current; open unknowns; evidence
-    that is not known good on disk (missing bytes or no digest; ``verify --all`` checks digests)."""
+    """The pin; counts by type, status and partition; forks; cited records not current; open unknowns;
+    evidence that is not known good on disk (missing bytes or no digest; ``verify --all`` checks digests)."""
     with session(bank, root, read=True) as current:
-        universe = current.universe
-        view = universe.view
-        release, reason = release_for(universe, root, None)
-        primary = primary_checkout(root)
-        by_type: dict[str, dict[str, int]] = {}
-        by_partition: dict[str, int] = {}
-        unknowns: list[str] = []
-        unverified: list[tuple[str, str]] = []
-        for identifier in sorted(view.entries, key=id_key):
-            record = view.entries[identifier].record
-            shown = view_status(universe, identifier)
-            counts = by_type.setdefault(record.type, {})
-            counts[shown] = counts.get(shown, 0) + 1
-            if record.type == "evidence":
-                path = record.text("path")
-                if shown == "active" and (record.text("sha256") is None or path is None or not (primary / path).exists()):
-                    unverified.append((identifier, "no sha256" if record.text("sha256") is None else f"missing: {path}"))
-                continue
-            if record.type == "unknown" and shown in OPEN_UNKNOWN:
-                unknowns.append(identifier)
-            if release is not None and claim_bearing(record):
-                name = partition(record, release, lambda commit: descends(root, commit)).name
-                by_partition[name] = by_partition.get(name, 0) + 1
-        cited = cited_not_current(root, universe, release, reason)
-        lines = [f"pin: {release.id if release is not None else 'unknown'}" + (f" ({reason})" if reason else ""),
-                 f"bank: {current.applied.retained} retained, {current.applied.retagged} re-tagged, {current.applied.deleted} deleted by replay"]
-        for kind in sorted(by_type):
-            lines.append(f"{kind}: " + ", ".join(f"{count} {name}" for name, count in sorted(by_type[kind].items())))
-        lines.append("partitions (findings, compatibility rows, references, scoped records): " + ", ".join(f"{by_partition.get(name, 0)} {name}" for name in PARTITIONS))
-        # Startup reading: the text gives counts and what to act on; ``--json`` and ``check --pin`` list every record.
-        reasons: dict[str, int] = {}
-        for _identifier, why, _where in cited:
-            reasons[why.split(" ", 1)[0]] = reasons.get(why.split(" ", 1)[0], 0) + 1
-        lines.append(f"cited records not current: {len(cited)}" + (" (" + ", ".join(f"{count} {name}" for name, count in sorted(reasons.items())) + ")" if cited else "")
-                     + ("; memory check --pin lists each" if cited else ""))
-        lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
+        return summarize(current.universe, root, current.applied, None)
+
+
+def status_anywhere(root: Path, bank: Callable[[], Bank]) -> Output:
+    """``status`` from the service, or, when it cannot be reached, the offline summary of the journal (exit 0):
+    startup reading must work on a fresh clone, in CI and with the unit down."""
+    try:
+        return status(bank(), root)
+    except (ServiceError, Unavailable) as error:
+        return summarize(gather(root), root, None, str(error))
+
+
+def summarize(universe: Universe, root: Path, applied: Applied | None, unavailable: str | None) -> Output:
+    """The status text and data. ``unavailable`` (why the service could not be reached) makes it the offline
+    summary: journal only, no bank state and no look at the evidence bytes."""
+    view = universe.view
+    release, reason = release_for(universe, root, None)
+    primary = primary_checkout(root)
+    by_type: dict[str, dict[str, int]] = {}
+    by_partition: dict[str, int] = {}
+    unknowns: list[str] = []
+    unverified: list[tuple[str, str]] = []
+    for identifier in sorted(view.entries, key=id_key):
+        record = view.entries[identifier].record
+        shown = view_status(universe, identifier)
+        counts = by_type.setdefault(record.type, {})
+        counts[shown] = counts.get(shown, 0) + 1
+        if record.type == "evidence":
+            path = record.text("path")
+            if unavailable is None and shown == "active" and (record.text("sha256") is None or path is None or not (primary / path).exists()):
+                unverified.append((identifier, "no sha256" if record.text("sha256") is None else f"missing: {path}"))
+            continue
+        if record.type == "unknown" and shown in OPEN_UNKNOWN:
+            unknowns.append(identifier)
+        if release is not None and claim_bearing(record):
+            name = partition(record, release, lambda commit: descends(root, commit)).name
+            by_partition[name] = by_partition.get(name, 0) + 1
+    forks = sorted((identifier for identifier, entry in universe.state.entries.items() if entry.conflict), key=id_key)
+    cited = cited_not_current(root, universe, release, reason)
+    lines: list[str] = []
+    if unavailable is not None:
+        lines.append(f"memory status: the memory service is unavailable ({unavailable}); OFFLINE summary of the journal alone: "
+                     + "every number below is journal-only; no bank state and no evidence check")
+    lines.append(f"pin: {release.id if release is not None else 'unknown'}" + (f" ({reason})" if reason else ""))
+    if applied is not None:
+        lines.append(f"bank: {applied.retained} retained, {applied.retagged} re-tagged, {applied.deleted} deleted by replay")
+    for kind in sorted(by_type):
+        lines.append(f"{kind}: " + ", ".join(f"{count} {name}" for name, count in sorted(by_type[kind].items())))
+    lines.append("partitions (findings, compatibility rows, references, scoped records): " + ", ".join(f"{by_partition.get(name, 0)} {name}" for name in PARTITIONS))
+    lines.append("forks: " + (", ".join(forks) or "none"))
+    # Startup reading: the text gives counts and what to act on; ``--json`` and ``check --pin`` list every record.
+    reasons: dict[str, int] = {}
+    for _identifier, why, _where in cited:
+        reasons[why.split(" ", 1)[0]] = reasons.get(why.split(" ", 1)[0], 0) + 1
+    lines.append(f"cited records not current: {len(cited)}" + (" (" + ", ".join(f"{count} {name}" for name, count in sorted(reasons.items())) + ")" if cited else "")
+                 + ("; memory check --pin lists each" if cited else ""))
+    lines.append("open unknowns: " + (", ".join(unknowns) or "none"))
+    if unavailable is None:
         undigested = sum(1 for _identifier, why in unverified if why == "no sha256")
         lines.append(f"active evidence not known good on disk: {len(unverified)} ({undigested} without a digest); verify --all checks digests")
         missing = [f"  {identifier}: {why}" for identifier, why in unverified if why != "no sha256"]
         lines.extend(missing[:20])
         if len(missing) > 20:
             lines.append(f"  ... {len(missing) - 20} more; memory verify --all lists each")
-        lines.extend(f"notice: {notice}" for notice in current.applied.notices)
-        data: dict[str, JSON] = {
-            "pin": release.id if release is not None else None, "reason": reason,
-            "by_type": {kind: dict[str, JSON](counts) for kind, counts in by_type.items()},
-            "by_partition": {name: by_partition.get(name, 0) for name in PARTITIONS},
-            "cited_not_current": [{"id": identifier, "why": why, "where": where} for identifier, why, where in cited],
-            "open_unknowns": list[JSON](unknowns), "evidence_unverified": [{"id": identifier, "why": why} for identifier, why in unverified], "notices": list[JSON](current.applied.notices),
-        }
-        return Output(data, lines)
+    notices = list(applied.notices) if applied is not None else list(universe.notices)
+    lines.extend(f"notice: {notice}" for notice in notices)
+    data: dict[str, JSON] = {
+        "pin": release.id if release is not None else None, "reason": reason, "offline": unavailable is not None, "service": unavailable,
+        "by_type": {kind: dict[str, JSON](counts) for kind, counts in by_type.items()},
+        "by_partition": {name: by_partition.get(name, 0) for name in PARTITIONS}, "forks": list[JSON](forks),
+        "cited_not_current": [{"id": identifier, "why": why, "where": where} for identifier, why, where in cited],
+        "open_unknowns": list[JSON](unknowns), "evidence_unverified": [{"id": identifier, "why": why} for identifier, why in unverified],
+        "notices": list[JSON](notices),
+    }
+    return Output(data, lines)
 
 
 def fetch(root: Path) -> str | None:
     """``git fetch origin main``; ``None`` on success, else why it failed."""
     try:
-        result = subprocess.run(["git", "-C", str(root), "fetch", "--quiet", "origin", "main"], capture_output=True, check=False, timeout=FETCH_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        _ = git(root, "fetch", "--quiet", "origin", "main", timeout=FETCH_TIMEOUT)
+    except GitError as error:
         return str(error)
-    return None if result.returncode == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.returncode}"
+    return None
 
 
 def sync(bank: Bank, root: Path) -> Output:
@@ -1569,6 +1639,18 @@ def rebuild(bank: Bank, root: Path) -> Output:
     data: dict[str, JSON] = {"retained": applied.retained, "retagged": applied.retagged, "deleted": applied.deleted, "milliseconds": round(seconds * 1000),
                              "check": checked.data}
     return Output(data, lines, checked.status)
+
+
+def check_bank_or_skip(root: Path, bank: Callable[[], Bank], *, explicit: bool) -> Output:
+    """``check --bank``; a bare ``check`` (``explicit`` false) whose service cannot be reached reports the bank
+    comparison skipped instead of failing, so it still gives the ``--ci`` result anywhere."""
+    try:
+        return check_bank(bank(), root)
+    except (ServiceError, Unavailable) as error:
+        if explicit:
+            raise
+        return Output({"bank": "skipped", "service": str(error)},
+                      [f"memory check: bank comparison skipped: the memory service is unreachable ({error}); memory check --bank compares it"])
 
 
 def check_bank(bank: Bank, root: Path) -> Output:
@@ -1696,7 +1778,8 @@ def register(subparsers: Subcommands) -> None:
                                 help=f"record an REA bundle above {BUNDLE_PARSE_CAP // 1024**2} MiB without listing its members")
     verify_parser = subparsers.add_parser("verify", help="verify evidence bytes")
     _ = verify_parser.add_argument("ids", nargs="*")
-    _ = verify_parser.add_argument("--all", action="store_true", dest="every")
+    _ = verify_parser.add_argument("--all", action="store_true", dest="every", help="every evidence record of this checkout")
+    _ = verify_parser.add_argument("--staged", action="store_true", help="every evidence revision in staged segments (the pre-commit hook)")
     recall_parser = subparsers.add_parser("recall", help="ranked search, partitioned")
     _ = recall_parser.add_argument("query")
     _ = recall_parser.add_argument("--release")
@@ -1779,17 +1862,20 @@ def execute(values: Mapping[str, object], root: Path) -> Output:
     """Run one parsed command (``values`` is ``vars`` of the parsed options)."""
     command = values.get("command")
     if command == "verify":
-        return verify(root, _strings(values, "ids"), every=_flag(values, "every"))
+        return verify(root, _strings(values, "ids"), every=_flag(values, "every"), staged=_flag(values, "staged"))
     if command == "check":
         merged = Output({}, [], 0)
         plain = not (_flag(values, "ci") or _flag(values, "bank") or _flag(values, "pin"))
-        for wanted, produce in ((_flag(values, "pin"), lambda: check_pin(root)), (_flag(values, "bank") or plain, lambda: check_bank(Client(connection()), root))):
+        for wanted, produce in ((_flag(values, "pin"), lambda: check_pin(root)), (_flag(values, "bank") or plain,
+                                                                                   lambda: check_bank_or_skip(root, lambda: Client(connection()), explicit=_flag(values, "bank")))):
             if wanted:
                 output = produce()
                 merged.data.update(output.data)
                 merged.lines.extend(output.lines)
                 merged.status = max(merged.status, output.status)
         return merged
+    if command == "status":
+        return status_anywhere(root, lambda: Client(connection()))
     bank = Client(connection())
     match command:
         case "propose":

@@ -287,11 +287,17 @@ def save_cache(path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def parse_segment(path: str, data: bytes) -> Segment:
-    """Parse and verify one segment found at repository-relative ``path``."""
+def segment_name(path: str) -> re.Match[str] | None:
+    """The parts of ``path`` if it can name a segment (``JOURNAL/YYYY/MM/<YYYYMMDDTHHMMSSZ>-<12 hex>.jsonl``)."""
     name = PurePosixPath(path).name
     match = NAME.fullmatch(name)
-    if match is None or path != f"{JOURNAL}/{match[2]}/{match[3]}/{name}":
+    return match if match is not None and path == f"{JOURNAL}/{match[2]}/{match[3]}/{name}" else None
+
+
+def parse_segment(path: str, data: bytes) -> Segment:
+    """Parse and verify one segment found at repository-relative ``path``."""
+    match = segment_name(path)
+    if match is None:
         raise JournalError(f"{path}: not a segment path ({JOURNAL}/YYYY/MM/<YYYYMMDDTHHMMSSZ>-<12 hex>.jsonl)")
     if len(data) > SEGMENT_LIMIT:
         raise JournalError(f"{path}: {len(data)} bytes exceeds the {SEGMENT_LIMIT}-byte segment limit")

@@ -215,13 +215,14 @@ class StdioSession(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
                 {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "check", "arguments": {"ci": True}}},
                 {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "status", "arguments": {}}},
+                {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "check", "arguments": {}}},
             ]
             environment = {**os.environ, "ICARUS_MEMORY_HOME": str(top / "no-service"), "PYTHONPATH": str(WORKTREE), "PYTHONDONTWRITEBYTECODE": "1"}
             done = subprocess.run([sys.executable, "-m", "tools.memory", "mcp"], cwd=root, env=environment, check=False, timeout=120,
                                   input="".join(json.dumps(item) + "\n" for item in requests).encode(), capture_output=True)
         self.assertEqual(0, done.returncode, done.stderr)
         responses = [cast(dict[str, JSON], json.loads(line)) for line in done.stdout.decode().splitlines()]
-        self.assertEqual([1, 2, 3, 4], [item["id"] for item in responses])
+        self.assertEqual([1, 2, 3, 4, 5], [item["id"] for item in responses])
         self.assertEqual("2025-06-18", result(responses[0])["protocolVersion"])
         tools = result(responses[1])["tools"]
         assert isinstance(tools, list)
@@ -233,5 +234,12 @@ class StdioSession(unittest.TestCase):
         status = result(responses[3])
         content = status["content"]
         assert isinstance(content, list) and isinstance(content[0], dict)
-        self.assertTrue(status["isError"])
+        # Without the service, status is the journal-only summary, not an error; a bare check skips the bank comparison.
+        self.assertFalse(status["isError"])
+        self.assertTrue(str(content[0]["text"]).startswith("memory status: the memory service is unavailable ("))
         self.assertIn("connection-v2.env", str(content[0]["text"]))
+        bare = result(responses[4])
+        bare_content = bare["content"]
+        assert isinstance(bare_content, list) and isinstance(bare_content[0], dict)
+        self.assertFalse(bare["isError"])
+        self.assertIn("memory check: bank comparison skipped: the memory service is unreachable", str(bare_content[0]["text"]))

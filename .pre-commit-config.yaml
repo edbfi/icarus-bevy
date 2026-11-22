@@ -63,7 +63,7 @@ repos:
         pass_filenames: false
         files: ^(\.agents/rea/rea\.sh|tools/tests/rea_launcher\.test\.cjs)$
       - id: hindsight-runtime-tests
-        name: Test Hindsight runtime launch and client configuration
+        name: Test the Hindsight runtime installer
         entry: node --test tools/tests/hindsight_runtime.test.cjs
         language: system
         pass_filenames: false
@@ -163,19 +163,29 @@ repos:
         entry: python3 -m unittest discover -s tools/tests -v
         language: system
         pass_filenames: false
-        files: ^tools/.*\.py$
-      - id: docs-lint
-        name: Lint documentation surface (caps, headings, links, ledger IDs)
-        entry: python3 tools/docs_lint.py
-        language: system
-        pass_filenames: false
-        files: (\.md$|^evidence/|^tools/docs_lint\.py$|^src/.*\.rs$|^tools/|^\.github/)
-      - id: evidence-catalog
-        name: Check evidence catalog authority and generated views
-        entry: python3 -m tools.evidence_catalog check --staged
+        # The runbook too: tools/tests/test_memory_runbook_quotes.py pins the salvage text it quotes.
+        files: ^(tools/.*\.py|docs/runbooks/memory-service\.md)$
+      - id: memory-check
+        name: Check the memory journal, citations and forks (memory check --ci)
+        entry: python3 -m tools.memory check --ci
         language: system
         pass_filenames: false
         always_run: true
+      - id: memory-verify-staged
+        name: Verify the bytes of every evidence record in staged journal segments
+        entry: python3 -m tools.memory verify --staged
+        language: system
+        pass_filenames: false
+        # Always: it reads the affected records from the index itself, and a commit that only deletes
+        # journal files has no staged file names for a files: filter to match.
+        always_run: true
+        stages: [pre-commit]
+      - id: docs-check
+        name: Check links and document paths of the documents in Git
+        entry: python3 tools/docs_check.py
+        language: system
+        pass_filenames: false
+        files: (\.md$|^(src|tests|examples|tools|config|\.github|\.agents/rules)/|^CLAUDE\.md$)
       - id: cargo-fmt
         name: Check Rust formatting
         entry: cargo fmt --all -- --check

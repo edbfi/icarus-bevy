@@ -1,8 +1,7 @@
 # Architecture and interfaces
 
 Design constraints, repository boundaries and toolchain for the native server.
-Goals: [plan](linux-dedicated-server-plan.md); state:
-[status](implementation-status.md).
+Goals, milestone state and next tasks: [plan](linux-dedicated-server-plan.md).
 
 Before restructure: 96ddb0b:docs/architecture.md
 
@@ -193,7 +192,8 @@ target stable 3.15.2 under the basedpyright gate.
 | `reference-data/` | Ignored user-supplied save archives and private inventories; preserved inputs, not backed up by Git |
 | `work/` | Ignored scratch: cases, captures, dumps, private saves, analysis, benchmarks |
 | `src/`, `tests/`, `benches/`, `tools/` | Reusable implementation, authored tests and research tools |
-| `docs/`, `evidence/` | Plan, specifications, ledgers, digests, runbooks, frozen history and the evidence index |
+| `docs/` | Plan, gates, architecture, runbooks and frozen history |
+| `memory/journal/` | Project records (findings, unknowns, bugs, evidence, references), written only by `python3 -m tools.memory` ([memory rules](../.agents/rules/memory.md)) |
 
 Keep reference installations immutable during experiments; put runtime data and
 disposable copies in a case directory. Commit only authored or reviewed,

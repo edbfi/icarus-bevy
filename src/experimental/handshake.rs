@@ -9,7 +9,7 @@
 //!
 //! Also models the `net.StatelessConnectComponent.MagicHeader` CVar bit-string
 //! parser (`0x14372d5d0`), which is unconfigured (`0` bits) in stock ICARUS.
-//! See `docs/specs/network/stateless-handshake.md`.
+//! See the stateless handshake framing reference (REF-004).
 use anyhow::{Result, bail, ensure};
 
 /// Server-to-client 1-byte (`3`-bit: `bHandshakePacket=1`, `bRestartHandshake=1`,

@@ -24,8 +24,8 @@
 
 **This currently runs a headless foundation, not an ICARUS-compatible server.**
 Networking, authentication, gameplay, original-world compatibility and
-official-save import remain unimplemented and unvalidated. Offline research has resumed; current results and remaining gates are in the
-[checkpoint](docs/implementation-status.md#summary).
+official-save import remain unimplemented and unvalidated. Offline research has resumed; milestone state and next tasks are in the
+[plan](docs/linux-dedicated-server-plan.md#milestone-state).
 
 ## Quick start
 
@@ -50,8 +50,10 @@ gameplay tables are not runtime inputs. Nothing original is bundled here.
 
 ## Documentation
 
-The [documentation map](docs/README.md) lists every document with its role and
-bound: plan, status, gates, ledgers, specs, research digests and runbooks.
+The [documentation map](docs/README.md) lists the documents kept in Git: plan,
+gates, architecture and runbooks. Findings, unknowns, bugs, references and
+evidence are project records in the memory service, read and written only
+through `python3 -m tools.memory` ([memory rules](.agents/rules/memory.md)).
 
 ## Contributing
 
@@ -61,9 +63,9 @@ prek run --all-files --hook-stage manual
 ```
 
 Rules for agents and people are in [`.agents/rules/`](.agents/rules/): project
-workflow in `project.md`, documentation in `docs.md`. Rust checks use `--locked`;
-Python helpers pass basedpyright in recommended mode; commits are signed-off
-Conventional Commits on feature branches. CI runs the same hooks plus a release
+workflow in `project.md`, knowledge and documentation in `memory.md`. Rust checks
+use `--locked`; Python helpers pass basedpyright in recommended mode; commits are
+signed-off Conventional Commits on feature branches. CI runs the same hooks plus a release
 build and headless smoke test with authored fixtures only.
 
 Original files stay under ignored `icarus-orig/`, supplied saves under ignored

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The legacy exporter, parity gate and salvage, on an invented miniature legacy repository.
+"""The legacy exporter and salvage, on an invented miniature legacy repository.
 
 Every row below is invented; builds are fictitious ``2999xxxx`` numbers and releases ``3.0.9x``. The
 fixture carries each hazard of the legacy data: free-text and role-less builds, glued builds, digits
@@ -31,17 +31,12 @@ from pathlib import Path
 from typing import override
 from unittest import mock
 
-from tools.memory import cli, migrate, online, salvage as salvage_command
-from tools.memory.canonical import render_text
+from tools.memory import cli, online, salvage as salvage_command
 from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment, read_git, read_tree, write_change_set
 from tools.memory.legacy import Export, export, write
-from tools.memory.legacy_prose import account
-from tools.memory.legacy_report import inbound, render, residue
 from tools.memory.legacy_rules import extract, standing
 from tools.memory.model import JSON, Record, RecordError
-from tools.memory.parity import parity
-from tools.memory.paths import ProtectedPathsError
 from tools.memory.salvage import Salvage, salvage
 from tools.memory.state import State, legacy_listed, partition, replay
 from tools.tests.memory_fixtures import clean_git_environment, finding, new_repository, run_git
@@ -473,136 +468,22 @@ class ExportTests(LegacyRepository):
         self.assertEqual(names["F-102"], "legacy-scope")
         self.assertEqual(names["F-107"], "unscoped")
 
-    def test_report_residue_and_inbound(self) -> None:
-        self.assertEqual(residue(self.result, self.root), [])
-        without = Export(self.result.revision, self.result.created, [item for item in self.result.migrated if item.record.id != "REF-003"],
-                         catalog=self.result.catalog)
-        values = {item.value for item in residue(without, self.root)}
-        self.assertIn("NeverRecordedName", values)
-        self.assertIn("42.5", values)
-        found = {(item.path, item.target) for item in inbound(self.result, self.root)}
-        self.assertIn(("src/lib.rs", "docs/specs/net/widget.md"), found)
-        self.assertIn(("docs/implementation-status.md", "docs/specs/net/widget.md"), found)
-        self.assertIn(("evidence/widgets/001.jsonl", "docs/specs/net/widget.md"), found)
-        text = render(self.result, self.root)
-        self.assertIn("- F-106 superseded by F-107: docs/ledgers/findings/widgets.md:7: F-106 is retired in favor of F-107.", text)
-        self.assertIn("finding `standing` set from the row's own words on 1 of 10: F-107", text)
-        self.assertIn("no active finding is `current` for REL-3.0.92", text)
-        self.assertIn("- REL-3.0.92 (current): states version_string 3.0.92.100-rel-Test, server_build 29990010; lacks client_build, dates", text)
-        self.assertIn("- F-109: scope commit not set: the limits cell names 1234567, c0ffee4; all-digit 1234567 is a commit or a number", text)
-        self.assertIn("- M-104 (active): docs/specs/net/widget.md -> REF-002", text)
-        self.assertIn("- lead status `legacy:unstated` on 1", text)
-        self.assertIn("- compatibility refs: 3", text)
-
     def segments(self) -> tuple[Segment, ...]:
         out = self.top / "segments"
         _ = write(self.result, out)
         return read_tree(out)
 
 
-class ParityTests(LegacyRepository):
-    def release_model(self, source: str) -> None:
-        """Point ``origin/main`` at a commit whose ``tools/memory/model.py`` is ``source``."""
-        released = self.top / f"released-{len(list(self.top.glob('released-*')))}"
-        released.mkdir()
-        new_repository(released)
-        target = released / "tools/memory/model.py"
-        target.parent.mkdir(parents=True)
-        _ = target.write_text(source, encoding="utf-8")
-        _ = run_git(released, "add", "-A")
-        _ = run_git(released, "commit", "-q", "-m", "released")
-        _ = run_git(self.root, "fetch", "-q", "-f", str(released), "main:refs/remotes/origin/main")
-
+class AnchoredTrackedTests(LegacyRepository):
     def test_an_anchored_tracked_row_links_the_ref_of_its_file(self) -> None:
         shard = self.root / "evidence/widgets/001.jsonl"
         row = {"id": "M-105", "path": "docs/specs/net/widget.md#scope", "sha256": None, "class": "tracked", "kind": "report",
                "date": None, "label": "Anchored", "status": "active"}
         _ = shard.write_text(shard.read_text() + json.dumps(row, separators=(",", ":")) + "\n")
         _ = run_git(self.root, "commit", "-q", "-am", "anchored tracked row")
-        exported = export(self.root, "HEAD")
-        anchored = exported.records()["M-105"]
+        anchored = export(self.root, "HEAD").records()["M-105"]
         self.assertEqual((("REF-002",), ("tracked file migrated to REF-002 at cut-over (link assigned at migration)",)),
                          (anchored.links.refs, anchored.notes))
-        self.release_model((Path(__file__).parents[1] / "memory/model.py").read_text(encoding="utf-8"))
-        out = self.top / "anchored"
-        _ = write(exported, out)
-        self.assertEqual([], parity(self.root, "HEAD", out).mismatches)
-
-    def test_the_export_passes_and_a_changed_record_fails(self) -> None:
-        model = (Path(__file__).parents[1] / "memory/model.py").read_text(encoding="utf-8")
-        self.release_model(model)
-        out = self.top / "journal"
-        _ = write(self.result, out)
-        result = parity(self.root, "HEAD", out)
-        self.assertEqual(result.mismatches, [])
-        self.assertRegex(result.measured["released model"], r"^origin/main [0-9a-f]{12}: 34 revision\(s\) parsed, 0 rejected$")
-        self.assertEqual(result.measured["edges compatibility, lead and report rows"], "7 (raw table lines 7)")
-        self.assertIn("finding 10", result.measured["counts"])
-        self.assertIn("reference 10", result.measured["counts"])
-        accounting = account(self.root, "HEAD", self.records)
-        self.assertEqual(accounting.problems, [])
-        self.assertEqual(sum(accounting.bytes.values()), sum(
-            (self.root / path).stat().st_size for path in run_git(self.root, "ls-files", "docs/ledgers", "docs/specs", "docs/research",
-                                                                  "docs/implementation-status.md", "evidence").split()))
-        self.assertGreater(accounting.bytes["structural"], 0)
-        lost = {identifier: record for identifier, record in self.records.items() if identifier not in ("REF-008", "M-103")}
-        problems = "\n".join(account(self.root, "HEAD", lost).problems)
-        self.assertIn("docs/ledgers/unknowns.md:1:", problems)
-        self.assertIn("evidence/widgets/001.jsonl:3:", problems)
-        tampered = self.top / "tampered"
-        revisions = [item for change_set in self.result.change_sets() for item in change_set.revisions]
-        changed: list[Revision] = []
-        for revision in revisions:
-            data = revision.record.to_json()
-            if revision.record.id == "F-102":
-                data["claim"] = "Something the row never said"
-            elif revision.record.id == "U-102":
-                data["refs"] = ["F-102"]
-            elif revision.record.id == "M-102":
-                data["path"] = "work/elsewhere/"
-            elif revision.record.id == "CP-002":
-                data["refs"] = ["F-102"]
-            changed.append(Revision.of(Record.from_json(data, revision.record.body)))
-        _ = write_change_set(tampered, datetime(2026, 1, 5, tzinfo=UTC), changed)
-        mismatches = "\n".join(parity(self.root, "HEAD", tampered).mismatches)
-        self.assertIn("F-102: claim", mismatches)
-        self.assertIn("U-102: links", mismatches)
-        self.assertIn("M-102: path", mismatches)
-        self.assertIn("CP-002: links ['F-105', 'U-101'] differ from its cells", mismatches)
-        self.assertIn("edges of compatibility, lead and report rows: journal 5, raw table lines 7", mismatches)
-
-    def test_an_unseen_legacy_cell_and_a_record_main_rejects_fail(self) -> None:
-        out = self.top / "journal"
-        _ = write(self.result, out)
-        model = (Path(__file__).parents[1] / "memory/model.py").read_text(encoding="utf-8")
-        self.release_model(model.replace('{"path", "cells", "superseded_by", "implied_status"}', '{"path", "cells", "implied_status"}'))
-
-        def without_limits(record: Record) -> str:
-            return "\n".join(line for line in render_text(record).split("\n") if not line.startswith("limits: "))
-
-        with mock.patch("tools.memory.parity.render_text", without_limits):
-            mismatches = "\n".join(parity(self.root, "HEAD", out).mismatches)
-        self.assertIn("F-102: legacy cell 'scope_and_limits' not in its text: 'high; build 29990003; build29990004 too'", mismatches)
-        self.assertRegex(mismatches, r"released model: memory/journal/[0-9/]+/[^:]+:[0-9]+: F-101: legacy: unknown fields superseded_by")
-
-    def test_an_unreadable_manifest_is_a_reported_failure_not_a_traceback(self) -> None:
-        options = argparse.Namespace(rev="HEAD", journal=self.top / "journal")
-        stderr = io.StringIO()
-        with (mock.patch("tools.memory.parity.parity", side_effect=ProtectedPathsError("M-101: unreadable sha256 manifest work/x/fixity.sha256")),
-              mock.patch("tools.memory.migrate.repository_root", return_value=self.root), contextlib.redirect_stderr(stderr)):
-            self.assertEqual(migrate.run_parity(options), 1)
-        self.assertIn("memory parity: M-101: unreadable sha256 manifest", stderr.getvalue())
-
-    def test_a_failing_clone_is_a_reported_failure_not_a_traceback(self) -> None:
-        out = self.top / "journal"
-        _ = write(self.result, out)
-        options = argparse.Namespace(rev="HEAD", journal=out)
-        stderr = io.StringIO()
-        with (mock.patch("tools.memory.parity.primary_checkout", return_value=self.top / "no-such-repository"),
-              mock.patch("tools.memory.migrate.repository_root", return_value=self.root), contextlib.redirect_stderr(stderr)):
-            self.assertEqual(migrate.run_parity(options), 1)
-        self.assertRegex(stderr.getvalue(), r"^memory parity: git clone: exit status [0-9]+: .*no-such-repository")
-        self.assertNotIn("Traceback", stderr.getvalue())
 
 
 def surface_record(identifier: str, name: str) -> Record:

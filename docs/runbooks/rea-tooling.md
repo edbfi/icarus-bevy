@@ -57,21 +57,22 @@ selects inline `TCppStructOps` PDB symbols.
 
 ## Evidence at session close
 
-The session bundle is canonical; Git holds its index and citations
-([rules](../../.agents/rules/docs.md)).
+The session bundle is canonical; its evidence record in the memory journal
+indexes it ([memory rules](../../.agents/rules/memory.md), Session close).
 
 1. Call the MCP `export_evidence_bundle` tool with an absolute `path` ending in
    `work/<case>/rea-bundle.json`. It reports the record and unknown counts.
-2. Allocate with `python3 tools/docs_lint.py --next-id M`; append to the area's
-   highest-numbered `evidence/` shard: `kind` `rea-bundle`, file SHA256,
-   exported `records`, and only cited IDs in `ev`/`unk`.
-3. Cite `M-NNN/ev_<12 hex>` in finding Evidence cells and `M-NNN/unk_<12 hex>`
-   in U- rows; never paste a full identifier.
-4. Run `python3 tools/docs_lint.py --local`; it checks the digest and that every
-   listed ID is a member of the bundle (export layout: F-494).
+2. `python3 -m tools.memory evidence add work/<case>/rea-bundle.json --kind
+   rea-bundle --label "<what the session observed>"`. The tool allocates the
+   `M-NNN`, hashes the file and lists the bundle's records and members.
+3. Cite `M-NNN/ev_<12 hex>` in findings and `M-NNN/unk_<12 hex>` in unknowns;
+   never paste a full identifier. Proposing a record checks each selector
+   against the bundle's members (export layout: F-494).
+4. `python3 -m tools.memory verify M-NNN` checks the digest and membership; the
+   pre-commit hook verifies every evidence record in staged segments.
 
-Read summary/exact filters, never whole bundles. Get the full ID from its row
-(`grep -rhw --include='*.jsonl' M-NNN evidence/`):
+Read summary/exact filters, never whole bundles. Get the full ID with
+`python3 -m tools.memory get M-NNN/ev_<12 hex>`:
 
 ```bash
 .agents/rea/rea.sh inspect-evidence-bundle \
@@ -83,20 +84,22 @@ filters without exporting.
 
 ## Private evidence backup
 
-Git indexes `local-private` evidence; its bytes stay on the analyst machine.
-Back up every active path outside the repository to `ICARUS_EVIDENCE_BACKUP`,
-then prove a scratch-clone restore:
+The journal records `local-private` evidence; its bytes stay on the analyst
+machine. Back up every protected path outside the repository to
+`ICARUS_EVIDENCE_BACKUP`, then prove a scratch-clone restore:
 
 ```bash
-(set -o pipefail; python3 tools/docs_lint.py --list-local |
+(set -o pipefail; python3 -m tools.memory protected-paths |
   rsync -a -r --relative --files-from=- ./ "$ICARUS_EVIDENCE_BACKUP/")
 git clone -q . "$RESTORE_CHECK" && rsync -a "$ICARUS_EVIDENCE_BACKUP/" "$RESTORE_CHECK/"
-python3 tools/docs_lint.py --local --root "$RESTORE_CHECK"
+(cd "$RESTORE_CHECK" && python3 -m tools.memory verify --all)
 ```
 
-`--files-from` needs `-r` for recursion. Nonzero exit means incomplete backup:
-listed existing files were copied; fix missing files/unreadable manifests named
-on stderr. Back up after every session adding rows; retire rows before deletion.
+`--files-from` needs `-r` for recursion. A nonzero exit from `protected-paths`
+means unreadable input (named on stderr): treat the backup as incomplete. In
+the restore check `verify` resolves paths against the clone; `unavailable` or
+`mismatched` names what the backup lacks. Back up after every session adding
+evidence; retire a record before deleting its bytes.
 
 ## Reference environments
 

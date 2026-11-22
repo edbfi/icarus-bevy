@@ -48,7 +48,8 @@ Migration moves records; it never upgrades, invents or fills. Every rule is mech
 
   Elsewhere commit-like words are pawn IDs, tag hashes or GUID parts. A finding's claim is not a commit
   cell: 8 findings name a commit-like word only there (F-497's feature commit, but also F-702's tag
-  hashes); the migration report lists them as a known limit (``claim_commits``).
+  hashes); the cut-over's migration report (``memory migrate`` on its parent) listed them as a
+  known limit.
 
   Builds named only in a cited evidence label are never copied. A row without tokens has no scope;
   ``scope`` is then a gap where the type requires it.
@@ -85,7 +86,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from tools.docs_lint import LEGACY_NOTE, LISTED_SELECTOR
+from tools.memory.legacy_reader import LEGACY_NOTE, LISTED_SELECTOR
 from tools.memory.model import JSON, LEGACY, STANDINGS, TYPES, Record, id_key
 
 BUILD = re.compile(r"(?<![\w.])(?<![0-9],)(?:[Bb]uild)?(2[0-9]{7})(?!\w|[.,][0-9])")

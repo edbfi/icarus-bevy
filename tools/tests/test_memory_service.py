@@ -5,6 +5,7 @@ generation, configuration assertions, the floor, watermarks, rotation, backup wi
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import NamedTuple, cast, override
 from unittest.mock import patch
 
-from tools.memory import durability, service
+from tools.memory import durability, gitio, online, service
 from tools.memory.bank import BankError
 from tools.memory.cli import main
 from tools.memory.gitio import GitError
@@ -150,6 +151,18 @@ class ConnectionFile(Scratch):
               patch("tools.memory.service.checked_assets", return_value=Assets(self.root / "runtime")), redirect_stderr(stderr)):
             self.assertEqual(1, main(["service", "install", "--reranker", "\u00b2"]))
         self.assertIn("memory service install: ICARUS_MEMORY_RERANKER must be off or a candidate cap from 1 to 500", stderr.getvalue())
+
+
+    def test_a_missing_postgresql_build_names_the_install_command(self) -> None:
+        requirements = self.root / "requirements.txt"
+        _ = requirements.write_text("invented==1\n", encoding="utf-8")
+        runtime = Assets(self.root / "runtime")
+        runtime.root.mkdir()
+        _ = (runtime.root / "wheels.sha256").write_text(hashlib.sha256(requirements.read_bytes()).hexdigest() + "\n", encoding="utf-8")
+        problems = runtime.problems(requirements)
+        self.assertIn(f"missing {runtime.pg_bin / 'postgres'}; run tools/hindsight_runtime install (it provisions the Python environment, the models and PostgreSQL)",
+                      problems)
+        self.assertFalse(any("does not match" in problem for problem in problems))
 
 
 class Units(Scratch):
@@ -414,6 +427,15 @@ class GitCalls(Scratch):
                                                    durability.descends_from(repository, "f" * 40, second)))
             with patch("tools.memory.service.Path.cwd", return_value=outside), self.assertRaisesRegex(ServiceError, "inside a checkout"):
                 _ = service.repository_root()
+
+    def test_a_git_timeout_is_a_git_error_and_fetch_reports_it(self) -> None:
+        def slow(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            raise subprocess.TimeoutExpired(["git"], float(cast(float, kwargs["timeout"])))
+
+        with patch("tools.memory.gitio.subprocess.run", side_effect=slow):
+            with self.assertRaisesRegex(GitError, r"^git fetch: no answer within 120 s$"):
+                _ = gitio.git(self.root, "fetch", "--quiet", "origin", "main", timeout=120)
+            self.assertEqual("git fetch: no answer within 120 s", online.fetch(self.root))
 
 
 def stamp(day: int, hour: int = 3) -> datetime:

@@ -1,6 +1,6 @@
 # Native server
 
-[Constraints](../architecture.md), [status](../implementation-status.md).
+[Constraints](../architecture.md), [milestones and next tasks](../linux-dedicated-server-plan.md#next-tasks).
 
 ## Run
 
@@ -178,7 +178,7 @@ release session plan required. `src/native_replication.rs`: strict regular JSON
 catalog/map, signed-axis/unit frame, archetype paths/checksums/`no_load`,
 parameters/schedule. `frame.orientation` selects
 `right_handed_zyx_degrees_v1`; omitted/`identity_only` requires `[0,0,0,1]`.
-Scale `[1,1,1]`, velocity zero; [rotation](../research/foundation/foundation.md#current-answer).
+Scale `[1,1,1]`, velocity zero; rotation: REF-012, Current answer.
 Proxies never persist (F-938).
 
 Format 1: schema 4; format 2: pinned schema-7/11 `lifecycle_id`.
@@ -250,8 +250,8 @@ not network filesystems/physical power loss (U-035).
 
 Read-only unless stated. Nonblocking regular files (symlinks allowed, F-671).
 
-- `inspect-save --source PATH` [checks envelope](../specs/save-format/prospect-envelope.md).
-  `--inner-tags` [frames roots](../specs/save-format/tagged-properties.md).
+- `inspect-save --source PATH` checks the envelope (REF-008).
+  `--inner-tags` frames roots (REF-011).
   `--recorders` counts entries. `--compare-recorders PATH` matches bytes.
 - `--stage-check [--expect-prospect-name NAME]`: stage/migrate full
   `FProspectSaveState`, `ProspectInfo`, base recorder fields (F-738).
@@ -268,7 +268,7 @@ Read-only unless stated. Nonblocking regular files (symlinks allowed, F-671).
   official server tables. After migration, resolve `ProspectDTKey` in
   `D_ProspectList` or authored `data_row` catalog; `FactionMissionDTKey`/custom-setting
   rows use `data_row`; format-1 `ProspectMapName` uses `unclassified`.
-  [Ordered rows and save-local link counts](../specs/save-format/prospect-loading.md#candidate).
+  Ordered rows and save-local link counts: REF-009, Candidate.
 
 Format 2 world scope (F-916):
 

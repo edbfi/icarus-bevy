@@ -78,7 +78,7 @@ config inspection does not qualify a complete schema.
 
 ## Strings and Ghidra windows
 
-The experimental [archive-string subset](../specs/save-format/archive-string.md)
+The experimental archive-string subset (REF-007)
 validates initial control strings on borrowed spans, without temporary
 decoded-unit allocation; archive byte order and enclosing message boundaries
 remain the caller's responsibility.

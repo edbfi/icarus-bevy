@@ -16,11 +16,11 @@ import unittest
 
 from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
-from tools.memory.legacy import TRACKED_NOTE
+from tools.memory.legacy import SALVAGED, TRACKED_NOTE
 from tools.memory.legacy_prose import section
 from tools.memory.legacy_rules import extract
 from tools.memory.model import ID, JSON, Record, id_key
-from tools.memory.salvage import (DOCUMENT_NOTE, SALVAGED, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
+from tools.memory.salvage import (DOCUMENT_NOTE, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
                                   pending_documents, relink, renumber)
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding

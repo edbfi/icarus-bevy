@@ -37,8 +37,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.evidence_catalog_model import PIPE, Entry, Index, references
-from tools.evidence_catalog_store import Catalog
+from tools.memory.legacy_reader import PIPE, Catalog, Entry, Index, references
 from tools.memory.gitio import read_blobs, tree_files
 from tools.memory.legacy_rules import (
     BUILD, EVIDENCE_CELL, RELEASE, REVISION_CELLS, ROLE, SELECTOR_SUFFIX, SELECTORS, UNSTATED, UNSTATED_NOTE, Migrated, MigrationError, extract, finish,

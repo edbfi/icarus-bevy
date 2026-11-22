@@ -25,7 +25,7 @@ from tools.memory.hindsight import (
     AllOf, AnyOf, Client, Document, Group, Hit, Item, Not, Tags, Unavailable, Unit, group_json,
 )
 from tools.memory.canonical import RENDERING
-from tools.memory.journal import Revision, read_tree, write_change_set
+from tools.memory.journal import JournalError, Revision, read_tree, write_change_set
 from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
@@ -601,6 +601,108 @@ class EvidenceTests(Online):
         _ = run_git(self.root, "worktree", "add", "-q", "--detach", str(linked))
         self.assertIn("M-001: verified", online.verify(linked, ["M-001"]).lines[0])
 
+    def test_staged_verifies_every_evidence_revision_in_staged_segments_and_fails_closed(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        self.assertEqual(["verify: 0 verified, 0 unavailable, 0 mismatched, 0 legacy-unverifiable; 0 failing"], online.verify(self.root, (), staged=True).lines)
+        _ = run_git(self.root, "add", "memory/journal")
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((0, "M-001: verified (work/case/receipt.txt)"), (staged.status, staged.lines[0]))
+        self.put("work/case/receipt.txt", "tampered")
+        self.assertEqual(1, online.verify(self.root, (), staged=True).status)
+        segment = next((self.root / "memory/journal").rglob("*.jsonl"))
+        _ = segment.write_bytes(segment.read_bytes() + b"not json\n")
+        _ = run_git(self.root, "add", "memory/journal")
+        with self.assertRaises(JournalError):
+            _ = online.verify(self.root, (), staged=True)
+
+    def test_staged_judges_the_revision_being_committed_not_a_later_unstaged_one(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        _ = run_git(self.root, "add", "memory/journal")
+        (self.root / "work/case/receipt.txt").unlink()
+        _ = online.revise(self.bank, self.root, "M-001", Changes({"status": "retired"}, note="Invented: retired, not staged"), now=self.tick())
+        self.assertEqual(0, online.verify(self.root, ["M-001"]).status, "the working tree's head is retired")
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (staged.status, staged.lines[0]))
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented replacing record", now=self.tick())
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        self.assertEqual(1, online.verify(self.root, (), staged=True).status, "an unstaged superseder releases nothing")
+        _ = run_git(self.root, "add", "memory/journal")
+        self.assertEqual(0, online.verify(self.root, (), staged=True).status, "the staged retirement is the revision committed")
+
+    def test_staged_deletion_of_an_unaccepted_retirement_judges_the_revision_it_reactivates(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        commit_all(self.root)
+        before = set((self.root / "memory/journal").rglob("*.jsonl"))
+        _ = online.revise(self.bank, self.root, "M-001", Changes({"status": "retired"}, note="Invented: retired on the branch"), now=self.tick())
+        (retirement,) = set((self.root / "memory/journal").rglob("*.jsonl")) - before
+        _ = run_git(self.root, "add", "memory/journal")
+        _ = run_git(self.root, "commit", "-q", "-m", "retirement, not on origin/main")
+        (self.root / "work/case/receipt.txt").unlink()
+        self.assertEqual(0, online.verify(self.root, (), staged=True).status, "nothing staged yet")
+        _ = run_git(self.root, "rm", "-q", str(retirement.relative_to(self.root)))
+        self.assertEqual(1, online.verify(self.root, ["M-001"]).status)
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((1, "M-001: unavailable (missing: work/case/receipt.txt)"), (staged.status, staged.lines[0]))
+
+    def test_staged_deletion_of_an_unaccepted_superseder_judges_the_record_it_reactivates(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        commit_all(self.root)
+        before = set((self.root / "memory/journal").rglob("*.jsonl"))
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented superseder", now=self.tick())
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        added = set((self.root / "memory/journal").rglob("*.jsonl")) - before
+        _ = run_git(self.root, "add", "memory/journal")
+        _ = run_git(self.root, "commit", "-q", "-m", "superseder, not on origin/main")
+        (self.root / "work/case/receipt.txt").unlink()
+        superseding = [path for path in added if '"supersedes":["M-001"]' in path.read_text(encoding="utf-8")]
+        self.assertEqual(1, len(superseding), "one segment holds M-002's supersedes M-001")
+        _ = run_git(self.root, "rm", "-q", str(superseding[0].relative_to(self.root)))
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual(1, staged.status, staged.lines)
+        self.assertIn("M-001: unavailable (missing: work/case/receipt.txt)", staged.lines)
+
+    def test_staged_superseder_of_a_drifted_record_does_not_judge_the_record_it_supersedes(self) -> None:
+        self.put("work/case/receipt.txt", "invented receipt")
+        self.put("work/case/summary.md", "invented summary")
+        _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
+        commit_all(self.root)
+        self.put("work/case/receipt.txt", "drifted receipt")
+        _ = online.evidence_add(self.bank, self.root, "work/case/summary.md", "report", "Invented replacement", now=self.tick())
+        _ = online.supersede(self.bank, self.root, "M-001", "M-002", now=self.tick())
+        _ = run_git(self.root, "add", "memory/journal")
+        for lost in (False, True):
+            if lost:
+                (self.root / "work/case/receipt.txt").unlink()
+            staged = online.verify(self.root, (), staged=True)
+            self.assertEqual(0, staged.status, staged.lines)
+            self.assertFalse([line for line in staged.lines if line.startswith("M-001:")], staged.lines)
+            self.assertIn("M-002: verified", " ".join(staged.lines))
+
+    def test_staged_refuses_a_stray_file_in_the_journal(self) -> None:
+        stray = self.root / "memory/journal/2026/11/notes.txt"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        _ = stray.write_text("not a segment\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "memory/journal")
+        stray.unlink()  # only the index holds it: the working-tree replay never sees it
+        with self.assertRaisesRegex(JournalError, r"^memory/journal/2026/11/notes\.txt: not a segment path"):
+            _ = online.verify(self.root, (), staged=True)
+
+    def test_staged_removal_of_a_committed_stray_file_is_no_segment_change(self) -> None:
+        stray = self.root / "memory/journal/2026/11/notes.txt"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        _ = stray.write_text("not a segment\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "memory/journal")
+        _ = run_git(self.root, "commit", "-q", "-m", "a stray file slipped in")
+        _ = run_git(self.root, "rm", "-q", "memory/journal/2026/11/notes.txt")
+        staged = online.verify(self.root, (), staged=True)
+        self.assertEqual((0, ["verify: 0 verified, 0 unavailable, 0 mismatched, 0 legacy-unverifiable; 0 failing"]), (staged.status, staged.lines))
+
     def test_a_retired_record_whose_bytes_changed_is_reported_but_does_not_fail(self) -> None:
         self.put("work/case/receipt.txt", "invented receipt")
         _ = online.evidence_add(self.bank, self.root, "work/case/receipt.txt", "receipt", "Invented receipt", now=self.tick())
@@ -917,6 +1019,46 @@ class CompactReadTests(Online):
         history = online.get(self.bank, self.root, "U-101", history=True)
         self.assertEqual(2, sum(1 for line in history.lines if line.startswith("  ") and " in memory/journal/" in line))
         self.assertGreater(len("\n".join(online.get(self.bank, self.root, "U-101", history=True, full=True).lines)), len("\n".join(history.lines)))
+
+
+class OfflineTests(Online):
+    def test_status_degrades_to_a_journal_only_summary_when_the_service_is_unreachable(self) -> None:
+        self.accepted_chain()
+
+        def no_service() -> Bank:
+            raise ServiceError("/invented/connection-v2.env: cannot open (No such file or directory); run memory service install")
+
+        offline = online.status_anywhere(self.root, no_service)
+        self.assertEqual(0, offline.status)
+        self.assertTrue(offline.lines[0].startswith("memory status: the memory service is unavailable (/invented/connection-v2.env: cannot open"))
+        self.assertIn("OFFLINE summary of the journal alone", offline.lines[0])
+        text = "\n".join(offline.lines)
+        self.assertIn("pin: REL-9.0.2", text)
+        self.assertIn("forks: none", text)
+        self.assertNotIn("bank:", text)
+        self.assertNotIn("evidence not known good", text)
+        self.assertEqual((True, False), (offline.data["offline"], online.status(self.bank, self.root).data["offline"]))
+        self.assertEqual(offline.data["by_type"], online.status(self.bank, self.root).data["by_type"])
+
+        def down() -> Bank:
+            raise Unavailable("GET /v1/default/banks: service unavailable (Connection refused)")
+
+        self.assertIn("Connection refused", online.status_anywhere(self.root, down).lines[0])
+
+    def test_a_bare_check_skips_the_bank_comparison_but_an_explicit_one_fails(self) -> None:
+        self.accepted_chain()
+
+        def down() -> Bank:
+            raise Unavailable("GET /v1/default/banks: service unavailable (Connection refused)")
+
+        skipped = online.check_bank_or_skip(self.root, down, explicit=False)
+        self.assertEqual(0, skipped.status)
+        self.assertEqual(["memory check: bank comparison skipped: the memory service is unreachable "
+                          + "(GET /v1/default/banks: service unavailable (Connection refused)); memory check --bank compares it"], skipped.lines)
+        with self.assertRaises(Unavailable):
+            _ = online.check_bank_or_skip(self.root, down, explicit=True)
+        _ = online.status(self.bank, self.root)
+        self.assertEqual(0, online.check_bank_or_skip(self.root, lambda: self.bank, explicit=False).status, "a reachable bank is compared")
 
 
 class SyncAndRebuildTests(Online):

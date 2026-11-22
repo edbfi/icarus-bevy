@@ -160,7 +160,7 @@ Owned advance avoids restaging (M-1259). Each fixed step still captures the
 world and validates the staged generation once, even without armed timers
 (F-926/M-1556). Catch-up repeats that cost.
 Costs scale with world size; the 1,024-owner cap gives no 30 Hz guarantee.
-[Measured costs and limits](../research/foundation/foundation.md#current-answer).
+Measured costs and limits: REF-012, Current answer.
 
 ## Independent inventories
 
