@@ -225,10 +225,12 @@ def exported(record: Record) -> JSON:
 
 def owner_cause(pending: Pending) -> str | None:
     """Why a row citing ``pending`` is the owner's to decide rather than waiting for the document to be settled, from the
-    facts its block prints (the runbook's rules): main withdrew or replaced it (none in force, and a reference that named
-    it is retired or superseded), or this branch did not change it (listed only because held rows cite it, while main
-    has changed it). ``None``: settling the document, as the rules allow, can clear the row."""
-    if not pending.in_force and (pending.withdrawn or any(fate != "now in force" for _name, fate in pending.based_on or ())):
+    facts its block prints (the runbook's rules): main withdrew or replaced it, or this branch did not change it (listed
+    only because held rows cite it, while main has changed it). With no reference in force, the document is the
+    operator's to propose only when it is new on this branch (the base had no such document) and no reference ever
+    named it; every other history (the base had it, mapped or not to an accepted reference; a reference that named it
+    retired or superseded) is main's withdrawal. ``None``: settling the document, as the rules allow, can clear the row."""
+    if not pending.in_force and not (pending.based_on is None and not pending.withdrawn):
         return "main withdrew the document it cites"
     if not pending.branch_changed:
         return f"this branch did not change {pending.path}, and main has since changed it"

@@ -1412,6 +1412,42 @@ class SalvageTests(LegacyRepository):
         (document,) = result.documents
         self.assertEqual((("REF-900", "retired"),), document.withdrawn)
 
+    def test_with_nothing_in_force_only_a_document_new_on_the_branch_without_history_is_the_operator_s(self) -> None:
+        def pending(based_on: tuple[tuple[str, str], ...] | None, withdrawn: tuple[tuple[str, str], ...] = ()) -> salvage_command.Pending:
+            return salvage_command.Pending("docs/specs/x.md", "# X\n", (), (), (), True, (), True, based_on, True, withdrawn)
+
+        withdrew = "main withdrew the document it cites"
+        table: list[tuple[salvage_command.Pending, str | None]] = [
+            (pending(None), None),                                              # new on this branch, no history: propose it
+            (pending(None, (("REF-900", "retired"),)), withdrew),               # new here, but main accepted and retired one
+            (pending(()), withdrew),                                            # the base had it; no accepted reference holds it
+            (pending((("REF-010", "retired"),)), withdrew),                     # the base's reference retired
+            (pending((("REF-010", "superseded by REF-900"),)), withdrew),       # the base's reference superseded elsewhere
+        ]
+        for case, expected in table:
+            self.assertEqual(expected, salvage_command.owner_cause(case), case)
+
+    def test_a_row_citing_a_document_main_deleted_before_the_cut_over_is_the_owner_s(self) -> None:
+        # The branch edits another.md and adds M-105 citing it; main deletes the file, then cuts over: no accepted REF ever
+        # named it, yet the base had it, so main withdrew it.
+        _ = run_git(self.root, "checkout", "-q", "-b", "deleted")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: the branch's line.\n", encoding="utf-8")
+        shard = self.root / "evidence/widgets/001.jsonl"
+        _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/another.md", "sha256": "d" * 64, "class": "tracked",
+                                                             "kind": "report", "date": "2026-01-07", "label": "The spec", "status": "active"},
+                                                            separators=(",", ":")) + "\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit and cite the spec")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = run_git(self.root, "rm", "-q", "docs/specs/net/another.md")
+        _ = run_git(self.root, "commit", "-q", "-m", "main deletes the spec")
+        _ = self.journal_on_main(remove_legacy=True)
+        result = salvage(self.root, "deleted")
+        self.assertRegex(result.undecided["M-105"], r"^it cites the document docs/specs/net/another\.md, which no accepted REF names \(by legacy path or a"
+                         + r" note 'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\); main withdrew the document it cites: decide by hand$")
+        (document,) = result.documents
+        self.assertEqual(((), (), ()), (document.in_force, document.based_on, document.withdrawn))
+
     def test_a_digest_s_scope_is_read_from_its_whole_text(self) -> None:
         # A digest has no Status or Scope sections the exporter reads: its scope comes from its whole text, and nothing lies beyond it.
         self.edited("digest", ("docs/research/net/widgets.md", "Frames take 42.5 ms", "Frames take 42.5 ms on server build 29990004"))
