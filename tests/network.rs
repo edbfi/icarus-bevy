@@ -718,11 +718,20 @@ fn pause_when_empty_ticks_only_while_a_loopback_peer_is_joined() {
         }
         assert!(!app.world().resource::<WorldOccupancy>().paused());
         client.close().unwrap();
-        thread::sleep(Duration::from_millis(20));
-        let before_close = tick(&app);
-        app.update();
-        assert_eq!(counts(&app).joined, 0);
-        assert_eq!(tick(&app), before_close, "the close's update ticks none");
+        // The close may reach the socket any number of updates later: each
+        // update before it still ticks once, the one that polls it ticks none.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let before_close = loop {
+            let before = tick(&app);
+            app.update();
+            if counts(&app).joined == 0 {
+                assert_eq!(tick(&app), before, "the close's update ticks none");
+                break before;
+            }
+            assert_eq!(tick(&app), before + 1, "one tick per update");
+            assert!(Instant::now() < deadline, "close was not polled");
+            thread::sleep(Duration::from_micros(200));
+        };
         for _ in 0..5 {
             app.update();
         }
