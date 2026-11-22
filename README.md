@@ -63,9 +63,9 @@ prek run --all-files --hook-stage manual
 ```
 
 Rules for agents and people are in [`.agents/rules/`](.agents/rules/): project
-workflow in `project.md`, documentation in `docs.md`. Rust checks use `--locked`;
-Python helpers pass basedpyright in recommended mode; commits are signed-off
-Conventional Commits on feature branches. CI runs the same hooks plus a release
+workflow in `project.md`, knowledge and documentation in `memory.md`. Rust checks
+use `--locked`; Python helpers pass basedpyright in recommended mode; commits are
+signed-off Conventional Commits on feature branches. CI runs the same hooks plus a release
 build and headless smoke test with authored fixtures only.
 
 Original files stay under ignored `icarus-orig/`, supplied saves under ignored

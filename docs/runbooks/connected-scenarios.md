@@ -36,7 +36,8 @@ join as above; `-Action Collect`, `-Action Restore`; send zip/hash.
 
 Private: logs/zips/account IDs. Preserve/inventory zips; copy unchanged to
 `reference-data/<date>-scenario-<id>/` (B: case-local). Compare input/saved
-prospect (M-692); inspect recorder/connection/version logs; index (`docs.md` rule 2).
+prospect (M-692); inspect recorder/connection/version logs; record each as evidence
+(`memory evidence add`, `.agents/rules/memory.md` "Procedures", Session close step 1).
 
 `python3 tools/capture_rows_to_jsonl.py INPUT OUTPUT --client IPv4:port --server IPv4:port --work-root work`
 Caller-exported JSONL fields map to string arrays, one value per field (`--help`: required list). Select connection by endpoints;
