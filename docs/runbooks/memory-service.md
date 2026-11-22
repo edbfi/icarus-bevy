@@ -115,13 +115,13 @@ in its conflicts loses the rows and unprotects the branch's evidence.
      branch's record under a new ID and rewrite its citations; when `main`
      took an earlier draft, reconcile with `memory revise` or a superseding
      record;
-   - `needs a decision by hand: …`: the last words of the reason name the
-     action. `that record must be accepted first`, `those records must be
-     accepted first` and `propose it alone first`: wait until that record is
-     accepted, then run salvage again. `: settle the document first`: settle
-     it by the rules below, then run again. `decide by hand`: decide with the
-     record's owner. A reason that joins clauses ends with the strongest
-     (wait, settle, decide).
+   - `needs a decision by hand: <ID>: <reason>; not proposed`: the end of
+     the reason, just before `; not proposed`, names the action, by its
+     words. `must be accepted first` or `propose it alone first`: wait until
+     that record is accepted, then run salvage again. `settle the document
+     first`: settle it by the document rules below, then run again. `decide
+     by hand`: decide with the record's owner (a rename, records that cannot
+     be told apart, a replay failure, a citation a revision cannot change).
 
    Documents: salvage prints facts, never a command. Apply the first rule
    whose facts fit; `<file>` is the `body written to` path:
