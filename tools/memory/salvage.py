@@ -1062,8 +1062,9 @@ def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
     """Write ``planned`` (paths relative to ``out``) into ``out``, a directory that must not exist: one ``os.mkdir`` creates
     it (its parent must exist; anything at the path, a dangling symlink included, refuses), and every subdirectory and
     file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure or interrupt after the mkdir
-    the whole tree is removed (and the message says whether that worked; an interrupt is re-raised). A concurrent process of the same user changing that directory during the run, and symlinks in the
-    path leading to its parent, are outside what this guards against. Raises ``PublishError``."""
+    the whole tree is removed (and the message says whether that worked; an interrupt is re-raised).
+    A concurrent process of the same user changing that directory during the run, and symlinks in the path leading
+    to its parent, are outside what this guards against. Raises ``PublishError``."""
     try:
         os.mkdir(out, 0o700)
     except FileExistsError as error:
