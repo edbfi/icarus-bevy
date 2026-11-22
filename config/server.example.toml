@@ -24,6 +24,11 @@ status_interval_seconds = 10
 # List a pak's row names: cargo run --example data_pak_rows -- --data-pak PATH --table NAME
 # player_inventory_projection = "config/player-inventory-projection.example.json"
 enabled = false
+# OPTIONAL native policy, default false; requires enabled. While no session is
+# joined no simulation tick completes (authored clock, consumption and durable
+# tick hold); a join resumes in the same update. run refuses --max-ticks with
+# it. Modelled on other builds' empty clocks (F-1271, F-895), not on 3.0.37.
+# pause_when_empty = false
 bind = "127.0.0.1"
 port = 17777
 max_players = 8

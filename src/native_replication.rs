@@ -1009,7 +1009,10 @@ pub fn install(app: &mut App, mut plan: PreparedReplication) -> Result<()> {
         NativeReplicationSet
             .after(SimulationSet::Gameplay)
             .after(crate::session_replication::SessionReplicationSet::Viewers)
-            .before(ReplicationSet),
+            .before(ReplicationSet)
+            // Per-tick binding checks resume with the first tick after a join,
+            // before that tick sends anything.
+            .run_if(crate::simulation::world_running),
     )
     .add_systems(FixedUpdate, extract.in_set(NativeReplicationSet));
     Ok(())

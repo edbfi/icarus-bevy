@@ -4799,6 +4799,15 @@ impl PeerLab {
         }
     }
 
+    /// Peers currently joined: `session_counts().joined`, without the rest.
+    #[must_use]
+    pub fn joined_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|entry| entry.admission.state == ClientLoginState::Joined)
+            .count()
+    }
+
     /// Joined peers with their lab connection IDs, in ID order: the
     /// replication viewers a session bridge maintains.
     pub fn joined_connections(&self) -> Vec<u32> {
@@ -13128,7 +13137,8 @@ impl Plugin for PeerLabPlugin {
     }
 }
 
-fn poll_peer_lab(world: &mut bevy::prelude::World) {
+/// Ordering target for systems that read this update's polled sessions.
+pub(crate) fn poll_peer_lab(world: &mut bevy::prelude::World) {
     if crate::network::reconcile_authored_clock(world).is_err()
         || crate::native_player_runtime::consumption_runtime_health(world).is_err()
     {
