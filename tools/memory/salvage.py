@@ -527,9 +527,9 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
     ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
     revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
     then the replay check (``honoured``) holds what fails. An accepted record whose document citation is stale
-    (``stale``, as ``stale_citation``) is never revised to carry a link: the old row is held instead. The held set only grows, so it ends; nothing is patched in
-    place, so no order of discovery leaves a stale link. Returns the proposals and the accepted records that could
-    not carry links, with why."""
+    (``stale``, as ``stale_citation``) is never revised to carry a link: the old row is held instead.
+    The held set only grows, so it ends; nothing is patched in place, so no order of discovery leaves a stale
+    link. Returns the proposals and the accepted records that could not carry links, with why."""
     accepted = on_accepted.records
     unlinkable: dict[str, str] = {}
     playing = ("revision", "superseded")
