@@ -120,24 +120,28 @@ in its conflicts loses the rows and unprotects the branch's evidence.
      `must be accepted first` (`that record`, `those records` or a named
      record): wait until that record is accepted. `propose it alone first`:
      the row is itself a new record that other rows cite by its provisional
-     number; propose it by itself, and once it is accepted the next run
-     proposes the rows citing it. `settle the document first`: settle the
-     document by the rules below (one that no reference names is settled by
-     rule 2). `decide by hand`: decide with the record's owner (a rename,
-     records that cannot be told apart, a replay failure, a citation a
-     revision cannot change, a document main withdrew or only main changed,
-     a record held as a superseding record or a conflict: `its content will be
-     recorded under a new ID, and this row's link must name that ID`). Clauses
-     come in the order wait, settle, decide, so the reason ends with the
-     strongest; do every one, then run salvage again, which reports what is
-     left.
+     number; propose it by itself. Either acceptance clears that dependency
+     only: the next run proposes a citing row once its other causes are
+     resolved too. `settle the document first`: settle the document by the
+     rules below (one that no reference names is settled by rule 2). `decide
+     by hand`: decide with the record's owner, for example a rename, records
+     that cannot be told apart, a replay failure, a citation a revision cannot
+     change, a document main withdrew or only main changed, a successor that
+     `needs a superseding record: its content will be recorded under a new
+     ID, and this row's link must name that ID`, a record that `is in
+     conflict: it is reconciled by hand, under its ID or as a new record`, or
+     rows that `refer to each other and none can be accepted alone` (resolve
+     their other causes and submit them together). Clauses come in the order
+     wait, settle, decide, so the reason ends with the strongest; do every
+     one, then run salvage again, which reports what is left.
 
    Documents: salvage prints facts, never a command. Apply the first rule
    whose facts fit; `<file>` is the `body written to` path:
 
    1. `this branch changed it since its base: no` (listed only for `rows held
       because they cite it`, which end `this branch did not change <path>, and
-      main has since changed it: decide by hand`): never propose a reference.
+      main has since changed it: decide by hand` or `…, and main has since
+      withdrawn it: decide by hand`): never propose a reference.
       With exactly one reference in force, decide with each row's owner whether
       its claim holds for that reference's current text; with none or several
       there is no single text to judge, so the row stays held, the end state
@@ -146,12 +150,13 @@ in its conflicts loses the rows and unprotects the branch's evidence.
       path and are no longer in force` lists any, or `at this branch's base its
       reference was REF-N: retired` (or `superseded by …`, or `none the
       accepted journal holds`), main withdrew or replaced it: propose nothing;
-      rows citing it end `main withdrew the document it cites: decide by hand`
-      and stay held unless their owners decide otherwise; bringing the document
-      back is the owner's decision, stated in the pull request. Only with that
-      history `none` and `none (the document is new on this branch)` is it
-      new: propose it as in rule 5, without a supersession; rows citing it are
-      proposed once it is accepted.
+      rows citing it (this branch changed it) end `main withdrew the document
+      it cites: decide by hand` and stay held unless their owners decide
+      otherwise; bringing the document back is the owner's decision, stated in
+      the pull request. Only with that history `none` and `none (the document
+      is new on this branch)` is it new: propose it as in rule 5, without a
+      supersession; rows citing it are proposed once it is accepted and their
+      other causes are resolved.
    3. Several in `in force:`: decide by hand which stands, supersede the
       others if so decided, run salvage again and apply these rules to the new
       facts. Nothing else.
@@ -172,9 +177,10 @@ in its conflicts loses the rows and unprotects the branch's evidence.
       the old scope still covers the newly named tokens, say so in the pull
       request and revise instead: a person records that, never the tool.
 
-   Rows held because they cite a document are proposed on the next run once
-   it is done. Example: REF-016, REF-010: 5, revise; REF-008: 5, superseding
-   reference; REF-036, REF-001, REF-013: 4, superseding reference.
+   Rows held because they cite a document are proposed on a later run once it
+   is done and their other causes are resolved. Example: REF-016, REF-010: 5,
+   revise; REF-008: 5, superseding reference; REF-036, REF-001, REF-013: 4,
+   superseding reference.
 4. On a new branch from `main`, copy every segment of `<out>/memory/journal/`
    into `memory/journal/`, add the records from step 3, run `memory check
    --ci`, commit and open the pull request. After it merges and the lead runs

@@ -799,10 +799,10 @@ class SalvageTests(LegacyRepository):
         calls: list[int] = []
 
         def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit],
-                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[salvage_command.Clause]]:
             found = real(on_accepted, proposals, edits, branch, minted)
             calls.append(len(calls))
-            return {**found, identifier: [(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
+            return {**found, identifier: [salvage_command.Clause(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
 
         with mock.patch.object(salvage_command, "replay_failures", failing):
             result = salvage(self.root, branch)
@@ -1293,6 +1293,48 @@ class SalvageTests(LegacyRepository):
         (document,) = result.documents
         self.assertEqual((("REF-900", "retired"),), document.withdrawn)
 
+    def test_with_nothing_in_force_only_a_document_new_on_the_branch_without_history_is_the_operator_s(self) -> None:
+        def pending(based_on: tuple[tuple[str, str], ...] | None, withdrawn: tuple[tuple[str, str], ...] = (), changed: bool = True,
+                    in_force: tuple[salvage_command.InForce, ...] = ()) -> salvage_command.Pending:
+            return salvage_command.Pending("docs/specs/x.md", "# X\n", (), (), in_force, True, (), changed, based_on, True, withdrawn)
+
+        withdrew = "main withdrew the document it cites"
+        table: list[tuple[salvage_command.Pending, str | None]] = [
+            (pending(None), None),                                              # new on this branch, no history: propose it
+            (pending(None, (("REF-900", "retired"),)), withdrew),               # new here, but main accepted and retired one
+            (pending(()), withdrew),                                            # the base had it; no accepted reference holds it
+            (pending((("REF-010", "retired"),)), withdrew),                     # the base's reference retired
+            (pending((("REF-010", "superseded by REF-900"),)), withdrew),       # the base's reference superseded elsewhere
+            # Rule 1 first: this branch did not change it; main changed it, or withdrew it too.
+            (pending((("REF-010", "now in force"),), changed=False, in_force=(salvage_command.InForce("REF-010", (), False),)),
+             "this branch did not change docs/specs/x.md, and main has since changed it"),
+            (pending((("REF-010", "retired"),), changed=False), "this branch did not change docs/specs/x.md, and main has since withdrawn it"),
+            (pending((), changed=False), "this branch did not change docs/specs/x.md, and main has since withdrawn it"),
+        ]
+        for case, expected in table:
+            self.assertEqual(expected, salvage_command.owner_cause(case), case)
+
+    def test_a_row_citing_a_document_main_deleted_before_the_cut_over_is_the_owner_s(self) -> None:
+        # The branch edits another.md and adds M-105 citing it; main deletes the file, then cuts over: no accepted REF ever
+        # named it, yet the base had it, so main withdrew it.
+        _ = run_git(self.root, "checkout", "-q", "-b", "deleted")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: the branch's line.\n", encoding="utf-8")
+        shard = self.root / "evidence/widgets/001.jsonl"
+        _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/another.md", "sha256": "d" * 64, "class": "tracked",
+                                                             "kind": "report", "date": "2026-01-07", "label": "The spec", "status": "active"},
+                                                            separators=(",", ":")) + "\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "edit and cite the spec")
+        _ = run_git(self.root, "checkout", "-q", "main")
+        _ = run_git(self.root, "rm", "-q", "docs/specs/net/another.md")
+        _ = run_git(self.root, "commit", "-q", "-m", "main deletes the spec")
+        _ = self.journal_on_main(remove_legacy=True)
+        result = salvage(self.root, "deleted")
+        self.assertRegex(result.undecided["M-105"], r"^it cites the document docs/specs/net/another\.md, which no accepted REF names \(by legacy path or a"
+                         + r" note 'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\); main withdrew the document it cites: decide by hand$")
+        (document,) = result.documents
+        self.assertEqual(((), (), ()), (document.in_force, document.based_on, document.withdrawn))
+
     def test_a_digest_s_scope_is_read_from_its_whole_text(self) -> None:
         # A digest has no Status or Scope sections the exporter reads: its scope comes from its whole text, and nothing lies beyond it.
         self.edited("digest", ("docs/research/net/widgets.md", "Frames take 42.5 ms", "Frames take 42.5 ms on server build 29990004"))
@@ -1605,6 +1647,41 @@ class SalvageTests(LegacyRepository):
         self.assertEqual("supersede", result.kinds["F-107"])
         self.assertEqual("its row on minted names successor F-107, which cannot carry the link (supersede); F-107 needs a superseding record: its content"
                          + " will be recorded under a new ID, and this row's link must name that ID: decide by hand", result.undecided["F-108"])
+
+    def test_a_row_superseded_by_a_row_in_conflict_is_decided_by_hand(self) -> None:
+        # As branch_and_main, and the branch also marks F-108 superseded by F-112, which main took for its own row.
+        root = self.root
+        _ = run_git(root, "checkout", "-q", "-b", "feature")
+        ledger = root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("medium; loopback |  | active |", "medium; loopback |  | superseded-by F-112 |")
+                              + "| F-112 | Branch takes a number main also takes | observed | review | high; x | | active |\n")
+        _ = run_git(root, "commit", "-q", "-am", "branch rows")
+        _ = run_git(root, "checkout", "-q", "main")
+        _ = ledger.write_text(ledger.read_text() + "| F-112 | Main's own F-112 | observed | review | high; y | | active |\n")
+        _ = run_git(root, "commit", "-q", "-am", "main row")
+        self.publish()
+        result = salvage(self.root, "feature")
+        self.assertEqual("conflict", result.kinds["F-112"])
+        self.assertEqual("its row on feature names successor F-112, which cannot carry the link (conflict); F-112 is in conflict: it is reconciled by hand,"
+                         + " under its ID or as a new record; if under a new ID, this row's link must name that ID: decide by hand", result.undecided["F-108"])
+
+    def test_rows_that_refer_to_each_other_are_proposed_together_or_decided_together(self) -> None:
+        ledger = "docs/ledgers/findings/widgets.md"
+        # A clean pair: each refers to the other and nothing else is wrong, so both are proposed together.
+        self.edited("pair", (ledger, "| F-107 |", "| F-111 | Invented: one | observed | review; F-112 | high; server 29990001 | | active |\n"
+                                                  + "| F-112 | Invented: two | observed | review; F-111 | high; server 29990001 | | active |\n| F-107 |"))
+        pair = salvage(self.root, "pair")
+        self.assertEqual(({}, ["F-111", "F-112"]), (pair.undecided, sorted(item.record.id for item in pair.proposals)))
+        _ = self.legal(pair)
+        # F-111 also refers to F-999, absent everywhere: both are held, and neither waits on the other forever.
+        self.setUp()
+        self.edited("cycle", (ledger, "| F-107 |", "| F-111 | Invented: one | observed | review; F-112, F-999 | high; server 29990001 | | active |\n"
+                                                   + "| F-112 | Invented: two | observed | review; F-111 | high; server 29990001 | | active |\n| F-107 |"))
+        cycle = salvage(self.root, "cycle")
+        together = "F-111, F-112 refer to each other and none can be accepted alone: decide by hand"
+        self.assertEqual({"F-111": "it would not replay cleanly: F-111: refs: no record F-999: decide by hand; it would not replay cleanly: F-111: refs: no"
+                                   + f" record F-112; {together}",
+                          "F-112": f"it would not replay cleanly: F-112: refs: no record F-111; {together}"}, cycle.undecided)
 
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))

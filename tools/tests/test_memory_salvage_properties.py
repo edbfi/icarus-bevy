@@ -161,7 +161,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     # renumbering the rest in its export; an unchanged tracked row and a finding cite later ones by those numbers.
     # Main may itself hold one name twice (two accepted rows of one identity).
     twins = rng.random() < 0.2
-    main_paths, main_names = ["docs/research/net/d.md", "docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
+    deleted_g = rng.random() < 0.2  # main deleted g.md before the cut-over; the branch edits it and a new row cites it
+    main_paths, main_names = ["docs/research/net/d.md", "docs/specs/c.md", "docs/specs/e.md", *(["docs/specs/g.md"] if deleted_g else [])], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
     renewed = not retoken and rng.random() < 0.3  # e.md's body newly names a build outside its (unchanged) scope sections
@@ -198,6 +199,9 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         if export is after and digest:
             # A digest: its scope is read from its whole text.
             export[refs["docs/research/net/d.md"]] = document(refs["docs/research/net/d.md"], "docs/research/net/d.md", "# d.md\nSeen on build 29990007.\n")
+        if export is after and deleted_g:
+            export[refs["docs/specs/g.md"]] = document(refs["docs/specs/g.md"], "docs/specs/g.md", "# g.md, edited on the branch\n")
+            export["M-504"] = tracked("M-504", "docs/specs/g.md", refs["docs/specs/g.md"])
         if export is after and rewrite_c:
             export[refs["docs/specs/c.md"]] = document(refs["docs/specs/c.md"], "docs/specs/c.md", "# c.md, rewritten\n")
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
@@ -222,9 +226,15 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if rng.random() < 0.5:
         # A new tracked row citing e.md as the branch has it (main's text may differ).
         after["M-502"] = tracked("M-502", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"])
+    if rng.random() < 0.15:
+        # Two new rows referring to each other; one maybe also to a record absent everywhere (then neither can be accepted alone).
+        after["F-250"] = Record.from_json(row("F-250", "active").to_json() | {"refs": ["F-251", *(["F-998"] if rng.random() < 0.6 else [])]})
+        after["F-251"] = Record.from_json(row("F-251", "active").to_json() | {"refs": ["F-250"]})
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    if deleted_g:
+        _ = revisions.pop(numbered(main_paths, main_names)[0]["docs/specs/g.md"])  # gone before the cut-over: no accepted REF
     main_edits: list[Revision] = []
     if rewrite_c and not two_holders and rng.random() < 0.4:
         # Main changed c.md too since the merge base: a body revision would drop its edit.
@@ -364,6 +374,17 @@ class GeneratedSalvageTests(unittest.TestCase):
         listed = {pending.path: pending for pending in pending_documents(after, before, on_accepted, result.cited)}
         proposed = {revision.record.id for revision in result.proposals}
         held = {name for name, kind in result.kinds.items() if kind == "undecided"}
+        # The waits among held rows form no cycle: rows that wait on one another never clear by waiting.
+        waits = {name: {target for clause in self.clauses_of(reason) if clause.endswith("must be accepted first")
+                        for target in self.waits_for(clause) if target in held} for name, reason in result.undecided.items()}
+        for name in waits:
+            seen: set[str] = set()
+            todo = list(waits[name])
+            while todo:
+                if (current := todo.pop()) not in seen:
+                    seen.add(current)
+                    todo.extend(waits.get(current, set()))
+            self.assertNotIn(name, seen, f"{where}: {name} waits on itself through {sorted(seen)}")
         for name, reason in result.undecided.items():
             self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
             for clause in self.clauses_of(reason):
@@ -372,8 +393,17 @@ class GeneratedSalvageTests(unittest.TestCase):
                     named = [pending for path, pending in listed.items() if path in clause and name in pending.citing]
                     self.assertTrue(named, f"{where}: {name}: {clause}")
                     for pending in named:
-                        withdrawn = not pending.in_force and (bool(pending.withdrawn) or any(fate != "now in force" for _id, fate in pending.based_on or ()))
-                        self.assertTrue(pending.branch_changed and not withdrawn, f"{where}: {name}: {pending.path} is not the operator's to settle: {clause}")
+                        # Stated from the case itself, not from the document's printed facts: the branch changed it, and some
+                        # reference stands for it, or it is new on the branch (absent from the base export) and no accepted
+                        # reference, in force or not, ever named it.
+                        path = pending.path
+                        in_base = any(document_path(record) == path for record in before.values())
+                        on_main = [other for other in on_accepted.records.values() if document_path(other) == path]
+                        branch_body = next(record.body for record in after.values() if document_path(record) == path)
+                        changed = not in_base or branch_body != next(record.body for record in before.values() if document_path(record) == path)
+                        standing = [other for other in on_main if other.id not in on_accepted.retired]
+                        self.assertTrue(changed and (bool(standing) or (not in_base and not on_main)),
+                                        f"{where}: {name}: {path} is not the operator's to settle: {clause}")
                 elif clause.endswith("must be accepted first"):
                     waited = self.waits_for(clause)
                     self.assertTrue(waited, f"{where}: {name}: {clause}")
@@ -500,6 +530,18 @@ class GeneratedSalvageTests(unittest.TestCase):
         result = Salvage("fixture", "a" * 40, "b" * 40, "c" * 40)
         _ = classify(result, after, before, accepted)
         self.assertEqual("it would not replay cleanly: F-200: legacy.superseded_by: no record F-100: decide by hand", result.undecided["F-200"])
+
+    def test_a_row_held_waiting_is_not_also_blamed_for_the_successor_link_its_hold_dropped(self) -> None:
+        # F-100 newly supersedes F-300 (a new row held for a decision) and is newly superseded by F-101. Held waiting for
+        # F-300, its link to F-101 is dropped with it; that is no failure of its own.
+        before = {"F-100": row("F-100", "active"), "F-101": row("F-101", "active")}
+        edited = Record.from_json(row("F-100", "superseded-by F-101", successors=("F-101",)).to_json() | {"supersedes": ["F-300"]})
+        after = {**before, "F-100": edited, "F-300": row("F-300", "superseded-by F-999", successors=("F-999",))}
+        accepted = accepted_of((Segment("memory/journal/generated.jsonl", "", tuple(Revision.of(record) for record in before.values())),))
+        result = Salvage("fixture", "a" * 40, "b" * 40, "c" * 40)
+        _ = classify(result, after, before, accepted)
+        self.assertEqual("it would not replay cleanly: F-100: supersedes: no record F-300; it refers to F-300, which this run does not propose: that record"
+                         + " must be accepted first", result.undecided["F-100"])
 
     def test_every_generated_case_keeps_the_invariants_and_replays_cleanly(self) -> None:
         for seed in SEEDS:

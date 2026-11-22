@@ -30,8 +30,10 @@ FACTS = ("body written to", "in force:", "no accepted reference names this path"
 ENDINGS = ("must be accepted first", "propose it alone first", "settle the document first", "decide by hand")
 SOURCE = ("--out must name a new directory", "could not remove", "remove it by hand", "internal error, nothing written",
           "needs a superseding record", "needs a decision by hand", "holds other content under this ID", *ENDINGS,
-          "main withdrew the document it cites", "and main has since changed it", "its content will be recorded under a new ID",
-          "this row's link must name that ID")
+          "its content will be recorded under a new ID", "this row's link must name that ID",
+          "it is reconciled by hand, under its ID or as a new record", "refer to each other and none can be accepted alone")
+# The owner causes ``owner_cause`` gives a row citing a document (rules 1 and 2).
+CAUSES = ("main withdrew the document it cites", "and main has since changed it", "and main has since withdrawn it")
 
 
 def flat(text: str) -> str:
@@ -48,7 +50,9 @@ def printed() -> str:
         Pending("<path>", "", (), (), (), False, (), True, ()),
         Pending("<path>", "", (), (), (), False, (), True, None),
     ]
-    return flat("\n".join(line for shape in shapes for line in shape.facts("<file>")))
+    unchanged_withdrawn = Pending("<path>", "", (), (), (), False, branch_changed=False, based_on=(("REF-N", "retired"),))
+    causes = [salvage.owner_cause(shape) or "" for shape in (*shapes, unchanged_withdrawn)]
+    return flat("\n".join([*(line for shape in shapes for line in shape.facts("<file>")), *causes]))
 
 
 def held_lines(stderr: str, ref: str) -> dict[tuple[str, str], str]:
@@ -60,13 +64,14 @@ class RunbookQuotes(unittest.TestCase):
         runbook = flat((ROOT / "docs/runbooks/memory-service.md").read_text(encoding="utf-8"))
         source = flat(Path(salvage.__file__).read_text(encoding="utf-8"))
         facts = printed()
-        for fragment in FACTS:
-            with self.subTest(fact=fragment):
+        for fragment in (*FACTS, *CAUSES, *SOURCE):
+            with self.subTest(runbook=fragment):
                 self.assertTrue(fragment in runbook, f"the runbook no longer quotes {fragment!r}")
+        for fragment in (*FACTS, *CAUSES):
+            with self.subTest(printed=fragment):
                 self.assertTrue(fragment in facts, f"salvage no longer prints {fragment!r}")
         for fragment in SOURCE:
             with self.subTest(source=fragment):
-                self.assertTrue(fragment in runbook, f"the runbook no longer quotes {fragment!r}")
                 self.assertTrue(fragment in source, f"salvage's source no longer says {fragment!r}")
 
     def test_a_held_row_ends_with_its_action_before_not_proposed(self) -> None:
