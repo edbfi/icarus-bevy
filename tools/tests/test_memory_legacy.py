@@ -663,7 +663,7 @@ class SalvageTests(LegacyRepository):
         self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
         self.assertEqual("supersede", result.kinds["F-107"])
         self.assertIn("docs/ledgers/findings/widgets.md: pending document; in force: REF-007 (scope: none; other text; this text newly names: nothing); this branch changed it since its base: yes; its Status and Scope sections"
-                      + " name: nothing; its body also names: nothing; main changed or replaced its reference since this branch's base: no;"
+                      + " name: nothing; its body also names: nothing; at this branch's base its reference was REF-007: now in force; main changed or replaced its reference since this branch's base: no;"
                       + " a new reference for it carries --note 'salvaged document: docs/ledgers/findings/widgets.md'", result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
@@ -1268,7 +1268,7 @@ class SalvageTests(LegacyRepository):
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual(1, status)
         self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: pending document; in force: REF-[0-9]+ \(scope: none; other text; this text newly names: nothing\); this branch changed it since its base: yes; its Status "
-                         + r"and Scope sections name: nothing; its body also names: nothing; main changed or replaced its reference since this "
+                         + r"and Scope sections name: nothing; its body also names: nothing; at this branch's base its reference was REF-[0-9]+: now in force; main changed or replaced its reference since this "
                          + r"branch's base: no; a new reference for it carries --note 'salvaged document: docs/specs/net/another.md'\n")
         self.assertNotIn("--body", stdout, "no path that does not exist")
         self.assertIn("0 unsalvaged row(s), 1 pending document(s) on spec-only", stdout)
@@ -1332,7 +1332,7 @@ class SalvageTests(LegacyRepository):
         status, stdout, _stderr = self.run_salvage("specs", check=True)
         self.assertEqual(1, status)
         self.assertIn("specs: docs/specs/net/third.md: pending document; no accepted reference names this path; this branch changed it since its base: yes; its Status and Scope sections name:"
-                      + " nothing; its body also names: nothing; main changed or replaced its reference since this branch's base: no;"
+                      + " nothing; its body also names: nothing; at this branch's base its reference was none (the document is new on this branch); main changed or replaced its reference since this branch's base: no;"
                       + " rows held because they cite it: M-105; a new reference for it carries --note 'salvaged document: docs/specs/net/third.md'\n",
                       stdout)
         self.assertIn("specs: M-105: undecided legacy row not yet salvaged", stdout)
@@ -1363,7 +1363,7 @@ class SalvageTests(LegacyRepository):
         # REF-008's shape: the sections equal, the body adds one build among tokens the accepted text already names.
         self.assertEqual(("any:29990009",), document.in_force[0].newly)
         self.assertIn("; other text; this text newly names: any:29990009);", document.line())
-        self.assertIn("; its body also names: any:29990009, c0ffee3; main changed or replaced its reference since this branch's base: no;", document.line())
+        self.assertIn("; its body also names: any:29990009, c0ffee3; at this branch's base its reference was REF-002: now in force; main changed or replaced its reference since this branch's base: no;", document.line())
 
     def test_a_row_citing_a_document_main_has_since_changed_waits_for_it(self) -> None:
         # An older branch adds tracked evidence for the spec as it then read; main later holds other text for that path.
@@ -1398,7 +1398,8 @@ class SalvageTests(LegacyRepository):
         (document,) = salvage(self.root, "both-edit").documents
         (held,) = document.in_force
         self.assertEqual(["in force: " + held.id + " (scope: none; other text; this text newly names: nothing)", "this branch changed it since its base: yes", "its Status and Scope sections name: nothing",
-                          "its body also names: nothing", "main changed or replaced its reference since this branch's base: yes",
+                          "its body also names: nothing", "at this branch's base its reference was " + held.id + ": now in force",
+                          "main changed or replaced its reference since this branch's base: yes",
                           "a new reference for it carries --note 'salvaged document: docs/specs/net/another.md'"], document.facts())
 
     def test_a_document_main_replaced_with_the_same_text_says_main_changed_it(self) -> None:
@@ -1417,6 +1418,23 @@ class SalvageTests(LegacyRepository):
         self.assertEqual((("REF-900",), True), (tuple(item.id for item in document.in_force), document.main_changed))
         self.assertIn("in force: REF-900 (scope: none; other text; this text newly names: nothing);", document.line())
         self.assertIn("main changed or replaced its reference since this branch's base: yes", document.line())
+        self.assertIn(f"; at this branch's base its reference was {old.id}: superseded by REF-900;", document.line())
+
+    def test_a_document_main_superseded_by_a_reference_of_another_path_says_by_which(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "moved")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: the branch's line.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "branch edits the spec")
+        records = self.journal_on_main(remove_legacy=True)
+        old = next(record for record in records.values() if record.type == "reference" and record.legacy is not None
+                   and record.legacy.path == "docs/specs/net/another.md")
+        self.accept_reference(online.Changes({"title": "Elsewhere", "scope": {"basis": "explicit"}, "supersedes": [old.id]},
+                                             salvage_command.DOCUMENT_NOTE.format("docs/specs/net/elsewhere.md"), "# Elsewhere\n"), "REF-900")
+        (document,) = salvage(self.root, "moved").documents
+        self.assertEqual(((), ((old.id, "superseded by REF-900"),)), (document.in_force, document.based_on))
+        self.assertIn(f"pending document; no accepted reference names this path; this branch changed it since its base: yes;", document.line())
+        self.assertIn(f"; at this branch's base its reference was {old.id}: superseded by REF-900; main changed or replaced its reference"
+                      + " since this branch's base: yes;", document.line())
 
     def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
@@ -1458,7 +1476,8 @@ class SalvageTests(LegacyRepository):
         _ = spec.write_text(spec.read_text() + "\nInvented: more.\n", encoding="utf-8")
         _ = run_git(self.root, "commit", "-q", "-am", "edit the spec")
         (document,) = salvage(self.root, "after-retire").documents
-        self.assertEqual(((), True), (document.in_force, document.main_changed))
+        self.assertEqual(((), True, ((ref.id, "retired"),)), (document.in_force, document.main_changed, document.based_on))
+        self.assertIn(f"; at this branch's base its reference was {ref.id}: retired;", document.line())
         self.assertIn("pending document; no accepted reference names this path;", document.line())
 
     def test_a_document_main_added_by_hand_says_main_changed_it(self) -> None:
@@ -1603,7 +1622,7 @@ class SalvageTests(LegacyRepository):
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
         facts = ["no accepted reference names this path", "this branch changed it since its base: yes", "its Status and Scope sections name: server:29990001", "its body also names: any:29990009",
-                 "main changed or replaced its reference since this branch's base: no", "rows held because they cite it: M-105",
+                 "at this branch's base its reference was none (the document is new on this branch)", "main changed or replaced its reference since this branch's base: no", "rows held because they cite it: M-105",
                  "a new reference for it carries --note 'salvaged document: docs/specs/net/third.md'"]
         self.assertIn("new-doc: docs/specs/net/third.md: pending document; " + "; ".join(facts) + "\n", stdout)
         out = self.top / "out"

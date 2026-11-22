@@ -225,6 +225,9 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
         held = revisions[e_ref]
         main_edits.append(Revision.of(Record.from_json({**held.record.to_json(), "status": "retired"}, held.record.body), [held.rev]))
+    elif "REF-960" not in revisions and rng.random() < 0.15:
+        # Main superseded e.md's REF by a reference of another path: none stands for e.md any more.
+        revisions["REF-985"] = Revision.of(superseding_document("REF-985", "docs/specs/z.md", numbered(main_paths, main_names)[0]["docs/specs/e.md"], "# z.md\n"))
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.25:
         # Main added a.md itself since the merge base, by hand, with other text than the branch's.
         revisions["REF-970"] = Revision.of(superseding_document("REF-970", "docs/specs/a.md", None, "# a.md, on main\n"))
@@ -325,6 +328,17 @@ class GeneratedSalvageTests(unittest.TestCase):
                              f"{where}: {path}, main changed it")
             self.assertEqual(sorted(waiting.get(path, set())), sorted(pending.citing), f"{where}: {path}, the rows citing it")
             self.assertEqual(changed, pending.branch_changed, f"{where}: {path}, the branch changed it")
+            # The base's reference: the REF the cut-over migrated from this path, and what became of it.
+            migrated = sorted((name for name, other in on_accepted.records.items() if other.type == "reference" and other.legacy is not None
+                               and other.legacy.path == path), key=id_key)
+            if path in based and not migrated and based[path].id in on_accepted.records:
+                migrated = [based[path].id]
+
+            def fate(name: str) -> str:
+                superseders = sorted((other.id for other in on_accepted.records.values() if name in other.links.supersedes), key=id_key)
+                return ("now in force" if name not in on_accepted.retired else f"superseded by {', '.join(superseders)}" if superseders else "retired")
+
+            self.assertEqual(None if path not in based else tuple((name, fate(name)) for name in migrated), pending.based_on, f"{where}: {path}, its base REF")
             for fact in [*pending.facts("FILE"), pending.line()]:
                 self.assertFalse(fact.startswith("memory "), f"{where}: {path}: {fact}")
         settled_state, settled = settle_documents(on_accepted, listed)

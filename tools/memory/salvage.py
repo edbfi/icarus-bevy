@@ -154,7 +154,8 @@ class Pending:
     Scope sections name (the exporter's scope); ``more``: those the rest of its body also names; ``main_changed``:
     the REFs in force for its path are not the very record the merge base's document maps to; ``citing``: the held
     rows that cite it as the branch has it; ``branch_changed``: the branch's text differs from the merge base's (or the
-    base had no such document)."""
+    base had no such document); ``based_on``: the REF the base's document maps to and its fate on the accepted
+    commit (now in force, retired, or superseded by which REFs)."""
 
     path: str
     body: str
@@ -164,6 +165,9 @@ class Pending:
     main_changed: bool
     citing: tuple[str, ...] = ()
     branch_changed: bool = True
+    # What the merge base's document mapped to on the accepted commit, each with what became of it; None: the base had no
+    # such document; empty: the accepted journal holds no reference it mapped to.
+    based_on: tuple[tuple[str, str], ...] | None = None
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
@@ -173,9 +177,17 @@ class Pending:
                 f"this branch changed it since its base: {'yes' if self.branch_changed else 'no'}",
                 f"its Status and Scope sections name: {', '.join(self.names) or 'nothing'}",
                 f"its body also names: {', '.join(self.more) or 'nothing'}",
+                self.base_fact(),
                 f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
                 *([f"rows held because they cite it: {', '.join(self.citing)}"] if self.citing else []),
                 f"a new reference for it carries --note {shlex.quote(DOCUMENT_NOTE.format(self.path))}"]
+
+    def base_fact(self) -> str:
+        if self.based_on is None:
+            return "at this branch's base its reference was none (the document is new on this branch)"
+        if not self.based_on:
+            return "at this branch's base its reference was none the accepted journal holds"
+        return "at this branch's base its reference was " + ", ".join(f"{name}: {fate}" for name, fate in self.based_on)
 
     def line(self) -> str:
         """The facts on one line (``--check`` and the notices)."""
@@ -211,6 +223,20 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
             holders.setdefault(path, []).append(record)
     based = documents(before)
     cited = cited or {}
+
+    def based_on(path: str, base: Record) -> list[str]:
+        """The accepted REF the base's document maps to: the one the cut-over migrated from its path (its legacy path),
+        else the accepted record its translated ID names."""
+        migrated = sorted((name for name, other in on_accepted.records.items()
+                           if other.type == "reference" and other.legacy is not None and other.legacy.path == path), key=id_key)
+        return migrated or ([base.id] if base.id in on_accepted.records else [])
+
+    def fate(name: str) -> str:
+        if name not in on_accepted.retired:
+            return "now in force"
+        by = sorted((other.id for other in on_accepted.records.values() if name in other.links.supersedes), key=id_key)
+        return f"superseded by {', '.join(by)}" if by else "retired"
+
     found: list[Pending] = []
     for path, record in sorted(documents(after).items()):
         on_main = sorted(holders.get(path, []), key=lambda other: id_key(other.id))
@@ -226,7 +252,8 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                            () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
-                                   for other in on_main), main_changed, tuple(cited.get(path, ())), changed))
+                                   for other in on_main), main_changed, tuple(cited.get(path, ())), changed,
+                             None if base is None else tuple((name, fate(name)) for name in based_on(path, base))))
     return found
 
 
