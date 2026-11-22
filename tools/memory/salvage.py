@@ -528,11 +528,13 @@ class SalvageError(RuntimeError):
 
 
 def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[str, list[str]], edits: Mapping[str, Edit],
-           on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None]) -> tuple[list[Revision], dict[str, str]]:
+           on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None],
+           stale: Callable[[Record], str | None] = lambda _record: None) -> tuple[list[Revision], dict[str, str]]:
     """The proposal set, rebuilt from scratch until nothing more is held: each row's own proposal, then every
     ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
     revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
-    then the replay check (``honoured``) holds what fails. The held set only grows, so it ends; nothing is patched in
+    then the replay check (``honoured``) holds what fails. An accepted record whose document citation is stale
+    (``stale``, as ``stale_citation``) is never revised to carry a link: the old row is held instead. The held set only grows, so it ends; nothing is patched in
     place, so no order of discovery leaves a stale link. Returns the proposals and the accepted records that could
     not carry links, with why."""
     accepted = on_accepted.records
@@ -554,6 +556,10 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     else:
                         carriers[target] = linked
                 elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "cosmetic", "revision", "superseded"):
+                    if (reason := stale(accepted[target])) is not None:
+                        _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which would carry the link, but {target} "
+                                             + reason.removeprefix("it "))
+                        continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
@@ -1065,7 +1071,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             if pending:
                 pending_links[identifier] = pending
     own = {revision.record.id: revision for revision in result.proposals}
-    result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold)
+    result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold,
+                                          lambda record: stale_citation(record, on_accepted, current, branch_documents))
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):

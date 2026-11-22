@@ -1561,6 +1561,29 @@ class SalvageTests(LegacyRepository):
                     self.assertEqual(((old,), "retired"), (revision.record.links.refs, revision.record.status))
                     _ = self.legal(result)
 
+    def test_an_unchanged_carrier_citing_a_document_main_changed_holds_the_edit_not_the_run(self) -> None:
+        # The branch retires M-102 as superseded by M-104, an unchanged accepted row citing the widget spec's REF; it also
+        # adds an unrelated row M-105. Main meanwhile holds other text for the spec, so M-104 cannot be revised to carry the link.
+        added = json.dumps({"id": "M-105", "path": "work/new/report.md", "sha256": "c" * 64, "class": "local-private", "kind": "report",
+                            "date": "2026-01-06", "label": "Unrelated", "status": "active"}, separators=(",", ":"))
+        self.edited("carrier", ("evidence/widgets/001.jsonl", '"status":"active","legacy":true}', f'"status":"retired","superseded_by":"M-104","legacy":true}}\n{added}'))
+        _ = run_git(self.root, "checkout", "-q", "main")
+        entry = next(entry for entry in replay(read_tree(self.root)).entries.values() if salvage_command.document_path(entry.record) == "docs/specs/net/widget.md")
+        body = (entry.record.body or "") + "\nInvented: main's text.\n"
+        revised = Record.from_json({**entry.record.to_json(), "body_sha256": hashlib.sha256(body.encode()).hexdigest()}, body)
+        _ = write_change_set(self.root, datetime(2026, 4, 6, tzinfo=UTC), [Revision.of(revised, entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main revises the widget spec")
+        self.publish()
+        result = salvage(self.root, "carrier")
+        self.assertEqual("undecided", result.kinds["M-102"])
+        self.assertEqual(f"its row on carrier names successor M-104, which would carry the link, but M-104 cites {entry.record.id}, which holds other"
+                         + " text of docs/specs/net/widget.md than this branch's: settle the document first", result.undecided["M-102"])
+        self.assertEqual(["M-105"], [revision.record.id for revision in result.proposals], "the unrelated row is still proposed")
+        status, _stdout, stderr = self.run_salvage("carrier")
+        self.assertEqual(salvage_command.EXIT_SUPERSEDE, status, stderr)
+        self.assertNotIn("internal error", stderr)
+
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
         old = next(record.id for record in (entry.record for entry in replay(read_tree(self.root)).entries.values())

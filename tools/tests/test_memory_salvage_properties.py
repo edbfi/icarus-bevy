@@ -212,6 +212,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if rng.random() < 0.3:
         # The branch retires the tracked row M-500, whose accepted record cites e.md's REF as the cut-over numbered it.
         after["M-500"] = tracked("M-500", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"], "retired")
+    if rng.random() < 0.3:
+        # An accepted evidence row the branch retires as superseded by M-500, which then carries the link: unless M-500 cites
+        # e.md as main holds it while the branch holds other text, when it cannot be revised and M-503 is held instead.
+        before["M-503"] = Record.from_json(evidence("M-503", "work/x/report.md", legacy={"path": "evidence/x.jsonl", "cells": {"row": '{"status":"active"}'}}))
+        after["M-503"] = Record.from_json(evidence("M-503", "work/x/report.md", legacy={
+            "path": "evidence/x.jsonl", "cells": {"row": '{"status":"retired","superseded_by":"M-500"}'}, "superseded_by": ["M-500"], "implied_status": "superseded"}))
     if rng.random() < 0.5:
         # A new tracked row citing e.md as the branch has it (main's text may differ).
         after["M-502"] = tracked("M-502", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"])
@@ -324,7 +330,7 @@ class GeneratedSalvageTests(unittest.TestCase):
         self.assertEqual(set[str](), set(by_path) - set(branch), f"{where}: a document the branch does not hold is listed")
         # Every row held because it cites a document's provisional number is named beside that document.
         numbered_as = {path: name for name, record in after.items() if (path := document_path(record)) is not None}
-        waiting = {path: {held for held, reason in result.undecided.items() if f"({name}, a provisional number)" in reason}
+        waiting = {path: {held for held, reason in result.undecided.items() if reason.startswith("it cites ") and f"({name}, a provisional number)" in reason}
                    for path, name in numbered_as.items() if name in unmapped}
         for path, record in branch.items():
             holding = sorted(standing.get(path, []), key=lambda other: id_key(other.id))
@@ -401,7 +407,10 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
             if raw_after["M-500"].status == raw_before["M-500"].status:
-                self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
+                # Unclassified, or the carrier of M-503's new link.
+                carried = [item.record.links.supersedes for item in result.proposals if item.record.id == "M-500"]
+                self.assertIn((result.kinds.get("M-500"), carried), [(None, []), ("revision", [("M-503",)])],
+                              f"seed {seed}: an unchanged tracked row renumbered by the branch")
             # (Invariant (f) checks no proposal cites a REF, CP or RP whose identity differs from the branch record it stood for.)
             e_alone = len(standing_refs(accepted).get("docs/specs/e.md", [])) == 1
             # Specific documents: e.md's extra build, c.md's two REFs in force, main's edit, the superseding REF alone.
@@ -459,6 +468,8 @@ class GeneratedSalvageTests(unittest.TestCase):
             elif raw_after["M-500"].status != raw_before["M-500"].status:
                 # Main and the branch both changed M-500: a conflict, or held first for citing e.md as the branch has it.
                 self.assertIn(result.kinds["M-500"], ("conflict", "undecided"), f"seed {seed}: main and the branch both changed M-500")
+            if result.kinds.get("M-503") == "undecided" and "would carry the link" in result.undecided["M-503"]:
+                self.assertIn("M-500 cites ", result.undecided["M-503"], f"seed {seed}")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)
