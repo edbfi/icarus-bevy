@@ -253,6 +253,15 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         # Main superseded e.md's REF by a reference of another path: none stands for e.md any more.
         revisions["REF-985"] = Revision.of(superseding_document("REF-985", "docs/specs/z.md", numbered(main_paths, main_names)[0]["docs/specs/e.md"], "# z.md\n"))
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.25:
+        # a.md, new on the branch, has a history on main: a REF accepted for it (by note), then retired or superseded by
+        # another path's REF; none of it is in force.
+        revisions["REF-971"] = Revision.of(superseding_document("REF-971", "docs/specs/a.md", None, "# a.md, withdrawn on main\n"))
+        if rng.random() < 0.5:
+            held = revisions["REF-971"]
+            main_edits.append(Revision.of(Record.from_json({**held.record.to_json(), "status": "retired"}, held.record.body), [held.rev]))
+        else:
+            revisions["REF-972"] = Revision.of(superseding_document("REF-972", "docs/specs/y.md", "REF-971", "# y.md\n"))
+    elif "docs/specs/a.md" in branch_paths and rng.random() < 0.25:
         # Main added a.md itself since the merge base, by hand, with other text than the branch's.
         revisions["REF-970"] = Revision.of(superseding_document("REF-970", "docs/specs/a.md", None, "# a.md, on main\n"))
     if two_holders:
@@ -356,8 +365,6 @@ class GeneratedSalvageTests(unittest.TestCase):
             label = "from its Status and Scope sections" if from_sections else "from its whole text"
             self.assertIn(f"the exporter reads as its scope, {label}: ", pending.line(), f"{where}: {path}")
             self.assertEqual(from_sections, "its body also names" in pending.line(), f"{where}: {path}")
-            self.assertEqual(path not in based and bool(holding) or path in based and [based[path]] != holding, pending.main_changed,
-                             f"{where}: {path}, main changed it")
             self.assertEqual(sorted(waiting.get(path, set())), sorted(pending.citing), f"{where}: {path}, the rows citing it")
             self.assertEqual(changed, pending.branch_changed, f"{where}: {path}, the branch changed it")
             # The base's reference: the REF the cut-over migrated from this path, and what became of it.
@@ -371,6 +378,12 @@ class GeneratedSalvageTests(unittest.TestCase):
                 return ("now in force" if name not in on_accepted.retired else f"superseded by {', '.join(superseders)}" if superseders else "retired")
 
             self.assertEqual(None if path not in based else tuple((name, fate(name)) for name in migrated), pending.based_on, f"{where}: {path}, its base REF")
+            # The path's history on the accepted commit: every REF of this identity no longer in force, whatever the base had.
+            gone = sorted((name for name, other in on_accepted.records.items() if document_path(other) == path and name in on_accepted.retired), key=id_key)
+            self.assertEqual(tuple((name, fate(name)) for name in gone), pending.withdrawn, f"{where}: {path}, its withdrawn REFs")
+            base_refs = migrated if path in based else []
+            self.assertEqual((path not in based and bool(holding) or path in based and [based[path]] != holding)
+                             or any(name not in base_refs for name in gone), pending.main_changed, f"{where}: {path}, main changed it")
             for fact in [*pending.facts("FILE"), pending.line()]:
                 self.assertFalse(fact.startswith("memory "), f"{where}: {path}: {fact}")
         settled_state, settled = settle_documents(on_accepted, listed)

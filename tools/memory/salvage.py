@@ -172,6 +172,8 @@ class Pending:
     based_on: tuple[tuple[str, str], ...] | None = None
     # The exporter read its scope from its Status and Scope sections (a spec that has them), else from its whole text.
     from_sections: bool = True
+    # Every accepted REF that named this path and is no longer in force, with what became of it (retired, superseded by).
+    withdrawn: tuple[tuple[str, str], ...] = ()
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
@@ -183,6 +185,8 @@ class Pending:
                    f"its body also names: {', '.join(self.more) or 'nothing'}"] if self.from_sections else
                   [f"the exporter reads as its scope, from its whole text: {', '.join(self.names) or 'nothing'}"]),
                 self.base_fact(),
+                "references that named this path and are no longer in force: "
+                + (", ".join(f"{name} ({fate})" for name, fate in self.withdrawn) or "none"),
                 f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
                 *([f"rows held because they cite it: {', '.join(self.citing)}"] if self.citing else []),
                 f"a new reference for it carries --note {shlex.quote(DOCUMENT_NOTE.format(self.path))}"]
@@ -223,9 +227,13 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
     not done, matched to the accepted REFs in force (not superseded or retired) by identity only (``document_path``;
     never by body). A document the branch did not change is never listed for main's later edits alone."""
     holders: dict[str, list[Record]] = {}
-    for record in on_accepted.records.values():
-        if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
-            holders.setdefault(path, []).append(record)
+    withdrawn: dict[str, list[str]] = {}
+    for record in sorted(on_accepted.records.values(), key=lambda other: id_key(other.id)):
+        if (path := document_path(record)) is not None:
+            if record.id in on_accepted.retired:
+                withdrawn.setdefault(path, []).append(record.id)
+            else:
+                holders.setdefault(path, []).append(record)
     based = documents(before)
     cited = cited or {}
 
@@ -256,11 +264,15 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         # Main changed it since the merge base when what stands for the path is not the very record the base's document
         # maps to: another ID, or the same ID at another revision (body, supersession, note), or none at all.
         main_changed = [exported(base)] != [exported(other) for other in on_main] if base is not None else bool(on_main)
+        # A reference to this path that main accepted and withdrew, other than the base's own: main did something here too.
+        base_refs = based_on(path, base) if base is not None else []
+        main_changed = main_changed or any(name not in base_refs for name in withdrawn.get(path, []))
         found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)) if from_sections else (),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                            () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
                                    for other in on_main), main_changed, tuple(cited.get(path, ())), changed,
-                             None if base is None else tuple((name, fate(name)) for name in based_on(path, base)), from_sections))
+                             None if base is None else tuple((name, fate(name)) for name in base_refs), from_sections,
+                             tuple((name, fate(name)) for name in withdrawn.get(path, []))))
     return found
 
 
