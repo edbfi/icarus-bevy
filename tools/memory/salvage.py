@@ -95,6 +95,7 @@ from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set
 from tools.memory.legacy import TRACKED_NOTE, commit_time, export
+from tools.memory.legacy_prose import SPECS, section
 from tools.memory.legacy_rules import MigrationError, commit_words, extract
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
 from tools.memory.state import State, replay
@@ -150,8 +151,9 @@ class InForce:
 @dataclass(frozen=True)
 class Pending:
     """A document that is not done (done: exactly one REF in force names its path and holds the branch's body), as
-    facts only; what each combination asks of the operator is the runbook's. ``names``: the tokens its Status and
-    Scope sections name (the exporter's scope); ``more``: those the rest of its body also names; ``main_changed``:
+    facts only; what each combination asks of the operator is the runbook's. ``names``: the tokens of the exporter's
+    scope (``from_sections``: a spec's Status and Scope sections, else its whole text); ``more``: those the rest of a
+    spec's body also names; ``main_changed``:
     the REFs in force for its path are not the very record the merge base's document maps to; ``citing``: the held
     rows that cite it as the branch has it; ``branch_changed``: the branch's text differs from the merge base's (or the
     base had no such document); ``based_on``: the REF the base's document maps to and its fate on the accepted
@@ -168,6 +170,8 @@ class Pending:
     # What the merge base's document mapped to on the accepted commit, each with what became of it; None: the base had no
     # such document; empty: the accepted journal holds no reference it mapped to.
     based_on: tuple[tuple[str, str], ...] | None = None
+    # The exporter read its scope from its Status and Scope sections (a spec that has them), else from its whole text.
+    from_sections: bool = True
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
@@ -175,8 +179,9 @@ class Pending:
         return [*([f"body written to {shlex.quote(file)}"] if file is not None else []),
                 f"in force: {held}" if held else "no accepted reference names this path",
                 f"this branch changed it since its base: {'yes' if self.branch_changed else 'no'}",
-                f"its Status and Scope sections name: {', '.join(self.names) or 'nothing'}",
-                f"its body also names: {', '.join(self.more) or 'nothing'}",
+                *([f"the exporter reads as its scope, from its Status and Scope sections: {', '.join(self.names) or 'nothing'}",
+                   f"its body also names: {', '.join(self.more) or 'nothing'}"] if self.from_sections else
+                  [f"the exporter reads as its scope, from its whole text: {', '.join(self.names) or 'nothing'}"]),
                 self.base_fact(),
                 f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
                 *([f"rows held because they cite it: {', '.join(self.citing)}"] if self.citing else []),
@@ -246,14 +251,16 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
             continue
         names = record.scope.tokens if record.scope is not None else ()
         text = body_tokens(record.body or "")
+        # The exporter's rule (``legacy_prose.references``): a spec's Status and Scope sections when it has them, else the whole text.
+        from_sections = path.startswith(SPECS) and any(section(record.body or "", name) for name in ("Status", "Scope"))
         # Main changed it since the merge base when what stands for the path is not the very record the base's document
         # maps to: another ID, or the same ID at another revision (body, supersession, note), or none at all.
         main_changed = [exported(base)] != [exported(other) for other in on_main] if base is not None else bool(on_main)
-        found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)),
+        found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)) if from_sections else (),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                            () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
                                    for other in on_main), main_changed, tuple(cited.get(path, ())), changed,
-                             None if base is None else tuple((name, fate(name)) for name in based_on(path, base))))
+                             None if base is None else tuple((name, fate(name)) for name in based_on(path, base)), from_sections))
     return found
 
 

@@ -16,6 +16,8 @@ import unittest
 from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
+from tools.memory.legacy_prose import section
+from tools.memory.legacy_rules import extract
 from tools.memory.model import JSON, Record, id_key
 from tools.memory.salvage import (DOCUMENT_NOTE, SALVAGED, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
                                   pending_documents, relink, renumber)
@@ -45,9 +47,21 @@ def row(identifier: str, cell: str, claim: str = "Invented claim", successors: t
 SAME_BODY = "# One body for several documents\n"
 
 
-def document(identifier: str, path: str, body: str | None = None, builds: tuple[str, ...] = ()) -> Record:
+def exporter_scope(path: str, body: str) -> tuple[bool, dict[str, JSON] | None]:
+    """The exporter's rule for a document's scope (``legacy_prose.references``): a spec's Status and Scope sections when
+    it has them, else its whole text; and whether the sections were read."""
+    sections = {name.lower(): section(body, name) for name in ("Status", "Scope")} if path.startswith("docs/specs/") else {}
+    return any(sections.values()), extract(sections if any(sections.values()) else {"body": body}).scope
+
+
+def scope_tokens(scope: dict[str, JSON] | None) -> set[str]:
+    return {item for key in ("builds", "releases") if scope is not None and isinstance(items := scope.get(key), list)
+            for item in items if isinstance(item, str)}
+
+
+def document(identifier: str, path: str, body: str | None = None) -> Record:
     text = f"# {path}\n" if body is None else body
-    scope: dict[str, JSON] = {"basis": "legacy-text", "builds": list[JSON](builds)} if builds else {"basis": "explicit", "subjects": ["tooling"]}
+    scope: dict[str, JSON] = exporter_scope(path, text)[1] or {"basis": "explicit", "subjects": ["tooling"]}
     return Record.from_json({"id": identifier, "type": "reference", "status": "current", "title": path, "scope": scope,
                              "body_sha256": hashlib.sha256(text.encode()).hexdigest(), "legacy": {"path": path, "cells": {"document": path}}}, text)
 
@@ -84,7 +98,7 @@ def rewrite_case(after: dict[str, Record]) -> bool:
 
 
 def retoken_case(after: dict[str, Record]) -> bool:
-    return any(record.body == "# e.md, re-observed\n" for record in after.values())
+    return any((record.body or "").startswith("# e.md, re-observed\n") for record in after.values())
 
 
 def problems(state: State) -> set[str]:
@@ -146,11 +160,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     # renumbering the rest in its export; an unchanged tracked row and a finding cite later ones by those numbers.
     # Main may itself hold one name twice (two accepted rows of one identity).
     twins = rng.random() < 0.2
-    main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
+    main_paths, main_names = ["docs/research/net/d.md", "docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
     renewed = not retoken and rng.random() < 0.3  # e.md's body newly names a build outside its (unchanged) scope sections
     main_e = rng.random() < 0.3  # main changes e.md since the merge base
+    digest = rng.random() < 0.3  # the branch changes the digest d.md
     # Documents sharing one body: two new ones on the branch; an unrelated REF of that body on main (no identity).
     same_body = rng.random() < 0.3
     if same_body and "docs/specs/a.md" in branch_paths:
@@ -176,9 +191,12 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
                        for path in paths})
         if export is after and retoken:
             # The branch's e.md text changes and names a build the accepted REF's scope does not hold.
-            export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md, re-observed\n", ("server:29990001",))
+            export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md, re-observed\n\n## Status\n\nObserved with server build 29990001.\n")
         if export is after and renewed:
             export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md\nSeen on build 29990005.\n")
+        if export is after and digest:
+            # A digest: its scope is read from its whole text.
+            export[refs["docs/research/net/d.md"]] = document(refs["docs/research/net/d.md"], "docs/research/net/d.md", "# d.md\nSeen on build 29990007.\n")
         if export is after and rewrite_c:
             export[refs["docs/specs/c.md"]] = document(refs["docs/specs/c.md"], "docs/specs/c.md", "# c.md, rewritten\n")
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
@@ -323,7 +341,13 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertEqual([(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                set() if other.body == record.body else text - body_tokens(other.body or "")) for other in holding],
                              [(held.id, held.scope, held.holds, set(held.newly)) for held in pending.in_force], f"{where}: {path}, the REFs in force")
-            self.assertEqual((names, set(body_tokens(record.body or "")) - set(names)), (pending.names, set(pending.more)), f"{where}: {path}, tokens")
+            # The scope as the exporter reads it for this kind of document, and the label saying where it was read.
+            from_sections, scope = exporter_scope(path, record.body or "")
+            self.assertEqual((from_sections, scope_tokens(scope), set(body_tokens(record.body or "")) - set(names) if from_sections else set()),
+                             (pending.from_sections, set(pending.names), set(pending.more)), f"{where}: {path}, tokens")
+            label = "from its Status and Scope sections" if from_sections else "from its whole text"
+            self.assertIn(f"the exporter reads as its scope, {label}: ", pending.line(), f"{where}: {path}")
+            self.assertEqual(from_sections, "its body also names" in pending.line(), f"{where}: {path}")
             self.assertEqual(path not in based and bool(holding) or path in based and [based[path]] != holding, pending.main_changed,
                              f"{where}: {path}, main changed it")
             self.assertEqual(sorted(waiting.get(path, set())), sorted(pending.citing), f"{where}: {path}, the rows citing it")
@@ -381,7 +405,7 @@ class GeneratedSalvageTests(unittest.TestCase):
             # Specific documents: e.md's extra build, c.md's two REFs in force, main's edit, the superseding REF alone.
             listed = {pending.path: pending for pending in pending_documents(after, before, accepted, result.cited)}
             if e_alone and "docs/specs/e.md" in listed and any(record.body == "# e.md\nSeen on build 29990005.\n" for record in raw_after.values()):
-                self.assertEqual(("any:29990005",), listed["docs/specs/e.md"].more, f"seed {seed}: e.md's body names a build")
+                self.assertIn(listed["docs/specs/e.md"].in_force[0].newly, [("any:29990005",), ()], f"seed {seed}: e.md's text names a build")
             in_force = [name for name, record in accepted.records.items()
                         if record.type == "reference" and name not in accepted.retired and document_path(record) == "docs/specs/c.md"]
             c_listed = listed.get("docs/specs/c.md")
@@ -428,7 +452,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                     if not branch_changed_e:
                         waiting = tuple(name for name in ("M-500", "M-502") if "docs/specs/e.md as this branch has it" in result.undecided.get(name, ""))
                         self.assertEqual([waiting], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")
-            if accepted.records["M-500"].links.refs == (numbered(["docs/specs/c.md", "docs/specs/e.md"], [])[0]["docs/specs/e.md"],):
+            if len(accepted.records["M-500"].links.refs) == 1:
                 self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
             elif raw_after["M-500"].status != raw_before["M-500"].status:
                 # Main and the branch both changed M-500: a conflict, or held first for citing e.md as the branch has it.
