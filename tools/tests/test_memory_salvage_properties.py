@@ -378,7 +378,8 @@ class GeneratedSalvageTests(unittest.TestCase):
         numbered_as = {path: name for name, record in after.items() if (path := document_path(record)) is not None}
         waiting = {path: {held for held, reason in result.undecided.items()
                           if (name in unmapped and reason.startswith("it cites ") and f"({name}, a provisional number)" in reason)
-                          or reason.endswith((f" of {path} than this branch's: settle the document first", f"no longer stands for {path}: settle the document first"))}
+                          or f" of {path} than this branch's" in reason.split(" (", 1)[0] + reason.rsplit(")", 1)[-1]
+                          or reason.endswith(f"no longer stands for {path}: settle the document first")}
                    for path, name in numbered_as.items()}
         # A row held for a successor that waits on a document settles that document too.
         for path, rows in waiting.items():
@@ -557,7 +558,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                     branch_changed_e = branch_e != next(record.body for record in raw_before.values() if document_path(record) == "docs/specs/e.md")
                     if not branch_changed_e:
                         waiting = tuple(name for name in ("M-500", "M-502", "M-503") if result.undecided.get(name, "").startswith("it cites docs/specs/e.md as this branch has it")
-                                        or result.undecided.get(name, "").endswith(" of docs/specs/e.md than this branch's: settle the document first")
+                                        or " of docs/specs/e.md than this branch's" in result.undecided.get(name, "")
                                         or (name == "M-503" and "names successor M-500, which cannot carry the link" in result.undecided.get(name, "")
                                             and result.undecided[name].endswith("settle the document first")))
                         self.assertEqual([waiting], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")

@@ -223,6 +223,18 @@ def exported(record: Record) -> JSON:
     return data
 
 
+def owner_cause(pending: Pending) -> str | None:
+    """Why a row citing ``pending`` is the owner's to decide rather than waiting for the document to be settled, from the
+    facts its block prints (the runbook's rules): main withdrew or replaced it (none in force, and a reference that named
+    it is retired or superseded), or this branch did not change it (listed only because held rows cite it, while main
+    has changed it). ``None``: settling the document, as the rules allow, can clear the row."""
+    if not pending.in_force and (pending.withdrawn or any(fate != "now in force" for _name, fate in pending.based_on or ())):
+        return "main withdrew the document it cites"
+    if not pending.branch_changed:
+        return f"this branch did not change {pending.path}, and main has since changed it"
+    return None
+
+
 def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
                       cited: Mapping[str, Sequence[str]] | None = None) -> list[Pending]:
     """The documents the branch changed or added, and those held rows cite as the branch has it (``cited``), that are
@@ -897,7 +909,7 @@ def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, 
                    branch: Mapping[str, str | None]) -> tuple[str | None, str] | None:
     """The document ``record`` may not cite as stored, and why: a cited REF that, resolved in force (``current``), does
     not hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may.
-    The path is ``None`` when the document itself is settled (one REF in force holds the branch's text): only the row's
+    The path is ``None`` whenever the cited REF is retired with no same-document successor in force: only the row's
     stored citation is stale, which no document action can change, so it is decided by hand."""
     for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
         cited = on_accepted.records.get(target)
@@ -984,6 +996,21 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     # today's journal, cites the successor while main's record still cites the old one.
     current = successors_in_force(accepted)
     branch_documents = {path: other.body for other in after.values() if (path := document_path(other)) is not None}
+    owners: dict[str, str | None] = {}
+
+    def owner(path: str) -> str | None:
+        """``owner_cause`` of the document at ``path``, from the facts its block would print."""
+        if path not in owners:
+            listed = [pending for pending in pending_documents(after, before, on_accepted, {path: ()}) if pending.path == path]
+            owners[path] = owner_cause(listed[0]) if listed else None
+        return owners[path]
+
+    def stale_here(record: Record) -> tuple[str | None, str] | None:
+        """``stale_citation``, its settling ending replaced by the owner's decision where the document's facts say so."""
+        found = stale_citation(record, on_accepted, current, branch_documents)
+        if found is None or found[0] is None or not found[1].endswith(SETTLE) or (cause := owner(found[0])) is None:
+            return found
+        return found[0], f"{found[1].removesuffix(SETTLE)}; {cause}: decide by hand"
 
     def same(one: Record | None, other: Record | None) -> bool:
         """Equal, or equal once each cited REF is the one superseding it (``current``). A record that cannot be read so
@@ -1023,25 +1050,35 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                                       and identity(other) == identity(after[name])), key=lambda other: id_key(other.id))
                         for name in cited if name in after and after[name].type == "reference" and identity(after[name]) is not None}
             settle_first = [name for name in cited if standing.get(name)]
-            clauses: list[str] = []
             new_documents = [name for name in cited if name not in settle_first and name not in shared and name in after and after[name].type == "reference"]
+            waits: list[str] = []
+            settles: list[str] = []
+            decides: list[str] = []
             if waiting := [name for name in cited if name not in settle_first and name not in shared and name not in new_documents]:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
-                               + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
-            for name in settle_first:
-                path, held = document_path(after[name]), standing[name]
-                holding = [other.id for other in held if other.body == after[name].body]
-                if len(held) == 1:
-                    state = f"{held[0].id} holds {'this' if holding else 'other'} text"
+                waits.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
+                             + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
+            for name in [*settle_first, *new_documents]:
+                path = document_path(after[name]) or ""
+                if name in settle_first:
+                    held = standing[name]
+                    holding = [other.id for other in held if other.body == after[name].body]
+                    if len(held) == 1:
+                        state = f"{held[0].id} holds {'this' if holding else 'other'} text"
+                    else:
+                        state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
+                                 + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
+                    clause = f"it cites {path} as this branch has it ({name}, a provisional number); {state}"
                 else:
-                    state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
-                             + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
-                clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}{SETTLE}")
-            if new_documents:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in new_documents) + SETTLE)
+                    clause = f"it cites {unmapped[name]} ({name}, a provisional number)"
+                # The document's facts decide: settling it clears the row, or only the owner can (runbook rules 1 and 2).
+                if (cause := owner(path)) is None:
+                    settles.append(clause + SETTLE)
+                else:
+                    decides.append(f"{clause}; {cause}: decide by hand")
             if ambiguous := [name for name in cited if name not in settle_first and name in shared]:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
+                decides.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
                                + ", which cannot be told apart: decide by hand")
+            clauses = [*waits, *settles, *decides]
             hold(identifier, "undecided", "; ".join(clauses))
             for name in cited:
                 if name in after and (path := document_path(after[name])) is not None:
@@ -1086,7 +1123,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         for old in links.get(identifier, ()):
             if linked is not None and old in linked.links.supersedes and old not in record.links.supersedes:
                 linked = without_supersedes(linked, old)
-        if on_main is None and (stale := stale_citation(record, on_accepted, current, branch_documents)) is not None:
+        if on_main is None and (stale := stale_here(record)) is not None:
             hold(identifier, "undecided", stale[1])
             if stale[0] is not None:
                 result.cited.setdefault(stale[0], []).append(identifier)
@@ -1122,7 +1159,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         elif not same(on_main, origin) and not same(on_main, apply(edit, origin)):
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
-        elif revision is not None and (stale := stale_citation(revision, on_accepted, current, branch_documents)) is not None:
+        elif revision is not None and (stale := stale_here(revision)) is not None:
             hold(identifier, "undecided", stale[1])
             if stale[0] is not None:
                 result.cited.setdefault(stale[0], []).append(identifier)
@@ -1134,7 +1171,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 pending_links[identifier] = pending
     own = {revision.record.id: revision for revision in result.proposals}
     result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold,
-                                          lambda record: stale_citation(record, on_accepted, current, branch_documents), after.keys())
+                                          stale_here, after.keys())
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):

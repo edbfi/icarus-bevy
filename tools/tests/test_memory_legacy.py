@@ -1394,6 +1394,24 @@ class SalvageTests(LegacyRepository):
                               + f" are no longer in force: REF-900 ({withdrawal}); main changed or replaced its reference since this branch's base: yes;",
                               document.line())
 
+    def test_a_row_citing_a_document_main_withdrew_is_the_owner_s(self) -> None:
+        # The branch adds third.md and a tracked row on it; main accepted a REF for third.md and retired it: proposing the
+        # document again would restore what main withdrew, so the row is the owner's to decide, not waiting on the document.
+        self.new_spec_branch("docs/specs/net/third.md")
+        self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                             "# Third, on main\n"), "REF-900")
+        entry = replay(read_tree(self.root)).entries["REF-900"]
+        _ = write_change_set(self.root, datetime(2026, 4, 7, tzinfo=UTC), [Revision.of(Record.from_json({**entry.record.to_json(), "status": "retired"},
+                                                                                                          entry.record.body), entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main retires REF-900")
+        self.publish()
+        result = salvage(self.root, "specs")
+        self.assertRegex(result.undecided["M-105"], r"^it cites the document docs/specs/net/third\.md, which no accepted REF names \(by legacy path or a note "
+                         + r"'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\); main withdrew the document it cites: decide by hand$")
+        (document,) = result.documents
+        self.assertEqual((("REF-900", "retired"),), document.withdrawn)
+
     def test_a_digest_s_scope_is_read_from_its_whole_text(self) -> None:
         # A digest has no Status or Scope sections the exporter reads: its scope comes from its whole text, and nothing lies beyond it.
         self.edited("digest", ("docs/research/net/widgets.md", "Frames take 42.5 ms", "Frames take 42.5 ms on server build 29990004"))
@@ -1403,7 +1421,7 @@ class SalvageTests(LegacyRepository):
         self.assertNotIn("its body also names", document.line())
         self.assertNotIn("Status and Scope", document.line())
 
-    def test_a_row_citing_a_document_main_has_since_changed_waits_for_it(self) -> None:
+    def test_a_row_citing_a_document_main_has_since_changed_is_the_owner_s(self) -> None:
         # An older branch adds tracked evidence for the spec as it then read; main later holds other text for that path.
         _ = run_git(self.root, "checkout", "-q", "-b", "older")
         shard = self.root / "evidence/widgets/001.jsonl"
@@ -1419,7 +1437,8 @@ class SalvageTests(LegacyRepository):
         self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
         (document,) = result.documents
         self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another\.md as this branch has it \(REF-[0-9]+, a provisional number\); "
-                         + rf"{document.in_force[0].id} holds other text: settle the document first$")
+                         + rf"{document.in_force[0].id} holds other text; this branch did not change docs/specs/net/another\.md, and main has since changed it:"
+                         + r" decide by hand$")
         self.assertEqual((("M-105",), True, False, False), (document.citing, document.main_changed, document.in_force[0].holds, document.branch_changed))
         self.assertIn("; this branch changed it since its base: no;", document.line())
         self.assertIn("main changed or replaced its reference since this branch's base: yes; rows held because they cite it: M-105;", document.line())
@@ -1607,7 +1626,8 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "carrier")
         self.assertEqual("undecided", result.kinds["M-102"])
         self.assertEqual(f"its row on carrier names successor M-104, which would carry the link, but M-104 cites {entry.record.id}, which holds other"
-                         + " text of docs/specs/net/widget.md than this branch's: settle the document first", result.undecided["M-102"])
+                         + " text of docs/specs/net/widget.md than this branch's; this branch did not change docs/specs/net/widget.md, and main has since"
+                         + " changed it: decide by hand", result.undecided["M-102"])
         self.assertEqual(["M-105"], [revision.record.id for revision in result.proposals], "the unrelated row is still proposed")
         # The document M-102 waits on is listed, though the branch never changed it, with M-102 as a row it holds.
         (document,) = result.documents
