@@ -77,94 +77,95 @@ second path; it needs no dump. Evidence bytes have no off-host copy:
 ## Worktrees that predate the cut-over
 
 A branch cut before the cut-over still has `docs/ledgers/` and `evidence/`, and
-the rows it added there exist nowhere else. A worktree whose memory tool is
-older than the bank's rendering guard (it contains `8592948e` but not the
-cut-over) parses `main`'s journal, and its scratch guards (`tools/work_gc.py`,
-`tools/cargo_guard.py`) keep working, but its online `memory` commands stop at
-`connection.env:1: malformed or repeated line`, because the service's
-connection file was retired for `connection-v2.env`. That error is all it
-prints. It means: merge `main` (salvaging first, below), never repair the
-config directory. A worktree older than the memory tool keeps its own
-legacy hooks and notices nothing until it merges `main`. On `main`,
-`memory check --ci` on such a branch says `this branch predates the cut-over`
-and lists its rows, but its own hooks are old and CI checks the merge commit,
-so do not wait for that message.
+the rows it added there exist nowhere else. If its memory tool is older than
+the bank's rendering guard (it contains `8592948e` but not the cut-over), its
+scratch guards (`tools/work_gc.py`, `tools/cargo_guard.py`) keep working but
+its online `memory` commands print only `connection.env:1: malformed or
+repeated line` (the connection file was retired for `connection-v2.env`):
+merge `main`, salvaging first, and never repair the config directory. A
+worktree older than the memory tool notices nothing until it merges `main`.
+`memory check --ci` on `main` reports `this branch predates the cut-over`,
+but CI checks the merge commit: do not wait for that message.
 
-Salvage first, merge last. Merging `main` first and resolving the
-modify/delete conflicts by deletion loses the rows, and the branch's evidence
-stops being protected as soon as its `evidence/` leaves the working tree.
+Salvage first, merge last: merging `main` first and deleting the legacy files
+in its conflicts loses the rows and unprotects the branch's evidence.
 
-1. In the old worktree, commit every legacy row it holds (salvage reads
-   commits, not the working tree). Do not merge `main` yet.
-2. From an up-to-date checkout of `main` in the same repository, run on the
-   branch's pre-merge tip `memory salvage <branch> --check`, then
-   `memory salvage <branch> --out work/<case>/salvage-<n>`, a path that does
-   not exist (`<out> exists: --out must name a new directory` otherwise).
-   Salvage creates it with the proposals under `<out>/memory/journal/` and
-   each listed document's body under `<out>/documents/<path>`. A non-zero
-   exit for conflicts or held rows leaves that output usable; a write failure
-   or an interrupt removes the directory. Salvage resolves `origin/main`
-   (`--main REF` names another), and REF, CP and RP numbers in the report are
-   `origin/main`'s. A tip that already merged the cut-over is refused with the
-   pre-merge tip to use. `memory salvage: internal error, nothing written: …`
-   is a defect in salvage: report it, do not work around it.
-3. Act on each line (exit 4 means some row needs a hand). Rows:
-   - a proposal (`new`, or a revision of `origin/main`'s record): kept in the
-     output segments;
-   - `needs a superseding record: …`: `memory propose` the branch's content as
-     a new record, then `memory supersede <old> --by <new>`;
-   - `needs a decision by hand: …`: settle it with the record's owner. One
-     that says `it cites the new document <path> (REF-N, a provisional
-     number), whose record must be accepted first` (or a new CP/RP row) waits
-     until that record is accepted; then run salvage again. `one of N records
-     sharing the …`, `which the accepted journal holds N times` and `a rename
-     needs a superseding record; decide by hand` are settled by hand, as is
-     any row citing one;
+1. In the old worktree, commit every legacy row (salvage reads commits). Do
+   not merge `main` yet.
+2. From an up-to-date checkout of `main`, run on the branch's pre-merge tip
+   `memory salvage <branch> --check`, then `memory salvage <branch> --out
+   work/<case>/salvage-<n>`, a path that does not exist (`<out> exists: --out
+   must name a new directory` otherwise). It writes the proposals under
+   `<out>/memory/journal/` and each listed document's body under
+   `<out>/documents/<path>`; a non-zero exit for conflicts or held rows leaves
+   that output usable. After a write failure or an interrupt it removes the
+   directory when it can and says so when it cannot (`could not remove
+   <out>: …; remove it by hand`). It reads `origin/main` (`--main REF` names
+   another), and its REF, CP and RP numbers are `origin/main`'s; a tip that
+   merged the cut-over is refused with the pre-merge tip to use. `internal
+   error, nothing written` is a defect in salvage: report it.
+3. Rows (exit 4 means some row needs a hand):
+   - a proposal (`new`, or a revision of `origin/main`'s record): kept;
+   - `needs a superseding record: …`: `memory propose` the branch's content
+     as a new record, then `memory supersede <old> --by <new>`;
+   - `needs a decision by hand: …`: settle it with the record's owner. `it
+     cites the new document <path> (REF-N, a provisional number), whose
+     record must be accepted first` (or a new CP/RP row) waits for that
+     record, then salvage runs again; `one of N records sharing the …`,
+     `which the accepted journal holds N times` and `a rename needs a
+     superseding record` are settled by hand, as is any row citing one;
    - `conflict: …: origin/main holds other content under this ID`: when both
-     sides allocated the number (as M-1623 to M-1625 on one existing
-     branch), add the branch's record under a new ID (`memory evidence add`,
-     `memory propose`) and rewrite its citations; when `main` took an earlier
-     draft, reconcile by hand with `memory revise` or a superseding record.
+     sides allocated the number (as M-1623 to M-1625 on one branch), add the
+     branch's record under a new ID and rewrite its citations; when `main`
+     took an earlier draft, reconcile with `memory revise` or a superseding
+     record.
 
-   Documents: one line each; `--out` adds the commands, which use the body it
-   wrote. A new REF's command carries `--set-json 'scope=<STATE THE SCOPE>'`,
-   refused until you state a JSON scope (the line `the scope must be stated by
-   whoever proposes it: … the text names: …` lists the text's tokens, which
-   salvage neither keeps nor upgrades), and `--note 'salvaged document:
-   <path>'`: keep it, salvage finds the REF by it.
+   Documents: salvage prints facts, never a command: `body written to
+   <file>`; `in force: REF-N (scope: …; other text; this text newly names:
+   …)` for each reference in force, or `no accepted reference names this
+   path`; what `its Status and Scope sections name` and `its body also
+   names`; `main changed or replaced its reference since this branch's base:
+   yes|no`; the `--note` a new reference carries; `rows held because they
+   cite it`. Apply the first rule that fits:
 
-   | The line says | Do |
-   | --- | --- |
-   | `changed document; revise REF-N with the body salvage --out writes` | `memory revise REF-N --body <out>/documents/<path>` as printed |
-   | `changed document; its text names: …; REF-N's scope is …; a body revision cannot change scope` | the printed `memory propose reference …`, then `memory supersede REF-N --by <the new REF>` |
-   | `changed document; its body newly names …; REF-N's scope is …; a body revision keeps that scope: decide by hand` | the printed `if REF-N's scope still holds for the new text: memory revise …`, or the `otherwise:` propose and supersede |
-   | `… main added or changed REF-N since this branch's base, so check that the branch's body carries main's text` | first make `<out>/documents/<path>` carry main's text, then the printed `if this body carries main's changes …` command |
-   | `new document; …` or `…; no accepted REF in force names this path` | the printed `memory propose reference …` |
-   | `…; the accepted journal holds REF-A, REF-B for this path; REF-B holds this body` | the printed `memory supersede REF-A --by REF-B`, or decide by hand |
-   | `…; the accepted journal holds REF-A (scope: …), REF-B (scope: …) for this path: decide by hand (no command)` | settle by hand |
-   | `unchanged document cited by … as this branch has it; REF-N holds other text: settle the document first` | decide whether the citing rows apply to REF-N's text, or propose this text as a new REF; the rows stay held until then |
+   a. `main changed or replaced …: yes`: make `<file>` carry main's current
+      text (`memory get REF-N`) with the branch's change, then apply b to e.
+   b. Several references in force: decide by hand which stands; if one holds
+      this text and the others should give way, `memory supersede REF-OLD
+      --by REF-NEW` for each. Nothing else is automatic.
+   c. One in force, its scope equals what the sections name, and this text
+      newly names nothing: `memory revise REF-N --body <file>`.
+   d. One in force, and the section tokens differ from its scope or this
+      text newly names something: a body revision cannot change scope.
+      `memory propose reference --set 'title=…' --set-json 'scope={"basis":
+      "explicit", …}' --note 'salvaged document: <path>' --body <file>`, with
+      a scope YOU state from what the text supports (the tool's lists are what
+      the text names, not a scope) and the note as printed; then `memory
+      supersede REF-N --by <the new REF>`. If you judge the old scope still
+      covers the new tokens, say so in the pull request and use c: a person
+      records that judgement, never the tool.
+   e. None in force: propose as in d, without a supersession.
 
+   Rows held because they cite a document are proposed on the next run once
+   it is done. Example: REF-016 and REF-010 c; REF-008 d (newly names
+   `any:26635895`); REF-036 and REF-001 a then c; REF-013 a then d.
 4. On a new branch from `main`, copy every segment of `<out>/memory/journal/`
-   into `memory/journal/`, add the records from step 3, run
-   `memory check --ci`, commit and open the pull request. After it merges, the
-   lead runs `memory sync`; salvage then counts those rows as accepted.
+   into `memory/journal/`, add the records from step 3, run `memory check
+   --ci`, commit and open the pull request. After it merges and the lead runs
+   `memory sync`, salvage counts those rows as accepted.
 5. Only then merge `main` into the old branch (deleting the legacy files in
-   the modify/delete conflicts and citing any new IDs), or retire the branch.
-   Keep its worktree until its evidence records are accepted on `origin/main`:
-   until then its legacy shards protect its branch-only artifacts.
-6. Confirm it is done, from the up-to-date checkout of `main`:
-   `memory salvage <branch>` on the merged tip exits 0 when nothing is left;
-   otherwise it exits 5 and names the pre-merge parent, whose `--check` lists
-   the rows and documents still open (lines as above) and exits non-zero
-   while any remains. A document is done once exactly one accepted REF in
-   force names its path (by legacy path or note) and holds the branch's body,
-   so a superseding REF counts only once the supersession is accepted too. A
-   row resolved by hand never becomes accepted under its old ID, and a body
-   merged by hand into other text never equals the branch's, so both stay
-   listed: the branch is done when everything still listed is one you
-   resolved by hand and its record, decision or REF revision is accepted on
-   `origin/main`. Anything else still listed is not salvaged yet: go back to
-   step 2.
+   the modify/delete conflicts, citing any new IDs) or retire it. Keep its
+   worktree until its evidence records are accepted on `origin/main`: until
+   then its legacy shards protect its branch-only artifacts.
+6. Confirm from `main`: `memory salvage <branch>` on the merged tip exits 0
+   when nothing is left, else 5 naming the pre-merge parent, whose `--check`
+   lists what is open and exits non-zero while anything is. A document is
+   done once exactly one reference in force names its path (by legacy path
+   or note) and holds the branch's body, so a superseding reference counts
+   only once the supersession is accepted. Rows resolved by hand and bodies
+   merged by hand into other text stay listed: the branch is done when
+   everything still listed is one of those and its record, decision or REF
+   revision is accepted on `origin/main`. Anything else: back to step 2.
 
 ## When the service is down
 
