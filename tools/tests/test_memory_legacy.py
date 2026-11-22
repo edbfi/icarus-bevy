@@ -1527,6 +1527,23 @@ class SalvageTests(LegacyRepository):
                     self.assertEqual(((old,), "retired"), (revision.record.links.refs, revision.record.status))
                     _ = self.legal(result)
 
+    def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
+        self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
+        old = next(record.id for record in (entry.record for entry in replay(read_tree(self.root)).entries.values())
+                   if salvage_command.document_path(record) == "docs/specs/net/widget.md")
+        self.accept_reference(online.Changes({"title": "Widget", "scope": {"basis": "explicit"}, "supersedes": [old]},
+                                             salvage_command.DOCUMENT_NOTE.format("docs/specs/net/widget.md"),
+                                             self.ref_body("retire-m104", "docs/specs/net/widget.md")), "REF-900")
+        # Main's M-104 now cites both the superseded REF and its successor: equating them would leave a duplicate citation.
+        entry = replay(read_tree(self.root)).entries["M-104"]
+        both = Record.from_json({**entry.record.to_json(), "refs": [*entry.record.links.refs, "REF-900"]}, entry.record.body)
+        _ = write_change_set(self.root, datetime(2026, 4, 5, tzinfo=UTC), [Revision.of(both, entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "M-104 cites both")
+        self.publish()
+        result = salvage(self.root, "retire-m104")
+        self.assertEqual("conflict", result.kinds["M-104"])
+
     def test_invariant_f_refuses_a_stored_citation_whose_ref_in_force_holds_other_text(self) -> None:
         old = Record.from_json({"id": "REF-001", "type": "reference", "status": "current", "title": "Spec", "scope": {"basis": "explicit"},
                                 "body_sha256": hashlib.sha256(b"# Old\n").hexdigest(), "notes": [salvage_command.DOCUMENT_NOTE.format("docs/specs/x.md")]}, "# Old\n")

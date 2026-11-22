@@ -884,8 +884,16 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     branch_documents = {path: other.body for other in after.values() if (path := document_path(other)) is not None}
 
     def same(one: Record | None, other: Record | None) -> bool:
-        """Equal, or equal once each cited REF is the one superseding it (``current``)."""
-        return one == other or (one is not None and other is not None and bool(current) and relink(one, current) == relink(other, current))
+        """Equal, or equal once each cited REF is the one superseding it (``current``). A record that cannot be read so
+        (it cites a REF and its successor both, which would collapse into a duplicate) is not the same."""
+        if one == other:
+            return True
+        if one is None or other is None or not current:
+            return False
+        try:
+            return relink(one, current) == relink(other, current)
+        except RecordError:
+            return False
 
     changed: list[str] = []
     for name in sorted(set(renamed) - set(after), key=id_key):

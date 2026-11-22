@@ -216,6 +216,10 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         # Or main re-homed e.md: a new REF with the text the merge base had, superseding the migrated one.
         body = rng.choice([branch_e, "# e.md, on main\n", revisions[main_e_ref].record.body or ""])
         revisions["REF-960"] = Revision.of(superseding_document("REF-960", "docs/specs/e.md", main_e_ref if rng.random() < 0.7 else None, body))
+        if rng.random() < 0.3:
+            # Main's M-500 then cites both e.md's old REF and REF-960: equating the two would collapse them into one citation.
+            held = revisions["M-500"]
+            main_edits.append(Revision.of(Record.from_json({**held.record.to_json(), "refs": [main_e_ref, "REF-960"]}), [held.rev]))
     if "REF-960" not in revisions and not main_e and rng.random() < 0.15:
         # Main retired e.md's REF: no accepted REF stands for e.md, which the branch's rows may still cite.
         e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
@@ -407,7 +411,11 @@ class GeneratedSalvageTests(unittest.TestCase):
                     if not branch_changed_e:
                         waiting = tuple(name for name in ("M-500", "M-502") if "docs/specs/e.md as this branch has it" in result.undecided.get(name, ""))
                         self.assertEqual([waiting], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")
-            self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
+            if accepted.records["M-500"].links.refs == (numbered(["docs/specs/c.md", "docs/specs/e.md"], [])[0]["docs/specs/e.md"],):
+                self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
+            elif raw_after["M-500"].status != raw_before["M-500"].status:
+                # Main and the branch both changed M-500: a conflict, or held first for citing e.md as the branch has it.
+                self.assertIn(result.kinds["M-500"], ("conflict", "undecided"), f"seed {seed}: main and the branch both changed M-500")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)
