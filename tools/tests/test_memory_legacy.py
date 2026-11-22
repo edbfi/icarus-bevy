@@ -683,7 +683,7 @@ class SalvageTests(LegacyRepository):
         out = self.top / "salvaged"
         status, stdout, stderr = self.run_salvage("claim-edit", out=out)
         self.assertEqual((salvage_command.EXIT_SUPERSEDE, ""), (status, stdout))
-        self.assertIn("needs a superseding record: F-107: changes claim, which a revision may not change; not proposed", stderr)
+        self.assertIn("needs a superseding record: F-107: a revision may not change claim; not proposed", stderr)
         self.assertIn("1 proposal(s), 1 needing a superseding record, 0 needing a decision by hand, 0 conflict(s)", stderr)
         written = {revision.record.id for segment in read_tree(out) for revision in segment.revisions}
         self.assertEqual({"F-111"}, written)
@@ -1069,7 +1069,7 @@ class SalvageTests(LegacyRepository):
         self.assertIn("CP-001", cps)
         self.assertIn("is gone from the branch (accepted as CP-001) and new compatibility rows appeared ('Discovery renamed' as", result.undecided["CP-001"])
         new = next(name for name in cps if name != "CP-001")
-        self.assertIn("new compatibility row 'Discovery renamed', and CP-001 is gone from the branch", result.undecided[new])
+        self.assertIn("new compatibility row 'Discovery renamed', and the branch lost CP-001; a rename", result.undecided[new])
         self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"])
         self.assertFalse(any("CP-001: removed" in notice for notice in result.notices), result.notices)
 
@@ -1094,7 +1094,7 @@ class SalvageTests(LegacyRepository):
         self.assertFalse(any("removed on" in notice and notice.startswith("CP-") for notice in result.notices), result.notices)
         renamed = [reason for reason in result.undecided.values() if "new compatibility row 'Discovery renamed'" in reason]
         self.assertEqual(1, len(renamed), result.undecided)
-        self.assertIn("CP-001, CP-002 is gone from the branch", renamed[0])
+        self.assertIn("the branch lost CP-001, CP-002; a rename", renamed[0])
         # Only real IDs are reported: the accepted twins and the branch's row, never a merge-base provisional number.
         self.assertEqual({"CP-001", "CP-002"}, {name for name, reason in result.undecided.items() if reason.startswith("it is gone from the branch")})
 
@@ -1113,7 +1113,7 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "rename-new")
         self.assertFalse([item for item in result.proposals if item.record.type == "compatibility"], result.kinds)
         self.assertEqual("undecided", result.kinds.get("CP-900"), result.kinds)
-        self.assertIn("CP-001 is gone from the branch", result.undecided["CP-900"])
+        self.assertIn("the branch lost CP-001; a rename", result.undecided["CP-900"])
         self.assertIn("it is gone from the branch (accepted as CP-001)", result.undecided["CP-001"])
 
     def test_a_supersession_cycle_among_proposals_is_never_returned(self) -> None:
@@ -1377,7 +1377,7 @@ class SalvageTests(LegacyRepository):
         # Not proposed citing main's text: held, and the document it cites listed although the branch never changed it.
         self.assertEqual("undecided", result.kinds["M-105"])
         self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
-        self.assertIn("docs/specs/net/another.md as this branch has it; REF-", result.undecided["M-105"])
+        self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another.md as this branch has it \(REF-[0-9]+, a provisional number\); REF-[0-9]+ holds other text: settle the document first$")
         (document,) = result.documents
         self.assertEqual(("cited", ("M-105",), []), (document.kind, document.holders, document.commands("FILE")))
         self.assertIn(f"cited by M-105 as this branch has it; {document.target} holds other text: settle the document first", document.line())
@@ -1411,7 +1411,7 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "checkout", "-q", "retoken")
         (listed,) = salvage(self.root, "retoken").documents
         self.assertEqual(("ambiguous", "REF-900"), (listed.kind, listed.target))
-        self.assertIn(f"holds {old}, REF-900 for this path, REF-900 with this body: supersede {old} by it (memory supersede {old} --by REF-900)",
+        self.assertIn(f"holds {old}, REF-900 for this path; REF-900 holds this body: supersede {old} by it (memory supersede {old} --by REF-900)",
                       listed.line())
         self.assertEqual([f"memory supersede {old} --by REF-900"], listed.commands("FILE"))
         self.assertEqual(1, self.run_salvage("retoken", check=True)[0])

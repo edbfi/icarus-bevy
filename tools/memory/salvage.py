@@ -134,10 +134,12 @@ class Salvage:
 
 @dataclass(frozen=True)
 class Pending:
-    """A document the branch changed or added: its legacy path, what it needs (``kind``: ``new``, ``revise`` the body
-    of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope, or
-    ``ambiguous`` when the accepted journal holds the path more than once, ``holders``), and the body, title and
-    scope tokens (``names``) the exporter gives its REF at the salvaged tip."""
+    """A document the branch changed, added or cites: its legacy path, what it needs (``kind``: ``new``, ``revise`` the
+    body of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope,
+    ``decide`` by hand (the body ``newly`` names tokens, or ``main_changed`` ``target`` since the base), ``ambiguous``
+    when the accepted journal holds the path more than once (``holders``), or ``cited`` by held rows (``holders``) as
+    the branch has it while ``target`` holds other text), and the body, title and scope tokens (``names``) the
+    exporter gives its REF at the salvaged tip."""
 
     path: str
     kind: str
@@ -187,7 +189,7 @@ class Pending:
             return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
                     + " branch's; a body merged by hand into other text stays listed)")
         if self.kind == "supersede":
-            return (f"changed document; {spoken(self.names, 'its text names')}; {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
+            return (f"changed document; {spoken(self.names, 'its text names')}; {self.target}'s scope is {', '.join(self.scope) or 'empty'}; "
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
                     + (f"; {self.main_note()}" if self.main_changed else "") + " (salvage --out writes its body and the commands)")
         if self.kind == "cited":
@@ -201,7 +203,7 @@ class Pending:
         if self.kind == "ambiguous":
             if self.target is not None:
                 others = ", ".join(other for other in self.holders if other != self.target)
-                return (f"changed document; the accepted journal holds {', '.join(self.holders)} for this path, {self.target} with this body:"
+                return (f"changed document; the accepted journal holds {', '.join(self.holders)} for this path; {self.target} holds this body:"
                         + f" supersede {others} by it (" + "; ".join(f"memory supersede {other} --by {self.target}" for other in self.holders
                                                                     if other != self.target) + ") or decide by hand")
             held = "; ".join(f"{holder} (scope: {scope})" for holder, scope in zip(self.holders, self.scopes, strict=True))
@@ -417,8 +419,8 @@ def plan(origin: Record, record: Record, ref: str) -> Edit:
             notes.append(STATUS_NOTE.format(cell))
     # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
-        return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
-                    + "a revision cannot withdraw a legacy edge")
+        return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)}; it has no new stored status, "
+                    + "and a revision cannot withdraw a legacy edge")
     return Edit(status, tuple(notes), probe, record.text("next_probe") if probe else None, tuple(appended), successors)
 
 
@@ -513,7 +515,7 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
             found[identifier] = f"its status {edit.status} would replay as {shown}"
         if edit.successors and shown != "superseded":
-            found[identifier] = f"its successors {', '.join(edit.successors)} would not supersede it on replay"
+            found[identifier] = f"on replay it would not be superseded by its successors {', '.join(edit.successors)}"
     return found
 
 
@@ -598,7 +600,7 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
         for name in ("supersedes", "resolves"):
             added = set(record.links.named(name)) - set(base.links.named(name) if base is not None else ())
             if bad := sorted(target for target in added if result.kinds.get(target) not in ("revision", "superseded")):
-                raise SalvageError(f"{identifier}: {name} {', '.join(bad)}, which this run does not salvage")
+                raise SalvageError(f"{identifier}: {name} records this run does not salvage: {', '.join(bad)}")
         for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
             if target in out and target not in accepted and target not in proposed:
                 raise SalvageError(f"{identifier}: links {target}, which this run holds or reports as a conflict")
@@ -628,7 +630,7 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
         if identifier.split("-", 1)[0] in ASSIGNED and identifier not in accepted and result.kinds.get(identifier) != "new":
             assigned.append(identifier)
         if assigned:
-            raise SalvageError(f"{identifier}: carries {', '.join(assigned)}, not the accepted journal's ID for that identity")
+            raise SalvageError(f"{identifier}: carries IDs other than the accepted journal's for their identity: {', '.join(assigned)}")
     # (f) A proposal's REF, CP or RP link names the accepted record of the identity the branch's record had.
     for identifier, record in proposed.items():
         for target in record.links.targets():
@@ -789,7 +791,7 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
                 if place not in provisional:
                     top["REF"] += 1
                     provisional[place] = f"REF-{top['REF']:03d}"
-                    unmapped[provisional[place]] = f"{document_path(record)} as this branch has it; {known[key]} holds other text: settle the document first"
+                    unmapped[provisional[place]] = f"{document_path(record)} as this branch has it"
                 target = provisional[place]
             else:
                 # Ambiguity on either side is ambiguity: the export or the accepted journal holding the identity twice.
@@ -880,7 +882,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             renamed[name] = (f"it is gone from the branch (accepted as {', '.join(lost)}) and new {kind} rows appeared ({appeared}): "
                              + "a rename needs a superseding record; decide by hand")
         for name in gained:
-            renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
+            renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and the branch lost {', '.join(lost)}; "
                              + "a rename needs a superseding record; decide by hand")
     # A branch REF numbered provisionally only because its text differs from the in-force REF's (``renumber``) stands,
     # for a row the branch did not change, for the accepted REF the merge base's export cited: such a row is unchanged.
@@ -926,8 +928,17 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             hold(identifier, "undecided", f"it is {unmapped[identifier]}, which cannot be told apart ({identifier} is a provisional number)")
             continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
-            hold(identifier, "undecided", "it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in cited)
-                 + ", whose record must be accepted first")
+            # A document cited as the branch has it waits for the document; any other provisional record for its acceptance.
+            settle_first = [name for name in cited if name in after and after[name].type == "reference" and (key := identity(after[name])) is not None
+                            and any(identity(other) == key and other_name not in on_accepted.retired for other_name, other in accepted.items())]
+            clauses = [f"it cites {unmapped[name]} ({name}, a provisional number); "
+                       + ", ".join(sorted(other_name for other_name, other in accepted.items() if other_name not in on_accepted.retired
+                                          and identity(other) == identity(after[name])))
+                       + " holds other text: settle the document first" for name in settle_first]
+            if others := [name for name in cited if name not in settle_first]:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in others)
+                               + ("; that record must be accepted first" if len(others) == 1 else "; those records must be accepted first"))
+            hold(identifier, "undecided", "; ".join(clauses))
             for name in cited:
                 if name in after and (path := document_path(after[name])) is not None:
                     result.cited.setdefault(path, []).append(identifier)
@@ -1125,7 +1136,7 @@ def run(options: argparse.Namespace) -> int:
         for notice in result.notices:
             print(f"notice: {notice}", file=sys.stderr)
         for identifier, fields in result.unrevisable.items():
-            print(f"needs a superseding record: {identifier}: changes {', '.join(fields)}, which a revision may not change; "
+            print(f"needs a superseding record: {identifier}: a revision may not change {', '.join(fields)}; "
                   + "not proposed: propose a new record that supersedes it", file=sys.stderr)
         for identifier, reason in result.undecided.items():
             print(f"needs a decision by hand: {identifier}: {reason}; not proposed", file=sys.stderr)
