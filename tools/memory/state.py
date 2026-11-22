@@ -10,10 +10,29 @@ Links are stored once, on the newer record; ``State`` derives the inverses from 
 ``superseded_by`` (``supersedes`` edges, unioned with what a migrated record's legacy row stated
 about itself) and ``resolved_by``. ``State.status`` is the derived status: ``superseded``,
 ``resolved``, a migrated record's implied ``retired``, else the stored status.
+
+*The latest statement wins.* A migrated record's legacy status (``legacy.implied_status`` and the
+``legacy.superseded_by`` edges its row stated) is its status as of migration. It holds while the record's
+stored status is the one it was migrated with (``Entry.origin``, the stored status of its first revision;
+a revision may only store a vocabulary value, and every legacy-implied status was migrated beside a
+``legacy:`` stored status, so a revision that changes the stored status always states something new). A
+later revision that stores another status withdraws it for good (``Entry.legacy_holds``): it holds at a
+revision only if every revision on the path from the migration revision to it stores the migration status,
+so storing that status again later does not bring it back. At a fork each head is judged on its own path;
+a reconciling revision naming both as ``prev`` is withdrawn if either path withdrew it. A ``supersedes`` or
+``resolves`` link naming the record derives ``superseded`` or ``resolved`` whatever its revisions say. A
+revision that leaves the stored status alone (a note, a ``verified_on``) keeps the legacy status. Every
+record as migrated is at its first revision, so this changes nothing for the migration itself.
+
+A migrated unknown whose legacy status was ``resolved`` derives ``resolved`` from that status alone: the
+legacy table never said which finding resolved it, so no resolver edge exists. ``legacy_listed`` names
+the linked records one of its legacy cells lists (its Findings column: ``legacy_listed(record,
+"findings")``), for display as "resolved (legacy status); findings listed: ...".
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
@@ -23,6 +42,8 @@ from pathlib import Path
 from tools.memory.journal import Revision, Segment
 from tools.memory.model import ID, SELECTOR, Record, RecordError, as_mapping, id_key, type_of
 
+# An ID, or a range of two IDs of one type, as legacy cells write them (``F-1``, ``F-1 to F-3``, ``F-1..F-3``).
+LISTED = re.compile(rf"(?<![\w-])({ID.pattern})(?:(?:\.\.| to |–)({ID.pattern}))?(?![\w-])")
 PARTITIONS = ("current", "other-build", "legacy-scope", "native", "unscoped")
 RELEASE_CONFIG = "config/release.toml"
 
@@ -54,6 +75,30 @@ class Entry:
     @property
     def record(self) -> Record:
         return self.head.revision.record
+
+    @property
+    def origin(self) -> str | None:
+        """The stored status of the migration revision (a migrated first revision; ``None`` when there is none)."""
+        found = sorted(located.revision.record.status for located in self.revisions.values()
+                       if not located.revision.prev and located.revision.record.legacy is not None)
+        return found[0] if found else None
+
+    def legacy_holds(self, rev: str) -> bool:
+        """Whether the migrated record's legacy status holds at revision ``rev``: every revision on every path
+        from the migration revision to ``rev`` stores the migration status (``origin``). A ``prev`` this entry
+        does not hold is not judged (the history known here decides)."""
+        origin = self.origin
+        known: dict[str, bool] = {}
+
+        def holds(current: str, seen: frozenset[str]) -> bool:
+            if current not in known:
+                record = self.revisions[current].revision.record
+                prev = [item for item in self.revisions[current].revision.prev if item in self.revisions and item not in seen]
+                known[current] = (record.legacy is not None and (origin is None or record.status == origin)
+                                  and all(holds(item, seen | {current}) for item in prev))
+            return known[current]
+
+        return holds(rev, frozenset())
 
     def history(self) -> tuple[Located, ...]:
         """Every revision, each after all of its ``prev`` (ties by ``rev``)."""
@@ -88,15 +133,32 @@ class State:
         entry = self.entries.get(identifier)
         return entry.record if entry is not None else None
 
-    def status(self, identifier: str) -> str:
-        """Derived status of a known ID: superseded, resolved, an implied legacy retirement, or the stored status."""
-        record = self.entries[identifier].record
-        implied = record.legacy.implied_status if record.legacy is not None else None
-        if self.superseded_by.get(identifier) or implied == "superseded":
+    def stated_superseders(self, identifier: str) -> tuple[str, ...]:
+        """Records of this state whose own ``supersedes`` names ``identifier`` (``superseded_by`` also holds the
+        record's own legacy edges)."""
+        return tuple(name for name in self.superseded_by.get(identifier, ())
+                     if (record := self.record(name)) is not None and identifier in record.links.supersedes)
+
+    def status_at(self, entry: Entry, rev: str) -> str:
+        """THE derived status: revision ``rev`` of ``entry`` against this state's links. ``entry`` is the history
+        holding the revision, from whichever replay shows it (the union, a checkout's view, ``origin/main``), so
+        its legacy status is judged on its own path (``Entry.legacy_holds``); the links that supersede or resolve
+        it are those of this state (``origin/main``'s for the bank). Superseded by a stated link or by its legacy
+        edges while they hold; resolved by a link or its holding legacy status; a holding legacy retirement;
+        else its stored status. Every surface that shows a derived status asks this, never the record alone."""
+        record = entry.revisions[rev].revision.record
+        legacy = record.legacy if record.legacy is not None and entry.legacy_holds(rev) else None
+        implied = legacy.implied_status if legacy is not None else None
+        if self.stated_superseders(record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
             return "superseded"
-        if self.resolved_by.get(identifier) or implied == "resolved":
+        if self.resolved_by.get(record.id) or implied == "resolved":
             return "resolved"
         return "retired" if implied == "retired" else record.status
+
+    def status(self, identifier: str) -> str:
+        """``status_at`` of a known ID's head (the first, at a fork) against this state's own links."""
+        entry = self.entries[identifier]
+        return self.status_at(entry, entry.heads[0])
 
     def retired(self, identifier: str) -> bool:
         return self.status(identifier) in ("superseded", "retired")
@@ -214,7 +276,7 @@ def replay(segments: Iterable[Segment]) -> State:
                 superseded_by[target].add(identifier)
             for target in record.links.resolves:
                 resolved_by[target].add(identifier)
-            if record.legacy is not None:
+            if record.legacy is not None and entry.legacy_holds(rev):
                 superseded_by[identifier].update(record.legacy.superseded_by)
     return State(
         entries,
@@ -222,6 +284,23 @@ def replay(segments: Iterable[Segment]) -> State:
         {key: tuple(sorted(value, key=id_key)) for key, value in sorted(resolved_by.items())},
         tuple(problems),
     )
+
+
+def legacy_listed(record: Record, cell: str) -> tuple[str, ...]:
+    """The records ``record`` links (``refs``, ``cites``) that its legacy cell ``cell`` names, a range
+    covering the linked IDs between its ends; empty for a record without that cell."""
+    text = record.legacy.cells.get(cell, "") if record.legacy is not None else ""
+    linked = {*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)}
+    found: set[str] = set()
+    for match in LISTED.finditer(text):
+        first, last = match[1], match[2]
+        prefix = first.split("-", 1)[0]
+        if last is None or last.split("-", 1)[0] != prefix or prefix == "REL":
+            found.update(item for item in (first, last) if item in linked)
+            continue
+        low, high = id_key(first), id_key(last)
+        found.update(item for item in linked if item.split("-", 1)[0] == prefix and low <= id_key(item) <= high)
+    return tuple(sorted(found, key=id_key))
 
 
 def _has_cycle(revisions: Mapping[str, Located]) -> bool:

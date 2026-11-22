@@ -138,11 +138,15 @@ def revision_problems(state: State) -> list[str]:
 
 def _compare(old: Record, new: Record, reconciles: bool) -> list[str]:
     before, after = old.to_json(), new.to_json()
-    allowed = {"status", *APPEND_ONLY, *REVISABLE.get(new.type, ())}
+    revisable = set(REVISABLE.get(new.type, ()))
+    allowed = {"status", "gaps", *APPEND_ONLY, *revisable}
     problems = [
         f"{name} changed; it is not revisable (supersede with a new record)"
         for name in sorted(before.keys() | after.keys()) if name not in allowed and before.get(name) != after.get(name)
     ]
+    # A migrated record's gaps follow a revisable field the revision fills or clears, and nothing else.
+    if set(old.gaps) - revisable != set(new.gaps) - revisable:
+        problems.append("gaps changed; it is not revisable (supersede with a new record)")
     for name, earlier, later in (("notes", old.notes, new.notes), ("verified_on", old.links.verified_on, new.links.verified_on)):
         kept = set(earlier) <= set(later) if reconciles else later[:len(earlier)] == earlier
         if not kept:

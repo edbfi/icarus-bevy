@@ -10,7 +10,16 @@ of:
   ``local-private``;
 - while the worktree still has an ``evidence/`` directory, every such row of its legacy shards, read by
   ``legacy_rows``, this module's own strict reader of the four keys protection needs (it does not depend
-  on ``tools/docs_lint.py``, so old worktrees keep their branch-only rows protected after the lint is gone).
+  on ``tools/docs_lint.py``, so old worktrees keep their branch-only rows protected after the lint is gone);
+
+minus what ``origin/main`` releases. Protection follows the *derived* status, but releasing it depends on
+ACCEPTED links only: a row ``(ID, path)`` is dropped only when the journal of ``origin/main`` (read through
+Git from the primary checkout, without a checkout) holds that ID with the same path and its derived status
+there is ``superseded`` (a superseding record, or the migrated row's own legacy edge), or ``retired`` by a
+revision that follows the worktree's head (a legacy row has no head; a worktree head ``origin/main`` does not
+hold is a proposal, which keeps protecting). A proposal anywhere that supersedes or retires a record
+releases nothing until it is accepted, and a proposal that adds or re-activates an active record protects
+at once. When ``origin/main`` or its journal cannot be read, nothing is released.
 
 For each such record ``paths`` holds the path exactly as recorded (directories keep their trailing
 ``/``) and every existing file the record's sha256 manifest lists (``tools/sha256_manifest.py``
@@ -29,7 +38,8 @@ One ``Reader`` serves a whole run over many worktrees, which after cut-over carr
 it parses and fully validates each distinct segment once (segments are named by their content and
 immutable, so the same name with other bytes in another worktree is an error), replays each distinct set
 of segments once and parses each distinct shard text once. Its ``tick`` runs before every segment, shard
-and replay, so a caller with a time budget can stop inside the read.
+and replay, so a caller with a time budget can stop inside the read. ``origin/main``'s journal is read and
+replayed once per ``Reader``, through the same segment cache.
 
 ``ProtectedPathsError`` (unreadable or malformed journal, shard or manifest; Git failure; no worktree
 with a journal or a legacy index at all) means the list cannot be known: callers must treat every path
@@ -44,10 +54,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools import sha256_manifest
-from tools.memory.gitio import GitError, git
+from tools.memory.gitio import GitError, git, read_blobs, tree_files
 from tools.memory.journal import JOURNAL, JournalError, Segment, parse_segment, read_tree
 from tools.memory.model import RecordError, as_mapping, load_json
-from tools.memory.state import replay
+from tools.memory.state import State, replay
 
 LEGACY_INDEX = "evidence"
 # The legacy lint capped shards at 64 KiB; a larger one is not a shard it accepted.
@@ -55,6 +65,7 @@ LEGACY_SHARD_LIMIT = 64 * 1024
 LEGACY_KEYS = ("id", "class", "status", "path")
 LEGACY_CLASSES = ("local-private", "tracked", "external")
 LEGACY_STATUSES = ("active", "retired", "missing")
+ACCEPTANCE_REF = "origin/main"
 
 
 class ProtectedPathsError(RuntimeError):
@@ -191,14 +202,69 @@ def _no_deadline() -> None:
     pass
 
 
+@dataclass(frozen=True)
+class Release:
+    """What ``origin/main`` accepts about one evidence ID: its path on every head, its derived status, and every
+    revision identity it holds (a worktree head among them is not a newer proposal)."""
+
+    path: str | None
+    status: str
+    revisions: frozenset[str]
+
+    def releases(self, path: str, rev: str | None) -> bool:
+        """Whether the row ``path`` (of the worktree head ``rev``, ``None`` for a legacy row) is no longer protected."""
+        if self.path != path:
+            return False
+        return self.status == "superseded" or (self.status == "retired" and (rev is None or rev in self.revisions))
+
+
+def releases(settled: State) -> dict[str, Release]:
+    """Per evidence ID of the replayed ``origin/main`` journal ``settled``: what it releases, if anything. A
+    retirement on a forked record releases nothing, nor does a record whose heads disagree on the path."""
+    found: dict[str, Release] = {}
+    for identifier, entry in settled.entries.items():
+        if entry.record.type != "evidence":
+            continue
+        status = settled.status(identifier)
+        located = {entry.revisions[rev].revision.record.text("path") for rev in entry.heads}
+        if (status == "superseded" or (status == "retired" and not entry.conflict)) and len(located) == 1:
+            found[identifier] = Release(located.pop(), status, frozenset(entry.revisions))
+    return found
+
+
 @dataclass
 class Reader:
-    """Evidence rows of many checkouts in one run, each distinct segment, journal and shard read once."""
+    """Evidence rows of many checkouts in one run, each distinct segment, journal and shard read once.
+
+    ``primary`` is the checkout whose ``origin/main`` releases rows; ``None`` finds it from the first checkout read."""
 
     tick: Callable[[], None] = _no_deadline
+    primary: Path | None = None
     segments: dict[str, tuple[bytes, Segment]] = field(default_factory=dict)
-    journals: dict[tuple[str, ...], frozenset[tuple[str, str]]] = field(default_factory=dict)
+    journals: dict[tuple[str, ...], frozenset[tuple[str, str, str]]] = field(default_factory=dict)
     shards: dict[bytes, frozenset[tuple[str, str]]] = field(default_factory=dict)
+    accepted: dict[str, Release] | None = None
+
+    def _accepted(self, checkout: Path) -> dict[str, Release]:
+        """Evidence IDs of ``origin/main``'s journal that it supersedes or retires (empty when it cannot be read)."""
+        if self.accepted is None:
+            try:
+                primary = self.primary if self.primary is not None else primary_checkout(checkout)
+                files = tree_files(primary, f"{ACCEPTANCE_REF}^{{commit}}", JOURNAL)
+                names = sorted(files)
+                blobs = read_blobs(primary, [files[name] for name in names])
+                segments: list[Segment] = []
+                for name, data in zip(names, blobs, strict=True):
+                    if data is None:
+                        raise JournalError(f"{ACCEPTANCE_REF}:{name}: blob missing from the object store")
+                    segments.append(self._segment(name, data))
+            except (GitError, JournalError, ProtectedPathsError):
+                # Unreadable acceptance: nothing is released, every worktree's rows stay protected.
+                segments = []
+            if segments:
+                self.tick()
+            self.accepted = releases(replay(segments)) if segments else {}
+        return self.accepted
 
     def _segment(self, relative: str, data: bytes) -> Segment:
         self.tick()
@@ -212,23 +278,26 @@ class Reader:
         return known[1]
 
     def evidence_rows(self, checkout: Path) -> set[tuple[str, str]]:
-        """``(ID, path)`` of every active local-private evidence record in one checkout's journal and legacy shards."""
+        """``(ID, path)`` of every active local-private evidence record in one checkout's journal and legacy
+        shards that ``origin/main`` does not release (see the module docstring)."""
         try:
             segments = read_tree(checkout, self._segment)
         except JournalError as error:
             raise ProtectedPathsError(f"{checkout}: {error}") from error
+        accepted = self._accepted(checkout)
         key = tuple(segment.path for segment in segments)
         if key not in self.journals:
             self.tick()
-            found: set[tuple[str, str]] = set()
+            found: set[tuple[str, str, str]] = set()
             for entry in replay(segments).entries.values():
                 for sha in entry.heads:
                     record = entry.revisions[sha].revision.record
                     path = record.text("path")
                     if record.type == "evidence" and record.status == "active" and record.text("class") == "local-private" and path:
-                        found.add((record.id, path))
+                        found.add((record.id, path, sha))
             self.journals[key] = frozenset(found)
-        rows = set(self.journals[key])
+        rows = {(identifier, path) for identifier, path, sha in self.journals[key]
+                if (release := accepted.get(identifier)) is None or not release.releases(path, sha)}
         for shard in legacy_shards(checkout):
             self.tick()
             try:
@@ -238,7 +307,8 @@ class Reader:
                                                   if status == "active" and klass == "local-private")
             except (OSError, UnicodeDecodeError) as error:
                 raise ProtectedPathsError(f"{shard}: unreadable: {error}") from error
-            rows |= self.shards[data]
+            rows |= {(identifier, path) for identifier, path in self.shards[data]
+                     if (release := accepted.get(identifier)) is None or not release.releases(path, None)}
         return rows
 
 
@@ -252,7 +322,7 @@ def protected_paths_for(primary: Path, checkouts: Sequence[Path]) -> Protected:
     if not any(sources(checkout) for checkout in checkouts):
         raise ProtectedPathsError(f"no worktree has a journal ({JOURNAL}/) or a legacy index ({LEGACY_INDEX}/)")
     rows: set[tuple[str, str]] = set()
-    reader = Reader()
+    reader = Reader(primary=primary)
     for checkout in checkouts:
         rows |= reader.evidence_rows(checkout)
     root = sha256_manifest.normal(primary)

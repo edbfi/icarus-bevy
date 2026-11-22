@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple, cast, override
 from unittest.mock import patch
 
-from tools.memory import durability
+from tools.memory import durability, service
 from tools.memory.bank import BankError
 from tools.memory.cli import main
 from tools.memory.gitio import GitError
@@ -28,9 +28,11 @@ from tools.memory.journal import JournalError
 from tools.memory.durability import NO_JOURNAL, Backup, Watermark, backup, compare, restore, retained, rotate, verify
 from tools.memory.service import (
     API_PORT, BACKUP_SCRIPT, BACKUP_TIMER, BACKUP_UNIT, Api, Connection, FLOOR, PG_PORT, SETTINGS, UNIT, Assets, FloorError, Home, ServiceError, Settings, bank_config_problems,
-    backup_interpreter, connection, ensure_settings, feature_problems, home, install, installed_interpreter, parse_settings, read_settings, render_settings, require_floor, unit_files,
-    unit_word,
+    backup_interpreter, connection, ensure_settings, feature_problems, file_variables, home, install, installed_interpreter, parse_settings, read_settings, render_settings,
+    LEGACY_CONNECTION_FILE, TOMBSTONE, Unauthorized, require_floor, reranker_cap, reranker_check, rotate_connection, set_reranker, settings_check, unit_files, unit_word,
 )
+
+from tools.tests.memory_fixtures import clean_git_environment, commit_all, new_repository, run_git
 
 KEY, PASSWORD = "1" * 64, "2" * 64
 
@@ -61,7 +63,7 @@ class Homes(unittest.TestCase):
     def test_icarus_memory_home_is_one_scratch_root(self) -> None:
         chosen = home({"HOME": "/h", "XDG_CONFIG_HOME": "/c", "ICARUS_MEMORY_HOME": "/s"})
         self.assertEqual((chosen.config, chosen.data, chosen.state, chosen.scratch), (Path("/s/config"), Path("/s/data"), Path("/s/state"), True))
-        self.assertEqual((chosen.connection_file, chosen.pg0_home, chosen.backups), (Path("/s/config/connection.env"), Path("/s/data/pg0"), Path("/s/state/backups")))
+        self.assertEqual((chosen.connection_file, chosen.pg0_home, chosen.backups), (Path("/s/config/connection-v2.env"), Path("/s/data/pg0"), Path("/s/state/backups")))
 
 
 class ConnectionFile(Scratch):
@@ -111,6 +113,45 @@ class ConnectionFile(Scratch):
                 _ = parse_settings(broken)
 
 
+    def test_the_reranker_setting_is_off_by_default_or_a_cap_with_four_threads(self) -> None:
+        default = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus"))
+        self.assertIn("ICARUS_MEMORY_RERANKER=off\nHINDSIGHT_API_ENABLE_RERANKING=false\n", default)
+        self.assertNotIn("MAX_CANDIDATES", default)
+        self.assertNotIn("ONNX_THREADS", default)
+        older = "".join(line + "\n" for line in default.splitlines() if "RERANK" not in line)
+        self.assertEqual((None, None), (parse_settings(default).reranker_cap, parse_settings(older).reranker_cap))
+        on = render_settings(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus", "10"))
+        self.assertIn("ICARUS_MEMORY_RERANKER=10\nHINDSIGHT_API_ENABLE_RERANKING=true\nHINDSIGHT_API_RERANKER_MAX_CANDIDATES=10\n"
+                      + "HINDSIGHT_API_RERANKER_ONNX_THREADS=4\n", on)
+        self.assertEqual(10, parse_settings(on).reranker_cap)
+        for broken in (on.replace("ICARUS_MEMORY_RERANKER=10", "ICARUS_MEMORY_RERANKER=0"),
+                       on.replace("MAX_CANDIDATES=10", "MAX_CANDIDATES=20"),
+                       on.replace("ONNX_THREADS=4", "ONNX_THREADS=2"),
+                       default.replace("ENABLE_RERANKING=false", "ENABLE_RERANKING=true")):
+            with self.assertRaises(ServiceError):
+                _ = parse_settings(broken)
+        settings = ensure_settings(self.where)
+        changed, written = set_reranker(self.where, "20")
+        self.assertTrue(written)
+        self.assertEqual((changed.key, changed.reranker_cap), (settings.key, 20))
+        self.assertFalse(set_reranker(self.where, "20")[1], "an unchanged setting is not rewritten")
+        self.assertEqual(20, reranker_cap(self.where))
+        with self.assertRaises(ServiceError):
+            _ = set_reranker(self.where, "many")
+
+    def test_a_cap_takes_ascii_digits_only(self) -> None:
+        _ = ensure_settings(self.where)
+        for value in ("\u00b2", "\u0665", "\uff11\uff10", "1\u00b2"):
+            with self.assertRaisesRegex(ServiceError, "candidate cap from 1 to 500"):
+                _ = set_reranker(self.where, value)
+        self.assertIsNone(reranker_cap(self.where), "a refused value is never written")
+        stderr = io.StringIO()
+        with (patch("tools.memory.service.home", return_value=self.where), patch("tools.memory.service.repository_root", return_value=self.root),
+              patch("tools.memory.service.checked_assets", return_value=Assets(self.root / "runtime")), redirect_stderr(stderr)):
+            self.assertEqual(1, main(["service", "install", "--reranker", "\u00b2"]))
+        self.assertIn("memory service install: ICARUS_MEMORY_RERANKER must be off or a candidate cap from 1 to 500", stderr.getvalue())
+
+
 class Units(Scratch):
     def test_service_unit_carries_the_instance_settings_and_no_secret(self) -> None:
         settings = ensure_settings(self.where)
@@ -120,7 +161,7 @@ class Units(Scratch):
         for name, value in SETTINGS.items():
             self.assertIn(f"Environment={name}={value}\n", service)
         for line in ("StartLimitBurst=10", "RestartSec=5", f"EnvironmentFile={self.where.connection_file}", "KillMode=control-group", "Restart=on-failure", "CPUQuota=400%",
-                     "MemoryHigh=3584M", "MemoryMax=4608M", "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
+                     "MemoryHigh=4608M", "MemoryMax=6144M", "StandardOutput=null", "StandardError=null", "RuntimeDirectory=icarus-memory", "Environment=TMPDIR=%t/icarus-memory", f"Environment=PG0_HOME={self.where.pg0_home}",
                      f"ExecStartPre=-{self.root}/runtime/venv/lib/python3.14/site-packages/pg0/bin/pg0 stop --name hindsight --timeout 30",
                      f"ExecStart=/usr/bin/flock --shared --nonblock {self.root}/runtime/assets.lock {self.root}/runtime/venv/bin/python -m hindsight_api.main"):
             self.assertIn(line + "\n", service)
@@ -166,6 +207,138 @@ class Units(Scratch):
         self.assertEqual(unit_word("/plain/path-1.2"), "/plain/path-1.2")
         self.assertEqual(unit_word("/with space/100%/$HOME"), '"/with space/100%%/$$HOME"')
         self.assertEqual(unit_word('a"b\\c'), '"a\\"b\\\\c"')
+
+    def service_environment(self, where: Home, unit: str) -> dict[str, str]:
+        """What systemd gives the API process: the unit's ``Environment=`` lines, then the connection file, which
+        overrides them (systemd.exec(5): ``EnvironmentFile=`` settings override ``Environment=``)."""
+        variables: dict[str, str] = {}
+        for line in unit.splitlines():
+            if line.startswith("Environment="):
+                name, _, value = line.removeprefix("Environment=").strip('"').partition("=")
+                variables[name] = value
+        return variables | file_variables(where.connection_file.read_text(encoding="utf-8"))
+
+    def install_with(self, where: Home, reranker: str | None) -> tuple[dict[str, str], bool]:
+        """``install`` against a stand-in systemd; the service's environment afterwards, and whether it restarted."""
+        units = self.root / "units"
+        started: list[Settings] = []
+
+        def start(settings: Settings) -> float:
+            started.append(settings)
+            return 1.0
+
+        runtime = Assets(self.root / "runtime")
+        with (patch("tools.memory.service.systemctl"), patch("tools.memory.service.unit_directory", return_value=units),
+              patch("tools.memory.service.unit_active", return_value=True), patch("tools.memory.service.start_unit", side_effect=start),
+              patch("tools.memory.service.ensure_bank"), patch("tools.memory.service.primary_checkout_of", return_value=self.root),
+              patch("tools.memory.service.backup_interpreter", return_value="/usr/bin/python3")):
+            _ = install(where, runtime, self.root, reranker)
+        return self.service_environment(where, (units / UNIT).read_text(encoding="utf-8")), bool(started)
+
+    def test_install_sets_reranking_explicitly_in_the_service_environment(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        _ = ensure_settings(where)
+        written = where.connection_file.read_text(encoding="utf-8")
+        older = "".join(line + "\n" for line in written.splitlines() if "RERANK" not in line)
+        _ = where.connection_file.write_text(older, encoding="utf-8")
+        self.assertEqual(5, sum(1 for line in older.splitlines() if not line.startswith("#")))
+        self.assertIn("predates the reranker setting", settings_check(where).detail)
+        self.assertFalse(settings_check(where).ok)
+        # (a) A pre-change five-line file: a plain install writes the setting out and restarts.
+        environment, restarted = self.install_with(where, None)
+        self.assertEqual(("off", "false"), (environment["ICARUS_MEMORY_RERANKER"], environment["HINDSIGHT_API_ENABLE_RERANKING"]))
+        self.assertNotIn("HINDSIGHT_API_RERANKER_MAX_CANDIDATES", environment)
+        self.assertTrue(restarted)
+        self.assertEqual(written, where.connection_file.read_text(encoding="utf-8"), "the generated shape, key and ports kept")
+        self.assertTrue(settings_check(where).ok)
+        self.assertFalse(self.install_with(where, None)[1], "an install with nothing to change leaves the running service alone")
+        # Even the old file under the new unit runs with reranking off: the unit carries the floor.
+        _ = where.connection_file.write_text(older, encoding="utf-8")
+        self.assertEqual("false", self.service_environment(where, unit_files(where, Assets(self.root / "runtime"), self.root, "/usr/bin/python3")[UNIT])
+                         ["HINDSIGHT_API_ENABLE_RERANKING"])
+        # (c) A cap turns it on with the cap and four threads; a plain install keeps it.
+        environment, restarted = self.install_with(where, "10")
+        self.assertEqual(("10", "true", "10", "4"), (environment["ICARUS_MEMORY_RERANKER"], environment["HINDSIGHT_API_ENABLE_RERANKING"],
+                                                     environment["HINDSIGHT_API_RERANKER_MAX_CANDIDATES"], environment["HINDSIGHT_API_RERANKER_ONNX_THREADS"]))
+        self.assertTrue(restarted)
+        environment, restarted = self.install_with(where, None)
+        self.assertEqual(("10", "true"), (environment["ICARUS_MEMORY_RERANKER"], environment["HINDSIGHT_API_ENABLE_RERANKING"]))
+        self.assertFalse(restarted)
+        # (b) Off again: explicitly false, and the cap and threads are gone.
+        environment, restarted = self.install_with(where, "off")
+        self.assertEqual(("off", "false"), (environment["ICARUS_MEMORY_RERANKER"], environment["HINDSIGHT_API_ENABLE_RERANKING"]))
+        self.assertFalse({"HINDSIGHT_API_RERANKER_MAX_CANDIDATES", "HINDSIGHT_API_RERANKER_ONNX_THREADS"} & set(environment))
+        self.assertTrue(restarted)
+
+    def test_status_names_reranking_that_differs_from_the_settings(self) -> None:
+        off = Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus")
+        mismatch = reranker_check(off, True)
+        self.assertFalse(mismatch.ok)
+        self.assertTrue(mismatch.detail.startswith("reranking is on in the service but the settings say off; run memory service install"))
+        self.assertTrue(reranker_check(off, False).ok)
+        capped = reranker_check(Settings(API_PORT, KEY, PG_PORT, PASSWORD, "icarus", "10"), False)
+        self.assertTrue(capped.detail.startswith("reranking is off in the service but the settings say on"))
+        self.assertIn("unreported", reranker_check(off, None).detail)
+
+    def test_install_retires_the_released_connection_file_with_a_new_key_once(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        old = ensure_settings(where)
+        legacy = where.config / LEGACY_CONNECTION_FILE
+        _ = where.connection_file.rename(legacy)
+        environment, restarted = self.install_with(where, None)
+        new = read_settings(where)
+        self.assertTrue(restarted, "the unit restarts with the new key")
+        self.assertEqual(TOMBSTONE, legacy.read_bytes(), "a tool without the rendering guard finds a tombstone")
+        self.assertEqual(0o600, legacy.stat().st_mode & 0o777)
+        with self.assertRaisesRegex(ServiceError, ":1: malformed or repeated line"):
+            _ = read_settings(where, legacy)
+        self.assertNotEqual(old.key, new.key)
+        self.assertEqual((old.port, old.pg_port, old.pg_password, old.reranker), (new.port, new.pg_port, new.pg_password, new.reranker))
+        self.assertEqual(new.key, environment["HINDSIGHT_API_TENANT_API_KEY"], "the unit reads the new file")
+        self.assertEqual(where.connection_file.stat().st_mode & 0o777, 0o600)
+        stamp = legacy.stat().st_mtime_ns
+        self.assertFalse(self.install_with(where, None)[1], "a second install rotates nothing")
+        self.assertEqual((new, stamp), (read_settings(where), legacy.stat().st_mtime_ns), "nor rewrites the tombstone")
+        # Valid old settings beside the new file (written by an old install) are tombstoned; anything else is refused, untouched.
+        _ = legacy.write_text(where.connection_file.read_text(encoding="utf-8"), encoding="utf-8")
+        legacy.chmod(0o600)
+        self.assertFalse(rotate_connection(where))
+        self.assertEqual((TOMBSTONE, new), (legacy.read_bytes(), read_settings(where)))
+        _ = legacy.write_text("anything", encoding="utf-8")
+        legacy.chmod(0o600)
+        with self.assertRaisesRegex(ServiceError, "^connection.env:1: malformed or repeated line$"):
+            _ = rotate_connection(where)
+        self.assertEqual("anything", legacy.read_text(encoding="utf-8"))
+
+    def test_a_retry_after_an_interrupted_install_restarts_a_process_holding_the_old_key(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        _ = self.install_with(where, None)
+        runtime = Assets(self.root / "runtime")
+        for failure, restarts in ((Unauthorized("bank icarus: HTTP 401"), 1), (ServiceError("bank icarus: HTTP 500"), 0)):
+            with self.subTest(failure=str(failure)):
+                started: list[Settings] = []
+
+                def start(settings: Settings) -> float:
+                    started.append(settings)
+                    return 1.0
+
+                with (patch("tools.memory.service.systemctl"), patch("tools.memory.service.unit_directory", return_value=self.root / "units"),
+                      patch("tools.memory.service.unit_active", return_value=True), patch("tools.memory.service.start_unit", side_effect=start),
+                      patch("tools.memory.service.ensure_bank", side_effect=[failure, None]), patch("tools.memory.service.primary_checkout_of", return_value=self.root),
+                      patch("tools.memory.service.backup_interpreter", return_value="/usr/bin/python3")):
+                    if restarts:
+                        self.assertEqual(1.0, install(where, runtime, self.root, None))
+                    else:
+                        with self.assertRaisesRegex(ServiceError, "HTTP 500"):
+                            _ = install(where, runtime, self.root, None)
+                self.assertEqual(restarts, len(started))
+
+    def test_a_fresh_install_leaves_the_tombstone_too(self) -> None:
+        where = Home(self.root / "config", self.root / "data", self.root / "state")
+        _, restarted = self.install_with(where, None)
+        self.assertTrue(restarted)
+        self.assertEqual(TOMBSTONE, (where.config / LEGACY_CONNECTION_FILE).read_bytes())
+        self.assertEqual(where.connection_file.name, "connection-v2.env")
 
     def test_install_never_manages_a_scratch_home(self) -> None:
         with self.assertRaisesRegex(ServiceError, "ICARUS_MEMORY_HOME"):
@@ -220,6 +393,27 @@ class Watermarks(unittest.TestCase):
         for data in (b'{"segments":[],"origin_main":null}\n', b'{"origin_main":null}\n', b'{"origin_main":null,"segments":[1]}\n', b"[]\n", b"{"):
             with self.assertRaises(ServiceError):
                 _ = Watermark.decode(data)
+
+
+class GitCalls(Scratch):
+    def test_git_failures_degrade_cleanly(self) -> None:
+        outside = self.root / "not-a-checkout"
+        outside.mkdir()
+        with clean_git_environment():
+            self.assertIsNone(durability.descends_from(outside, "a" * 40, "b" * 40))
+            repository = self.root / "repository"
+            repository.mkdir()
+            new_repository(repository)
+            _ = (repository / "file").write_text("one\n", encoding="utf-8")
+            commit_all(repository)
+            first = run_git(repository, "rev-parse", "HEAD").strip()
+            _ = (repository / "file").write_text("two\n", encoding="utf-8")
+            commit_all(repository)
+            second = run_git(repository, "rev-parse", "HEAD").strip()
+            self.assertEqual((True, False, None), (durability.descends_from(repository, first, second), durability.descends_from(repository, second, first),
+                                                   durability.descends_from(repository, "f" * 40, second)))
+            with patch("tools.memory.service.Path.cwd", return_value=outside), self.assertRaisesRegex(ServiceError, "inside a checkout"):
+                _ = service.repository_root()
 
 
 def stamp(day: int, hour: int = 3) -> datetime:
@@ -364,6 +558,41 @@ class RestoreRollback(Backups):
         self.assertEqual(settings.bank, "icarus")
 
 
+class DrillSettings(Backups):
+    def test_the_scratch_instance_runs_with_the_live_reranker_setting(self) -> None:
+        installed = Home(self.root / "live/config", self.root / "live/data", self.root / "live/state")
+        _ = ensure_settings(installed)
+        _settings, changed = set_reranker(installed, "40")
+        self.assertTrue(changed)
+        served: list[Settings] = []
+
+        def restore_cluster(pg0_home: Path, _dump: Path, _settings: Settings, _runtime: Assets) -> None:
+            pg0_home.mkdir(parents=True)
+
+        def serve(_scratch: Home, settings: Settings, _runtime: Assets) -> tuple[subprocess.Popen[bytes], float]:
+            served.append(settings)
+            raise ServiceError("stop here: the scratch settings are what this test reads")
+
+        def noop(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        def ready(_api: Api) -> bool:
+            return True
+
+        def free(_port: int) -> bool:
+            return False
+
+        floor = patch("tools.memory.service.shutil.disk_usage", return_value=Usage(FLOOR * 4, FLOOR, FLOOR * 3))
+        with (floor, patch.object(Api, "ready", ready), patch.object(durability, "port_open", free),
+              patch.object(durability, "restore_cluster", restore_cluster), patch.object(durability, "prepare_runtime_directories", noop),
+              patch.object(durability, "serve", serve), patch.object(durability, "stop_postgres", noop)):
+            with self.assertRaisesRegex(ServiceError, "stop here"):
+                _ = durability.drill(installed, self.runtime())
+        self.assertEqual(["40"], [item.reranker for item in served])
+        self.assertEqual(40, served[0].reranker_cap)
+        self.assertNotEqual(API_PORT, served[0].port, "the scratch instance never takes the live port")
+
+
 class Serve(Scratch):
     def test_a_scratch_instance_refuses_a_port_in_use(self) -> None:
         with socket.socket() as taken:
@@ -412,7 +641,7 @@ class CommandLine(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"ICARUS_MEMORY_HOME": root}):
             created = ensure_settings(home())
             self.assertEqual(read_settings(home()), created)
-            self.assertTrue(Path(root, "config/connection.env").is_file())
+            self.assertTrue(Path(root, "config/connection-v2.env").is_file())
 
 
 if __name__ == "__main__":

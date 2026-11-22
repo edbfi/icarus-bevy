@@ -32,6 +32,12 @@ revisions that are no longer desired (a pending revision since accepted, an olde
 document whose ``rev`` no gathered segment holds is *unexplained*: it is left alone, and only
 ``memory sync`` after a successful fetch re-tags it ``state:orphaned``. The same diff is publication,
 the replay of a half-applied change set, ``rebuild`` and the repair path.
+
+*Rendering version.* The reconcile marker and stamp carry ``canonical.RENDERING`` (the marker's text ends
+``rendering N``; a marker without it was written by a tool before version 2 and reads as 1). A tool whose
+version is lower than the marker's refuses to reconcile, so it never rewrites newer documents with older
+text: ``reconcile`` raises ``OlderTool`` (merge ``main``), and every write and the repair path go through
+it. A tool with a higher version reconciles, which re-renders every document and raises the marker.
 """
 
 from __future__ import annotations
@@ -43,7 +49,7 @@ from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from tools.memory.canonical import RenderError, canonical_json, entities, render_text, tags
+from tools.memory.canonical import RENDERING, RenderError, canonical_json, entities, render_text, tags
 from tools.memory.gitio import GitError, changed_files, git, read_blobs, run_git, tree_files
 from tools.memory.hindsight import Document, Group, Hit, Item, Tags, Unit
 from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, load_cache, parse_segment, read_git, read_tree, save_cache
@@ -255,18 +261,6 @@ class Desired:
     item: Item
 
 
-def derived_status(settled: State, record: Record) -> str:
-    """The status a revision shows in the bank: superseded or resolved by ACCEPTED links (``settled``, the
-    replay of ``origin/main``) or by its own legacy row, an implied legacy retirement, or its stored status."""
-    legacy = record.legacy
-    implied = legacy.implied_status if legacy is not None else None
-    if settled.superseded_by.get(record.id) or (legacy is not None and legacy.superseded_by) or implied == "superseded":
-        return "superseded"
-    if settled.resolved_by.get(record.id) or implied == "resolved":
-        return "resolved"
-    return "retired" if implied == "retired" else record.status
-
-
 def document_text(record: Record, status: str) -> str:
     """The rendered text with the derived status; the stored rendering when that would not fit."""
     if status == record.status or record.body is not None:
@@ -312,7 +306,7 @@ def desired_for(universe: Universe, identifier: str) -> list[Desired]:
 
     def add(document_id: str, rev: str, document_state: str) -> None:
         located = entry.revisions[rev]
-        status = derived_status(universe.settled, located.revision.record)
+        status = universe.settled.status_at(entry, rev)
         item = item_for(document_id, located.revision, located.segment, document_state, status)
         found.append(Desired(document_id, entry.id, document_state, status, located.revision, located.segment, item))
 
@@ -437,7 +431,10 @@ def orphan_tags(document: Document) -> tuple[str, ...] | None:
 
 def reconcile(bank: Bank, universe: Universe, *, bulk: bool = False, orphan: bool = False) -> Applied:
     """Make the bank hold exactly ``desired(universe)``; with ``orphan`` (only after a successful fetch)
-    re-tag unexplained documents ``state:orphaned``. Raises ``BankError`` if a desired document still differs."""
+    re-tag unexplained documents ``state:orphaned``. Raises ``OlderTool`` before touching a bank a newer
+    tool rendered, and ``BankError`` if a desired document still differs."""
+    if (held := marker_rendering(bank)) is not None and held > RENDERING:
+        raise OlderTool(held)
     wanted = desired(universe)
     plan = diff(wanted, bank.documents(), universe.known)
     apply(bank, plan, bulk=bulk)
@@ -463,27 +460,47 @@ def reconcile(bank: Bank, universe: Universe, *, bulk: bool = False, orphan: boo
 
 MARKER = "memory-stamp"
 STAMP_FILE = "memory.stamp.json"
+MARKER_RENDERING = re.compile(r" rendering ([0-9]+)$")
+
+
+class OlderTool(BankError):
+    """The bank was rendered by a newer tool; this one must not reconcile or write it."""
+
+    def __init__(self, held: int) -> None:
+        super().__init__(f"this tool renders records at version {RENDERING}, older than the bank's {held}: it does not write or repair"
+                         + " the bank; merge main into this worktree (exact reads by ID still work)")
+        self.held: int = held
 
 
 @dataclass(frozen=True)
 class Stamp:
-    """The ``origin/main`` commit and the sha256 of every segment a reconciliation applied. ``digest`` names
-    it; the bank holds the same digest in its ``MARKER`` document, so a restored or foreign-written bank
-    (whose marker differs) is never trusted."""
+    """The ``origin/main`` commit, the sha256 of every segment a reconciliation applied and the rendering
+    version. ``digest`` names it; the bank holds the same digest in its ``MARKER`` document, so a restored
+    or foreign-written bank (whose marker differs) is never trusted."""
 
     origin_main: str | None
     segments: tuple[str, ...]
+    rendering: int = RENDERING
 
     @property
     def digest(self) -> str:
-        return sha256_hex(canonical_json({"origin_main": self.origin_main, "segments": list(self.segments)}))
+        return sha256_hex(canonical_json({"origin_main": self.origin_main, "rendering": self.rendering, "segments": list(self.segments)}))
 
     def json(self) -> bytes:
-        return canonical_json({"digest": self.digest, "origin_main": self.origin_main, "segments": list(self.segments)})
+        return canonical_json({"digest": self.digest, "origin_main": self.origin_main, "rendering": self.rendering, "segments": list(self.segments)})
 
 
 def marker_item(stamp: Stamp) -> Item:
-    return Item(MARKER, f"memory stamp {stamp.digest}", ("marker:stamp",), {"stamp": stamp.digest}, "unset", ())
+    return Item(MARKER, f"memory stamp {stamp.digest} rendering {stamp.rendering}", ("marker:stamp",), {"stamp": stamp.digest}, "unset", ())
+
+
+def marker_rendering(bank: Bank) -> int | None:
+    """The rendering version of the bank's marker: ``None`` without a marker, 1 for one written before versions."""
+    held = bank.document(MARKER)
+    if held is None:
+        return None
+    found = MARKER_RENDERING.search(held.text or "")
+    return int(found[1]) if found else 1
 
 
 def mark(bank: Bank, stamp: Stamp) -> None:

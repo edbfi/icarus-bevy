@@ -158,7 +158,7 @@ class Protocol(unittest.TestCase):
         superseded = self.call(3, "supersede", {"old": "F-106", "by": "F-107"})
         self.assertFalse(superseded["isError"])
         self.assertIn("status:active", self.bank.held["F-106"].tags)
-        recalled = self.call(4, "recall", {"query": "lock follows the key"})
+        recalled = self.call(4, "recall", {"query": "lock follows the key", "limit": 5})
         recall_text = recalled["content"]
         assert isinstance(recall_text, list) and isinstance(recall_text[0], dict)
         self.assertIn("proposed superseder: F-107 (proposed, this worktree)", str(recall_text[0]["text"]))
@@ -180,6 +180,10 @@ class Protocol(unittest.TestCase):
         self.assertEqual(-32602, error_code(self.pipe.request(3, "tools/call", {"name": "get", "arguments": {}})))
         self.assertEqual(-32602, error_code(self.pipe.request(4, "tools/call", {"name": "get", "arguments": {"id": "F-101", "extra": 1}})))
         self.assertEqual(-32602, error_code(self.pipe.request(5, "tools/call", {"name": "get", "arguments": {"id": 7}})))
+        invalid: list[JSON] = ["abc", True, False, 0, -3]
+        for number, limit in enumerate(invalid, start=20):
+            self.assertEqual(-32602, error_code(self.pipe.request(number, "tools/call", {"name": "recall", "arguments": {"query": "x", "limit": limit}})),
+                             repr(limit))
         self.pipe.send({"jsonrpc": "1.0", "id": 6, "method": "ping"})
         self.assertEqual(-32600, error_code(self.pipe.receive()))
         self.pipe.send([{"jsonrpc": "2.0", "id": 7, "method": "ping"}])
@@ -230,4 +234,4 @@ class StdioSession(unittest.TestCase):
         content = status["content"]
         assert isinstance(content, list) and isinstance(content[0], dict)
         self.assertTrue(status["isError"])
-        self.assertIn("connection.env", str(content[0]["text"]))
+        self.assertIn("connection-v2.env", str(content[0]["text"]))

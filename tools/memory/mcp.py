@@ -92,6 +92,11 @@ def flag(argument: Arguments, name: str) -> bool:
     return argument.get(name) is True
 
 
+def number(argument: Arguments, name: str) -> int | None:
+    value = argument.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def changes(argument: Arguments) -> online.Changes:
     fields = argument.get("fields")
     return online.Changes(dict(fields) if isinstance(fields, dict) else {}, optional(argument, "note"), optional(argument, "body"))
@@ -133,22 +138,29 @@ def check(context: Context, argument: Arguments) -> online.Output:
 
 STRING: JSON = {"type": "string"}
 BOOLEAN: JSON = {"type": "boolean"}
+INTEGER: JSON = {"type": "integer", "minimum": 1}
 FIELDS: JSON = {"type": "object", "description": "record fields to set, as the record's JSON names them (null removes one)"}
 NOTE: JSON = {"type": "string", "description": "a note to append"}
 BODY: JSON = {"type": "string", "description": "a reference's Markdown body"}
 TOOLS: tuple[Tool, ...] = (
     Tool("get", "Exact GET of one record (ID or evidence selector M-N/ev_<12 hex>), verified against the journal: state, status from " +
          "accepted links, partition, pending revisions, conflicts, evidence status and this worktree's proposed superseders and resolvers.",
-         {"id": STRING, "history": BOOLEAN, "all_proposals": BOOLEAN}, ("id",),
-         lambda c, a: online.get(c.bank(), c.root, text(a, "id"), history=flag(a, "history"), all_proposals=flag(a, "all_proposals"))),
+         {"id": STRING, "history": BOOLEAN, "all_proposals": BOOLEAN, "full": BOOLEAN}, ("id",),
+         lambda c, a: online.get(c.bank(), c.root, text(a, "id"), history=flag(a, "history"), all_proposals=flag(a, "all_proposals"), full=flag(a, "full"))),
     Tool("recall", "Ranked search with strict tags, partitioned against a release (default the pin); IDs named in the query are fetched by exact " +
          "GET first. Accepted records plus this worktree's proposals; other worktrees' with all_proposals; evidence with include_evidence; " +
-         "text adds a substring search.",
-         {"query": STRING, "release": STRING, "text": STRING, "all_proposals": BOOLEAN, "include_evidence": BOOLEAN}, ("query",),
+         "text adds a substring search (its hits first). Compact by default (at most 12 hits, about 6 KB; records before reference " +
+         "documents, at most 3 of those, each only its matching passage): get reads a record; limit ranks more hits, refs lists only " +
+         "reference documents with longer passages, full prints every hit's whole text.",
+         {"query": STRING, "release": STRING, "text": STRING, "all_proposals": BOOLEAN, "include_evidence": BOOLEAN, "limit": INTEGER, "full": BOOLEAN,
+          "refs": BOOLEAN},
+         ("query",),
          lambda c, a: online.recall(c.bank(), c.root, text(a, "query"), release=optional(a, "release"), text=optional(a, "text"),
-                                    all_proposals=flag(a, "all_proposals"), include_evidence=flag(a, "include_evidence"))),
-    Tool("area", "One area's records by status and partition, its open unknowns and the closure of their links.", {"area": STRING}, ("area",),
-         lambda c, a: online.area(c.bank(), c.root, text(a, "area"))),
+                                    all_proposals=flag(a, "all_proposals"), include_evidence=flag(a, "include_evidence"), limit=number(a, "limit"),
+                                    full=flag(a, "full"), refs=flag(a, "refs"))),
+    Tool("area", "One area's records by status and partition, its open unknowns and the closure of their links; compact by default, " +
+         "full lists every record.", {"area": STRING, "full": BOOLEAN}, ("area",),
+         lambda c, a: online.area(c.bank(), c.root, text(a, "area"), full=flag(a, "full"))),
     Tool("status", "The pin; counts by type, status and partition; cited records not current; open unknowns; evidence not known good on disk.",
          {}, (), lambda c, _a: online.status(c.bank(), c.root)),
     Tool("propose", "Propose a new record of a type; the tool allocates the ID (a release names its REL-x.y.z in fields.id). Schema, scope, " +
@@ -181,13 +193,18 @@ TOOLS: tuple[Tool, ...] = (
 
 
 def matches(schema: JSON, value: JSON) -> bool:
-    """``value`` against the small JSON Schema subset the tools use: type, enum and array items."""
+    """``value`` against the small JSON Schema subset the tools use: type, enum, an integer's minimum and array items.
+    A boolean is never an integer, although Python's ``bool`` is an ``int``."""
     if not isinstance(schema, dict):
         return True
     match schema.get("type"):
         case "string":
             enum = schema.get("enum")
             return isinstance(value, str) and (not isinstance(enum, list) or value in enum)
+        case "integer":
+            minimum = schema.get("minimum")
+            return (isinstance(value, int) and not isinstance(value, bool)
+                    and (not isinstance(minimum, int) or isinstance(minimum, bool) or value >= minimum))
         case "boolean":
             return isinstance(value, bool)
         case "object":

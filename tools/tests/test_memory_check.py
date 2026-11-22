@@ -273,8 +273,8 @@ class GetTests(Repository):
         _ = write(self.root, [finding("F-405", "Invented proposal")], second=1)
         status, output, _ = self.run_get("F-101", "--offline")
         self.assertEqual(0, status)
-        self.assertTrue(output.startswith("F-101 finding active\nInvented: the prompt"))
-        for line in ("state: accepted", "status: superseded (stored active)", "partition: other-build against REL-9.0.2; tokens server:90000001",
+        self.assertTrue(output.startswith("F-101 finding superseded\nInvented: the prompt"), "the text renders the derived status, as the bank holds it")
+        for line in ("state: accepted", "status: superseded (link from F-102)", "partition: other-build against REL-9.0.2; tokens server:90000001",
                      "superseded by: F-102 (terminal: F-106)"):
             self.assertIn(line, output)
         self.assertIn("state: proposed", self.run_get("F-405", "--offline")[1])
@@ -290,7 +290,7 @@ class GetTests(Repository):
         with patch.dict(os.environ, {"ICARUS_MEMORY_HOME": str(self.top / "no-service")}):
             status, _, error = self.run_get("F-101")
         self.assertEqual(1, status)
-        self.assertIn("connection.env", error)
+        self.assertIn("connection-v2.env", error)
 
 
 class ProtectedPathsTests(Repository):

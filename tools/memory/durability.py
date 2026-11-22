@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from tools.memory.bank import BankError, gather, reconcile
-from tools.memory.gitio import GitError, git
+from tools.memory.gitio import GitError, git, run_git
 from tools.memory.hindsight import Client, HindsightError
 from tools.memory.journal import JournalError, segment_bytes
 from tools.memory.model import sha256_hex
@@ -462,7 +462,8 @@ def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = 
           journal_check: Callable[[Connection, Watermark], list[str]] = no_journal_check) -> Drilled:
     """Back up the live instance, restore that backup into a scratch home on other ports, compare it read-only with the live one, remove it."""
     require_floor(where.state)
-    live = Api(read_settings(where).connection())
+    current = read_settings(where)
+    live = Api(current.connection())
     if not live.ready():
         raise ServiceError("the live service is not ready; the drill compares against it")
     for port in (DRILL_PORT, DRILL_PG_PORT):
@@ -474,7 +475,9 @@ def drill(where: Home, runtime: Assets, *, watermark: Callable[[], Watermark] = 
     process: subprocess.Popen[bytes] | None = None
     scratch = Home.under(root)
     try:
-        settings = ensure_settings(scratch, port=DRILL_PORT, pg_port=DRILL_PG_PORT)
+        # The scratch instance runs with the live reranker setting: its health checks and the journal comparison
+        # (``check --bank``) assert the bank config against that setting.
+        settings = ensure_settings(scratch, port=DRILL_PORT, pg_port=DRILL_PG_PORT, reranker=current.reranker)
         began = time.monotonic()
         with Lock(where.backups):
             restore_cluster(scratch.pg0_home, made.backup.dump, settings, runtime)
@@ -528,9 +531,12 @@ def watermark_problems(root: Path, mark: Watermark) -> list[str]:
 
 
 def descends_from(root: Path, ancestor: str, commit: str) -> bool | None:
-    result = subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", "--end-of-options", ancestor, commit],
-                            capture_output=True, check=False)
-    return {0: True, 1: False}.get(result.returncode)
+    """Whether ``commit`` descends from ``ancestor``; ``None`` when Git cannot tell (unknown commit, shallow clone)."""
+    try:
+        status, _ = run_git(root, "merge-base", "--is-ancestor", "--end-of-options", ancestor, commit, ok=(0, 1))
+    except GitError:
+        return None
+    return status == 0
 
 
 def replay_forward(root: Path) -> Callable[[Connection, Watermark], None]:
@@ -606,6 +612,7 @@ def register(commands: Subcommands) -> None:
     """``memory service ...``, ``memory backup`` and ``memory restore ...``."""
     service = commands.add_parser("service", help="install and run the always-on memory service")
     _ = service.add_argument("action", choices=("install", "start", "stop", "status", "uninstall"))
+    _ = service.add_argument("--reranker", metavar="off|N", help="with install: turn reranking off or cap its candidates per recall (default: the current setting, off on a first install)")
     service.set_defaults(handler=run_service)
     made = commands.add_parser("backup", help="pg_dump the memory service with its watermark, then rotate")
     made.set_defaults(handler=run_backup)
