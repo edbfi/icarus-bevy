@@ -87,7 +87,7 @@ import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from tools.evidence_catalog_model import CatalogError
 from tools.evidence_catalog_store import LEGACY_ROOTS
@@ -521,13 +521,24 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
     return {identifier: joined(clauses) for identifier, clauses in replay_failures(on_accepted, proposals, edits, branch, minted).items()}
 
 
-def joined(clauses: Sequence[tuple[int, str]]) -> str:
-    """A reason from its clauses (rank 0 wait, 1 settle, 2 decide), ordered so that it ends by the strongest."""
-    return "; ".join(clause for _rank, clause in sorted(dict.fromkeys(clauses), key=lambda item: item[0]))
+class Clause(NamedTuple):
+    """One cause of a held row: its rank (0 wait, 1 settle, 2 decide), its text ending by that action, the records a
+    waiting clause waits for, and the text before its ending (``stem``)."""
+
+    rank: int
+    text: str
+    waits: tuple[str, ...] = ()
+    stem: str = ""
+
+
+def joined(clauses: Sequence[Clause]) -> str:
+    """A reason from its clauses, each once, ordered so that it ends by the strongest."""
+    unique = list({clause.text: clause for clause in clauses}.values())
+    return "; ".join(clause.text for clause in sorted(unique, key=lambda clause: clause.rank))
 
 
 def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit],
-                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[Clause]]:
     """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly and every edit
     must show. Any replay, revision, link or cycle problem the accepted journal alone does not have (``check
     --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
@@ -547,11 +558,11 @@ def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits:
     known = set(problems(accepted_state))
     # Every failure of a row is kept, each as a clause ending by its action, ordered wait, then decide: the reason ends by
     # the strongest, and nothing is hidden behind the first failure found.
-    clauses: dict[str, list[tuple[int, str]]] = {}
+    clauses: dict[str, list[Clause]] = {}
 
-    def add(identifier: str, rank: int, clause: str) -> None:
-        if (rank, clause) not in (bucket := clauses.setdefault(identifier, [])):
-            bucket.append((rank, clause))
+    def add(identifier: str, clause: Clause) -> None:
+        if clause not in (bucket := clauses.setdefault(identifier, [])):
+            bucket.append(clause)
 
     for problem in problems(proposed):
         if problem in known:
@@ -567,21 +578,22 @@ def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits:
                             + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")), 0
         else:
             ending, rank = ": decide by hand", 2
+        stem = f"it would not replay cleanly: {problem}"
         for identifier in named or sorted(ids, key=id_key):
-            add(identifier, rank, f"it would not replay cleanly: {problem}{ending}")
+            add(identifier, Clause(rank, stem + ending, tuple(missing) if rank == 0 else (), stem))
     for revision in proposals:
         identifier = revision.record.id
         before = accepted_state.entries.get(identifier)
         if before is not None and before.record == proposed.entries[identifier].record:
-            add(identifier, 2, "its revision would replay to no change: decide by hand")
+            add(identifier, Clause(2, "its revision would replay to no change: decide by hand"))
     for identifier, edit in edits.items():
         if identifier not in proposed.entries:
             continue
         shown = proposed.status(identifier)
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
-            add(identifier, 2, f"its status {edit.status} would replay as {shown}: decide by hand")
+            add(identifier, Clause(2, f"its status {edit.status} would replay as {shown}: decide by hand"))
         if edit.successors and shown != "superseded":
-            add(identifier, 2, f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand")
+            add(identifier, Clause(2, f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand"))
     return clauses
 
 
@@ -611,12 +623,14 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
     link. Returns the proposals and the accepted records that could not carry links, with why."""
     accepted = on_accepted.records
     unlinkable: dict[str, str] = {}
-    replayed: dict[str, list[tuple[int, str]]] = {}
+    replayed: dict[str, list[Clause]] = {}
+    # Every row settle holds, with its clauses: the waits among them are checked for cycles once the set is final.
+    structured: dict[str, list[Clause]] = {}
     playing = ("revision", "superseded")
     while True:
         proposals = {identifier: revision for identifier, revision in own.items() if result.kinds.get(identifier) not in ("supersede", "undecided")}
         carriers: dict[str, Revision] = {}
-        stuck: dict[str, str] = {}
+        stuck: dict[str, Clause] = {}
         for old, targets in pending_links.items():
             if result.kinds.get(old) not in playing:
                 continue
@@ -634,7 +648,8 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         # Recorded as citing it only when this is the reason the old row is held (the first one found).
                         path, reason = found
                         if old not in stuck:
-                            stuck[old] = f"its row on {ref} names successor {target}, which would carry the link, but {target} " + reason.removeprefix("it ")
+                            text = f"its row on {ref} names successor {target}, which would carry the link, but {target} " + reason.removeprefix("it ")
+                            stuck[old] = Clause(1 if text.endswith(SETTLE) else 2, text)
                             if path is not None and old not in (citing := result.cited.setdefault(path, [])):
                                 citing.append(old)
                         continue
@@ -656,10 +671,13 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         ending = f"; {cause}: decide by hand"
                     else:
                         ending = f"; {target} must be accepted first" if held else ": decide by hand"
-                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}){ending}")
+                    stem = f"its row on {ref} names successor {target}, which cannot carry the link ({why})"
+                    waiting = ending.endswith("must be accepted first")
+                    _ = stuck.setdefault(old, Clause(0 if waiting else 1 if ending == SETTLE else 2, stem + ending, (target,) if waiting else (), stem))
         if stuck:
-            for old, reason in stuck.items():
-                hold(old, "undecided", reason)
+            for old, clause in stuck.items():
+                hold(old, "undecided", clause.text)
+                structured[old] = [clause]
             continue
         everything = [*proposals.values(), *carriers.values()]
         in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic", "supersede", "conflict")} & set(branch)
@@ -679,14 +697,41 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                 if result.kinds.get(identifier) == "undecided" and identifier in own:
                     alone = {identifier: edits[identifier]} if identifier in edits else {}
                     later = replay_failures(on_accepted, [*everything, own[identifier]], alone, final_play, final_minted).get(identifier, [])
-                    result.undecided[identifier] = joined([*found, *later])
+                    structured[identifier] = [*found, *later]
+                    result.undecided[identifier] = joined(structured[identifier])
+            break_cycles(result, structured)
             return everything, unlinkable
         for identifier, reason in failing.items():
             if identifier in carriers:
                 unlinkable[identifier] = reason
             else:
                 hold(identifier, "undecided", reason)
-                replayed[identifier] = failures[identifier]
+                replayed[identifier] = structured[identifier] = failures[identifier]
+
+
+def break_cycles(result: Salvage, structured: Mapping[str, Sequence[Clause]]) -> None:
+    """Rows held here that wait on one another in a cycle never clear by waiting (none can be accepted alone): each
+    waiting clause of a row on a cycle that waits for the cycle's members ends instead "{IDs} refer to each other and
+    none can be accepted alone: decide by hand" (resolve their other causes and submit them together). A row merely
+    waiting on a row in a cycle still waits."""
+    held = {name for name in structured if result.kinds.get(name) == "undecided"}
+    edges = {name: {target for clause in structured[name] if clause.rank == 0 for target in clause.waits if target in held} for name in held}
+    reach: dict[str, set[str]] = {}
+    for name in held:
+        seen: set[str] = set()
+        todo = list(edges[name])
+        while todo:
+            if (current := todo.pop()) not in seen:
+                seen.add(current)
+                todo.extend(edges[current])
+        reach[name] = seen
+    for name in sorted(held, key=id_key):
+        if name not in reach[name]:
+            continue
+        cycle = sorted({other for other in reach[name] if name in reach[other]} | {name}, key=id_key)
+        clauses = [Clause(2, f"{clause.stem}; {', '.join(cycle)} refer to each other and none can be accepted alone: decide by hand")
+                   if clause.rank == 0 and set(clause.waits) & set(cycle) else clause for clause in structured[name]]
+        result.undecided[name] = joined(clauses)
 
 
 def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, after: Mapping[str, Record] | None = None) -> None:

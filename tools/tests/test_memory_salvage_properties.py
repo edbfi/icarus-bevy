@@ -226,6 +226,10 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if rng.random() < 0.5:
         # A new tracked row citing e.md as the branch has it (main's text may differ).
         after["M-502"] = tracked("M-502", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"])
+    if rng.random() < 0.15:
+        # Two new rows referring to each other; one maybe also to a record absent everywhere (then neither can be accepted alone).
+        after["F-250"] = Record.from_json(row("F-250", "active").to_json() | {"refs": ["F-251", *(["F-998"] if rng.random() < 0.6 else [])]})
+        after["F-251"] = Record.from_json(row("F-251", "active").to_json() | {"refs": ["F-250"]})
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
@@ -370,6 +374,17 @@ class GeneratedSalvageTests(unittest.TestCase):
         listed = {pending.path: pending for pending in pending_documents(after, before, on_accepted, result.cited)}
         proposed = {revision.record.id for revision in result.proposals}
         held = {name for name, kind in result.kinds.items() if kind == "undecided"}
+        # The waits among held rows form no cycle: rows that wait on one another never clear by waiting.
+        waits = {name: {target for clause in self.clauses_of(reason) if clause.endswith("must be accepted first")
+                        for target in self.waits_for(clause) if target in held} for name, reason in result.undecided.items()}
+        for name in waits:
+            seen: set[str] = set()
+            todo = list(waits[name])
+            while todo:
+                if (current := todo.pop()) not in seen:
+                    seen.add(current)
+                    todo.extend(waits.get(current, set()))
+            self.assertNotIn(name, seen, f"{where}: {name} waits on itself through {sorted(seen)}")
         for name, reason in result.undecided.items():
             self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
             for clause in self.clauses_of(reason):

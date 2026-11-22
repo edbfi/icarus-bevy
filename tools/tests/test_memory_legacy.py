@@ -918,10 +918,10 @@ class SalvageTests(LegacyRepository):
         calls: list[int] = []
 
         def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit],
-                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[salvage_command.Clause]]:
             found = real(on_accepted, proposals, edits, branch, minted)
             calls.append(len(calls))
-            return {**found, identifier: [(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
+            return {**found, identifier: [salvage_command.Clause(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
 
         with mock.patch.object(salvage_command, "replay_failures", failing):
             result = salvage(self.root, branch)
@@ -1777,6 +1777,24 @@ class SalvageTests(LegacyRepository):
         self.assertEqual("conflict", result.kinds["F-112"])
         self.assertEqual("its row on feature names successor F-112, which cannot carry the link (conflict); F-112 is in conflict: it is reconciled by hand,"
                          + " under its ID or as a new record; if under a new ID, this row's link must name that ID: decide by hand", result.undecided["F-108"])
+
+    def test_rows_that_refer_to_each_other_are_proposed_together_or_decided_together(self) -> None:
+        ledger = "docs/ledgers/findings/widgets.md"
+        # A clean pair: each refers to the other and nothing else is wrong, so both are proposed together.
+        self.edited("pair", (ledger, "| F-107 |", "| F-111 | Invented: one | observed | review; F-112 | high; server 29990001 | | active |\n"
+                                                  + "| F-112 | Invented: two | observed | review; F-111 | high; server 29990001 | | active |\n| F-107 |"))
+        pair = salvage(self.root, "pair")
+        self.assertEqual(({}, ["F-111", "F-112"]), (pair.undecided, sorted(item.record.id for item in pair.proposals)))
+        _ = self.legal(pair)
+        # F-111 also refers to F-999, absent everywhere: both are held, and neither waits on the other forever.
+        self.setUp()
+        self.edited("cycle", (ledger, "| F-107 |", "| F-111 | Invented: one | observed | review; F-112, F-999 | high; server 29990001 | | active |\n"
+                                                   + "| F-112 | Invented: two | observed | review; F-111 | high; server 29990001 | | active |\n| F-107 |"))
+        cycle = salvage(self.root, "cycle")
+        together = "F-111, F-112 refer to each other and none can be accepted alone: decide by hand"
+        self.assertEqual({"F-111": "it would not replay cleanly: F-111: refs: no record F-999: decide by hand; it would not replay cleanly: F-111: refs: no"
+                                   + f" record F-112; {together}",
+                          "F-112": f"it would not replay cleanly: F-112: refs: no record F-111; {together}"}, cycle.undecided)
 
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
