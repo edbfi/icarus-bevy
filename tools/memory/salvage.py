@@ -536,7 +536,8 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
     changed row is in exactly one class, its proposal present exactly when the class has one; (d) every notice
     about a successor's link agrees with that successor's proposal (absent, with the link, or without it); (e) no
     proposal carries a migration-assigned ID (REF, CP, RP) that is not the accepted journal's ID for that identity; (f) no
-    proposal cites a REF, CP or RP whose accepted identity differs from that of the branch record it stood for."""
+    proposal cites a REF, CP or RP whose accepted identity differs from that of the branch record it stood for, nor a REF
+    that, resolved in force, does not hold the branch's text of its document."""
     accepted = on_accepted.records
     proposed = {revision.record.id: revision.record for revision in result.proposals}
     if len(proposed) != len(result.proposals):
@@ -584,10 +585,14 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
             if after is not None and target in after and target in accepted and target.split("-", 1)[0] in ASSIGNED \
                     and identity(after[target]) != identity(accepted[target]):
                 raise SalvageError(f"{identifier}: cites {target}, which on main is {identity(accepted[target])}, not the branch's {identity(after[target])}")
-            # A citation of a document is of the document as the branch has it: the accepted REF must hold that body.
-            if after is not None and target in after and target in accepted and after[target].type == "reference" \
-                    and after[target].body != accepted[target].body:
-                raise SalvageError(f"{identifier}: cites {target}, whose text on main differs from the branch's document")
+    # A citation of a document is of the document as the branch has it: the cited REF, as stored and resolved in force
+    # (``successors_in_force``), holds the branch's body of its path.
+    if after is not None:
+        current = successors_in_force(accepted)
+        branch = {path: record.body for record in after.values() if (path := document_path(record)) is not None}
+        for identifier, record in proposed.items():
+            if (stale := stale_citation(record, on_accepted, current, branch)) is not None:
+                raise SalvageError(f"{identifier}: {stale}")
     # (d) A notice about a link agrees with the links of the proposal it names.
     for notice in result.notices:
         claim = re.fullmatch(r"([A-Z]+-[0-9]+): ([A-Z]+-[0-9]+) would supersede it, but .*; \2 (is proposed without that link|is not revised"
@@ -774,6 +779,43 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
     return result, unmapped, shared
 
 
+def successors_in_force(accepted: Mapping[str, Record]) -> dict[str, str]:
+    """Each REF superseded for its document, mapped to the REF that alone and transitively supersedes it for the same
+    document (``identity``); a REF two REFs supersede maps to neither."""
+    successors: dict[str, list[str]] = {}
+    for name, other in accepted.items():
+        if other.type == "reference" and (key := identity(other)) is not None:
+            for old in other.links.supersedes:
+                if old in accepted and identity(accepted[old]) == key:
+                    successors.setdefault(old, []).append(name)
+    current: dict[str, str] = {}
+    for old in successors:
+        name, visited = old, {old}
+        while len(successors.get(name, ())) == 1 and (following := successors[name][0]) not in visited:
+            name = following
+            visited.add(name)
+        if name != old:
+            current[old] = name
+    return current
+
+
+def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, str], branch: Mapping[str, str | None]) -> str | None:
+    """Why ``record`` may not cite a document as stored: a cited REF that, resolved in force (``current``), does not
+    hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may."""
+    for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
+        cited = on_accepted.records.get(target)
+        if cited is None or cited.type != "reference" or (path := document_path(cited)) is None or path not in branch:
+            continue
+        resolved = current.get(target, target)
+        held = on_accepted.records[resolved]
+        through = f"{target}, in force as {resolved}" if resolved != target else target
+        if resolved in on_accepted.retired:
+            return f"it cites {through}, which no longer stands for {path}: settle the document first"
+        if held.body != branch[path]:
+            return f"it cites {through}, which holds other text of {path} than this branch's: settle the document first"
+    return None
+
+
 def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
              unmapped: Mapping[str, str] | None = None, shared: Collection[str] = (),
              raw: tuple[Mapping[str, Record], Mapping[str, Record]] | None = None) -> list[Revision]:
@@ -838,20 +880,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     # A REF and the accepted REF superseding it for the same document are one citation: main may supersede a document's
     # REF after a row citing it was accepted (by a cut-over or a run of salvage), so the branch's row, translated against
     # today's journal, cites the successor while main's record still cites the old one.
-    successors: dict[str, list[str]] = {}
-    for name, other in accepted.items():
-        if other.type == "reference" and (key := identity(other)) is not None:
-            for old in other.links.supersedes:
-                if old in accepted and identity(accepted[old]) == key:
-                    successors.setdefault(old, []).append(name)
-    current: dict[str, str] = {}
-    for old in successors:
-        name, visited = old, {old}
-        while len(successors.get(name, ())) == 1 and (following := successors[name][0]) not in visited:
-            name = following
-            visited.add(name)
-        if name != old:
-            current[old] = name
+    current = successors_in_force(accepted)
+    branch_documents = {path: other.body for other in after.values() if (path := document_path(other)) is not None}
 
     def same(one: Record | None, other: Record | None) -> bool:
         """Equal, or equal once each cited REF is the one superseding it (``current``)."""
@@ -937,7 +967,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         for old in links.get(identifier, ()):
             if linked is not None and old in linked.links.supersedes and old not in record.links.supersedes:
                 linked = without_supersedes(linked, old)
-        if on_main is None:
+        if on_main is None and (stale := stale_citation(record, on_accepted, current, branch_documents)) is not None:
+            hold(identifier, "undecided", stale)
+        elif on_main is None:
             result.kinds[identifier] = "new"
             if record.type in ("compatibility", "report"):
                 result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
@@ -969,6 +1001,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         elif not same(on_main, origin) and not same(on_main, apply(edit, origin)):
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
+        elif revision is not None and (stale := stale_citation(revision, on_accepted, current, branch_documents)) is not None:
+            hold(identifier, "undecided", stale)
         else:
             result.kinds[identifier] = "revision" if revision is not None else "superseded"
             if revision is not None:

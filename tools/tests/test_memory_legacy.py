@@ -44,7 +44,7 @@ from tools.memory.parity import parity
 from tools.memory.paths import ProtectedPathsError
 from tools.memory.salvage import Salvage, salvage
 from tools.memory.state import State, legacy_listed, partition, replay
-from tools.tests.memory_fixtures import clean_git_environment, new_repository, run_git
+from tools.tests.memory_fixtures import clean_git_environment, finding, new_repository, run_git
 
 MEMBER_A = "ev_29990001aaaa" + "1" * 52
 MEMBER_B = "ev_bbbbbbbbbbbb" + "2" * 52
@@ -1508,6 +1508,43 @@ class SalvageTests(LegacyRepository):
                          + r"several REFs in force name docs/specs/net/third\.md: REF-900, REF-901 \(REF-901 holds this text\): settle the document first$")
         (document,) = result.documents
         self.assertEqual(("M-105",), document.citing)
+
+    def test_a_revision_keeps_a_citation_only_when_the_ref_in_force_holds_the_branch_s_text(self) -> None:
+        # The branch retires the tracked row M-104 (it cites the widget spec's REF); main meanwhile supersedes that REF.
+        for body_of, kind in (("same", "revision"), ("other", "undecided")):
+            with self.subTest(body_of):
+                self.setUp()
+                self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
+                old = next(record.id for record in (entry.record for entry in replay(read_tree(self.root)).entries.values()) if salvage_command.document_path(record) == "docs/specs/net/widget.md")
+                body = self.ref_body("retire-m104", "docs/specs/net/widget.md") if body_of == "same" else "# Widget, other text\n"
+                self.accept_reference(online.Changes({"title": "Widget", "scope": {"basis": "explicit"}, "supersedes": [old]},
+                                                     salvage_command.DOCUMENT_NOTE.format("docs/specs/net/widget.md"), body), "REF-900")
+                result = salvage(self.root, "retire-m104")
+                self.assertEqual(kind, result.kinds["M-104"], result.undecided)
+                if kind == "revision":
+                    # Main's record cites the superseded REF; resolved in force it is REF-900, which holds the branch's text.
+                    (revision,) = [item for item in result.proposals if item.record.id == "M-104"]
+                    self.assertEqual(((old,), "retired"), (revision.record.links.refs, revision.record.status))
+                    _ = self.legal(result)
+
+    def test_invariant_f_refuses_a_stored_citation_whose_ref_in_force_holds_other_text(self) -> None:
+        old = Record.from_json({"id": "REF-001", "type": "reference", "status": "current", "title": "Spec", "scope": {"basis": "explicit"},
+                                "body_sha256": hashlib.sha256(b"# Old\n").hexdigest(), "notes": [salvage_command.DOCUMENT_NOTE.format("docs/specs/x.md")]}, "# Old\n")
+        new = Record.from_json({**old.to_json(), "id": "REF-002", "supersedes": ["REF-001"], "body_sha256": hashlib.sha256(b"# New\n").hexdigest()}, "# New\n")
+        segments = (Segment("memory/journal/a.jsonl", "", (Revision.of(old), Revision.of(new))),)
+        state = replay(segments)
+        accepted = salvage_command.Accepted({name: entry.record for name, entry in state.entries.items()},
+                                            {name: entry.heads for name, entry in state.entries.items()}, "journal", segments,
+                                            frozenset(name for name in state.entries if state.retired(name)))
+        data = finding("F-900", "Invented: cites the old REF")
+        del data["cites"]
+        row = Record.from_json({**data, "refs": ["REF-001"]})
+        branch_document = Record.from_json({**old.to_json(), "id": "REF-003", "body_sha256": hashlib.sha256(b"# Branch\n").hexdigest()}, "# Branch\n")
+        result = Salvage("branch", "a" * 40, "b" * 40, "c" * 40)
+        result.proposals.append(Revision.of(row))
+        result.kinds["F-900"] = "new"
+        with self.assertRaisesRegex(salvage_command.SalvageError, "F-900: it cites REF-001, in force as REF-002, which holds other text of docs/specs/x.md"):
+            salvage_command.invariants(result, ["F-900"], accepted, {"F-900": row, "REF-003": branch_document})
 
     def test_the_note_line_round_trips_a_path_with_a_space(self) -> None:
         pending = salvage_command.Pending("docs/specs/net/two words.md", "# Two words\n", (), (), (), False)
