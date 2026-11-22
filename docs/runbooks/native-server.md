@@ -77,6 +77,12 @@ Optional `pawn_move_acks` defaults off (F-1127/F-1128; no observed walking
 benefit, F-1150), requires the pawn. Probe flags mirror these names with
 hyphens. `[network.spawn]` uses operator points; omission keeps the origin
 ([placement](network-readiness.md#spawn-placement), F-1139/F-1140).
+Optional `pause_when_empty` defaults off and requires `enabled`: while no
+session is joined no simulation tick completes, a join resumes in the same
+update, and `run` refuses `--max-ticks` (so `--compressed`) with it; stop such a
+run with a signal. `status` and `stopped` records carry `world_occupancy`
+(F-1286). The policy is modelled on other builds' empty clocks (F-1271, F-895),
+not on 3.0.37, and wall-time values keep advancing.
 
 Optional independent `run` bootstrap: `[network.authored_world]` with
 `seed = 1`, `seed_initialised = true`, `flod_tile_count = 0`; omission keeps defaults.
