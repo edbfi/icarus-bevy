@@ -57,7 +57,9 @@ branch has it, is listed by path (``pending_documents``) until it is done: exact
 its path (by legacy path or ``DOCUMENT_NOTE``, never by body) and holds the branch's body. Salvage lists facts, never
 commands: the REFs in force with their scopes and whether each holds this text, the tokens the Status and Scope
 sections name and those the body also names, whether main changed or replaced the REF since the base, the rows held
-for it, and the note a new REF for it carries; the runbook says what each combination asks.
+for it, and the note a new REF for it carries. What each combination of facts asks of the operator is in the
+memory service runbook, section "Worktrees that predate the cut-over", which the cut-over change adds with the
+journal; salvage itself prints no command for a document.
 ``unsalvaged`` holds every proposal, conflict, ``supersede`` or ``undecided`` row whose content (ID and sha256)
 is not yet in ``ref``'s own journal.
 
