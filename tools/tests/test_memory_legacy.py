@@ -1629,6 +1629,22 @@ class SalvageTests(LegacyRepository):
                           "F-112": "it would not replay cleanly: F-112: refs: no record F-111; it refers to F-111, which this run does not propose:"
                                    + " that record must be accepted first"}, result.undecided)
 
+    def test_a_carrier_citing_a_ref_main_retired_is_decided_by_hand(self) -> None:
+        # As below, but main accepted no other reference for the spec: settling it never changes M-104's citation.
+        self.edited("carrier", ("evidence/widgets/001.jsonl", '"status":"active","legacy":true}', '"status":"retired","superseded_by":"M-104","legacy":true}'))
+        _ = run_git(self.root, "checkout", "-q", "main")
+        entry = next(entry for entry in replay(read_tree(self.root)).entries.values() if salvage_command.document_path(entry.record) == "docs/specs/net/widget.md")
+        retired = Record.from_json({**entry.record.to_json(), "status": "retired"}, entry.record.body)
+        _ = write_change_set(self.root, datetime(2026, 4, 8, tzinfo=UTC), [Revision.of(retired, entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main retires the widget REF")
+        self.publish()
+        result = salvage(self.root, "carrier")
+        self.assertEqual(f"its row on carrier names successor M-104, which would carry the link, but M-104 cites {entry.record.id}, which no longer stands"
+                         + " for docs/specs/net/widget.md; no reference stands for it, and a revision cannot change the row's citations: decide by hand",
+                         result.undecided["M-102"])
+        self.assertEqual(({}, []), (result.cited, result.documents))
+
     def test_a_carrier_citing_a_retired_ref_of_a_settled_document_is_decided_by_hand(self) -> None:
         # The branch retires M-102 as superseded by M-104, which cites the widget spec's REF; main retired that REF and
         # accepted REF-900 (by note, no supersession) holding the branch's text. The document is done; only M-104's stored

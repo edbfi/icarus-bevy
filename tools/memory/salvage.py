@@ -893,11 +893,12 @@ def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, 
         held = on_accepted.records[resolved]
         through = f"{target}, in force as {resolved}" if resolved != target else target
         if resolved in on_accepted.retired:
+            # Retired with no successor in force for the document: settling the document never changes the row's citation.
             in_force = [other for name, other in on_accepted.records.items() if name not in on_accepted.retired and document_path(other) == path]
-            if len(in_force) == 1 and in_force[0].body == branch[path]:
-                return None, (f"it cites {through}, which no longer stands for {path}; {in_force[0].id} stands for it with this branch's text, and"
-                              + " a revision cannot change the row's citations: decide by hand")
-            return path, f"it cites {through}, which no longer stands for {path}: settle the document first"
+            standing = (f"{in_force[0].id} stands for it with this branch's text" if len(in_force) == 1 and in_force[0].body == branch[path]
+                        else f"{', '.join(sorted((other.id for other in in_force), key=id_key))} stand{'s' if len(in_force) == 1 else ''} for it"
+                        if in_force else "no reference stands for it")
+            return None, f"it cites {through}, which no longer stands for {path}; {standing}, and a revision cannot change the row's citations: decide by hand"
         if held.body != branch[path]:
             return path, f"it cites {through}, which holds other text of {path} than this branch's: settle the document first"
     return None
