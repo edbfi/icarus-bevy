@@ -11,7 +11,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-# Seconds a read-only history query of ``get`` may take before it answers "unknown".
+# Seconds a history query of a read command (``get``, ``recall``, ``area``) may take before it answers "unknown".
 READ_TIMEOUT = 30.0
 
 
