@@ -430,6 +430,16 @@ class GeneratedSalvageTests(unittest.TestCase):
         self.assertEqual({}, result.cited)
         self.assertEqual([], pending_documents(after_numbered, before_numbered, accepted, result.cited))
 
+    def test_a_replay_failure_on_a_record_this_run_neither_proposes_nor_holds_is_decided_by_hand(self) -> None:
+        # F-100 is unchanged on the branch, and main dropped it; the new row F-200 names it as its successor. No acceptance
+        # of anything this run holds brings F-100 back: decided by hand, not waiting.
+        before = {"F-100": row("F-100", "active"), "F-101": row("F-101", "active")}
+        after = {**before, "F-200": row("F-200", "superseded-by F-100", successors=("F-100",))}
+        accepted = accepted_of((Segment("memory/journal/generated.jsonl", "", (Revision.of(before["F-101"]),)),))
+        result = Salvage("fixture", "a" * 40, "b" * 40, "c" * 40)
+        _ = classify(result, after, before, accepted)
+        self.assertEqual("it would not replay cleanly: F-200: legacy.superseded_by: no record F-100: decide by hand", result.undecided["F-200"])
+
     def test_every_generated_case_keeps_the_invariants_and_replays_cleanly(self) -> None:
         for seed in SEEDS:
             raw_after, raw_before, accepted = case(seed)

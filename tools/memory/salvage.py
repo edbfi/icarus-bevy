@@ -494,8 +494,8 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
     --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
     derive its status, an edit naming successors must derive ``superseded``, and every proposal must change its
     record's head. Returns the IDs that fail, with why; ``salvage`` repeats it until nothing fails. A problem naming a
-    record the branch has (``branch``) that is neither accepted nor proposed here ends by waiting for that record; every
-    other failure is decided by hand."""
+    record this run holds (``branch``: the records it proposes or holds, in any held class) ends by waiting for that
+    record; every other failure is decided by hand, a record the run neither proposes nor holds included."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
     found: dict[str, str] = {}
@@ -511,7 +511,7 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
             continue
         mentioned = {match[0] for match in ID.finditer(problem)}
         named = sorted(mentioned & ids, key=id_key)
-        missing = sorted((mentioned & set(branch)) - ids - on_accepted.records.keys(), key=id_key)
+        missing = sorted((mentioned & set(branch)) - ids - on_accepted.records.keys(), key=id_key)  # ``branch``: proposed or held here
         ending = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
                   + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")) if missing else ": decide by hand"
         for identifier in named or sorted(ids, key=id_key):
@@ -594,8 +594,9 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                 hold(old, "undecided", reason)
             continue
         everything = [*proposals.values(), *carriers.values()]
+        in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic")} & set(branch)
         failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
-                           branch)
+                           in_play)
         if not failing:
             for target in carriers:
                 if result.kinds.get(target) in (None, "accepted", "cosmetic", "superseded"):
