@@ -503,6 +503,17 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
 
 
 def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit], branch: Collection[str] = ()) -> dict[str, str]:
+    """``replay_failures`` as reasons: each row's clauses, ordered wait then decide."""
+    return {identifier: joined(clauses) for identifier, clauses in replay_failures(on_accepted, proposals, edits, branch).items()}
+
+
+def joined(clauses: Sequence[tuple[int, str]]) -> str:
+    """A reason from its clauses (rank 0 wait, 1 settle, 2 decide), ordered so that it ends by the strongest."""
+    return "; ".join(clause for _rank, clause in sorted(dict.fromkeys(clauses), key=lambda item: item[0]))
+
+
+def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit],
+                    branch: Collection[str] = ()) -> dict[str, list[tuple[int, str]]]:
     """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly and every edit
     must show. Any replay, revision, link or cycle problem the accepted journal alone does not have (``check
     --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
@@ -512,7 +523,6 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
     record; every other failure is decided by hand, a record the run neither proposes nor holds included."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
-    found: dict[str, str] = {}
     ids = {revision.record.id for revision in proposals}
 
     def problems(state: State) -> list[str]:
@@ -520,6 +530,14 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
                 *(f"supersession cycle {cycle}" for cycle in state.supersession_cycles())]
 
     known = set(problems(accepted_state))
+    # Every failure of a row is kept, each as a clause ending by its action, ordered wait, then decide: the reason ends by
+    # the strongest, and nothing is hidden behind the first failure found.
+    clauses: dict[str, list[tuple[int, str]]] = {}
+
+    def add(identifier: str, rank: int, clause: str) -> None:
+        if (rank, clause) not in (bucket := clauses.setdefault(identifier, [])):
+            bucket.append((rank, clause))
+
     for problem in problems(proposed):
         if problem in known:
             continue
@@ -529,21 +547,21 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
         ending = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
                   + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")) if missing else ": decide by hand"
         for identifier in named or sorted(ids, key=id_key):
-            _ = found.setdefault(identifier, f"it would not replay cleanly: {problem}{ending}")
+            add(identifier, 0 if missing else 2, f"it would not replay cleanly: {problem}{ending}")
     for revision in proposals:
         identifier = revision.record.id
         before = accepted_state.entries.get(identifier)
         if before is not None and before.record == proposed.entries[identifier].record:
-            found[identifier] = "its revision would replay to no change: decide by hand"
+            add(identifier, 2, "its revision would replay to no change: decide by hand")
     for identifier, edit in edits.items():
         if identifier not in proposed.entries:
             continue
         shown = proposed.status(identifier)
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
-            found[identifier] = f"its status {edit.status} would replay as {shown}: decide by hand"
+            add(identifier, 2, f"its status {edit.status} would replay as {shown}: decide by hand")
         if edit.successors and shown != "superseded":
-            found[identifier] = f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand"
-    return found
+            add(identifier, 2, f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand")
+    return clauses
 
 
 def without_supersedes(record: Record, old: str) -> Record:
@@ -572,6 +590,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
     link. Returns the proposals and the accepted records that could not carry links, with why."""
     accepted = on_accepted.records
     unlinkable: dict[str, str] = {}
+    replayed: dict[str, list[tuple[int, str]]] = {}
     playing = ("revision", "superseded")
     while True:
         proposals = {identifier: revision for identifier, revision in own.items() if result.kinds.get(identifier) not in ("supersede", "undecided")}
@@ -621,18 +640,28 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
             continue
         everything = [*proposals.values(), *carriers.values()]
         in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic")} & set(branch)
-        failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
-                           in_play)
+        failures = replay_failures(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
+                                   in_play)
+        failing = {identifier: joined(clauses) for identifier, clauses in failures.items()}
         if not failing:
             for target in carriers:
                 if result.kinds.get(target) in (None, "accepted", "cosmetic", "superseded"):
                     result.kinds[target] = "revision"
+            # A row held on replay was held for the failures found while others were still in play: its reason is every
+            # failure of its proposal against the final set (records held since then included).
+            final_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic")} & set(branch)
+            for identifier, found in sorted(replayed.items(), key=lambda item: id_key(item[0])):
+                if result.kinds.get(identifier) == "undecided" and identifier in own:
+                    alone = {identifier: edits[identifier]} if identifier in edits else {}
+                    later = replay_failures(on_accepted, [*everything, own[identifier]], alone, final_play).get(identifier, [])
+                    result.undecided[identifier] = joined([*found, *later])
             return everything, unlinkable
         for identifier, reason in failing.items():
             if identifier in carriers:
                 unlinkable[identifier] = reason
             else:
                 hold(identifier, "undecided", reason)
+                replayed[identifier] = failures[identifier]
 
 
 def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, after: Mapping[str, Record] | None = None) -> None:

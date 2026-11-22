@@ -914,16 +914,16 @@ class SalvageTests(LegacyRepository):
 
     def forced(self, branch: str, identifier: str) -> Salvage:
         """Salvage ``branch`` with the first replay check also failing ``identifier``; the final set must replay cleanly."""
-        real = salvage_command.honoured
+        real = salvage_command.replay_failures
         calls: list[int] = []
 
         def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit],
-                    branch: Collection[str] = ()) -> dict[str, str]:
+                    branch: Collection[str] = ()) -> dict[str, list[tuple[int, str]]]:
             found = real(on_accepted, proposals, edits, branch)
             calls.append(len(calls))
-            return {**found, identifier: "invented failure: decide by hand"} if len(calls) == 1 else found
+            return {**found, identifier: [(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
 
-        with mock.patch.object(salvage_command, "honoured", failing):
+        with mock.patch.object(salvage_command, "replay_failures", failing):
             result = salvage(self.root, branch)
         _ = self.legal(result)
         return result
@@ -1704,6 +1704,15 @@ class SalvageTests(LegacyRepository):
                          + " for docs/specs/net/widget.md; REF-900 stands for it with this branch's text, and a revision cannot change the row's citations:"
                          + " decide by hand", result.undecided["M-102"])
         self.assertEqual(({}, []), (result.cited, result.documents))
+
+    def test_every_replay_failure_of_a_row_is_in_its_reason(self) -> None:
+        # F-112 refers to F-111 (held here) and to F-999 (absent everywhere): once F-111 is accepted, F-999 still needs a decision.
+        self.edited("chain", ("docs/ledgers/findings/widgets.md", "| F-107 |",
+                              "| F-111 | Invented: a bad selector | observed | review; M-101/ev_000000000000 | high; server 29990001 | | active |\n"
+                              + "| F-112 | Invented: refers to F-111 and F-999 | observed | review; F-111, F-999 | high; server 29990001 | | active |\n| F-107 |"))
+        result = salvage(self.root, "chain")
+        self.assertEqual("it would not replay cleanly: F-112: refs: no record F-111; it refers to F-111, which this run does not propose: that record must be"
+                         + " accepted first; it would not replay cleanly: F-112: refs: no record F-999: decide by hand", result.undecided["F-112"])
 
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
