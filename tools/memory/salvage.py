@@ -505,13 +505,13 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
 
 
 def new_id_cause(identifier: str, kind: str | None) -> str | None:
-    """Why a wait for ``identifier`` would never clear: held as ``supersede`` or ``conflict``, its content is recorded
-    under a new ID (a superseding record, or the branch's record re-added), so a link to it must be rewritten by hand.
-    ``None``: it keeps its ID (proposed here, or held ``undecided``)."""
+    """Why a wait for ``identifier`` would never clear by waiting: held as ``supersede``, its content is recorded under a
+    new ID (a superseding record); held as ``conflict``, it is reconciled by hand, under its ID (a revision) or as a new
+    record, and a link to it may have to name the new ID. ``None``: it keeps its ID (proposed here, or held ``undecided``)."""
     if kind == "supersede":
         return f"{identifier} needs a superseding record: its content will be recorded under a new ID, and this row's link must name that ID"
     if kind == "conflict":
-        return f"{identifier} is in conflict: its content will be recorded under a new ID, and this row's link must name that ID"
+        return f"{identifier} is in conflict: it is reconciled by hand, under its ID or as a new record; if under a new ID, this row's link must name that ID"
     return None
 
 

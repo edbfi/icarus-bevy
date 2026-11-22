@@ -1761,6 +1761,23 @@ class SalvageTests(LegacyRepository):
         self.assertEqual("its row on minted names successor F-107, which cannot carry the link (supersede); F-107 needs a superseding record: its content"
                          + " will be recorded under a new ID, and this row's link must name that ID: decide by hand", result.undecided["F-108"])
 
+    def test_a_row_superseded_by_a_row_in_conflict_is_decided_by_hand(self) -> None:
+        # As branch_and_main, and the branch also marks F-108 superseded by F-112, which main took for its own row.
+        root = self.root
+        _ = run_git(root, "checkout", "-q", "-b", "feature")
+        ledger = root / "docs/ledgers/findings/widgets.md"
+        _ = ledger.write_text(ledger.read_text().replace("medium; loopback |  | active |", "medium; loopback |  | superseded-by F-112 |")
+                              + "| F-112 | Branch takes a number main also takes | observed | review | high; x | | active |\n")
+        _ = run_git(root, "commit", "-q", "-am", "branch rows")
+        _ = run_git(root, "checkout", "-q", "main")
+        _ = ledger.write_text(ledger.read_text() + "| F-112 | Main's own F-112 | observed | review | high; y | | active |\n")
+        _ = run_git(root, "commit", "-q", "-am", "main row")
+        self.publish()
+        result = salvage(self.root, "feature")
+        self.assertEqual("conflict", result.kinds["F-112"])
+        self.assertEqual("its row on feature names successor F-112, which cannot carry the link (conflict); F-112 is in conflict: it is reconciled by hand,"
+                         + " under its ID or as a new record; if under a new ID, this row's link must name that ID: decide by hand", result.undecided["F-108"])
+
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
         old = next(record.id for record in (entry.record for entry in replay(read_tree(self.root)).entries.values())
