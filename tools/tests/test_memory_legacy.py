@@ -21,7 +21,6 @@ import hashlib
 import io
 import json
 import os
-import re
 import shlex
 import subprocess
 import tempfile
@@ -663,8 +662,9 @@ class SalvageTests(LegacyRepository):
         # A changed claim is not revisable: the row needs a superseding record and is never proposed.
         self.assertEqual(result.unrevisable, {"F-107": ("claim",)})
         self.assertEqual("supersede", result.kinds["F-107"])
-        self.assertTrue(any(notice.startswith("docs/ledgers/findings/widgets.md: changed document; revise REF-007 with the body salvage --out writes")
-                            for notice in result.notices), result.notices)
+        self.assertIn("docs/ledgers/findings/widgets.md: pending document; in force: REF-007 (scope: none; other text); its Status and Scope sections"
+                      + " name: nothing; its body also names: nothing; main changed or replaced its reference since this branch's base: no;"
+                      + " a new reference for it carries --note 'salvaged document: docs/ledgers/findings/widgets.md'", result.notices)
         self.assertFalse(any("unknowns.md" in notice or "evidence" in notice for notice in result.notices))
         self.assertEqual([new.id for _old, new in result.conflicts], ["F-112"])
         self.assertEqual(sorted(result.unsalvaged), ["F-107", "F-111", "F-112", "M-105"])
@@ -1267,15 +1267,17 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         status, stdout, _stderr = self.run_salvage("spec-only", check=True)
         self.assertEqual(1, status)
-        self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: changed document; revise REF-[0-9]+ with the body salvage --out writes "
-                         + r"\(listed until the accepted body equals the branch's; a body merged by hand into other text stays listed\)")
+        self.assertRegex(stdout, r"spec-only: docs/specs/net/another.md: pending document; in force: REF-[0-9]+ \(scope: none; other text\); its Status "
+                         + r"and Scope sections name: nothing; its body also names: nothing; main changed or replaced its reference since this "
+                         + r"branch's base: no; a new reference for it carries --note 'salvaged document: docs/specs/net/another.md'\n")
         self.assertNotIn("--body", stdout, "no path that does not exist")
         self.assertIn("0 unsalvaged row(s), 1 pending document(s) on spec-only", stdout)
         out = self.top / "out"
         status, _stdout, stderr = self.run_salvage("spec-only", out=out)
         written = out / "documents/docs/specs/net/another.md"
         self.assertEqual(self.ref_body("spec-only", "docs/specs/net/another.md").encode(), written.read_bytes(), "the exporter's body at the tip")
-        self.assertRegex(stderr, rf"docs/specs/net/another.md: memory revise REF-[0-9]+ --body {re.escape(str(written))}")
+        self.assertIn(f"memory salvage: docs/specs/net/another.md: body written to {written}\n", stderr)
+        self.assertEqual([], [line for line in stderr.splitlines() if line.split(": ", 2)[-1].startswith("memory ")], "facts, never a command")
         self.revise_spec_on_main(written.read_text(encoding="utf-8").replace("one more line", "a different line"))
         self.assertEqual(1, self.run_salvage("spec-only", check=True)[0], "a body merged into other text stays listed")
         self.revise_spec_on_main(written.read_text(encoding="utf-8"))
@@ -1314,7 +1316,7 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "specs")
         self.assertEqual("undecided", result.kinds["M-105"])
         self.assertIn("docs/specs/net/third.md, which no accepted REF names", result.undecided["M-105"])
-        self.assertEqual([("docs/specs/net/third.md", None)], [(item.path, item.target) for item in result.documents])
+        self.assertEqual([("docs/specs/net/third.md", ())], [(item.path, item.in_force) for item in result.documents])
 
     def test_two_branch_documents_with_one_body_are_each_provisional(self) -> None:
         self.new_spec_branch("docs/specs/net/third.md", "docs/specs/net/fourth.md")
@@ -1329,39 +1331,35 @@ class SalvageTests(LegacyRepository):
         self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}}, None, "# Same\n"), "REF-900")
         status, stdout, _stderr = self.run_salvage("specs", check=True)
         self.assertEqual(1, status)
-        self.assertIn("specs: docs/specs/net/third.md: new document;", stdout)
+        self.assertIn("specs: docs/specs/net/third.md: pending document; no accepted reference names this path; its Status and Scope sections name:"
+                      + " nothing; its body also names: nothing; main changed or replaced its reference since this branch's base: no;"
+                      + " rows held because they cite it: M-105; a new reference for it carries --note 'salvaged document: docs/specs/net/third.md'\n",
+                      stdout)
         self.assertIn("specs: M-105: undecided legacy row not yet salvaged", stdout)
 
-    def test_a_changed_document_naming_other_tokens_needs_a_superseding_ref(self) -> None:
+    def test_a_changed_document_naming_other_tokens_lists_both_scopes(self) -> None:
         # The widget spec's text names client:29990002 and server:29990001; the branch re-observes it on build 29990003.
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
                                 "Candidate; observed with client build 29990003 only."))
-        result = salvage(self.root, "retoken")
-        (document,) = result.documents
-        self.assertEqual(("supersede", "docs/specs/net/widget.md"), (document.kind, document.path))
+        (document,) = salvage(self.root, "retoken").documents
+        (held,) = document.in_force
         self.assertIn("client:29990003", document.names)
-        self.assertIn("client:29990002", document.scope)
-        self.assertIn(f"a body revision cannot change scope; propose it as a new reference and supersede {document.target}", document.line())
-        commands = document.commands("FILE")
-        self.assertEqual(2, len(commands))
-        self.assertIn("--set-json 'scope=<STATE THE SCOPE>' --note 'salvaged document: docs/specs/net/widget.md'", commands[0])
-        self.assertEqual(f"memory supersede {document.target} --by <the new REF>", commands[1])
+        self.assertIn("client:29990002", held.scope)
+        # The spec's later sections name a commit its Status and Scope sections do not.
+        self.assertEqual((False, False, ("c0ffee3",)), (held.holds, document.main_changed, document.more))
+        self.assertIn(f"in force: {held.id} (scope: {', '.join(held.scope)}; other text); its Status and Scope sections name: {', '.join(document.names)};",
+                      document.line())
         self.setUp()
         self.edited("same-tokens", ("docs/specs/net/widget.md", "Candidate; observed", "Candidate, still; observed"))
-        self.assertEqual(["revise"], [item.kind for item in salvage(self.root, "same-tokens").documents])
+        (document,) = salvage(self.root, "same-tokens").documents
+        self.assertEqual((document.in_force[0].scope, ("c0ffee3",), False), (document.names, document.more, document.main_changed))
 
-    def test_a_body_naming_new_tokens_under_an_equal_scope_needs_a_decision(self) -> None:
+    def test_a_body_naming_more_tokens_than_its_sections_says_so(self) -> None:
         # The scope reads Status and Scope only; the branch adds an observation on another build in a later section.
         self.edited("newly", ("docs/specs/net/widget.md", "## Confirmed\n", "## Confirmed\n\n- Seen again on build 29990009.\n"))
         (document,) = salvage(self.root, "newly").documents
-        self.assertEqual(("decide", ("any:29990009",)), (document.kind, document.newly))
-        self.assertIn(f"its body newly names any:29990009; {document.target}'s scope is ", document.line())
-        self.assertIn("a body revision keeps that scope: decide by hand", document.line())
-        commands = document.commands("FILE")
-        self.assertEqual(3, len(commands))
-        self.assertTrue(commands[0].startswith(f"if {document.target}'s scope still holds for the new text: memory revise {document.target} --body FILE"))
-        self.assertIn("otherwise: memory propose reference", commands[1])
-        self.assertEqual(f"otherwise, then: memory supersede {document.target} --by <the new REF>", commands[2])
+        self.assertEqual((("any:29990009", "c0ffee3"), document.in_force[0].scope), (document.more, document.names))
+        self.assertIn("; its body also names: any:29990009, c0ffee3; main changed or replaced its reference since this branch's base: no;", document.line())
 
     def test_a_row_citing_a_document_main_has_since_changed_waits_for_it(self) -> None:
         # An older branch adds tracked evidence for the spec as it then read; main later holds other text for that path.
@@ -1377,14 +1375,15 @@ class SalvageTests(LegacyRepository):
         # Not proposed citing main's text: held, and the document it cites listed although the branch never changed it.
         self.assertEqual("undecided", result.kinds["M-105"])
         self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
-        self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another.md as this branch has it \(REF-[0-9]+, a provisional number\); REF-[0-9]+ holds other text: settle the document first$")
+        self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another.md as this branch has it \(REF-[0-9]+, a provisional number\); "
+                         + r"REF-[0-9]+ holds other text: settle the document first$")
         (document,) = result.documents
-        self.assertEqual(("cited", ("M-105",), []), (document.kind, document.citing, document.commands("FILE")))
-        self.assertIn(f"cited by M-105 as this branch has it; {document.target} holds other text: settle the document first", document.line())
+        self.assertEqual((("M-105",), True, False), (document.citing, document.main_changed, document.in_force[0].holds))
+        self.assertIn("main changed or replaced its reference since this branch's base: yes; rows held because they cite it: M-105;", document.line())
         status, stdout, _stderr = self.run_salvage("older", check=True)
         self.assertEqual((1, True), (status, "1 unsalvaged row(s), 1 pending document(s)" in stdout), stdout)
 
-    def test_a_document_main_also_changed_needs_a_decision(self) -> None:
+    def test_a_document_main_also_changed_says_so(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "both-edit")
         spec = self.root / "docs/specs/net/another.md"
         _ = spec.write_text(spec.read_text() + "\nInvented: the branch's line.\n", encoding="utf-8")
@@ -1392,18 +1391,16 @@ class SalvageTests(LegacyRepository):
         _ = self.journal_on_main(remove_legacy=True)
         self.revise_spec_on_main(self.ref_body("main~1", "docs/specs/net/another.md") + "\nInvented: main's line.\n")
         (document,) = salvage(self.root, "both-edit").documents
-        self.assertEqual(("decide", True, ()), (document.kind, document.main_changed, document.newly))
-        self.assertIn(f"main added or changed {document.target} since this branch's base, so check that the branch's body carries main's text", document.line())
-        self.assertEqual([f"if this body carries main's changes to {document.target} since this branch's base: memory revise {document.target} --body FILE"],
-                         document.commands("FILE"))
-        self.assertEqual(document.commands("FILE"), document.printed("FILE"), "no scope line without a command that proposes a REF")
+        (held,) = document.in_force
+        self.assertEqual(["in force: " + held.id + " (scope: none; other text)", "its Status and Scope sections name: nothing",
+                          "its body also names: nothing", "main changed or replaced its reference since this branch's base: yes",
+                          "a new reference for it carries --note 'salvaged document: docs/specs/net/another.md'"], document.facts())
 
     def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
                                 "Candidate; observed with client build 29990003 only."))
         (document,) = salvage(self.root, "retoken").documents
-        old = document.target
-        assert old is not None
+        old = document.in_force[0].id
         body = self.ref_body("retoken", "docs/specs/net/widget.md")
         changes = online.Changes({"title": "Widget framing", "scope": {"basis": "explicit", "builds": ["client:29990003"]}},
                                  salvage_command.DOCUMENT_NOTE.format("docs/specs/net/widget.md"), body)
@@ -1411,10 +1408,8 @@ class SalvageTests(LegacyRepository):
         # The new REF accepted, the old one not superseded: two REFs in force for one document is not done.
         _ = run_git(self.root, "checkout", "-q", "retoken")
         (listed,) = salvage(self.root, "retoken").documents
-        self.assertEqual(("ambiguous", "REF-900"), (listed.kind, listed.target))
-        self.assertIn(f"holds {old}, REF-900 for this path; REF-900 holds this body: supersede {old} by it (memory supersede {old} --by REF-900)",
-                      listed.line())
-        self.assertEqual([f"memory supersede {old} --by REF-900"], listed.commands("FILE"))
+        self.assertEqual([(old, False), ("REF-900", True)], [(item.id, item.holds) for item in listed.in_force])
+        self.assertRegex(listed.line(), rf"in force: {old} \(scope: [^;]*; other text\), REF-900 \(scope: client:29990003; this text\);")
         self.assertEqual(1, self.run_salvage("retoken", check=True)[0])
         # The supersession accepted (a revision of REF-900 appending supersedes): done.
         _ = run_git(self.root, "checkout", "-q", "main")
@@ -1427,7 +1422,7 @@ class SalvageTests(LegacyRepository):
         status, stdout, _stderr = self.run_salvage("retoken", check=True)
         self.assertEqual((0, True), (status, "0 unsalvaged row(s), 0 pending document(s)" in stdout), stdout)
 
-    def test_a_document_whose_only_ref_is_retired_is_new(self) -> None:
+    def test_a_document_whose_only_ref_is_retired_has_none_in_force(self) -> None:
         records = self.journal_on_main(remove_legacy=False)
         ref = next(record for record in records.values() if record.type == "reference" and record.legacy is not None
                    and record.legacy.path == "docs/specs/net/another.md")
@@ -1440,14 +1435,15 @@ class SalvageTests(LegacyRepository):
         spec = self.root / "docs/specs/net/another.md"
         _ = spec.write_text(spec.read_text() + "\nInvented: more.\n", encoding="utf-8")
         _ = run_git(self.root, "commit", "-q", "-am", "edit the spec")
-        self.assertEqual(["new"], [item.kind for item in salvage(self.root, "after-retire").documents])
+        (document,) = salvage(self.root, "after-retire").documents
+        self.assertEqual(((), True), (document.in_force, document.main_changed))
+        self.assertIn("pending document; no accepted reference names this path;", document.line())
 
-    def test_a_document_main_added_by_hand_needs_a_decision_or_a_superseding_ref(self) -> None:
-        # Main added the document (by REF-900) since the branch's base: even under equal tokens a revision is a decision, since
-        # salvage cannot tell main's text from an earlier state of the branch's.
-        scopes: list[tuple[JSON, str]] = [({"basis": "explicit", "builds": ["server:29990001"]}, "decide"), ({"basis": "explicit"}, "supersede")]
-        for scope, kind in scopes:
-            with self.subTest(kind):
+    def test_a_document_main_added_by_hand_says_main_changed_it(self) -> None:
+        # Main added the document (by REF-900) since the branch's base: salvage cannot tell main's text from an earlier state of the branch's.
+        scopes: list[tuple[JSON, tuple[str, ...]]] = [({"basis": "explicit", "builds": ["server:29990001"]}, ("server:29990001",)), ({"basis": "explicit"}, ())]
+        for scope, tokens in scopes:
+            with self.subTest(tokens):
                 self.setUp()
                 _ = run_git(self.root, "checkout", "-q", "-b", "hand")
                 spec = self.root / "docs/specs/net/third.md"
@@ -1461,44 +1457,51 @@ class SalvageTests(LegacyRepository):
                 _ = spec.write_text(spec.read_text() + "\nMore text.\n", encoding="utf-8")
                 _ = run_git(self.root, "commit", "-q", "-am", "more text")
                 (document,) = salvage(self.root, "hand").documents
-                self.assertEqual((kind, "REF-900", True), (document.kind, document.target, document.main_changed))
+                self.assertEqual(((salvage_command.InForce("REF-900", tokens, False),), ("server:29990001",), True),
+                                 (document.in_force, document.names, document.main_changed))
 
-    def test_a_path_two_accepted_refs_name_gets_no_command(self) -> None:
-        self.new_spec_branch("docs/specs/net/third.md", cite=False)
-        for identifier in ("REF-900", "REF-901"):
-            self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}},
-                                                 salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"), f"# Other {identifier}\n"), identifier)
-        (document,) = salvage(self.root, "specs").documents
-        self.assertEqual(("ambiguous", ("REF-900", "REF-901"), []), (document.kind, document.holders, document.commands("FILE")))
-        self.assertIn("the accepted journal holds REF-900 (scope: none); REF-901 (scope: none) for this path: decide by hand (no command)", document.line())
+    def test_every_ref_in_force_is_listed_with_whether_it_holds_this_text(self) -> None:
+        cases: list[tuple[list[tuple[str, JSON, str]], str]] = [
+            ([("REF-900", {"basis": "explicit"}, "# Other REF-900\n"), ("REF-901", {"basis": "explicit"}, "# Other REF-901\n")],
+             "in force: REF-900 (scope: none; other text), REF-901 (scope: none; other text);"),
+            ([("REF-900", {"basis": "explicit", "releases": ["3.0.91"]}, "# Same\n"), ("REF-901", {"basis": "explicit", "releases": ["3.0.91", "3.0.92"]}, "# Same\n")],
+             "in force: REF-900 (scope: 3.0.91; this text), REF-901 (scope: 3.0.91, 3.0.92; this text);"),
+            ([("REF-900", {"basis": "explicit"}, "# Other\n"), ("REF-901", {"basis": "explicit", "releases": ["3.0.91"]}, "# Same\n"),
+              ("REF-902", {"basis": "explicit"}, "# Other still\n")],
+             "in force: REF-900 (scope: none; other text), REF-901 (scope: 3.0.91; this text), REF-902 (scope: none; other text);"),
+        ]
+        for refs, expected in cases:
+            with self.subTest(len(refs)):
+                self.setUp()
+                self.new_spec_branch("docs/specs/net/third.md", cite=False)
+                for identifier, scope, body in refs:
+                    self.accept_reference(online.Changes({"title": "Third", "scope": scope}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                                         body), identifier)
+                (document,) = salvage(self.root, "specs").documents
+                self.assertIn(expected, document.line())
+                self.assertTrue(document.main_changed)
 
-    def test_two_refs_holding_the_branch_s_body_get_no_supersede_command(self) -> None:
-        self.new_spec_branch("docs/specs/net/third.md", cite=False)
-        scopes: list[tuple[str, JSON]] = [("REF-900", {"basis": "explicit", "releases": ["3.0.91"]}), ("REF-901", {"basis": "explicit", "releases": ["3.0.91", "3.0.92"]})]
-        for identifier, scope in scopes:
-            self.accept_reference(online.Changes({"title": "Third", "scope": scope}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
-                                                 "# Same\n"), identifier)
-        (document,) = salvage(self.root, "specs").documents
-        self.assertEqual(("ambiguous", None, []), (document.kind, document.target, document.commands("FILE")))
-        self.assertIn("holds REF-900 (scope: 3.0.91); REF-901 (scope: 3.0.91, 3.0.92) for this path: decide by hand (no command)", document.line())
-
-    def test_a_note_with_a_space_in_its_path_round_trips_through_the_printed_command(self) -> None:
-        pending = salvage_command.Pending("docs/specs/net/two words.md", "new", "# Two words\n", "Two words")
+    def test_the_note_line_round_trips_a_path_with_a_space(self) -> None:
+        pending = salvage_command.Pending("docs/specs/net/two words.md", "# Two words\n", (), (), (), False)
         written = self.top / "out dir/documents/docs/specs/net/two words.md"
         written.parent.mkdir(parents=True)
         _ = written.write_text("# Two words\n", encoding="utf-8")
-        (command,) = pending.commands(str(written))
-        stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit"}'))
-        changes = online.changes_from(vars(cli.parse_options(stated[1:])))
-        assert changes.note is not None
+        facts = pending.facts(str(written))
+        self.assertEqual(f"body written to {shlex.quote(str(written))}", facts[0])
+        note = facts[-1].removeprefix("a new reference for it carries ")
+        stated = ["propose", "reference", "--set", "title=Two words", "--set-json", 'scope={"basis": "explicit"}', *shlex.split(note),
+                  "--body", *shlex.split(facts[0].removeprefix("body written to "))]
+        changes = online.changes_from(vars(cli.parse_options(stated)))
+        assert changes.note is not None and changes.body is not None
         record = Record.from_json({"id": "REF-900", "type": "reference", "status": "current", "title": "Two words", "scope": {"basis": "explicit"},
-                                   "body_sha256": hashlib.sha256(b"# Two words\n").hexdigest(), "notes": [changes.note]}, "# Two words\n")
+                                   "body_sha256": hashlib.sha256(changes.body.encode()).hexdigest(), "notes": [changes.note]}, changes.body)
         self.assertEqual("docs/specs/net/two words.md", salvage_command.document_path(record))
 
-    def test_a_new_document_clears_once_a_ref_proposed_with_the_printed_command_is_accepted(self) -> None:
+    def test_a_new_document_clears_once_a_ref_carrying_the_note_is_accepted(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "new-doc")
         _ = (self.root / "docs/specs/net/third.md").write_text("# Third spec\n\n## Status\n\nObserved with server build 29990001.\n\n"
-                                                               + "## Scope\n\nInvented: new.\n", encoding="utf-8")
+                                                               + "## Scope\n\nInvented: new.\n\n## Notes\n\nSeen again on build 29990009.\n",
+                                                               encoding="utf-8")
         # A tracked evidence row on the branch points at the new document: it cites the REF that document becomes.
         shard = self.root / "evidence/widgets/001.jsonl"
         _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/third.md", "sha256": "d" * 64, "class": "tracked",
@@ -1512,26 +1515,20 @@ class SalvageTests(LegacyRepository):
         self.assertIn("it cites the document docs/specs/net/third.md, which no accepted REF names", first.undecided["M-105"])
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
-        self.assertIn("new-doc: docs/specs/net/third.md: new document; salvage --out writes its body", stdout)
+        facts = ["no accepted reference names this path", "its Status and Scope sections name: server:29990001", "its body also names: any:29990009",
+                 "main changed or replaced its reference since this branch's base: no", "rows held because they cite it: M-105",
+                 "a new reference for it carries --note 'salvaged document: docs/specs/net/third.md'"]
+        self.assertIn("new-doc: docs/specs/net/third.md: pending document; " + "; ".join(facts) + "\n", stdout)
         out = self.top / "out"
         _, _stdout, stderr = self.run_salvage("new-doc", out=out)
         written = out / "documents/docs/specs/net/third.md"
         self.assertEqual(self.ref_body("new-doc", "docs/specs/net/third.md").encode(), written.read_bytes())
         lines = [line.split(": ", 2)[2] for line in stderr.splitlines() if line.startswith("memory salvage: docs/specs/net/third.md: ")]
-        command, scope_line = lines
-        self.assertIn("'scope=<STATE THE SCOPE>'", command)
-        self.assertIn("--note 'salvaged document: docs/specs/net/third.md'", command)
-        self.assertEqual("the scope must be stated by whoever proposes it: replace <STATE THE SCOPE> with a JSON scope (salvage neither keeps nor upgrades "
-                         + "the text's tokens); the text names: server:29990001", scope_line)
-        words = shlex.split(command)
-        self.assertEqual(["memory", "propose", "reference"], words[:3])
-        with self.assertRaisesRegex(RecordError, "invalid JSON"):
-            _ = online.changes_from(vars(cli.parse_options(words[1:])))
-        # The operator states the scope: the printed command, the placeholder replaced.
-        stated = shlex.split(command.replace("<STATE THE SCOPE>", '{"basis": "explicit", "builds": ["server:29990001"]}'))
-        options = cli.parse_options(stated[1:])
-        changes = online.changes_from(vars(options))
-        self.accept_reference(changes, "REF-900")
+        self.assertEqual([f"body written to {written}", *facts], lines)
+        # The operator states a scope and proposes the body with the note: the document is done and the row cites the new REF.
+        stated = ["propose", "reference", "--set", "title=Third", "--set-json", '{"basis": "explicit", "builds": ["server:29990001"]}'.join(("scope=", "")),
+                  *shlex.split(facts[-1].removeprefix("a new reference for it carries ")), "--body", str(written)]
+        self.accept_reference(online.changes_from(vars(cli.parse_options(stated))), "REF-900")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertIn("0 pending document(s)", stdout)
         # Run 2: the document maps to the REF proposed by hand (by its "salvaged document:" note), so the row citing it is proposed with that ID.

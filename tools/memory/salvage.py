@@ -52,21 +52,21 @@ provisional number above every accepted one: a row citing it is held until that 
 RP row is proposed (its number provisional) only if nothing on the branch cites it. Records sharing an identity in
 one export (two CP rows of one name) are never mapped: each gets its own provisional number and is held, with every
 row citing one.
-A document the branch changed or added (a spec, digest, ledger prose, the status file) is listed by path
-(``pending_documents``), matched to the accepted REF of that path by identity only (its legacy path or its
-``DOCUMENT_NOTE``, never its body): a body revision when the text's tokens equal that REF's scope tokens, else a
-superseding REF; a new REF for a new document; nothing but a decision by hand when two accepted REFs name the path.
+A document the branch changed or added (a spec, digest, ledger prose, the status file), or that held rows cite as the
+branch has it, is listed by path (``pending_documents``) until it is done: exactly one accepted REF in force names
+its path (by legacy path or ``DOCUMENT_NOTE``, never by body) and holds the branch's body. Salvage lists facts, never
+commands: the REFs in force with their scopes and whether each holds this text, the tokens the Status and Scope
+sections name and those the body also names, whether main changed or replaced the REF since the base, the rows held
+for it, and the note a new REF for it carries; the runbook says what each combination asks.
 ``unsalvaged`` holds every proposal, conflict, ``supersede`` or ``undecided`` row whose content (ID and sha256)
 is not yet in ``ref``'s own journal.
 
 The command prints the proposal change set as segment lines, or writes it under ``DIR/memory/journal`` with
 ``--out DIR``, a directory that must not exist (salvage creates it, and removes it again if anything fails); notices,
 conflicts and rows needing a superseding record go to stderr. ``--check`` prints each
-unsalvaged row and each pending document (done when the accepted REF of its path holds the branch's body) and exits
-1 if there is any. ``--out`` also
-writes each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
-``DIR/documents/<legacy path>``, and prints the ``memory revise`` or ``memory propose reference`` command that
-uses it.
+unsalvaged row and each pending document's facts on one line, and exits 1 if there is any. ``--out`` also writes
+each pending document's body, exactly as the exporter gives its REF at the salvaged tip, under
+``DIR/documents/<legacy path>``, and prints its facts with that file, one per line.
 
 Exit status: 0 success; 1 a conflict or an error; 2 usage; ``EXIT_SUPERSEDE`` (4) some row needs a superseding
 record or a decision by hand (and none conflicts; the other proposals are still printed or written);
@@ -100,11 +100,9 @@ from tools.memory.state import State, replay
 ACCEPTANCE_REF = "origin/main"
 SALVAGED = ("finding", "unknown", "bug", "evidence", "lead", "report", "compatibility")
 EXIT_SUPERSEDE = 4
-# The note a REF proposed with salvage's printed command carries: the legacy document it stands for (its identity).
+# The note a REF proposed for a salvaged document carries: the legacy document it stands for (its identity).
 DOCUMENT_NOTE = "salvaged document: {}"
 DOCUMENT_NOTED = re.compile(r"salvaged document: (.+)")
-# A new document's printed command carries this in place of a scope: not JSON, so the tool refuses it until replaced.
-SCOPE_PLACEHOLDER = "<STATE THE SCOPE>"
 # The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.
 STATUS_NOTE = "status cell (salvaged legacy row): {}"
 EXIT_PREMERGE = 5
@@ -126,101 +124,51 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
     premerge: str | None = None
     merge: str | None = None
-    # Pending documents: what each changed, added or cited document needs (``Pending``).
+    # The documents that are not done, as facts (``Pending``).
     documents: list[Pending] = field(default_factory=list["Pending"])
     # Documents (by path) that held rows cite as the branch has them, with those rows.
     cited: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
 
 
 @dataclass(frozen=True)
+class InForce:
+    """An accepted REF in force for a document's path: its ID, scope tokens, and whether it holds the branch's text."""
+
+    id: str
+    scope: tuple[str, ...]
+    holds: bool
+
+
+@dataclass(frozen=True)
 class Pending:
-    """A document the branch changed, added or cites: its legacy path, what it needs (``kind``: ``new``, ``revise`` the
-    body of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope,
-    ``decide`` by hand (the body ``newly`` names tokens, or ``main_changed`` ``target`` since the base), ``ambiguous``
-    when the accepted journal holds the path more than once (``holders``), or ``cited`` as the branch has it while
-    ``target`` holds other text), and the body, title and scope tokens (``names``) the exporter gives its REF at the
-    salvaged tip. ``citing``: the held rows citing a document the branch did not change (listed for them alone)."""
+    """A document that is not done (done: exactly one REF in force names its path and holds the branch's body), as
+    facts only; what each combination asks of the operator is the runbook's. ``names``: the tokens its Status and
+    Scope sections name (the exporter's scope); ``more``: those the rest of its body also names; ``main_changed``:
+    the REFs in force for its path are not the very record the merge base's document maps to; ``citing``: the held
+    rows that cite it as the branch has it."""
 
     path: str
-    kind: str
     body: str
-    title: str
-    names: tuple[str, ...] = ()
-    target: str | None = None
-    holders: tuple[str, ...] = ()
-    scope: tuple[str, ...] = ()
-    scopes: tuple[str, ...] = ()
-    newly: tuple[str, ...] = ()
-    main_changed: bool = False
+    names: tuple[str, ...]
+    more: tuple[str, ...]
+    in_force: tuple[InForce, ...]
+    main_changed: bool
     citing: tuple[str, ...] = ()
 
-    def commands(self, file: str) -> list[str]:
-        """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
-        scope is the operator's statement: the command carries ``SCOPE_PLACEHOLDER``, which the tool's parser refuses
-        (not JSON) until replaced; ``scope_line`` says what the exporter read from the text."""
-        if self.kind == "revise":
-            return [f"memory revise {self.target} --body {shlex.quote(file)}"]
-        if self.kind == "ambiguous":
-            return [f"memory supersede {other} --by {self.target}" for other in self.holders if other != self.target] if self.target is not None else []
-        propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
-                   + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
-        if self.kind == "cited":
-            return []
-        if self.kind == "decide":
-            conditions = [*([f"{self.target}'s scope still holds for the new text"] if self.newly else []),
-                          *([f"this body carries main's changes to {self.target} since this branch's base"] if self.main_changed else [])]
-            revise = f"if {' and '.join(conditions)}: memory revise {self.target} --body {shlex.quote(file)}"
-            if not self.newly:
-                return [revise]
-            return [revise, f"otherwise: {propose}", f"otherwise, then: memory supersede {self.target} --by <the new REF>"]
-        return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
-
-    def printed(self, file: str) -> list[str]:
-        """Everything ``--out`` prints for this document: its commands, then the scope line only when one of them
-        proposes a REF (carries ``SCOPE_PLACEHOLDER``), or the plain line for a kind that names its IDs or rows."""
-        commands = self.commands(file)
-        if any(SCOPE_PLACEHOLDER in command for command in commands):
-            return [*commands, self.scope_line()]
-        return [*commands, *([self.line()] if self.kind in ("ambiguous", "cited") else [])]
-
-    def main_note(self) -> str:
-        return (f"main added or changed {self.target} since this branch's base, so check that the branch's body carries"
-                + " main's text before it replaces it")
-
-    def scope_line(self) -> str:
-        """For a new REF: who states the scope, and the build, release and commit tokens its text names."""
-        return (f"the scope must be stated by whoever proposes it: replace {SCOPE_PLACEHOLDER} with a JSON scope"
-                + f" (salvage neither keeps nor upgrades the text's tokens); {spoken(self.names, 'the text names')}")
+    def facts(self, file: str | None = None) -> list[str]:
+        """One fact per line; ``file``: where ``--out`` wrote the body."""
+        held = ", ".join(f"{ref.id} (scope: {', '.join(ref.scope) or 'none'}; {'this text' if ref.holds else 'other text'})" for ref in self.in_force)
+        return [*([f"body written to {shlex.quote(file)}"] if file is not None else []),
+                f"in force: {held}" if held else "no accepted reference names this path",
+                f"its Status and Scope sections name: {', '.join(self.names) or 'nothing'}",
+                f"its body also names: {', '.join(self.more) or 'nothing'}",
+                f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
+                *([f"rows held because they cite it: {', '.join(self.citing)}"] if self.citing else []),
+                f"a new reference for it carries --note {shlex.quote(DOCUMENT_NOTE.format(self.path))}"]
 
     def line(self) -> str:
-        """The pending document without ``--out``: no path is named that does not exist."""
-        opening = f"unchanged document cited by {', '.join(self.citing)} as this branch has it" if self.citing else "changed document"
-        if self.kind == "revise":
-            return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
-                    + " branch's; a body merged by hand into other text stays listed)")
-        if self.kind == "supersede":
-            return (f"changed document; {spoken(self.names, 'its text names')}; {self.target}'s scope is {', '.join(self.scope) or 'empty'}; "
-                    + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
-                    + (f"; {self.main_note()}" if self.main_changed else "") + " (salvage --out writes its body and the commands)")
-        if self.kind == "cited":
-            return (f"{opening}; {self.target} holds other text: settle the document first"
-                    + f" (decide whether those rows apply to {self.target}'s text, or propose this text as a new REF)")
-        if self.kind == "decide":
-            reasons = [*([f"its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
-                          + " a body revision keeps that scope"] if self.newly else []),
-                       *([self.main_note()] if self.main_changed else [])]
-            return f"changed document; {'; '.join(reasons)}: decide by hand (salvage --out writes the body and the commands, labelled)"
-        if self.kind == "ambiguous":
-            if self.target is not None:
-                others = ", ".join(other for other in self.holders if other != self.target)
-                return (f"{opening}; the accepted journal holds {', '.join(self.holders)} for this path; {self.target} holds this body:"
-                        + f" supersede {others} by it (" + "; ".join(f"memory supersede {other} --by {self.target}" for other in self.holders
-                                                                    if other != self.target) + ") or decide by hand")
-            held = "; ".join(f"{holder} (scope: {scope})" for holder, scope in zip(self.holders, self.scopes, strict=True))
-            return f"{opening}; the accepted journal holds {held} for this path: decide by hand (no command)"
-        return ((f"{opening}; no accepted REF in force names this path" if self.citing else "new document")
-                + "; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
-                + " path, by legacy path or that command's note, with this body)")
+        """The facts on one line (``--check`` and the notices)."""
+        return "pending document; " + "; ".join(self.facts())
 
 
 def body_tokens(body: str) -> set[str]:
@@ -232,57 +180,30 @@ def body_tokens(body: str) -> set[str]:
     return {*named, *commits}
 
 
-def spoken(tokens: Sequence[str], subject: str) -> str:
-    return f"{subject}: {', '.join(tokens)}" if tokens else f"{subject} no build, release or commit"
-
-
 def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
                       cited: Mapping[str, Sequence[str]] | None = None) -> list[Pending]:
-    """The documents the branch changed or added, matched by identity only (``document_path``; never by body) against
-    the accepted REFs still in force (not superseded or retired). More than one: ambiguous, listed with their IDs
-    (and, when one holds the branch's body, the supersession that would leave it alone). Exactly one: done when it
-    holds the branch's body, else a body revision when the text's tokens equal its scope tokens, else a superseding
-    REF. None: a new document. A document the branch did not change but held rows cite (``cited``) while the in-force
-    REF holds other text is listed too: those rows wait for it to be settled."""
+    """The documents the branch changed or added, and those held rows cite as the branch has it (``cited``), that are
+    not done, matched to the accepted REFs in force (not superseded or retired) by identity only (``document_path``;
+    never by body). A document the branch did not change is never listed for main's later edits alone."""
     holders: dict[str, list[Record]] = {}
     for record in on_accepted.records.values():
         if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
             holders.setdefault(path, []).append(record)
-    base_bodies = {path: record.body for path, record in documents(before).items()}
+    based = documents(before)
+    cited = cited or {}
     found: list[Pending] = []
     for path, record in sorted(documents(after).items()):
-        body, title = record.body or "", record.text("title") or path
+        on_main = sorted(holders.get(path, []), key=lambda other: id_key(other.id))
+        base = based.get(path)
+        changed = base is None or record.body != base.body
+        if not (changed or path in cited) or (len(on_main) == 1 and on_main[0].body == record.body):
+            continue
         names = record.scope.tokens if record.scope is not None else ()
-        on_main = holders.get(path, [])
-        citing: tuple[str, ...] = ()
-        if record.body == base_bodies.get(path):
-            # The branch did not change it: listed only for held rows citing it as the branch has it, while main does not
-            # hold exactly that text under one REF (main's later edits alone are not this branch's to salvage).
-            if not (cited and path in cited) or (len(on_main) == 1 and on_main[0].body == record.body):
-                continue
-            citing = tuple(cited[path])
-            if len(on_main) == 1:
-                found.append(Pending(path, "cited", body, title, names, target=on_main[0].id, citing=citing))
-                continue
-        if not on_main:
-            found.append(Pending(path, "new", body, title, names, citing=citing))
-        elif len(on_main) > 1:
-            # Ambiguity before done: two REFs in force for one document is never done. A supersession is offered only when
-            # exactly one of them holds this body; with several, which one's scope is right is the operator's call.
-            matching = [other.id for other in on_main if other.body == record.body]
-            ordered = sorted(on_main, key=lambda other: id_key(other.id))
-            found.append(Pending(path, "ambiguous", body, title, names, target=matching[0] if len(matching) == 1 else None, citing=citing,
-                                 holders=tuple(other.id for other in ordered),
-                                 scopes=tuple(", ".join(other.scope.tokens) if other.scope is not None and other.scope.tokens else "none"
-                                              for other in ordered)))
-        elif record.body != on_main[0].body:
-            held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
-            # The scope reads Status and Scope only (the exporter's rule); the whole body may name more.
-            newly = tuple(sorted(body_tokens(body) - body_tokens(on_main[0].body or ""), key=id_key))
-            # Main added or changed the document since the merge base: a body revision would drop its text (no three-way merge).
-            main_changed = on_main[0].body != base_bodies.get(path)
-            kind = "supersede" if sorted(names) != sorted(held) else "decide" if newly or main_changed else "revise"
-            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held, newly=newly, main_changed=main_changed))
+        # Main changed it since the merge base when what stands for the path does not hold the base's text.
+        main_changed = [base.body] != [other.body for other in on_main] if base is not None else bool(on_main)
+        found.append(Pending(path, record.body or "", names, tuple(sorted(body_tokens(record.body or "") - set(names), key=id_key)),
+                             tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body)
+                                   for other in on_main), main_changed, tuple(cited.get(path, ()))))
     return found
 
 
@@ -1175,9 +1096,8 @@ def run(options: argparse.Namespace) -> int:
                 print(f"memory salvage: {error}", file=sys.stderr)
                 return 1
             for document in result.documents:
-                target = out / "documents" / document.path
-                for printed in document.printed(str(target)):
-                    print(f"memory salvage: {document.path}: {printed}", file=sys.stderr)
+                for fact in document.facts(str(out / "documents" / document.path)):
+                    print(f"memory salvage: {document.path}: {fact}", file=sys.stderr)
             if segments:
                 print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)
         else:
