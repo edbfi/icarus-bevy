@@ -213,7 +213,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         # (the supersession forgotten) holds both in force.
         main_e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
         branch_e = next(record.body or "" for record in after.values() if document_path(record) == "docs/specs/e.md")
-        body = branch_e if rng.random() < 0.5 else "# e.md, on main\n"
+        # Or main re-homed e.md: a new REF with the text the merge base had, superseding the migrated one.
+        body = rng.choice([branch_e, "# e.md, on main\n", revisions[main_e_ref].record.body or ""])
         revisions["REF-960"] = Revision.of(superseding_document("REF-960", "docs/specs/e.md", main_e_ref if rng.random() < 0.7 else None, body))
     if "REF-960" not in revisions and not main_e and rng.random() < 0.15:
         # Main retired e.md's REF: no accepted REF stands for e.md, which the branch's rows may still cite.
@@ -314,7 +315,7 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertEqual([(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body) for other in holding],
                              [(held.id, held.scope, held.holds) for held in pending.in_force], f"{where}: {path}, the REFs in force")
             self.assertEqual((names, set(body_tokens(record.body or "")) - set(names)), (pending.names, set(pending.more)), f"{where}: {path}, tokens")
-            self.assertEqual(path not in based and bool(holding) or path in based and [based[path].body] != [other.body for other in holding], pending.main_changed,
+            self.assertEqual(path not in based and bool(holding) or path in based and [based[path]] != holding, pending.main_changed,
                              f"{where}: {path}, main changed it")
             self.assertEqual(sorted(waiting.get(path, set())), sorted(pending.citing), f"{where}: {path}, the rows citing it")
             for fact in [*pending.facts("FILE"), pending.line()]:

@@ -1396,6 +1396,23 @@ class SalvageTests(LegacyRepository):
                           "its body also names: nothing", "main changed or replaced its reference since this branch's base: yes",
                           "a new reference for it carries --note 'salvaged document: docs/specs/net/another.md'"], document.facts())
 
+    def test_a_document_main_replaced_with_the_same_text_says_main_changed_it(self) -> None:
+        # Main re-homed the document after the base: a new REF with the same body supersedes the migrated one.
+        _ = run_git(self.root, "checkout", "-q", "-b", "rehomed")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: the branch's line.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "branch edits the spec")
+        records = self.journal_on_main(remove_legacy=True)
+        old = next(record for record in records.values() if record.type == "reference" and record.legacy is not None
+                   and record.legacy.path == "docs/specs/net/another.md")
+        body = old.body or ""
+        self.accept_reference(online.Changes({"title": "Another", "scope": {"basis": "explicit"}, "supersedes": [old.id]},
+                                             salvage_command.DOCUMENT_NOTE.format("docs/specs/net/another.md"), body), "REF-900")
+        (document,) = salvage(self.root, "rehomed").documents
+        self.assertEqual((("REF-900",), True), (tuple(item.id for item in document.in_force), document.main_changed))
+        self.assertIn("in force: REF-900 (scope: none; other text);", document.line())
+        self.assertIn("main changed or replaced its reference since this branch's base: yes", document.line())
+
     def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
                                 "Candidate; observed with client build 29990003 only."))

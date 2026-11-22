@@ -180,6 +180,15 @@ def body_tokens(body: str) -> set[str]:
     return {*named, *commits}
 
 
+def exported(record: Record) -> JSON:
+    """``record`` as data, less the commit an export read it at (its legacy ``revision`` cell): the same document
+    exported at two commits is one record."""
+    data = record.to_json()
+    if isinstance(legacy := data.get("legacy"), dict) and isinstance(cells := legacy.get("cells"), dict):
+        _ = cells.pop("revision", None)
+    return data
+
+
 def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
                       cited: Mapping[str, Sequence[str]] | None = None) -> list[Pending]:
     """The documents the branch changed or added, and those held rows cite as the branch has it (``cited``), that are
@@ -199,8 +208,9 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         if not (changed or path in cited) or (len(on_main) == 1 and on_main[0].body == record.body):
             continue
         names = record.scope.tokens if record.scope is not None else ()
-        # Main changed it since the merge base when what stands for the path does not hold the base's text.
-        main_changed = [base.body] != [other.body for other in on_main] if base is not None else bool(on_main)
+        # Main changed it since the merge base when what stands for the path is not the very record the base's document
+        # maps to: another ID, or the same ID at another revision (body, supersession, note), or none at all.
+        main_changed = [exported(base)] != [exported(other) for other in on_main] if base is not None else bool(on_main)
         found.append(Pending(path, record.body or "", names, tuple(sorted(body_tokens(record.body or "") - set(names), key=id_key)),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body)
                                    for other in on_main), main_changed, tuple(cited.get(path, ()))))
