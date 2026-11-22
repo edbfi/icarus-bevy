@@ -93,6 +93,7 @@ from tools.memory.check import APPEND_ONLY, REVISABLE, revision_problems
 from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set
 from tools.memory.legacy import SALVAGED, TRACKED_NOTE, commit_time, export
+from tools.memory.legacy_prose import SPECS, section
 from tools.memory.legacy_reader import CatalogError, has_legacy
 from tools.memory.legacy_rules import MigrationError, commit_words, extract
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
@@ -142,16 +143,19 @@ class InForce:
 
     def fact(self) -> str:
         text = "this text" if self.holds else f"other text; this text newly names: {', '.join(self.newly) or 'nothing'}"
-        return f"{self.id} (scope: {', '.join(self.scope) or 'none'}; {text})"
+        return f"{self.id} (scope tokens: {', '.join(self.scope) or 'none'}; {text})"
 
 
 @dataclass(frozen=True)
 class Pending:
     """A document that is not done (done: exactly one REF in force names its path and holds the branch's body), as
-    facts only; what each combination asks of the operator is the runbook's. ``names``: the tokens its Status and
-    Scope sections name (the exporter's scope); ``more``: those the rest of its body also names; ``main_changed``:
+    facts only; what each combination asks of the operator is the runbook's. ``names``: the tokens of the exporter's
+    scope (``from_sections``: a spec's Status and Scope sections, else its whole text); ``more``: those the rest of a
+    spec's body also names; ``main_changed``:
     the REFs in force for its path are not the very record the merge base's document maps to; ``citing``: the held
-    rows that cite it as the branch has it."""
+    rows that cite it as the branch has it; ``branch_changed``: the branch's text differs from the merge base's (or the
+    base had no such document); ``based_on``: the REF the base's document maps to and its fate on the accepted
+    commit (now in force, retired, or superseded by which REFs)."""
 
     path: str
     body: str
@@ -160,17 +164,33 @@ class Pending:
     in_force: tuple[InForce, ...]
     main_changed: bool
     citing: tuple[str, ...] = ()
+    branch_changed: bool = True
+    # What the merge base's document mapped to on the accepted commit, each with what became of it; None: the base had no
+    # such document; empty: the accepted journal holds no reference it mapped to.
+    based_on: tuple[tuple[str, str], ...] | None = None
+    # The exporter read its scope from its Status and Scope sections (a spec that has them), else from its whole text.
+    from_sections: bool = True
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
         held = ", ".join(ref.fact() for ref in self.in_force)
         return [*([f"body written to {shlex.quote(file)}"] if file is not None else []),
                 f"in force: {held}" if held else "no accepted reference names this path",
-                f"its Status and Scope sections name: {', '.join(self.names) or 'nothing'}",
-                f"its body also names: {', '.join(self.more) or 'nothing'}",
+                f"this branch changed it since its base: {'yes' if self.branch_changed else 'no'}",
+                *([f"the exporter reads as its scope, from its Status and Scope sections: {', '.join(self.names) or 'nothing'}",
+                   f"its body also names: {', '.join(self.more) or 'nothing'}"] if self.from_sections else
+                  [f"the exporter reads as its scope, from its whole text: {', '.join(self.names) or 'nothing'}"]),
+                self.base_fact(),
                 f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
                 *([f"rows held because they cite it: {', '.join(self.citing)}"] if self.citing else []),
                 f"a new reference for it carries --note {shlex.quote(DOCUMENT_NOTE.format(self.path))}"]
+
+    def base_fact(self) -> str:
+        if self.based_on is None:
+            return "at this branch's base its reference was none (the document is new on this branch)"
+        if not self.based_on:
+            return "at this branch's base its reference was none the accepted journal holds"
+        return "at this branch's base its reference was " + ", ".join(f"{name}: {fate}" for name, fate in self.based_on)
 
     def line(self) -> str:
         """The facts on one line (``--check`` and the notices)."""
@@ -206,6 +226,20 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
             holders.setdefault(path, []).append(record)
     based = documents(before)
     cited = cited or {}
+
+    def based_on(path: str, base: Record) -> list[str]:
+        """The accepted REF the base's document maps to: the one the cut-over migrated from its path (its legacy path),
+        else the accepted record its translated ID names."""
+        migrated = sorted((name for name, other in on_accepted.records.items()
+                           if other.type == "reference" and other.legacy is not None and other.legacy.path == path), key=id_key)
+        return migrated or ([base.id] if base.id in on_accepted.records else [])
+
+    def fate(name: str) -> str:
+        if name not in on_accepted.retired:
+            return "now in force"
+        by = sorted((other.id for other in on_accepted.records.values() if name in other.links.supersedes), key=id_key)
+        return f"superseded by {', '.join(by)}" if by else "retired"
+
     found: list[Pending] = []
     for path, record in sorted(documents(after).items()):
         on_main = sorted(holders.get(path, []), key=lambda other: id_key(other.id))
@@ -215,13 +249,16 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
             continue
         names = record.scope.tokens if record.scope is not None else ()
         text = body_tokens(record.body or "")
+        # The exporter's rule (``legacy_prose.references``): a spec's Status and Scope sections when it has them, else the whole text.
+        from_sections = path.startswith(SPECS) and any(section(record.body or "", name) for name in ("Status", "Scope"))
         # Main changed it since the merge base when what stands for the path is not the very record the base's document
         # maps to: another ID, or the same ID at another revision (body, supersession, note), or none at all.
         main_changed = [exported(base)] != [exported(other) for other in on_main] if base is not None else bool(on_main)
-        found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)),
+        found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)) if from_sections else (),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                            () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
-                                   for other in on_main), main_changed, tuple(cited.get(path, ()))))
+                                   for other in on_main), main_changed, tuple(cited.get(path, ())), changed,
+                             None if base is None else tuple((name, fate(name)) for name in based_on(path, base)), from_sections))
     return found
 
 
@@ -484,11 +521,13 @@ class SalvageError(RuntimeError):
 
 
 def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[str, list[str]], edits: Mapping[str, Edit],
-           on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None]) -> tuple[list[Revision], dict[str, str]]:
+           on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None],
+           stale: Callable[[Record], str | None] = lambda _record: None) -> tuple[list[Revision], dict[str, str]]:
     """The proposal set, rebuilt from scratch until nothing more is held: each row's own proposal, then every
     ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
     revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
-    then the replay check (``honoured``) holds what fails. The held set only grows, so it ends; nothing is patched in
+    then the replay check (``honoured``) holds what fails. An accepted record whose document citation is stale
+    (``stale``, as ``stale_citation``) is never revised to carry a link: the old row is held instead. The held set only grows, so it ends; nothing is patched in
     place, so no order of discovery leaves a stale link. Returns the proposals and the accepted records that could
     not carry links, with why."""
     accepted = on_accepted.records
@@ -510,6 +549,10 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     else:
                         carriers[target] = linked
                 elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "cosmetic", "revision", "superseded"):
+                    if (reason := stale(accepted[target])) is not None:
+                        _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which would carry the link, but {target} "
+                                             + reason.removeprefix("it "))
+                        continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
                     why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
@@ -1021,7 +1064,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             if pending:
                 pending_links[identifier] = pending
     own = {revision.record.id: revision for revision in result.proposals}
-    result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold)
+    result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold,
+                                          lambda record: stale_citation(record, on_accepted, current, branch_documents))
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):
