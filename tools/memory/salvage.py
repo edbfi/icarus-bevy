@@ -886,6 +886,28 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     # for a row the branch did not change, for the accepted REF the merge base's export cited: such a row is unchanged.
     standins = {name: other for name in unmapped if name in after and name not in before and after[name].type == "reference"
                 for other, base in before.items() if other in accepted and identity(base) == identity(after[name])}
+    # A REF and the accepted REF superseding it for the same document are one citation: main may supersede a document's
+    # REF after a row citing it was accepted (by a cut-over or a run of salvage), so the branch's row, translated against
+    # today's journal, cites the successor while main's record still cites the old one.
+    successors: dict[str, list[str]] = {}
+    for name, other in accepted.items():
+        if other.type == "reference" and (key := identity(other)) is not None:
+            for old in other.links.supersedes:
+                if old in accepted and identity(accepted[old]) == key:
+                    successors.setdefault(old, []).append(name)
+    current: dict[str, str] = {}
+    for old in successors:
+        name, visited = old, {old}
+        while len(successors.get(name, ())) == 1 and (following := successors[name][0]) not in visited:
+            name = following
+            visited.add(name)
+        if name != old:
+            current[old] = name
+
+    def same(one: Record | None, other: Record | None) -> bool:
+        """Equal, or equal once each cited REF is the one superseding it (``current``)."""
+        return one == other or (one is not None and other is not None and bool(current) and relink(one, current) == relink(other, current))
+
     changed: list[str] = []
     for name in sorted(set(renamed) - set(after), key=id_key):
         hold(name, "undecided", renamed[name])
@@ -914,7 +936,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 *other.links.targets(), *(other.legacy.superseded_by if other.legacy is not None else ())}), key=id_key)):
             hold(identifier, "undecided", f"its provisional number is cited by {', '.join(citing)}; propose it alone first")
             continue
-        if on_main == record:
+        if same(on_main, record):
             result.kinds[identifier] = "accepted"
         elif origin is None:
             fresh.append(identifier)
@@ -926,7 +948,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             except RecordError as error:
                 hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
                 continue
-            if (edit.blocked or edit.undecided is not None) and on_main is not None and on_main != origin:
+            if (edit.blocked or edit.undecided is not None) and on_main is not None and not same(on_main, origin):
                 # Main changed the row since the merge base too: reconcile by hand before anything else.
                 result.kinds[identifier] = "conflict"
                 result.conflicts.append((on_main, record))
@@ -955,7 +977,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
             # Without links: the linking pass below adds each only from an edit that is neither a conflict nor held.
             result.proposals.append(Revision.of(record))
-        elif linked == record:
+        elif same(linked, record):
             result.kinds[identifier] = "accepted"
         else:
             result.kinds[identifier] = "conflict"
@@ -978,7 +1000,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             result.kinds[identifier] = "cosmetic"
         elif revision is None and not pending:
             result.kinds[identifier] = "accepted"
-        elif on_main != origin and on_main != apply(edit, origin):
+        elif not same(on_main, origin) and not same(on_main, apply(edit, origin)):
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
         else:
