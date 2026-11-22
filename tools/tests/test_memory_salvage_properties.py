@@ -320,7 +320,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                 # A citation of e.md is of e.md as the branch has it: proposed citing main's REF only when main holds that text.
                 branch_e = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/e.md")
                 main_e = next(record.body for name, record in accepted.records.items() if document_path(record) == "docs/specs/e.md" and name not in accepted.retired)
-                e_listed = [(pending.kind, pending.holders) for pending in pending_documents(after, before, accepted, result.cited)
+                e_listed = [(pending.kind, pending.citing) for pending in pending_documents(after, before, accepted, result.cited)
                             if pending.path == "docs/specs/e.md"]
                 if branch_e == main_e:
                     self.assertEqual("new", result.kinds["M-502"], f"seed {seed}: a row citing e.md as main holds it")

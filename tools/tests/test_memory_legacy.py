@@ -1379,7 +1379,7 @@ class SalvageTests(LegacyRepository):
         self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
         self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another.md as this branch has it \(REF-[0-9]+, a provisional number\); REF-[0-9]+ holds other text: settle the document first$")
         (document,) = result.documents
-        self.assertEqual(("cited", ("M-105",), []), (document.kind, document.holders, document.commands("FILE")))
+        self.assertEqual(("cited", ("M-105",), []), (document.kind, document.citing, document.commands("FILE")))
         self.assertIn(f"cited by M-105 as this branch has it; {document.target} holds other text: settle the document first", document.line())
         status, stdout, _stderr = self.run_salvage("older", check=True)
         self.assertEqual((1, True), (status, "1 unsalvaged row(s), 1 pending document(s)" in stdout), stdout)
@@ -1393,7 +1393,7 @@ class SalvageTests(LegacyRepository):
         self.revise_spec_on_main(self.ref_body("main~1", "docs/specs/net/another.md") + "\nInvented: main's line.\n")
         (document,) = salvage(self.root, "both-edit").documents
         self.assertEqual(("decide", True, ()), (document.kind, document.main_changed, document.newly))
-        self.assertIn(f"main changed {document.target} since this branch's base, so check that the branch's body carries those changes", document.line())
+        self.assertIn(f"main added or changed {document.target} since this branch's base, so check that the branch's body carries main's text", document.line())
         self.assertEqual([f"if this body carries main's changes to {document.target} since this branch's base: memory revise {document.target} --body FILE"],
                          document.commands("FILE"))
 
@@ -1441,8 +1441,10 @@ class SalvageTests(LegacyRepository):
         _ = run_git(self.root, "commit", "-q", "-am", "edit the spec")
         self.assertEqual(["new"], [item.kind for item in salvage(self.root, "after-retire").documents])
 
-    def test_a_hand_proposed_ref_takes_a_body_revision_only_under_the_same_tokens(self) -> None:
-        scopes: list[tuple[JSON, str]] = [({"basis": "explicit", "builds": ["server:29990001"]}, "revise"), ({"basis": "explicit"}, "supersede")]
+    def test_a_document_main_added_by_hand_needs_a_decision_or_a_superseding_ref(self) -> None:
+        # Main added the document (by REF-900) since the branch's base: even under equal tokens a revision is a decision, since
+        # salvage cannot tell main's text from an earlier state of the branch's.
+        scopes: list[tuple[JSON, str]] = [({"basis": "explicit", "builds": ["server:29990001"]}, "decide"), ({"basis": "explicit"}, "supersede")]
         for scope, kind in scopes:
             with self.subTest(kind):
                 self.setUp()
@@ -1458,7 +1460,7 @@ class SalvageTests(LegacyRepository):
                 _ = spec.write_text(spec.read_text() + "\nMore text.\n", encoding="utf-8")
                 _ = run_git(self.root, "commit", "-q", "-am", "more text")
                 (document,) = salvage(self.root, "hand").documents
-                self.assertEqual((kind, "REF-900"), (document.kind, document.target))
+                self.assertEqual((kind, "REF-900", True), (document.kind, document.target, document.main_changed))
 
     def test_a_path_two_accepted_refs_name_gets_no_command(self) -> None:
         self.new_spec_branch("docs/specs/net/third.md", cite=False)

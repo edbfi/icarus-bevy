@@ -137,9 +137,9 @@ class Pending:
     """A document the branch changed, added or cites: its legacy path, what it needs (``kind``: ``new``, ``revise`` the
     body of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope,
     ``decide`` by hand (the body ``newly`` names tokens, or ``main_changed`` ``target`` since the base), ``ambiguous``
-    when the accepted journal holds the path more than once (``holders``), or ``cited`` by held rows (``holders``) as
-    the branch has it while ``target`` holds other text), and the body, title and scope tokens (``names``) the
-    exporter gives its REF at the salvaged tip."""
+    when the accepted journal holds the path more than once (``holders``), or ``cited`` as the branch has it while
+    ``target`` holds other text), and the body, title and scope tokens (``names``) the exporter gives its REF at the
+    salvaged tip. ``citing``: the held rows citing a document the branch did not change (listed for them alone)."""
 
     path: str
     kind: str
@@ -152,6 +152,7 @@ class Pending:
     scopes: tuple[str, ...] = ()
     newly: tuple[str, ...] = ()
     main_changed: bool = False
+    citing: tuple[str, ...] = ()
 
     def commands(self, file: str) -> list[str]:
         """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
@@ -175,8 +176,8 @@ class Pending:
         return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
 
     def main_note(self) -> str:
-        return (f"main changed {self.target} since this branch's base, so check that the branch's body carries those changes"
-                + " before it replaces them")
+        return (f"main added or changed {self.target} since this branch's base, so check that the branch's body carries"
+                + " main's text before it replaces it")
 
     def scope_line(self) -> str:
         """For a new REF: who states the scope, and the build, release and commit tokens its text names."""
@@ -185,6 +186,7 @@ class Pending:
 
     def line(self) -> str:
         """The pending document without ``--out``: no path is named that does not exist."""
+        opening = f"unchanged document cited by {', '.join(self.citing)} as this branch has it" if self.citing else "changed document"
         if self.kind == "revise":
             return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
                     + " branch's; a body merged by hand into other text stays listed)")
@@ -193,7 +195,7 @@ class Pending:
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
                     + (f"; {self.main_note()}" if self.main_changed else "") + " (salvage --out writes its body and the commands)")
         if self.kind == "cited":
-            return (f"cited by {', '.join(self.holders)} as this branch has it; {self.target} holds other text: settle the document first"
+            return (f"{opening}; {self.target} holds other text: settle the document first"
                     + f" (decide whether those rows apply to {self.target}'s text, or propose this text as a new REF)")
         if self.kind == "decide":
             reasons = [*([f"its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
@@ -203,12 +205,13 @@ class Pending:
         if self.kind == "ambiguous":
             if self.target is not None:
                 others = ", ".join(other for other in self.holders if other != self.target)
-                return (f"changed document; the accepted journal holds {', '.join(self.holders)} for this path; {self.target} holds this body:"
+                return (f"{opening}; the accepted journal holds {', '.join(self.holders)} for this path; {self.target} holds this body:"
                         + f" supersede {others} by it (" + "; ".join(f"memory supersede {other} --by {self.target}" for other in self.holders
                                                                     if other != self.target) + ") or decide by hand")
             held = "; ".join(f"{holder} (scope: {scope})" for holder, scope in zip(self.holders, self.scopes, strict=True))
-            return f"changed document; the accepted journal holds {held} for this path: decide by hand (no command)"
-        return ("new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
+            return f"{opening}; the accepted journal holds {held} for this path: decide by hand (no command)"
+        return ((f"{opening}; no accepted REF in force names this path" if self.citing else "new document")
+                + "; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
                 + " path, by legacy path or that command's note, with this body)")
 
 
@@ -243,19 +246,24 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         body, title = record.body or "", record.text("title") or path
         names = record.scope.tokens if record.scope is not None else ()
         on_main = holders.get(path, [])
+        citing: tuple[str, ...] = ()
         if record.body == base_bodies.get(path):
-            # The branch did not change it; listed only when held rows cite it as the branch has it and main's differs.
-            if cited and path in cited and len(on_main) == 1 and on_main[0].body != record.body:
-                found.append(Pending(path, "cited", body, title, names, target=on_main[0].id, holders=tuple(cited[path])))
-            continue
+            # The branch did not change it: listed only for held rows citing it as the branch has it, while main does not
+            # hold exactly that text under one REF (main's later edits alone are not this branch's to salvage).
+            if not (cited and path in cited) or (len(on_main) == 1 and on_main[0].body == record.body):
+                continue
+            citing = tuple(cited[path])
+            if len(on_main) == 1:
+                found.append(Pending(path, "cited", body, title, names, target=on_main[0].id, citing=citing))
+                continue
         if not on_main:
-            found.append(Pending(path, "new", body, title, names))
+            found.append(Pending(path, "new", body, title, names, citing=citing))
         elif len(on_main) > 1:
             # Ambiguity before done: two REFs in force for one document is never done. A supersession is offered only when
             # exactly one of them holds this body; with several, which one's scope is right is the operator's call.
             matching = [other.id for other in on_main if other.body == record.body]
             ordered = sorted(on_main, key=lambda other: id_key(other.id))
-            found.append(Pending(path, "ambiguous", body, title, names, target=matching[0] if len(matching) == 1 else None,
+            found.append(Pending(path, "ambiguous", body, title, names, target=matching[0] if len(matching) == 1 else None, citing=citing,
                                  holders=tuple(other.id for other in ordered),
                                  scopes=tuple(", ".join(other.scope.tokens) if other.scope is not None and other.scope.tokens else "none"
                                               for other in ordered)))
@@ -263,8 +271,8 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
             held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
             # The scope reads Status and Scope only (the exporter's rule); the whole body may name more.
             newly = tuple(sorted(body_tokens(body) - body_tokens(on_main[0].body or ""), key=id_key))
-            # Main changed the document too since the merge base: a body revision would drop its edits (no three-way merge).
-            main_changed = path in base_bodies and on_main[0].body != base_bodies[path]
+            # Main added or changed the document since the merge base: a body revision would drop its text (no three-way merge).
+            main_changed = on_main[0].body != base_bodies.get(path)
             kind = "supersede" if sorted(names) != sorted(held) else "decide" if newly or main_changed else "revise"
             found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held, newly=newly, main_changed=main_changed))
     return found
