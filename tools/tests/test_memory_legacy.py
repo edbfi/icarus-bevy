@@ -1607,6 +1607,10 @@ class SalvageTests(LegacyRepository):
         self.assertEqual(f"its row on carrier names successor M-104, which would carry the link, but M-104 cites {entry.record.id}, which holds other"
                          + " text of docs/specs/net/widget.md than this branch's: settle the document first", result.undecided["M-102"])
         self.assertEqual(["M-105"], [revision.record.id for revision in result.proposals], "the unrelated row is still proposed")
+        # The document M-102 waits on is listed, though the branch never changed it, with M-102 as a row it holds.
+        (document,) = result.documents
+        self.assertEqual(("docs/specs/net/widget.md", ("M-102",), False), (document.path, document.citing, document.branch_changed))
+        self.assertIn("; rows held because they cite it: M-102;", document.line())
         status, _stdout, stderr = self.run_salvage("carrier")
         self.assertEqual(salvage_command.EXIT_SUPERSEDE, status, stderr)
         self.assertNotIn("internal error", stderr)

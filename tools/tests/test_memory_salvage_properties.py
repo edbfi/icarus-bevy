@@ -340,8 +340,10 @@ class GeneratedSalvageTests(unittest.TestCase):
         self.assertEqual(set[str](), set(by_path) - set(branch), f"{where}: a document the branch does not hold is listed")
         # Every row held because it cites a document's provisional number is named beside that document.
         numbered_as = {path: name for name, record in after.items() if (path := document_path(record)) is not None}
-        waiting = {path: {held for held, reason in result.undecided.items() if reason.startswith("it cites ") and f"({name}, a provisional number)" in reason}
-                   for path, name in numbered_as.items() if name in unmapped}
+        waiting = {path: {held for held, reason in result.undecided.items()
+                          if (name in unmapped and reason.startswith("it cites ") and f"({name}, a provisional number)" in reason)
+                          or reason.endswith((f" of {path} than this branch's: settle the document first", f"no longer stands for {path}: settle the document first"))}
+                   for path, name in numbered_as.items()}
         for path, record in branch.items():
             holding = sorted(standing.get(path, []), key=lambda other: id_key(other.id))
             done = len(holding) == 1 and holding[0].body == record.body
@@ -475,7 +477,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                     self.assertIn("docs/specs/e.md as this branch has it", result.undecided["M-502"], f"seed {seed}")
                     branch_changed_e = branch_e != next(record.body for record in raw_before.values() if document_path(record) == "docs/specs/e.md")
                     if not branch_changed_e:
-                        waiting = tuple(name for name in ("M-500", "M-502") if "docs/specs/e.md as this branch has it" in result.undecided.get(name, ""))
+                        waiting = tuple(name for name in ("M-500", "M-502", "M-503") if result.undecided.get(name, "").startswith("it cites docs/specs/e.md as this branch has it")
+                                        or result.undecided.get(name, "").endswith(" of docs/specs/e.md than this branch's: settle the document first"))
                         self.assertEqual([waiting], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")
             if len(accepted.records["M-500"].links.refs) == 1:
                 self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
