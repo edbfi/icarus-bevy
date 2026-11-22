@@ -115,40 +115,39 @@ in its conflicts loses the rows and unprotects the branch's evidence.
      branch's record under a new ID and rewrite its citations; when `main`
      took an earlier draft, reconcile with `memory revise` or a superseding
      record;
-   - `needs a decision by hand: …`, by its reason. Wait for that record, then
-     run salvage again: `which no accepted REF names (by legacy path or a
-     note`, `it cites the new …`, `that record must be accepted first`, `propose
-     it alone first`. Settle the document first (below), then run again:
-     `as this branch has it`, `which holds other text of`, `which no longer
-     stands for`, `several REFs in force name` (each ending `: settle the
-     document first`). Decide with the record's owner: `which the accepted
-     journal holds N times`, `one of N records sharing the`, `a rename needs a
-     superseding record`, `which would carry the link`.
+   - `needs a decision by hand: …`: the last words of the reason name the
+     action. `that record must be accepted first`, `those records must be
+     accepted first` and `propose it alone first`: wait until that record is
+     accepted, then run salvage again. `: settle the document first`: settle
+     it by the rules below, then run again. `decide by hand`: decide with the
+     record's owner. A reason that joins clauses ends with the strongest
+     (wait, settle, decide).
 
    Documents: salvage prints facts, never a command. Apply the first rule
    whose facts fit; `<file>` is the `body written to` path:
 
    1. `this branch changed it since its base: no` (listed only for `rows held
-      because they cite it`): do nothing to it and propose no reference; for
-      each held row, decide with its owner whether the claim holds for the
-      reference's current text. The row stays listed (step 6).
-   2. `no accepted reference names this path`: if `at this branch's base its
+      because they cite it`): never propose a reference. With exactly one
+      reference in force, decide with each row's owner whether its claim holds
+      for that reference's current text; with none or several there is no
+      single text to judge, so the row stays held, the end state unless its
+      owner rewrites the claim as a new record.
+   2. `no accepted reference names this path`: if `references that named this
+      path and are no longer in force` lists any, or `at this branch's base its
       reference was REF-N: retired` (or `superseded by …`, or `none the
       accepted journal holds`), main withdrew or replaced it: propose nothing;
-      bringing it back is the owner's decision, stated in the pull request. If
-      `none (the document is new on this branch)`: propose it as in rule 5,
-      without a supersession.
+      bringing it back is the owner's decision, stated in the pull request.
+      Only with that history `none` and `none (the document is new on this
+      branch)` is it new: propose it as in rule 5, without a supersession.
    3. Several in `in force:`: decide by hand which stands, supersede the
       others if so decided, run salvage again and apply these rules to the new
       facts. Nothing else.
    4. One in force and `main changed or replaced its reference since this
       branch's base: yes`: make `<file>` carry main's current text (`memory get
-      REF-N`) with the branch's change. The facts describe the branch's text,
-      not this file: use `memory revise` only if you can show that what the
-      exporter would read as its scope (its Status and Scope sections for a
-      spec, its whole text otherwise) names exactly REF-N's scope tokens and
-      that it names no build, release or commit REF-N's current text does not;
-      otherwise, and whenever unsure, rule 5's superseding reference.
+      REF-N`) with the branch's change, then propose it as a new reference and
+      supersede REF-N (rule 5's second branch), never `memory revise`: the
+      printed facts describe the branch's text, not the reconciled file, and no
+      tool recomputes them. This is deliberately conservative.
    5. One in force, main unchanged: if its `scope tokens` equal what `the
       exporter reads as its scope` and `this text newly names: nothing`,
       `memory revise REF-N --body <file>`. Otherwise a body revision cannot
@@ -161,9 +160,8 @@ in its conflicts loses the rows and unprotects the branch's evidence.
       request and revise instead: a person records that, never the tool.
 
    Rows held because they cite a document are proposed on the next run once
-   it is done. Example: REF-016, REF-010: 5, revise; REF-008: 5, supersede;
-   REF-036, REF-001: 4, then revise if the re-assessment allows; REF-013: 4,
-   then supersede.
+   it is done. Example: REF-016, REF-010: 5, revise; REF-008: 5, superseding
+   reference; REF-036, REF-001, REF-013: 4, superseding reference.
 4. On a new branch from `main`, copy every segment of `<out>/memory/journal/`
    into `memory/journal/`, add the records from step 3, run `memory check
    --ci`, commit and open the pull request. After it merges and the lead runs
