@@ -121,15 +121,15 @@ def added_by(root: Path, path: str) -> str | None:
     return lines[-1] if lines else None
 
 
-def same_tree_outside(root: Path, first: str, second: str, excluded: str) -> bool | None:
-    """Whether the trees of commits ``first`` and ``second`` are equal outside ``excluded``; ``None`` when Git
-    cannot compare them (a commit not in this clone)."""
+def changed_outside(root: Path, first: str, second: str, excluded: str) -> tuple[str, ...] | None:
+    """The paths that differ between the trees of commits ``first`` and ``second`` outside ``excluded``, sorted
+    (empty: the trees are equal there); ``None`` when Git cannot compare them (a commit not in this clone)."""
     try:
-        status, _ = run_git(root, "diff", "--quiet", "--no-ext-diff", "--end-of-options", f"{first}^{{commit}}", f"{second}^{{commit}}",
-                            "--", ".", f":(exclude){excluded}", ok=(0, 1), timeout=READ_TIMEOUT)
+        output = git(root, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--end-of-options", f"{first}^{{commit}}",
+                     f"{second}^{{commit}}", "--", ".", f":(exclude){excluded}", timeout=READ_TIMEOUT)
     except GitError:
         return None
-    return status == 0
+    return tuple(sorted(item for item in output.decode("utf-8", "surrogateescape").split("\0") if item))
 
 
 def merge_base(root: Path, base: str) -> str:

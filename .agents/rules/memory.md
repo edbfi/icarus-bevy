@@ -175,7 +175,7 @@ Supersession is acyclic.
   REF, and whether one names the pin; never verified); `native` (commit, with whether
   HEAD descends from it; if not, the commit in HEAD's history that added the
   record's segment and whether its tree outside `memory/journal/` equals the
-  commit's: `yes`, `no` or `unknown`); `unscoped`.
+  commit's: `yes`, `no` with where they differ, or `unknown`); `unscoped`.
 - Default recall: accepted records plus this worktree's proposals; no evidence,
   orphaned documents or pending revisions; pinned `query_timestamp`. Other
   worktrees' proposals only with `--all-proposals`, listed apart.

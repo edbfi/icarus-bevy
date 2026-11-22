@@ -41,7 +41,7 @@ from tools.memory.bank import (
 )
 from tools.memory.canonical import RENDERING, render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
-from tools.memory.gitio import GitError, added_by, descends, git, listed_files, read_blobs, same_tree_outside
+from tools.memory.gitio import GitError, added_by, changed_outside, descends, git, listed_files, read_blobs
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags, Unavailable
 from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, segment_name, write_change_set
 from tools.memory.legacy_rules import extract
@@ -763,6 +763,10 @@ def label_tokens(label: str) -> tuple[str, ...]:
     return tuple(item for name in ("builds", "releases") if is_array(found := scope.get(name)) for item in found if isinstance(item, str))
 
 
+# Top-level names a native record's landing line lists before it says there are more.
+TOP_CAP = 6
+
+
 def yes_no(value: bool | None) -> str:
     return "unknown" if value is None else "yes" if value else "no"
 
@@ -775,9 +779,11 @@ def place(root: Path, record: Record, release: Record | None, reason: str, entry
 
     A native record whose commit HEAD does not descend from (a squash merge leaves the measured commit in no
     branch) also names ``landed``, the oldest commit in HEAD's history that added the segment of ``entry``'s first
-    revision (scope is not revisable, so that revision carries it), and ``landed_identical``, whether that commit's
-    tree equals the measured commit's outside the journal (``None``: the measured commit is not in this clone).
-    Both are ``None`` when not applicable or no such commit exists; only these records cost the extra Git calls."""
+    revision (scope is not revisable, so that revision carries it), ``landed_identical``, whether that commit's
+    tree equals the measured commit's outside the journal (``None``: the measured commit is not in this clone), and
+    ``landed_changed``, the top-level names under which the two differ (documents committed after the measurement
+    differ too; the reader judges). All are ``None`` when not applicable or no such commit exists; only these
+    records cost the extra Git calls."""
     if record.type in ("evidence", "release"):
         return {"name": record.type}, ""
     if release is None:
@@ -789,15 +795,22 @@ def place(root: Path, record: Record, release: Record | None, reason: str, entry
         detail.append(f"names the pin: {'yes' if placed.names_pin else 'no'}")
     landed: str | None = None
     identical: bool | None = None
+    changed: list[JSON] | None = None
     if placed.name == "native" and placed.commit is not None:
         line = f"HEAD descends from {placed.commit}: {yes_no(placed.descends)}"
         if placed.descends is not True and entry is not None and (landed := added_by(root, entry.history()[0].segment)) is not None:
-            identical = same_tree_outside(root, placed.commit, landed, JOURNAL)
+            paths = changed_outside(root, placed.commit, landed, JOURNAL)
+            identical = None if paths is None else not paths
             line += (f"; its segment was added to HEAD's history by {landed[:12]}; tree there outside {JOURNAL}/ identical to"
                      f" {placed.commit}: {yes_no(identical)}")
+            if paths:
+                tops = sorted({path.split("/", 1)[0] + ("/" if "/" in path else "") for path in paths})
+                changed = list[JSON](tops)
+                line += f" ({len(paths)} path(s) differ, under {', '.join(tops[:TOP_CAP])}{', ...' if len(tops) > TOP_CAP else ''})"
         detail.append(line)
     data: dict[str, JSON] = {"name": placed.name, "release": release.id, "tokens": list(placed.tokens), "names_pin": placed.names_pin,
-                             "commit": placed.commit, "descends": placed.descends, "landed": landed, "landed_identical": identical}
+                             "commit": placed.commit, "descends": placed.descends, "landed": landed, "landed_identical": identical,
+                             "landed_changed": changed}
     return data, f"{placed.name} against {release.id}" + "".join(f"; {item}" for item in detail)
 
 

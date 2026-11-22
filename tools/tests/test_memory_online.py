@@ -1645,13 +1645,14 @@ class NativeLandingTests(Online):
         line, placed = self.partition_of("F-201")
         self.assertEqual(f"partition: native against REL-9.0.2; tokens {measured}; HEAD descends from {measured}: no; its segment was added to"
                          + f" HEAD's history by {squash[:12]}; tree there outside memory/journal/ identical to {measured}: yes", line)
-        self.assertEqual((False, squash, True), (placed["descends"], placed["landed"], placed["landed_identical"]))
+        self.assertEqual((False, squash, True, None), (placed["descends"], placed["landed"], placed["landed_identical"], placed["landed_changed"]))
 
     def test_a_squash_merge_onto_a_main_that_moved(self) -> None:
         measured, squash = self.squashed(main_moves=True)
         line, placed = self.partition_of("F-201")
-        self.assertTrue(line.endswith(f"by {squash[:12]}; tree there outside memory/journal/ identical to {measured}: no"), line)
-        self.assertEqual((squash, False), (placed["landed"], placed["landed_identical"]))
+        self.assertTrue(line.endswith(f"by {squash[:12]}; tree there outside memory/journal/ identical to {measured}: no"
+                                      + " (1 path(s) differ, under src/)"), line)
+        self.assertEqual((squash, False, ["src/"]), (placed["landed"], placed["landed_identical"], placed["landed_changed"]))
 
     def test_a_measured_commit_absent_from_the_clone(self) -> None:
         self.accepted_chain()
