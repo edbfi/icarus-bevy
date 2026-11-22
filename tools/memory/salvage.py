@@ -145,7 +145,7 @@ class InForce:
 
     def fact(self) -> str:
         text = "this text" if self.holds else f"other text; this text newly names: {', '.join(self.newly) or 'nothing'}"
-        return f"{self.id} (scope: {', '.join(self.scope) or 'none'}; {text})"
+        return f"{self.id} (scope tokens: {', '.join(self.scope) or 'none'}; {text})"
 
 
 @dataclass(frozen=True)

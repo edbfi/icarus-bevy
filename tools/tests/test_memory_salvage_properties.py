@@ -345,6 +345,8 @@ class GeneratedSalvageTests(unittest.TestCase):
             from_sections, scope = exporter_scope(path, record.body or "")
             self.assertEqual((from_sections, scope_tokens(scope), set(body_tokens(record.body or "")) - set(names) if from_sections else set()),
                              (pending.from_sections, set(pending.names), set(pending.more)), f"{where}: {path}, tokens")
+            for held in pending.in_force:
+                self.assertIn(f"{held.id} (scope tokens: {', '.join(held.scope) or 'none'}; ", pending.line(), f"{where}: {path}")
             label = "from its Status and Scope sections" if from_sections else "from its whole text"
             self.assertIn(f"the exporter reads as its scope, {label}: ", pending.line(), f"{where}: {path}")
             self.assertEqual(from_sections, "its body also names" in pending.line(), f"{where}: {path}")
