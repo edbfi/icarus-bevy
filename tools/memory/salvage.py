@@ -92,7 +92,7 @@ from tools.memory.gitio import GitError, git, run_git
 from tools.memory.journal import JournalError, Revision, Segment, read_git, split_change_set
 from tools.memory.legacy import SALVAGED, TRACKED_NOTE, commit_time, export
 from tools.memory.legacy_reader import CatalogError, has_legacy
-from tools.memory.legacy_rules import MigrationError
+from tools.memory.legacy_rules import MigrationError, commit_words, extract
 from tools.memory.model import ID, JSON, TYPES, Record, RecordError, as_mapping, id_key, load_json, regap
 from tools.memory.state import State, replay
 
@@ -124,16 +124,20 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
     premerge: str | None = None
     merge: str | None = None
-    # Pending documents: (path, the REF whose body to revise, or None for a new document).
+    # Pending documents: what each changed, added or cited document needs (``Pending``).
     documents: list[Pending] = field(default_factory=list["Pending"])
+    # Documents (by path) that held rows cite as the branch has them, with those rows.
+    cited: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
 
 
 @dataclass(frozen=True)
 class Pending:
-    """A document the branch changed or added: its legacy path, what it needs (``kind``: ``new``, ``revise`` the body
-    of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope, or
-    ``ambiguous`` when the accepted journal holds the path more than once, ``holders``), and the body, title and
-    scope tokens (``names``) the exporter gives its REF at the salvaged tip."""
+    """A document the branch changed, added or cites: its legacy path, what it needs (``kind``: ``new``, ``revise`` the
+    body of ``target``, ``supersede`` ``target`` with a new REF because the text names other tokens than its scope,
+    ``decide`` by hand (the body ``newly`` names tokens, or ``main_changed`` ``target`` since the base), ``ambiguous``
+    when the accepted journal holds the path more than once (``holders``), or ``cited`` as the branch has it while
+    ``target`` holds other text), and the body, title and scope tokens (``names``) the exporter gives its REF at the
+    salvaged tip. ``citing``: the held rows citing a document the branch did not change (listed for them alone)."""
 
     path: str
     kind: str
@@ -143,6 +147,10 @@ class Pending:
     target: str | None = None
     holders: tuple[str, ...] = ()
     scope: tuple[str, ...] = ()
+    scopes: tuple[str, ...] = ()
+    newly: tuple[str, ...] = ()
+    main_changed: bool = False
+    citing: tuple[str, ...] = ()
 
     def commands(self, file: str) -> list[str]:
         """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
@@ -154,7 +162,20 @@ class Pending:
             return [f"memory supersede {other} --by {self.target}" for other in self.holders if other != self.target] if self.target is not None else []
         propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                    + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
+        if self.kind == "cited":
+            return []
+        if self.kind == "decide":
+            conditions = [*([f"{self.target}'s scope still holds for the new text"] if self.newly else []),
+                          *([f"this body carries main's changes to {self.target} since this branch's base"] if self.main_changed else [])]
+            revise = f"if {' and '.join(conditions)}: memory revise {self.target} --body {shlex.quote(file)}"
+            if not self.newly:
+                return [revise]
+            return [revise, f"otherwise: {propose}", f"otherwise, then: memory supersede {self.target} --by <the new REF>"]
         return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
+
+    def main_note(self) -> str:
+        return (f"main added or changed {self.target} since this branch's base, so check that the branch's body carries"
+                + " main's text before it replaces it")
 
     def scope_line(self) -> str:
         """For a new REF: who states the scope, and the build, release and commit tokens its text names."""
@@ -163,34 +184,56 @@ class Pending:
 
     def line(self) -> str:
         """The pending document without ``--out``: no path is named that does not exist."""
+        opening = f"unchanged document cited by {', '.join(self.citing)} as this branch has it" if self.citing else "changed document"
         if self.kind == "revise":
             return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
                     + " branch's; a body merged by hand into other text stays listed)")
         if self.kind == "supersede":
-            return (f"changed document; {spoken(self.names, 'its text names')}, {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
+            return (f"changed document; {spoken(self.names, 'its text names')}; {self.target}'s scope is {', '.join(self.scope) or 'empty'}; "
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
-                    + " (salvage --out writes its body and the commands)")
+                    + (f"; {self.main_note()}" if self.main_changed else "") + " (salvage --out writes its body and the commands)")
+        if self.kind == "cited":
+            return (f"{opening}; {self.target} holds other text: settle the document first"
+                    + f" (decide whether those rows apply to {self.target}'s text, or propose this text as a new REF)")
+        if self.kind == "decide":
+            reasons = [*([f"its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
+                          + " a body revision keeps that scope"] if self.newly else []),
+                       *([self.main_note()] if self.main_changed else [])]
+            return f"changed document; {'; '.join(reasons)}: decide by hand (salvage --out writes the body and the commands, labelled)"
         if self.kind == "ambiguous":
             if self.target is not None:
                 others = ", ".join(other for other in self.holders if other != self.target)
-                return (f"changed document; the accepted journal holds {', '.join(self.holders)} for this path, {self.target} with this body:"
+                return (f"{opening}; the accepted journal holds {', '.join(self.holders)} for this path; {self.target} holds this body:"
                         + f" supersede {others} by it (" + "; ".join(f"memory supersede {other} --by {self.target}" for other in self.holders
                                                                     if other != self.target) + ") or decide by hand")
-            return f"changed document; the accepted journal holds {', '.join(self.holders)} for this path: decide by hand (no command)"
-        return ("new document; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
+            held = "; ".join(f"{holder} (scope: {scope})" for holder, scope in zip(self.holders, self.scopes, strict=True))
+            return f"{opening}; the accepted journal holds {held} for this path: decide by hand (no command)"
+        return ((f"{opening}; no accepted REF in force names this path" if self.citing else "new document")
+                + "; salvage --out writes its body and the memory propose reference command (listed until an accepted REF names this"
                 + " path, by legacy path or that command's note, with this body)")
+
+
+def body_tokens(body: str) -> set[str]:
+    """The build, release and commit tokens a whole body names, read with the exporter's own rules (``extract``,
+    ``commit_words``) over the body as one cell."""
+    scope = extract({"body": body}).scope or {}
+    named = [item for key in ("builds", "releases") if isinstance(items := scope.get(key), list) for item in items if isinstance(item, str)]
+    commits, _digits = commit_words(body)
+    return {*named, *commits}
 
 
 def spoken(tokens: Sequence[str], subject: str) -> str:
     return f"{subject}: {', '.join(tokens)}" if tokens else f"{subject} no build, release or commit"
 
 
-def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted) -> list[Pending]:
+def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
+                      cited: Mapping[str, Sequence[str]] | None = None) -> list[Pending]:
     """The documents the branch changed or added, matched by identity only (``document_path``; never by body) against
     the accepted REFs still in force (not superseded or retired). More than one: ambiguous, listed with their IDs
     (and, when one holds the branch's body, the supersession that would leave it alone). Exactly one: done when it
     holds the branch's body, else a body revision when the text's tokens equal its scope tokens, else a superseding
-    REF. None: a new document."""
+    REF. None: a new document. A document the branch did not change but held rows cite (``cited``) while the in-force
+    REF holds other text is listed too: those rows wait for it to be settled."""
     holders: dict[str, list[Record]] = {}
     for record in on_accepted.records.values():
         if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
@@ -201,18 +244,35 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         body, title = record.body or "", record.text("title") or path
         names = record.scope.tokens if record.scope is not None else ()
         on_main = holders.get(path, [])
+        citing: tuple[str, ...] = ()
         if record.body == base_bodies.get(path):
-            continue  # the branch did not change it
+            # The branch did not change it: listed only for held rows citing it as the branch has it, while main does not
+            # hold exactly that text under one REF (main's later edits alone are not this branch's to salvage).
+            if not (cited and path in cited) or (len(on_main) == 1 and on_main[0].body == record.body):
+                continue
+            citing = tuple(cited[path])
+            if len(on_main) == 1:
+                found.append(Pending(path, "cited", body, title, names, target=on_main[0].id, citing=citing))
+                continue
         if not on_main:
-            found.append(Pending(path, "new", body, title, names))
+            found.append(Pending(path, "new", body, title, names, citing=citing))
         elif len(on_main) > 1:
-            # Ambiguity before done: two REFs in force for one document is never done, even if one holds this body.
-            current = next((other.id for other in on_main if other.body == record.body), None)
-            found.append(Pending(path, "ambiguous", body, title, names, target=current, holders=tuple(sorted((other.id for other in on_main), key=id_key))))
+            # Ambiguity before done: two REFs in force for one document is never done. A supersession is offered only when
+            # exactly one of them holds this body; with several, which one's scope is right is the operator's call.
+            matching = [other.id for other in on_main if other.body == record.body]
+            ordered = sorted(on_main, key=lambda other: id_key(other.id))
+            found.append(Pending(path, "ambiguous", body, title, names, target=matching[0] if len(matching) == 1 else None, citing=citing,
+                                 holders=tuple(other.id for other in ordered),
+                                 scopes=tuple(", ".join(other.scope.tokens) if other.scope is not None and other.scope.tokens else "none"
+                                              for other in ordered)))
         elif record.body != on_main[0].body:
             held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
-            kind = "revise" if sorted(names) == sorted(held) else "supersede"
-            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held))
+            # The scope reads Status and Scope only (the exporter's rule); the whole body may name more.
+            newly = tuple(sorted(body_tokens(body) - body_tokens(on_main[0].body or ""), key=id_key))
+            # Main added or changed the document since the merge base: a body revision would drop its text (no three-way merge).
+            main_changed = on_main[0].body != base_bodies.get(path)
+            kind = "supersede" if sorted(names) != sorted(held) else "decide" if newly or main_changed else "revise"
+            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held, newly=newly, main_changed=main_changed))
     return found
 
 
@@ -360,8 +420,8 @@ def plan(origin: Record, record: Record, ref: str) -> Edit:
             notes.append(STATUS_NOTE.format(cell))
     # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
-        return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)} without a new stored status; "
-                    + "a revision cannot withdraw a legacy edge")
+        return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)}; it has no new stored status, "
+                    + "and a revision cannot withdraw a legacy edge")
     return Edit(status, tuple(notes), probe, record.text("next_probe") if probe else None, tuple(appended), successors)
 
 
@@ -456,7 +516,7 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
             found[identifier] = f"its status {edit.status} would replay as {shown}"
         if edit.successors and shown != "superseded":
-            found[identifier] = f"its successors {', '.join(edit.successors)} would not supersede it on replay"
+            found[identifier] = f"on replay it would not be superseded by its successors {', '.join(edit.successors)}"
     return found
 
 
@@ -541,7 +601,7 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
         for name in ("supersedes", "resolves"):
             added = set(record.links.named(name)) - set(base.links.named(name) if base is not None else ())
             if bad := sorted(target for target in added if result.kinds.get(target) not in ("revision", "superseded")):
-                raise SalvageError(f"{identifier}: {name} {', '.join(bad)}, which this run does not salvage")
+                raise SalvageError(f"{identifier}: {name} records this run does not salvage: {', '.join(bad)}")
         for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
             if target in out and target not in accepted and target not in proposed:
                 raise SalvageError(f"{identifier}: links {target}, which this run holds or reports as a conflict")
@@ -571,13 +631,17 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
         if identifier.split("-", 1)[0] in ASSIGNED and identifier not in accepted and result.kinds.get(identifier) != "new":
             assigned.append(identifier)
         if assigned:
-            raise SalvageError(f"{identifier}: carries {', '.join(assigned)}, not the accepted journal's ID for that identity")
+            raise SalvageError(f"{identifier}: carries IDs other than the accepted journal's for their identity: {', '.join(assigned)}")
     # (f) A proposal's REF, CP or RP link names the accepted record of the identity the branch's record had.
     for identifier, record in proposed.items():
         for target in record.links.targets():
             if after is not None and target in after and target in accepted and target.split("-", 1)[0] in ASSIGNED \
                     and identity(after[target]) != identity(accepted[target]):
                 raise SalvageError(f"{identifier}: cites {target}, which on main is {identity(accepted[target])}, not the branch's {identity(after[target])}")
+            # A citation of a document is of the document as the branch has it: the accepted REF must hold that body.
+            if after is not None and target in after and target in accepted and after[target].type == "reference" \
+                    and after[target].body != accepted[target].body:
+                raise SalvageError(f"{identifier}: cites {target}, whose text on main differs from the branch's document")
     # (d) A notice about a link agrees with the links of the proposal it names.
     for notice in result.notices:
         claim = re.fullmatch(r"([A-Z]+-[0-9]+): ([A-Z]+-[0-9]+) would supersede it, but .*; \2 (is proposed without that link|is not revised"
@@ -617,7 +681,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     raw = (after, before)
     (after, before), unmapped, shared = renumber((after, before), on_accepted.records, on_accepted.retired)
     superseding = classify(result, after, before, on_accepted, unmapped, shared, raw)
-    result.documents = pending_documents(after, before, on_accepted)
+    result.documents = pending_documents(after, before, on_accepted, result.cited)
     result.notices.extend(f"{document.path}: {document.line()}" for document in result.documents)
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
@@ -706,7 +770,7 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
     unmapped: dict[str, str] = {}
     shared: set[str] = set()
     result: list[dict[str, Record]] = []
-    for export in exports:
+    for position, export in enumerate(exports):
         seen: dict[str, int] = {}
         for record in export.values():
             if (key := identity(record)) is not None:
@@ -717,8 +781,19 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
             key = identity(record)
             if key is None or record.id.split("-", 1)[0] not in ASSIGNED:
                 continue
-            if key in known and seen[key] == 1:
+            # A citation of a document means the document as the branch has it: the branch's REF takes the accepted ID
+            # only when the in-force REF holds the same body; otherwise its number is provisional and rows citing it wait.
+            elsewhere = (position == 0 and record.type == "reference" and key in known and seen[key] == 1
+                         and standing[known[key]].body != record.body)
+            if key in known and seen[key] == 1 and not elsewhere:
                 target = known[key]
+            elif elsewhere:
+                place = (f"{key} as the branch has it", -1)
+                if place not in provisional:
+                    top["REF"] += 1
+                    provisional[place] = f"REF-{top['REF']:03d}"
+                    unmapped[provisional[place]] = f"{document_path(record)} as this branch has it"
+                target = provisional[place]
             else:
                 # Ambiguity on either side is ambiguity: the export or the accepted journal holding the identity twice.
                 ambiguous = seen[key] > 1 or counts.get(key, 0) > 1
@@ -808,8 +883,34 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             renamed[name] = (f"it is gone from the branch (accepted as {', '.join(lost)}) and new {kind} rows appeared ({appeared}): "
                              + "a rename needs a superseding record; decide by hand")
         for name in gained:
-            renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
+            renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and the branch lost {', '.join(lost)}; "
                              + "a rename needs a superseding record; decide by hand")
+    # A branch REF numbered provisionally only because its text differs from the in-force REF's (``renumber``) stands,
+    # for a row the branch did not change, for the accepted REF the merge base's export cited: such a row is unchanged.
+    standins = {name: other for name in unmapped if name in after and name not in before and after[name].type == "reference"
+                for other, base in before.items() if other in accepted and identity(base) == identity(after[name])}
+    # A REF and the accepted REF superseding it for the same document are one citation: main may supersede a document's
+    # REF after a row citing it was accepted (by a cut-over or a run of salvage), so the branch's row, translated against
+    # today's journal, cites the successor while main's record still cites the old one.
+    successors: dict[str, list[str]] = {}
+    for name, other in accepted.items():
+        if other.type == "reference" and (key := identity(other)) is not None:
+            for old in other.links.supersedes:
+                if old in accepted and identity(accepted[old]) == key:
+                    successors.setdefault(old, []).append(name)
+    current: dict[str, str] = {}
+    for old in successors:
+        name, visited = old, {old}
+        while len(successors.get(name, ())) == 1 and (following := successors[name][0]) not in visited:
+            name = following
+            visited.add(name)
+        if name != old:
+            current[old] = name
+
+    def same(one: Record | None, other: Record | None) -> bool:
+        """Equal, or equal once each cited REF is the one superseding it (``current``)."""
+        return one == other or (one is not None and other is not None and bool(current) and relink(one, current) == relink(other, current))
+
     changed: list[str] = []
     for name in sorted(set(renamed) - set(after), key=id_key):
         hold(name, "undecided", renamed[name])
@@ -819,7 +920,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             changed.append(identifier)
             hold(identifier, "undecided", renamed[identifier])
             continue
-        if record.type not in SALVAGED or before.get(identifier) == record:
+        if record.type not in SALVAGED or before.get(identifier) in (record, relink(record, standins)):
             continue
         changed.append(identifier)
         on_main, origin = accepted.get(identifier), before.get(identifier)
@@ -828,14 +929,26 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             hold(identifier, "undecided", f"it is {unmapped[identifier]}, which cannot be told apart ({identifier} is a provisional number)")
             continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
-            hold(identifier, "undecided", "it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in cited)
-                 + ", whose record must be accepted first")
+            # A document cited as the branch has it waits for the document; any other provisional record for its acceptance.
+            settle_first = [name for name in cited if name in after and after[name].type == "reference" and (key := identity(after[name])) is not None
+                            and any(identity(other) == key and other_name not in on_accepted.retired for other_name, other in accepted.items())]
+            clauses = [f"it cites {unmapped[name]} ({name}, a provisional number); "
+                       + ", ".join(sorted(other_name for other_name, other in accepted.items() if other_name not in on_accepted.retired
+                                          and identity(other) == identity(after[name])))
+                       + " holds other text: settle the document first" for name in settle_first]
+            if others := [name for name in cited if name not in settle_first]:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in others)
+                               + ("; that record must be accepted first" if len(others) == 1 else "; those records must be accepted first"))
+            hold(identifier, "undecided", "; ".join(clauses))
+            for name in cited:
+                if name in after and (path := document_path(after[name])) is not None:
+                    result.cited.setdefault(path, []).append(identifier)
             continue
         if identifier in unmapped and (citing := sorted((name for name, other in after.items() if name != identifier and identifier in {
                 *other.links.targets(), *(other.legacy.superseded_by if other.legacy is not None else ())}), key=id_key)):
             hold(identifier, "undecided", f"its provisional number is cited by {', '.join(citing)}; propose it alone first")
             continue
-        if on_main == record:
+        if same(on_main, record):
             result.kinds[identifier] = "accepted"
         elif origin is None:
             fresh.append(identifier)
@@ -847,7 +960,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             except RecordError as error:
                 hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
                 continue
-            if (edit.blocked or edit.undecided is not None) and on_main is not None and on_main != origin:
+            if (edit.blocked or edit.undecided is not None) and on_main is not None and not same(on_main, origin):
                 # Main changed the row since the merge base too: reconcile by hand before anything else.
                 result.kinds[identifier] = "conflict"
                 result.conflicts.append((on_main, record))
@@ -876,7 +989,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 result.notices.append(f"{identifier}: new {record.type} row; its migration ID is positional and provisional")
             # Without links: the linking pass below adds each only from an edit that is neither a conflict nor held.
             result.proposals.append(Revision.of(record))
-        elif linked == record:
+        elif same(linked, record):
             result.kinds[identifier] = "accepted"
         else:
             result.kinds[identifier] = "conflict"
@@ -899,7 +1012,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             result.kinds[identifier] = "cosmetic"
         elif revision is None and not pending:
             result.kinds[identifier] = "accepted"
-        elif on_main != origin and on_main != apply(edit, origin):
+        elif not same(on_main, origin) and not same(on_main, apply(edit, origin)):
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
         else:
@@ -941,8 +1054,8 @@ class PublishError(RuntimeError):
 def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
     """Write ``planned`` (paths relative to ``out``) into ``out``, a directory that must not exist: one ``os.mkdir`` creates
     it (its parent must exist; anything at the path, a dangling symlink included, refuses), and every subdirectory and
-    file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure after the mkdir the whole
-    tree is removed. A concurrent process of the same user changing that directory during the run, and symlinks in the
+    file is created inside it, files exclusively (``O_EXCL | O_NOFOLLOW``). On any failure or interrupt after the mkdir
+    the whole tree is removed (and the message says whether that worked; an interrupt is re-raised). A concurrent process of the same user changing that directory during the run, and symlinks in the
     path leading to its parent, are outside what this guards against. Raises ``PublishError``."""
     try:
         os.mkdir(out, 0o700)
@@ -961,9 +1074,17 @@ def publish(out: Path, planned: Sequence[tuple[str, bytes]]) -> None:
                 _ = handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-    except OSError as error:
-        shutil.rmtree(out, ignore_errors=True)
-        raise PublishError(f"{error}; removed {out}, which this run had created") from error
+    except BaseException as error:
+        # Any failure or interrupt after the mkdir: remove the tree, and say truthfully whether that worked.
+        try:
+            shutil.rmtree(out)
+            outcome = f"removed {out}, which this run had created"
+        except OSError as cleanup:
+            outcome = f"could not remove {out}: {cleanup}; remove it by hand"
+        if not isinstance(error, OSError):
+            print(f"memory salvage: {outcome}", file=sys.stderr)
+            raise
+        raise PublishError(f"{error}; {outcome}") from error
 
 
 class Subparsers(Protocol):
@@ -1016,7 +1137,7 @@ def run(options: argparse.Namespace) -> int:
         for notice in result.notices:
             print(f"notice: {notice}", file=sys.stderr)
         for identifier, fields in result.unrevisable.items():
-            print(f"needs a superseding record: {identifier}: changes {', '.join(fields)}, which a revision may not change; "
+            print(f"needs a superseding record: {identifier}: a revision may not change {', '.join(fields)}; "
                   + "not proposed: propose a new record that supersedes it", file=sys.stderr)
         for identifier, reason in result.undecided.items():
             print(f"needs a decision by hand: {identifier}: {reason}; not proposed", file=sys.stderr)
@@ -1041,9 +1162,9 @@ def run(options: argparse.Namespace) -> int:
                 target = out / "documents" / document.path
                 for command in document.commands(str(target)):
                     print(f"memory salvage: {document.path}: {command}", file=sys.stderr)
-                if document.kind in ("new", "supersede"):
+                if document.kind in ("new", "supersede", "decide"):
                     print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
-                elif document.kind == "ambiguous":
+                elif document.kind in ("ambiguous", "cited"):
                     print(f"memory salvage: {document.path}: {document.line()}", file=sys.stderr)
             if segments:
                 print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)

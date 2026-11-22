@@ -17,7 +17,8 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import SALVAGED, TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import DOCUMENT_NOTE, Accepted, Salvage, SalvageError, classify, document_path, identity, pending_documents, renumber
+from tools.memory.salvage import (DOCUMENT_NOTE, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
+                                  pending_documents, relink, renumber)
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -57,8 +58,11 @@ def surface(identifier: str, name: str) -> Record:
                              "legacy": {"path": "docs/ledgers/compatibility.md", "cells": {"surface": name, "status": "Unknown", "required_proof": "Invented proof"}}})
 
 
-def tracked(identifier: str, path: str, ref: str) -> Record:
-    data = evidence(identifier, path, refs=[ref], notes=[TRACKED_NOTE.format(ref)], legacy={"path": "evidence/x.jsonl", "cells": {"row": "{}"}})
+def tracked(identifier: str, path: str, ref: str, status: str | None = None) -> Record:
+    line = "{}" if status is None else f'{{"status":"{status}"}}'
+    data = evidence(identifier, path, refs=[ref], notes=[TRACKED_NOTE.format(ref)], legacy={"path": "evidence/x.jsonl", "cells": {"row": line}})
+    if status is not None:
+        data["status"] = status
     data["class"] = "tracked"
     return Record.from_json(data)
 
@@ -85,6 +89,23 @@ def retoken_case(after: dict[str, Record]) -> bool:
 
 def problems(state: State) -> set[str]:
     return {*state.problems, *revision_problems(state), *state.link_problems(), *state.supersession_cycles()}
+
+
+def superseding_document(identifier: str, path: str, old: str | None, body: str) -> Record:
+    """A REF proposed by hand for ``path`` (its note names it), superseding ``old`` (if any)."""
+    data: dict[str, JSON] = {"id": identifier, "type": "reference", "status": "current", "title": path, "scope": {"basis": "explicit"},
+                             "body_sha256": hashlib.sha256(body.encode()).hexdigest(), "notes": [DOCUMENT_NOTE.format(path)]}
+    if old is not None:
+        data["supersedes"] = [old]
+    return Record.from_json(data, body)
+
+
+def accepted_of(segments: tuple[Segment, ...]) -> Accepted:
+    """What ``accepted_on`` reads from a main holding ``segments``."""
+    state = replay(segments)
+    return Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
+                    {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments,
+                    frozenset(identifier for identifier in state.entries if state.retired(identifier)))
 
 
 def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
@@ -128,6 +149,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     main_paths, main_names = ["docs/specs/c.md", "docs/specs/e.md"], ["Alpha", "Gamma", "Gamma"] if twins else ["Alpha", "Gamma"]
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
+    renewed = not retoken and rng.random() < 0.3  # e.md's body newly names a build outside its (unchanged) scope sections
+    main_e = rng.random() < 0.3  # main changes e.md since the merge base
     # Documents sharing one body: two new ones on the branch; an unrelated REF of that body on main (no identity).
     same_body = rng.random() < 0.3
     if same_body and "docs/specs/a.md" in branch_paths:
@@ -154,6 +177,8 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         if export is after and retoken:
             # The branch's e.md text changes and names a build the accepted REF's scope does not hold.
             export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md, re-observed\n", ("server:29990001",))
+        if export is after and renewed:
+            export[refs["docs/specs/e.md"]] = document(refs["docs/specs/e.md"], "docs/specs/e.md", "# e.md\nSeen on build 29990005.\n")
         if export is after and rewrite_c:
             export[refs["docs/specs/c.md"]] = document(refs["docs/specs/c.md"], "docs/specs/c.md", "# c.md, rewritten\n")
         export.update({f"CP-{number:03d}": surface(f"CP-{number:03d}", name) for number, name in enumerate(names, 1)})
@@ -166,9 +191,38 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         export[base_ids[0]] = Record.from_json(cited)
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.5:
         after["M-501"] = tracked("M-501", "docs/specs/a.md", numbered(branch_paths, branch_names)[0]["docs/specs/a.md"])
+    if rng.random() < 0.3:
+        # The branch retires the tracked row M-500, whose accepted record cites e.md's REF as the cut-over numbered it.
+        after["M-500"] = tracked("M-500", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"], "retired")
+    if rng.random() < 0.5:
+        # A new tracked row citing e.md as the branch has it (main's text may differ).
+        after["M-502"] = tracked("M-502", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"])
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    main_edits: list[Revision] = []
+    if rewrite_c and not two_holders and rng.random() < 0.4:
+        # Main changed c.md too since the merge base: a body revision would drop its edit.
+        main_c = numbered(main_paths, main_names)[0]["docs/specs/c.md"]
+        main_edits.append(Revision.of(document(main_c, "docs/specs/c.md", "# c.md, main's edit\n"), [revisions[main_c].rev]))
+    if main_e:
+        main_e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
+        main_edits.append(Revision.of(document(main_e_ref, "docs/specs/e.md", "# e.md, main's edit\n"), [revisions[main_e_ref].rev]))
+    if rng.random() < 0.25:
+        # Main superseded e.md's REF before this run by a REF naming e.md by note (the branch's text, or other text), or
+        # (the supersession forgotten) holds both in force.
+        main_e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
+        branch_e = next(record.body or "" for record in after.values() if document_path(record) == "docs/specs/e.md")
+        body = branch_e if rng.random() < 0.5 else "# e.md, on main\n"
+        revisions["REF-960"] = Revision.of(superseding_document("REF-960", "docs/specs/e.md", main_e_ref if rng.random() < 0.7 else None, body))
+    if "REF-960" not in revisions and not main_e and rng.random() < 0.15:
+        # Main retired e.md's REF: no accepted REF stands for e.md, which the branch's rows may still cite.
+        e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
+        held = revisions[e_ref]
+        main_edits.append(Revision.of(Record.from_json({**held.record.to_json(), "status": "retired"}, held.record.body), [held.rev]))
+    if "docs/specs/a.md" in branch_paths and rng.random() < 0.25:
+        # Main added a.md itself since the merge base, by hand, with other text than the branch's.
+        revisions["REF-970"] = Revision.of(superseding_document("REF-970", "docs/specs/a.md", None, "# a.md, on main\n"))
     if two_holders:
         # A second accepted REF naming c.md by note, maybe with the branch's new body (a superseding REF accepted), and
         # maybe superseding the first (the supersession accepted too: then it alone is in force).
@@ -195,7 +249,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
                                  [revisions[changed].rev]))
     if rng.random() < 0.3:
         _ = revisions.pop(rng.choice(base_ids[1:]))
-    segments = (Segment("memory/journal/generated.jsonl", "", (*revisions.values(), *later)),)
+    segments = (Segment("memory/journal/generated.jsonl", "", (*revisions.values(), *later, *main_edits)),)
     state = replay(segments)
     accepted = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
                         {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments,
@@ -203,10 +257,98 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     return after, before, accepted
 
 
+def standing_refs(on_accepted: Accepted) -> dict[str, list[Record]]:
+    """The accepted REFs still standing for each document path (not superseded or retired)."""
+    found: dict[str, list[Record]] = {}
+    for name, record in on_accepted.records.items():
+        if (path := document_path(record)) is not None and name not in on_accepted.retired:
+            found.setdefault(path, []).append(record)
+    return found
+
+
+def settle_documents(on_accepted: Accepted, listed: list[Pending]) -> tuple[Accepted, set[str]]:
+    """``on_accepted`` once the effect of each listed document's printed command is accepted (a ``decide`` taken as its
+    labelled revision; ``cited`` and an ``ambiguous`` path with no command left alone), and the paths so settled."""
+    top = max((int(name.split("-", 1)[1]) for name in on_accepted.records if name.startswith("REF-")), default=0)
+    revisions: list[Revision] = []
+    settled: set[str] = set()
+    for pending in listed:
+        digest = hashlib.sha256(pending.body.encode()).hexdigest()
+        if pending.kind in ("revise", "decide") and pending.target is not None:
+            old = on_accepted.records[pending.target]
+            revisions.append(Revision.of(Record.from_json({**old.to_json(), "body_sha256": digest}, pending.body), on_accepted.heads[pending.target]))
+        elif pending.kind in ("new", "supersede"):
+            top += 1
+            data: dict[str, JSON] = {"id": f"REF-{top:03d}", "type": "reference", "status": "current", "title": pending.title,
+                                     "scope": {"basis": "explicit"}, "body_sha256": digest, "notes": [DOCUMENT_NOTE.format(pending.path)]}
+            if pending.kind == "supersede" and pending.target is not None:
+                data["supersedes"] = [pending.target]
+            revisions.append(Revision.of(Record.from_json(data, pending.body)))
+        elif pending.kind == "ambiguous" and pending.target is not None:
+            old = on_accepted.records[pending.target]
+            others = [other for other in pending.holders if other != pending.target and other not in old.links.supersedes]
+            revisions.append(Revision.of(Record.from_json({**old.to_json(), "supersedes": [*old.links.supersedes, *others]}, old.body),
+                                         on_accepted.heads[pending.target]))
+        else:
+            continue
+        settled.add(pending.path)
+    return accepted_of((*on_accepted.segments, Segment("memory/journal/settled-documents.jsonl", "", tuple(revisions)))), settled
+
+
 class GeneratedSalvageTests(unittest.TestCase):
+    def assert_documents(self, where: str, raw_after: dict[str, Record], raw_before: dict[str, Record], on_accepted: Accepted) -> None:
+        """The document properties of one run against ``on_accepted``: what is listed, which ready commands are printed, and
+        that accepting the printed commands' effect clears what they were printed for."""
+        (after, before), unmapped, shared = renumber((raw_after, raw_before), on_accepted.records, on_accepted.retired)
+        result = Salvage("generated", "7" * 40, "b" * 40, "c" * 40)
+        _ = classify(result, after, before, on_accepted, unmapped, shared)
+        listed = pending_documents(after, before, on_accepted, result.cited)
+        self.assertEqual(len(listed), len({pending.path for pending in listed}), f"{where}: a document listed in more than one kind")
+        by_path = {pending.path: pending for pending in listed}
+        branch = {path: record for record in raw_after.values() if (path := document_path(record)) is not None}
+        base = {path: record.body for record in raw_before.values() if (path := document_path(record)) is not None}
+        standing = standing_refs(on_accepted)
+        self.assertEqual(set[str](), set(by_path) - set(branch), f"{where}: a document the branch does not hold is listed")
+        for path, record in branch.items():
+            holding = standing.get(path, [])
+            done = len(holding) == 1 and holding[0].body == record.body
+            changed = record.body != base.get(path)
+            # The branch's own documents, and those held rows cite as the branch has them; never main's later edits alone.
+            if done or not (changed or path in result.cited):
+                self.assertNotIn(path, by_path, f"{where}: {path} listed though {'main holds its text' if done else 'the branch did not change it'}")
+                continue
+            self.assertIn(path, by_path, f"{where}: {path} differs from main's in force ({[other.id for other in holding]}) and is not listed")
+            pending = by_path[path]
+            expected = ("new" if not holding else "ambiguous" if len(holding) > 1 else "cited" if not changed else pending.kind)
+            self.assertEqual(expected, pending.kind, f"{where}: {path}")
+            if not changed:
+                self.assertEqual(tuple(sorted(result.cited[path])), tuple(sorted(pending.citing)), f"{where}: {path}, the rows citing it")
+            # A ready-to-run command only when its preconditions hold.
+            for command in pending.commands("FILE"):
+                if command.startswith("memory revise "):
+                    old = holding[0]
+                    self.assertEqual(1, len(holding), f"{where}: {command}")
+                    self.assertEqual(sorted(record.scope.tokens if record.scope is not None else ()),
+                                     sorted(old.scope.tokens if old.scope is not None else ()), f"{where}: {command}: scope tokens differ")
+                    self.assertEqual(set[str](), body_tokens(record.body or "") - body_tokens(old.body or ""), f"{where}: {command}: newly named tokens")
+                    self.assertEqual(base.get(path), old.body, f"{where}: {command}: main changed or added {path} since the base")
+                elif command.startswith("memory supersede ") and "<" not in command:
+                    self.assertGreater(len(holding), 1, f"{where}: {command}")
+                    self.assertEqual([command.rsplit(" ", 1)[1]], [other.id for other in holding if other.body == record.body],
+                                     f"{where}: {command}: exactly one in-force REF must hold the branch's body")
+        # The printed commands' effect accepted: none of those documents is listed again, and the journal replays as before.
+        settled_state, settled = settle_documents(on_accepted, listed)
+        self.assertEqual(set[str](), problems(replay(settled_state.segments)) - problems(replay(on_accepted.segments)), f"{where}: settling")
+        (after_settled, before_settled), unmapped_settled, shared_settled = renumber((raw_after, raw_before), settled_state.records, settled_state.retired)
+        next_run = Salvage("generated", "8" * 40, "b" * 40, "c" * 40)
+        _ = classify(next_run, after_settled, before_settled, settled_state, unmapped_settled, shared_settled)
+        again = {pending.path: pending.kind for pending in pending_documents(after_settled, before_settled, settled_state, next_run.cited)}
+        self.assertEqual({}, {path: kind for path, kind in again.items() if path in settled}, f"{where}: listed again after its command was accepted")
+
     def test_every_generated_case_keeps_the_invariants_and_replays_cleanly(self) -> None:
         for seed in SEEDS:
             raw_after, raw_before, accepted = case(seed)
+            self.assert_documents(f"seed {seed}, run 1", raw_after, raw_before, accepted)
             after, before = raw_after, raw_before
             (after, before), unmapped, shared = renumber((after, before), accepted.records, accepted.retired)
             result = Salvage("generated", "a" * 40, "b" * 40, "c" * 40)
@@ -220,14 +362,19 @@ class GeneratedSalvageTests(unittest.TestCase):
             # Another spelling of the ref and another tip (an unrelated commit): byte-identical proposals, same classes.
             # No record is lost: the translated export holds every record, and every changed one is reported.
             self.assertEqual(len(raw_after), len(after), f"seed {seed}: renumbering lost a record")
-            changed = {name for name, record in after.items() if record.type in SALVAGED and before.get(name) != record}
+            # A branch REF whose text differs from main's is numbered provisionally; for an unchanged row it is main's REF.
+            standins = {name: other for name, reason in unmapped.items() if "as this branch has it" in reason
+                        for other, base in before.items() if identity(base) == identity(after[name])}
+            changed = {name for name, record in after.items() if record.type in SALVAGED and before.get(name) != relink(record, standins)}
             self.assertEqual(set[str](), changed - set(result.kinds), f"seed {seed}: changed rows not reported")
             for name in shared:
                 if name in changed:
                     self.assertEqual("undecided", result.kinds[name], f"seed {seed}: a row sharing an identity")
-            self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
+            if raw_after["M-500"].status == raw_before["M-500"].status:
+                self.assertNotIn("M-500", result.kinds, f"seed {seed}: an unchanged tracked row renumbered by the branch")
             # (Invariant (f) checks no proposal cites a REF, CP or RP whose identity differs from the branch record it stood for.)
             # Documents: a body revision only under equal tokens; no command for a path main holds twice.
+            e_alone = len(standing_refs(accepted).get("docs/specs/e.md", [])) == 1
             for pending in pending_documents(after, before, accepted):
                 if pending.kind == "revise":
                     self.assertEqual(sorted(pending.names), sorted(pending.scope), f"seed {seed}: {pending.path}")
@@ -235,7 +382,9 @@ class GeneratedSalvageTests(unittest.TestCase):
                     # No command, or (one REF holds this body) only the supersession of the others by it.
                     expected = [f"memory supersede {other} --by {pending.target}" for other in pending.holders if other != pending.target]
                     self.assertEqual(expected if pending.target is not None else [], pending.commands("FILE"), f"seed {seed}: {pending.path}")
-                if pending.path == "docs/specs/e.md" and retoken_case(raw_after):
+                if e_alone and pending.path == "docs/specs/e.md" and any(record.body == "# e.md\nSeen on build 29990005.\n" for record in raw_after.values()):
+                    self.assertEqual(("decide", ("any:29990005",)), (pending.kind, pending.newly), f"seed {seed}: e.md newly names a build")
+                if e_alone and pending.path == "docs/specs/e.md" and retoken_case(raw_after):
                     self.assertEqual("supersede", pending.kind, f"seed {seed}: e.md names a build its REF's scope lacks")
             # Ambiguity before done: c.md changed on the branch with two REFs in force is listed, never done.
             in_force = [name for name, record in accepted.records.items()
@@ -243,6 +392,8 @@ class GeneratedSalvageTests(unittest.TestCase):
             c_listed = [pending for pending in pending_documents(after, before, accepted) if pending.path == "docs/specs/c.md"]
             if len(in_force) > 1 and rewrite_case(raw_after):
                 self.assertEqual(["ambiguous"], [pending.kind for pending in c_listed], f"seed {seed}: c.md with {in_force} in force")
+            if len(in_force) == 1 and rewrite_case(raw_after) and accepted.records[in_force[0]].body == "# c.md, main's edit\n":
+                self.assertEqual([("decide", True)], [(pending.kind, pending.main_changed) for pending in c_listed], f"seed {seed}: main changed c.md too")
             if len(in_force) == 1 and rewrite_case(raw_after) and accepted.records[in_force[0]].body == "# c.md, rewritten\n":
                 self.assertEqual([], c_listed, f"seed {seed}: c.md done once the superseding REF alone is in force")
             self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],
@@ -268,6 +419,22 @@ class GeneratedSalvageTests(unittest.TestCase):
                 self.assertEqual("undecided", result.kinds[base_ids(raw_before)[0]], f"seed {seed}: a row citing a shared name")
             if "M-501" in after:
                 self.assertEqual("undecided", result.kinds["M-501"], f"seed {seed}: a row citing a new document")
+            if "M-502" in raw_after and e_alone:
+                # A citation of e.md is of e.md as the branch has it: proposed citing main's REF only when main holds that text.
+                branch_e = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/e.md")
+                main_e = next(record.body for name, record in accepted.records.items() if document_path(record) == "docs/specs/e.md" and name not in accepted.retired)
+                e_listed = [(pending.kind, pending.citing) for pending in pending_documents(after, before, accepted, result.cited)
+                            if pending.path == "docs/specs/e.md"]
+                if branch_e == main_e:
+                    self.assertEqual("new", result.kinds["M-502"], f"seed {seed}: a row citing e.md as main holds it")
+                else:
+                    self.assertEqual("undecided", result.kinds["M-502"], f"seed {seed}: a row citing e.md as main does not hold it")
+                    self.assertIn("docs/specs/e.md as this branch has it", result.undecided["M-502"], f"seed {seed}")
+                    branch_changed_e = branch_e != next(record.body for record in raw_before.values() if document_path(record) == "docs/specs/e.md")
+                    if not branch_changed_e:
+                        waiting = tuple(name for name in ("M-500", "M-502") if "docs/specs/e.md as this branch has it" in result.undecided.get(name, ""))
+                        self.assertEqual([("cited", waiting)], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")
+            self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)
@@ -276,9 +443,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                              ([revision.line() for revision in other.proposals], other.kinds), f"seed {seed}")
             # Once the first output is accepted, nothing is proposed again and nothing held changes class.
             merged = (*accepted.segments, Segment("memory/journal/accepted-proposals.jsonl", "", tuple(result.proposals)))
-            state = replay(merged)
-            now = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                           {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", merged)
+            now = accepted_of(merged)
+            self.assert_documents(f"seed {seed}, run 2", raw_after, raw_before, now)
             again = Salvage("generated", "e" * 40, "b" * 40, "c" * 40)
             (after_again, before_again), unmapped_again, shared_again = renumber((raw_after, raw_before), now.records, now.retired)
             try:
@@ -298,7 +464,28 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertEqual(set[str](), {name for name in proposed if again.kinds.get(name) not in ("accepted", "cosmetic")},
                              f"seed {seed}: what run 1 proposed is accepted in run 2")
             self.assertEqual(set[str](), {name for name, kind in again.kinds.items() if kind == "conflict"} - set(held), f"seed {seed}: new conflicts")
-            if "M-501" in raw_after:
+            # Run 1 accepted, then main supersedes e.md's REF by one holding the branch's e.md text: what run 1 proposed is
+            # still accepted (a citation of a REF and of its same-document successor are one), and nothing new conflicts.
+            e_in_force = [name for name, record in now.records.items() if document_path(record) == "docs/specs/e.md" and name not in now.retired]
+            if len(e_in_force) == 1:
+                branch_e = next(record.body or "" for record in raw_after.values() if document_path(record) == "docs/specs/e.md")
+                succeeded = (*merged, Segment("memory/journal/succeeded.jsonl", "", (Revision.of(superseding_document("REF-961", "docs/specs/e.md", e_in_force[0], branch_e)),)))
+                successor = accepted_of(succeeded)
+                self.assert_documents(f"seed {seed}, after e.md was superseded", raw_after, raw_before, successor)
+                (after_next, before_next), unmapped_next, shared_next = renumber((raw_after, raw_before), successor.records, successor.retired)
+                following = Salvage("generated", "9" * 40, "b" * 40, "c" * 40)
+                try:
+                    _ = classify(following, after_next, before_next, successor, unmapped_next, shared_next)
+                except SalvageError as error:
+                    self.fail(f"seed {seed}, after e.md was superseded: {error}")
+                self.assertEqual(set[str](), {name for name in proposed if following.kinds.get(name) not in ("accepted", "cosmetic")},
+                                 f"seed {seed}: what run 1 proposed is accepted after e.md's REF was superseded")
+                self.assertEqual(set[str](), {name for name, kind in following.kinds.items() if kind == "conflict"} - set(held),
+                                 f"seed {seed}: new conflicts after e.md's REF was superseded")
+                if "M-502" in raw_after:
+                    # Main now holds the branch's e.md text: a row held in run 1 for it is proposed citing REF-961.
+                    self.assertIn(following.kinds["M-502"], ("accepted", "new"), f"seed {seed}: M-502 after e.md was superseded")
+            if "M-501" in raw_after and "REF-970" not in accepted.records:
                 # The new document proposed by hand (no legacy; the note names its path) and accepted: the row citing it now translates.
                 body = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/a.md")
                 assert body is not None
@@ -306,9 +493,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                                                      "scope": {"basis": "explicit"}, "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
                                                      "notes": [DOCUMENT_NOTE.format("docs/specs/a.md")]}, body))
                 with_hand = (*merged, Segment("memory/journal/hand.jsonl", "", (hand,)))
-                state = replay(with_hand)
-                later = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                                 {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", with_hand)
+                later = accepted_of(with_hand)
+                self.assert_documents(f"seed {seed}, run 3", raw_after, raw_before, later)
                 (after_hand, before_hand), unmapped_hand, shared_hand = renumber((raw_after, raw_before), later.records, later.retired)
                 third = Salvage("generated", "f" * 40, "b" * 40, "c" * 40)
                 _ = classify(third, after_hand, before_hand, later, unmapped_hand, shared_hand)
