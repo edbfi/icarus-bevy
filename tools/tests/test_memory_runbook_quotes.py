@@ -22,13 +22,12 @@ FACTS = ("body written to", "in force:", "no accepted reference names this path"
          "rows held because they cite it", "scope tokens", "the exporter reads as its scope", "this text newly names: nothing",
          "at this branch's base its reference was REF-N: retired", "superseded by", "none the accepted journal holds",
          "none (the document is new on this branch)", "main changed or replaced its reference since this branch's base: yes",
-         "--note 'salvaged document: <path>'")
+         "--note 'salvaged document: <path>'", "references that named this path and are no longer in force")
+# The held-row reasons are grouped in the runbook by how they end; each ending names its action.
+ENDINGS = ("that record must be accepted first", "those records must be accepted first", "propose it alone first",
+           ": settle the document first", "decide by hand")
 SOURCE = ("--out must name a new directory", "could not remove", "remove it by hand", "internal error, nothing written",
-          "needs a superseding record", "needs a decision by hand", "holds other content under this ID",
-          "which no accepted REF names (by legacy path or a note", "that record must be accepted first", "propose it alone first",
-          "as this branch has it", "which holds other text of", "which no longer stands for", "several REFs in force name",
-          ": settle the document first", "which the accepted journal holds", "records sharing the",
-          "a rename needs a superseding record", "which would carry the link")
+          "needs a superseding record", "needs a decision by hand", "holds other content under this ID", *ENDINGS)
 
 
 def flat(text: str) -> str:
@@ -40,7 +39,8 @@ def printed() -> str:
     one = InForce("REF-N", ("3.0.37",), False, ())
     shapes = [
         Pending("<path>", "", ("3.0.37",), ("3.0.36",), (one,), True, ("F-1",), False, (("REF-N", "retired"),)),
-        Pending("<path>", "", (), (), (), False, (), True, (("REF-N", "superseded by REF-M"),), from_sections=False),
+        Pending("<path>", "", (), (), (), False, (), True, (("REF-N", "superseded by REF-M"),), from_sections=False,
+                withdrawn=(("REF-M", "retired"),)),
         Pending("<path>", "", (), (), (), False, (), True, ()),
         Pending("<path>", "", (), (), (), False, (), True, None),
     ]
