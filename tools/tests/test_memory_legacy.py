@@ -1413,8 +1413,9 @@ class SalvageTests(LegacyRepository):
         self.assertEqual((("REF-900", "retired"),), document.withdrawn)
 
     def test_with_nothing_in_force_only_a_document_new_on_the_branch_without_history_is_the_operator_s(self) -> None:
-        def pending(based_on: tuple[tuple[str, str], ...] | None, withdrawn: tuple[tuple[str, str], ...] = ()) -> salvage_command.Pending:
-            return salvage_command.Pending("docs/specs/x.md", "# X\n", (), (), (), True, (), True, based_on, True, withdrawn)
+        def pending(based_on: tuple[tuple[str, str], ...] | None, withdrawn: tuple[tuple[str, str], ...] = (), changed: bool = True,
+                    in_force: tuple[salvage_command.InForce, ...] = ()) -> salvage_command.Pending:
+            return salvage_command.Pending("docs/specs/x.md", "# X\n", (), (), in_force, True, (), changed, based_on, True, withdrawn)
 
         withdrew = "main withdrew the document it cites"
         table: list[tuple[salvage_command.Pending, str | None]] = [
@@ -1423,6 +1424,11 @@ class SalvageTests(LegacyRepository):
             (pending(()), withdrew),                                            # the base had it; no accepted reference holds it
             (pending((("REF-010", "retired"),)), withdrew),                     # the base's reference retired
             (pending((("REF-010", "superseded by REF-900"),)), withdrew),       # the base's reference superseded elsewhere
+            # Rule 1 first: this branch did not change it; main changed it, or withdrew it too.
+            (pending((("REF-010", "now in force"),), changed=False, in_force=(salvage_command.InForce("REF-010", (), False),)),
+             "this branch did not change docs/specs/x.md, and main has since changed it"),
+            (pending((("REF-010", "retired"),), changed=False), "this branch did not change docs/specs/x.md, and main has since withdrawn it"),
+            (pending((), changed=False), "this branch did not change docs/specs/x.md, and main has since withdrawn it"),
         ]
         for case, expected in table:
             self.assertEqual(expected, salvage_command.owner_cause(case), case)

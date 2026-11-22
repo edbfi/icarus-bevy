@@ -230,10 +230,12 @@ def owner_cause(pending: Pending) -> str | None:
     operator's to propose only when it is new on this branch (the base had no such document) and no reference ever
     named it; every other history (the base had it, mapped or not to an accepted reference; a reference that named it
     retired or superseded) is main's withdrawal. ``None``: settling the document, as the rules allow, can clear the row."""
-    if not pending.in_force and not (pending.based_on is None and not pending.withdrawn):
-        return "main withdrew the document it cites"
+    withdrawn = not pending.in_force and not (pending.based_on is None and not pending.withdrawn)
+    # The runbook's order: rule 1 (this branch did not change it) first, saying both when both hold.
     if not pending.branch_changed:
-        return f"this branch did not change {pending.path}, and main has since changed it"
+        return f"this branch did not change {pending.path}, and main has since {'withdrawn' if withdrawn else 'changed'} it"
+    if withdrawn:
+        return "main withdrew the document it cites"
     return None
 
 
