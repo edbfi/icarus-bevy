@@ -173,6 +173,14 @@ class Pending:
             return [revise, f"otherwise: {propose}", f"otherwise, then: memory supersede {self.target} --by <the new REF>"]
         return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
 
+    def printed(self, file: str) -> list[str]:
+        """Everything ``--out`` prints for this document: its commands, then the scope line only when one of them
+        proposes a REF (carries ``SCOPE_PLACEHOLDER``), or the plain line for a kind that names its IDs or rows."""
+        commands = self.commands(file)
+        if any(SCOPE_PLACEHOLDER in command for command in commands):
+            return [*commands, self.scope_line()]
+        return [*commands, *([self.line()] if self.kind in ("ambiguous", "cited") else [])]
+
     def main_note(self) -> str:
         return (f"main added or changed {self.target} since this branch's base, so check that the branch's body carries"
                 + " main's text before it replaces it")
@@ -1161,12 +1169,8 @@ def run(options: argparse.Namespace) -> int:
                 return 1
             for document in result.documents:
                 target = out / "documents" / document.path
-                for command in document.commands(str(target)):
-                    print(f"memory salvage: {document.path}: {command}", file=sys.stderr)
-                if document.kind in ("new", "supersede", "decide"):
-                    print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
-                elif document.kind in ("ambiguous", "cited"):
-                    print(f"memory salvage: {document.path}: {document.line()}", file=sys.stderr)
+                for printed in document.printed(str(target)):
+                    print(f"memory salvage: {document.path}: {printed}", file=sys.stderr)
             if segments:
                 print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)
         else:

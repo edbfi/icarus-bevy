@@ -1277,6 +1277,7 @@ class SalvageTests(LegacyRepository):
         self.assertIn(f"main added or changed {document.target} since this branch's base, so check that the branch's body carries main's text", document.line())
         self.assertEqual([f"if this body carries main's changes to {document.target} since this branch's base: memory revise {document.target} --body FILE"],
                          document.commands("FILE"))
+        self.assertEqual(document.commands("FILE"), document.printed("FILE"), "no scope line without a command that proposes a REF")
 
     def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
