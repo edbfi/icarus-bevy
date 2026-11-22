@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import json
 import os
 import re
@@ -26,12 +27,12 @@ from tools.memory.hindsight import (
 )
 from tools.memory.canonical import RENDERING
 from tools.memory.journal import JournalError, Revision, read_tree, write_change_set
-from tools.memory.model import JSON, Record, RecordError, load_json, sha256_hex
+from tools.memory.model import JSON, TYPES, Record, RecordError, load_json, sha256_hex
 from tools.memory.online import Changes, Output, Refused
 from tools.memory.service import Connection, ServiceError, connection
 from tools.tests.memory_fixtures import (
-    CREATED, MEMBER, NEW_CLIENT, NEW_SERVER, OTHER_MEMBER, chain, clean_git_environment, commit_all, evidence, finding, new_repository,
-    run_git, unknown, write,
+    CREATED, MEMBER, NEW_CLIENT, NEW_SERVER, OTHER_MEMBER, chain, clean_git_environment, commit_all, evidence, explicit, finding,
+    new_repository, release, run_git, unknown, write,
 )
 
 TODAY = CREATED.replace(hour=13)
@@ -1591,3 +1592,168 @@ class ParseCacheTests(unittest.TestCase):
             _ = cache.write_bytes(b"not a pickle")
             journal.load_cache(cache)
             self.assertEqual(0, journal.forget_cache())
+
+
+class NativeLandingTests(Online):
+    """A native record whose measured commit a squash merge left in no branch: ``get`` names the commit that brought
+    its segment into HEAD's history and whether the source there equals the measured tree."""
+
+    def commit(self, message: str) -> str:
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", message)
+        return run_git(self.root, "rev-parse", "HEAD").strip()
+
+    def native(self, identifier: str, commit: str, second: int) -> None:
+        _ = write(self.root, [finding(identifier, "Invented: the native server pauses when empty",
+                                      scope=explicit(commit=commit, subjects=("native",)))], second=second)
+
+    def partition_of(self, identifier: str) -> tuple[str, dict[str, JSON]]:
+        got = online.get(self.bank, self.root, identifier)
+        placed = got.data["partition"]
+        assert isinstance(placed, dict)
+        return next(line for line in got.lines if line.startswith("partition: ")), placed
+
+    def squashed(self, *, main_moves: bool) -> tuple[str, str]:
+        """The measured commit on a branch, the segment in a later commit of it, squash-merged into ``main``."""
+        self.accepted_chain()
+        _ = run_git(self.root, "switch", "-q", "-c", "feature")
+        self.put("src/pause.rs", "fn pause() {}\n")
+        measured = self.commit("feat: pause")
+        self.native("F-201", measured, 10)
+        _ = self.commit("docs(memory): record the pause")
+        _ = run_git(self.root, "switch", "-q", "main")
+        if main_moves:
+            self.put("src/other.rs", "fn other() {}\n")
+            _ = self.commit("feat: other")
+        _ = run_git(self.root, "merge", "-q", "--squash", "feature")
+        squash = self.commit("feat: pause (#1)")
+        _ = run_git(self.root, "branch", "-q", "-D", "feature")
+        return measured, squash
+
+    def test_an_ancestor_commit_keeps_the_line_unchanged(self) -> None:
+        self.accepted_chain()
+        self.put("src/pause.rs", "fn pause() {}\n")
+        measured = self.commit("feat: pause")
+        self.native("F-201", measured, 10)
+        _ = self.commit("docs(memory): record the pause")
+        line, placed = self.partition_of("F-201")
+        self.assertEqual(f"partition: native against REL-9.0.2; tokens {measured}; HEAD descends from {measured}: yes", line)
+        self.assertEqual((None, None), (placed["landed"], placed["landed_identical"]))
+
+    def test_a_squash_merge_with_identical_source(self) -> None:
+        measured, squash = self.squashed(main_moves=False)
+        line, placed = self.partition_of("F-201")
+        self.assertEqual(f"partition: native against REL-9.0.2; tokens {measured}; HEAD descends from {measured}: no; its segment was added to"
+                         + f" HEAD's history by {squash[:12]}; tree there outside memory/journal/ identical to {measured}: yes", line)
+        self.assertEqual((False, squash, True), (placed["descends"], placed["landed"], placed["landed_identical"]))
+
+    def test_a_squash_merge_onto_a_main_that_moved(self) -> None:
+        measured, squash = self.squashed(main_moves=True)
+        line, placed = self.partition_of("F-201")
+        self.assertTrue(line.endswith(f"by {squash[:12]}; tree there outside memory/journal/ identical to {measured}: no"), line)
+        self.assertEqual((squash, False), (placed["landed"], placed["landed_identical"]))
+
+    def test_a_measured_commit_absent_from_the_clone(self) -> None:
+        self.accepted_chain()
+        self.native("F-201", "0123abc4567", 10)
+        landed = self.commit("docs(memory): record the pause")
+        line, placed = self.partition_of("F-201")
+        self.assertEqual("partition: native against REL-9.0.2; tokens 0123abc4567; HEAD descends from 0123abc4567: unknown; its segment was"
+                         + f" added to HEAD's history by {landed[:12]}; tree there outside memory/journal/ identical to 0123abc4567: unknown", line)
+        self.assertEqual((None, landed, None), (placed["descends"], placed["landed"], placed["landed_identical"]))
+
+    def test_a_segment_not_yet_in_head_adds_nothing(self) -> None:
+        self.accepted_chain()
+        self.native("F-201", "0123abc4567", 10)
+        line, placed = self.partition_of("F-201")
+        self.assertEqual("partition: native against REL-9.0.2; tokens 0123abc4567; HEAD descends from 0123abc4567: unknown", line)
+        self.assertEqual((None, None), (placed["landed"], placed["landed_identical"]))
+
+    def test_records_that_are_not_native_cost_no_history_query(self) -> None:
+        self.accepted_chain()
+        asked: list[str] = []
+
+        def counting(root: Path, path: str) -> str | None:
+            del root
+            asked.append(path)
+            return None
+
+        with patch.object(online, "added_by", counting):
+            _ = online.area(self.bank, self.root, "listing", full=True)
+        self.assertEqual(1, len(asked), "only F-104, the fixture's native record whose commit is not in the clone, is asked about")
+
+
+class LabelHintTests(Online):
+    """A build or release named only in a cited evidence label is a hint in ``get``, never scope."""
+
+    def records(self) -> None:
+        self.accepted_chain()
+        _ = write(self.root, [
+            evidence("M-201", "work/invented-case/offline.txt", label="Invented receipt of the offline 3.0.31 server"),
+            finding("F-201", "Invented: the offline server answers", scope=explicit(subjects=("tooling",)), cites=["M-201"]),
+            finding("F-202", "Invented: the receipt names nothing", scope=explicit(subjects=("tooling",)), cites=["M-102"]),
+            finding("F-203", "Invented: scoped already", cites=["M-201"]),
+        ], second=10)
+        commit_all(self.root)
+
+    def cites_line(self, identifier: str, evidence_id: str) -> tuple[str, online.Output]:
+        got = online.get(self.bank, self.root, identifier)
+        return next(line for line in got.lines if line.startswith(f"cites {evidence_id}:")), got
+
+    def test_a_label_build_is_shown_as_a_hint(self) -> None:
+        self.records()
+        line, got = self.cites_line("F-201", "M-201")
+        self.assertEqual("cites M-201: active; label names 3.0.31 (hint, not scope)", line)
+        self.assertEqual([{"id": "M-201", "status": "active", "label_hint": ["3.0.31"]}], got.data["cited_evidence"])
+        self.assertNotIn("3.0.31", str(got.data["text"]), "the document text is unchanged")
+        self.assertIn("partition: unscoped against REL-9.0.2", got.lines)
+        record = got.data["record"]
+        assert isinstance(record, dict)
+        self.assertNotIn("releases", cast(dict[str, JSON], record["scope"]))
+
+    def test_no_hint_when_the_label_names_no_build(self) -> None:
+        self.records()
+        self.assertEqual("cites M-102: active", self.cites_line("F-202", "M-102")[0])
+
+    def test_no_hint_when_the_record_s_scope_names_a_build(self) -> None:
+        self.records()
+        self.assertEqual("cites M-201: active", self.cites_line("F-203", "M-201")[0])
+
+
+class ReleasePartitionTests(Online):
+    """A release defines the partitions; like evidence it has none, and no partition count includes it."""
+
+    def test_a_release_has_no_partition_line_and_counts_in_no_partition(self) -> None:
+        self.accepted_chain()
+        before = online.status(self.bank, self.root).data["by_partition"]
+        _ = write(self.root, [{**release("REL-9.0.3", "90000004", "90000005"), "area": "releases"}], second=10)
+        commit_all(self.root)
+        got = online.get(self.bank, self.root, "REL-9.0.2")
+        self.assertFalse(any(line.startswith("partition:") for line in got.lines), got.lines)
+        self.assertEqual({"name": "release"}, got.data["partition"])
+        self.assertEqual(before, online.status(self.bank, self.root).data["by_partition"])
+        self.assertIn("by partition: 0 current, 0 other-build, 0 legacy-scope, 0 native, 0 unscoped", online.area(self.bank, self.root, "releases").lines)
+        recalled = "\n".join(online.recall(self.bank, self.root, "released test dates sources").lines)
+        self.assertIn("REL-9.0.2 [release; accepted, current (stored)]", recalled)
+        self.assertIn("== release ==\n", recalled)
+
+
+class ProposeFieldsTests(unittest.TestCase):
+    def test_propose_help_names_every_field_from_the_model(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            _ = cli.main(["propose", "finding", "--help"])
+        text = output.getvalue()
+        lines = text.split("\n")
+        for kind, spec in TYPES.items():
+            start = next(index for index, line in enumerate(lines) if line.startswith(f"  {kind} ({spec.prefix}-"))
+            block = list(itertools.takewhile(lambda line: line.startswith("    "), lines[start + 1:]))
+            required = next(line for line in block if line.startswith("    required: "))
+            listed = {item.split(" (", 1)[0] for item in required.removeprefix("    required: ").split(", ")}
+            with self.subTest(kind=kind):
+                self.assertEqual(set(spec.required), listed)
+                for name, field_spec in spec.fields.items():
+                    if field_spec.kind == "enum":
+                        self.assertIn(f"    {name}: {', '.join(field_spec.vocabulary)}", block)
+        for word in ('"basis": "explicit"', '"commit": "<7-40 hex>"', "supersedes:", "resolves:", "cites:", "refs:", "verified_on:"):
+            self.assertIn(word, text)

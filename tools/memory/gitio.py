@@ -11,6 +11,9 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+# Seconds a read-only history query of ``get`` may take before it answers "unknown".
+READ_TIMEOUT = 30.0
+
 
 class GitError(RuntimeError):
     """A Git command failed or answered in an unexpected form."""
@@ -106,6 +109,27 @@ def descends(root: Path, commit: str) -> bool | None:
         capture_output=True, check=False,
     )
     return {0: True, 1: False}.get(result.returncode)
+
+
+def added_by(root: Path, path: str) -> str | None:
+    """The oldest commit in HEAD's history that added ``path``; ``None`` when none did or Git cannot tell."""
+    try:
+        output = git(root, "log", "--diff-filter=A", "--format=%H", "--end-of-options", "HEAD", "--", path, timeout=READ_TIMEOUT)
+    except GitError:
+        return None
+    lines = output.decode().split()
+    return lines[-1] if lines else None
+
+
+def same_tree_outside(root: Path, first: str, second: str, excluded: str) -> bool | None:
+    """Whether the trees of commits ``first`` and ``second`` are equal outside ``excluded``; ``None`` when Git
+    cannot compare them (a commit not in this clone)."""
+    try:
+        status, _ = run_git(root, "diff", "--quiet", "--no-ext-diff", "--end-of-options", f"{first}^{{commit}}", f"{second}^{{commit}}",
+                            "--", ".", f":(exclude){excluded}", ok=(0, 1), timeout=READ_TIMEOUT)
+    except GitError:
+        return None
+    return status == 0
 
 
 def merge_base(root: Path, base: str) -> str:
