@@ -11,6 +11,9 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+# Seconds a history query of a read command (``get``, ``recall``, ``area``) may take before it answers "unknown".
+READ_TIMEOUT = 30.0
+
 
 class GitError(RuntimeError):
     """A Git command failed or answered in an unexpected form."""
@@ -106,6 +109,27 @@ def descends(root: Path, commit: str) -> bool | None:
         capture_output=True, check=False,
     )
     return {0: True, 1: False}.get(result.returncode)
+
+
+def added_by(root: Path, path: str) -> str | None:
+    """The oldest commit in HEAD's history that added ``path``; ``None`` when none did or Git cannot tell."""
+    try:
+        output = git(root, "log", "--diff-filter=A", "--format=%H", "--end-of-options", "HEAD", "--", path, timeout=READ_TIMEOUT)
+    except GitError:
+        return None
+    lines = output.decode().split()
+    return lines[-1] if lines else None
+
+
+def changed_outside(root: Path, first: str, second: str, excluded: str) -> tuple[str, ...] | None:
+    """The paths that differ between the trees of commits ``first`` and ``second`` outside ``excluded``, sorted
+    (empty: the trees are equal there); ``None`` when Git cannot compare them (a commit not in this clone)."""
+    try:
+        output = git(root, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--end-of-options", f"{first}^{{commit}}",
+                     f"{second}^{{commit}}", "--", ".", f":(exclude){excluded}", timeout=READ_TIMEOUT)
+    except GitError:
+        return None
+    return tuple(sorted(item for item in output.decode("utf-8", "surrogateescape").split("\0") if item))
 
 
 def merge_base(root: Path, base: str) -> str:

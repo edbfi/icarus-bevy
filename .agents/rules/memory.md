@@ -150,7 +150,7 @@ Supersession is acyclic.
 
 | Command | Guarantee |
 | --- | --- |
-| `get ID[/selector] [--history] [--offline]` | Exact GET, verified; state, partition (not for evidence), derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: journal. |
+| `get ID[/selector] [--history] [--offline]` | Exact GET, verified; state, partition (not for evidence or releases), derived links, pending revisions, conflicts, evidence status. `--history`, `--offline`: journal. |
 | `recall "Q" [--release R] [--text S] [--all-proposals] [--include-evidence] [--limit N] [--refs] [--full]` | Strict tags; partitioned; one hit per document; retired hits under their terminal successor; 1-hop links. About 6 KB: records, then at most 3 REF passages; `--refs`: only REFs; `--full`: whole texts; `--text`: substring hits first. |
 | `area AREA` | Records by status and partition, open unknowns, link closure. |
 | `status` | Pin; counts by type, status, partition; cited records not current; open unknowns; unverified evidence. |
@@ -173,7 +173,9 @@ Supersession is acyclic.
   build-independent decision); `other-build` (explicit, different build);
   `legacy-scope` (legacy-text, shown with its literal tokens, "text names" on a
   REF, and whether one names the pin; never verified); `native` (commit, with whether
-  HEAD descends from it); `unscoped`.
+  HEAD descends from it; if not, the commit in HEAD's history that added the
+  record's segment and whether its tree outside `memory/journal/` equals the
+  commit's: `yes`, `no` with where they differ, or `unknown`); `unscoped`.
 - Default recall: accepted records plus this worktree's proposals; no evidence,
   orphaned documents or pending revisions; pinned `query_timestamp`. Other
   worktrees' proposals only with `--all-proposals`, listed apart.
@@ -182,13 +184,15 @@ Supersession is acyclic.
 
 Session close:
 
-1. Export the REA bundle to `work/<case>/rea-bundle.json`; `evidence add` it and
+1. Close `case.json` first (a fixity manifest pins it; evidence is write-once).
+   Export the REA bundle to `work/<case>/rea-bundle.json`; `evidence add` it and
    each cited artifact (one file each; directories through a sha256 manifest).
 2. Propose, revise, supersede, resolve; a record replacing a chain of steps
    supersedes each.
 3. `memory check`. The prek hook verifies every M record in staged segments.
-4. Commit segments with their code; close `case.json`; run the scratch routine
-   (`.agents/rules/work.md`); after merge, `memory sync`.
+4. Commit segments on their code's branch, a native finding's in a later commit
+   than the one it names; run the scratch routine (`.agents/rules/work.md`);
+   after merge, `memory sync`.
 
 Engineering loop:
 
@@ -201,7 +205,9 @@ Engineering loop:
 3. Cite the ID where code depends on it, e.g. `(F-1162)`. New citations
    name accepted or same-branch records, never retired ones.
 4. Record test results: receipts as evidence, native properties as `measured`
-   findings with commit scope, fixed defects as N records naming the test.
+   findings whose `scope.commit` is the commit whose tree built the binary
+   measured (a record cannot name the commit that holds it, so its segment is a
+   later commit of the same branch), fixed defects as N records naming the test.
 
 Qualification: scope the case first (workload, targets, matched reference,
 thresholds, duration, faults); record every run, whatever its outcome, with

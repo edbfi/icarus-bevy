@@ -41,11 +41,13 @@ from tools.memory.bank import (
 )
 from tools.memory.canonical import RENDERING, render_text
 from tools.memory.check import CITATION_EXCLUDED, CITATION_ROOTS, citations, confidence_problems, revision_problems
-from tools.memory.gitio import GitError, descends, git, listed_files, read_blobs
+from tools.memory.gitio import GitError, added_by, changed_outside, descends, git, listed_files, read_blobs
 from tools.memory.hindsight import AllOf, AnyOf, Client, Document, Group, HindsightError, Not, Tags, Unavailable
 from tools.memory.journal import JOURNAL, JournalError, Revision, Segment, parse_segment, segment_name, write_change_set
+from tools.memory.legacy_rules import extract
 from tools.memory.model import (
-    ID, JSON, MEMBER, RUN, TYPES, Record, RecordError, as_mapping, id_key, is_array, is_object, load_json, regap, sha256_hex,
+    DECISION_FIELDS, ID, JSON, MEMBER, RUN, RUN_REQUIRED, SUBJECTS, TYPES, Record, RecordError, TypeSpec, as_mapping, id_key, is_array, is_object,
+    load_json, regap, sha256_hex,
 )
 from tools.memory.paths import ProtectedPathsError, primary_checkout
 from tools.memory.service import ServiceError, Subcommands, connection, home, host_lock, require_floor, reranker_cap
@@ -754,12 +756,36 @@ def release_for(universe: Universe, root: Path, name: str | None) -> tuple[Recor
     return found, "" if found is not None else f"no REL record for server build {build}"
 
 
-def place(root: Path, record: Record, release: Record | None, reason: str) -> tuple[dict[str, JSON], str]:
-    """A record's partition as JSON and as one text phrase. Evidence is an artifact, not a claim: it has no
-    partition (the name ``evidence`` and an empty phrase). A REF's legacy tokens read "text names", since a
-    document's tokens say what its text mentions, not where it applies."""
-    if record.type == "evidence":
-        return {"name": "evidence"}, ""
+def label_tokens(label: str) -> tuple[str, ...]:
+    """The build and release tokens an evidence label literally names, by the recogniser of legacy-text scope
+    (``legacy_rules.extract``): ``server:``/``client:`` or ``any:`` builds, then releases."""
+    scope = extract({"label": label}).scope or {}
+    return tuple(item for name in ("builds", "releases") if is_array(found := scope.get(name)) for item in found if isinstance(item, str))
+
+
+# Top-level names a native record's landing line lists before it says there are more.
+TOP_CAP = 6
+
+
+def yes_no(value: bool | None) -> str:
+    return "unknown" if value is None else "yes" if value else "no"
+
+
+def place(root: Path, record: Record, release: Record | None, reason: str, entry: Entry | None = None) -> tuple[dict[str, JSON], str]:
+    """A record's partition as JSON and as one text phrase. Evidence is an artifact and a release defines the
+    partitions; neither is a claim about a build, so neither has a partition (its type as the name and an empty
+    phrase). A REF's legacy tokens read "text names", since a document's tokens say what its text mentions, not
+    where it applies.
+
+    A native record whose commit HEAD does not descend from (a squash merge leaves the measured commit in no
+    branch) also names ``landed``, the oldest commit in HEAD's history that added the segment of ``entry``'s first
+    revision (scope is not revisable, so that revision carries it), ``landed_identical``, whether that commit's
+    tree equals the measured commit's outside the journal (``None``: the measured commit is not in this clone), and
+    ``landed_changed``, the top-level names under which the two differ (documents committed after the measurement
+    differ too; the reader judges). All are ``None`` when not applicable or no such commit exists; only these
+    records cost the extra Git calls."""
+    if record.type in ("evidence", "release"):
+        return {"name": record.type}, ""
     if release is None:
         return {"name": "unknown", "reason": reason}, f"unknown ({reason})"
     placed = partition(record, release, lambda commit: descends(root, commit))
@@ -767,10 +793,24 @@ def place(root: Path, record: Record, release: Record | None, reason: str) -> tu
     detail = [f"{label} {', '.join(placed.tokens)}"] if placed.tokens else []
     if placed.name == "legacy-scope":
         detail.append(f"names the pin: {'yes' if placed.names_pin else 'no'}")
-    if placed.name == "native":
-        detail.append(f"HEAD descends from {placed.commit}: {'unknown' if placed.descends is None else 'yes' if placed.descends else 'no'}")
+    landed: str | None = None
+    identical: bool | None = None
+    changed: list[JSON] | None = None
+    if placed.name == "native" and placed.commit is not None:
+        line = f"HEAD descends from {placed.commit}: {yes_no(placed.descends)}"
+        if placed.descends is not True and entry is not None and (landed := added_by(root, entry.history()[0].segment)) is not None:
+            paths = changed_outside(root, placed.commit, landed, JOURNAL)
+            identical = None if paths is None else not paths
+            line += (f"; its segment was added to HEAD's history by {landed[:12]}; tree there outside {JOURNAL}/ identical to"
+                     f" {placed.commit}: {yes_no(identical)}")
+            if paths:
+                tops = sorted({path.split("/", 1)[0] + ("/" if "/" in path else "") for path in paths})
+                changed = list[JSON](tops)
+                line += f" ({len(paths)} path(s) differ, under {', '.join(tops[:TOP_CAP])}{', ...' if len(tops) > TOP_CAP else ''})"
+        detail.append(line)
     data: dict[str, JSON] = {"name": placed.name, "release": release.id, "tokens": list(placed.tokens), "names_pin": placed.names_pin,
-                             "commit": placed.commit, "descends": placed.descends}
+                             "commit": placed.commit, "descends": placed.descends, "landed": landed, "landed_identical": identical,
+                             "landed_changed": changed}
     return data, f"{placed.name} against {release.id}" + "".join(f"; {item}" for item in detail)
 
 
@@ -993,8 +1033,8 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
     pending = [item for item in documents if item.state == "pending"]
     record = target.revision.record
     release, reason = release_for(universe, root, None)
-    placed, phrase = place(root, record, release, reason)
     entry = state.entries[identifier]
+    placed, phrase = place(root, record, release, reason, entry)
     proposed = overlay(universe, identifier, every=all_proposals)
     holds = entry.legacy_holds(target.revision.rev)
     shown_superseders = superseders(universe, entry, target.revision.rev)
@@ -1039,11 +1079,14 @@ def describe(universe: Universe, root: Path, citation: str, *, history: bool = F
         data["evidence"] = {"outcome": verdict.outcome, "detail": verdict.detail}
         lines.append(f"evidence: {verdict.outcome} ({verdict.detail})")
     cited: list[JSON] = []
+    # The rules' Scope: a build named only in a cited evidence label is a hint, never scope (get output only).
+    hinted = record.scope is None or not (record.scope.builds or record.scope.releases)
     for name in sorted({item.split("/", 1)[0] for item in record.links.citations()}, key=id_key):
         evidence = state.record(name)
         shown = view_status(universe, name) if evidence is not None else "absent"
-        cited.append({"id": name, "status": shown})
-        lines.append(f"cites {name}: {shown}")
+        hint = label_tokens(evidence.text("label") or "") if hinted and evidence is not None else ()
+        cited.append({"id": name, "status": shown, "label_hint": list[JSON](hint)})
+        lines.append(f"cites {name}: {shown}" + (f"; label names {', '.join(hint)} (hint, not scope)" if hint else ""))
     data["cited_evidence"] = cited
     if history:
         data["history"] = [{"rev": item.revision.rev, "sha256": item.revision.sha256, "segment": item.segment, "prev": list(item.revision.prev),
@@ -1128,7 +1171,7 @@ REFS_PASSAGE_CAP = 1200
 REF_HITS = 3
 LINK_CAP = 8
 # Partitions as recall prints them: what can be relied on first.
-DISPLAY = ("current", "native", "legacy-scope", "other-build", "unscoped", "unknown", "evidence", "not-in-journal")
+DISPLAY = ("current", "native", "legacy-scope", "other-build", "unscoped", "unknown", "release", "evidence", "not-in-journal")
 TERM = re.compile(r"[\w-]{3,}")
 
 
@@ -1256,7 +1299,7 @@ def recall(bank: Bank, root: Path, query: str, *, release: str | None = None, te
                 continue
             record = target.revision.record
             verified = checked.get(item.document, False)
-            placed, phrase = place(root, record, rel, reason)
+            placed, phrase = place(root, record, rel, reason, state.entries[item.identifier])
             name = str(placed["name"])
             proposed = overlay(universe, item.identifier, every=all_proposals, index=index)
             retired = [summary(fetched, wanted, old, older=current.older is not None) for old in sorted(set(item.retired), key=id_key)]
@@ -1374,7 +1417,7 @@ def record_rows(universe: Universe, root: Path, identifiers: Sequence[str], rele
     lines: list[str] = []
     for identifier in identifiers:
         record = view.entries[identifier].record
-        placed, phrase = place(root, record, release, reason)
+        placed, phrase = place(root, record, release, reason, view.entries[identifier])
         status = view_status(universe, identifier)
         proposed = overlay(universe, identifier, every=False, index=index)
         entry = view.entries[identifier]
@@ -1753,9 +1796,52 @@ def _field_flags(parser: argparse.ArgumentParser) -> None:
     _ = parser.add_argument("--body", help="file holding a reference's Markdown body")
 
 
+# How ``propose --help`` writes a field of each ``Spec`` kind that is not plain text (``--set-json`` for JSON).
+SHAPES: Final[dict[str, str]] = {
+    "count": "integer", "flag": "true", "list": "JSON list", "date": "YYYY-MM-DD", "sha256": "64 hex", "dates": 'JSON {"name": "YYYY-MM-DD"}',
+    "members": "JSON list of ev_/unk_ members", "timestamp": "YYYY-MM-DDTHH:MM:SSZ", "build": "digits",
+}
+
+
+def fields_epilog() -> str:
+    """Every type's required and optional fields and enum vocabularies, and the shape of scope and links, from the model."""
+
+    def shown(name: str, spec: TypeSpec) -> str:
+        field_spec = spec.fields.get(name)
+        if name == "body":
+            return "body (--body FILE)"
+        if name == "scope":
+            return "scope (JSON object)"
+        if name == "refs":
+            return "refs (JSON list of IDs)"
+        shape = SHAPES.get(field_spec.kind) if field_spec is not None else None
+        return f"{name} ({shape})" if shape else name
+
+    lines = ["fields by type (--set NAME=TEXT; --set-json NAME=JSON; --file JSON):"]
+    for kind, spec in TYPES.items():
+        optional = [name for name in spec.fields if name not in spec.required]
+        lines.append(f"  {kind} ({spec.prefix}-{'x.y.z' if kind == 'release' else 'N'}; status {', '.join(spec.statuses)}):")
+        lines.append(f"    required: {', '.join(shown(name, spec) for name in spec.required)}")
+        lines.append(f"    optional: {', '.join(shown(name, spec) for name in optional)}")
+        lines.extend(f"    {name}: {', '.join(field_spec.vocabulary)}" for name, field_spec in spec.fields.items() if field_spec.kind == "enum")
+    lines += [
+        f"  a decision finding also needs: {', '.join(DECISION_FIELDS)}",
+        f"  run evidence also needs run (JSON object): {', '.join(RUN_REQUIRED)}; optional {', '.join(name for name in RUN if name not in RUN_REQUIRED)}",
+        *(f"    run.{name}: {', '.join(field_spec.vocabulary)}" for name, field_spec in RUN.items() if field_spec.kind == "enum"),
+        "scope (JSON object; omit what does not apply):",
+        '  {"basis": "explicit", "subjects": ["<subject>"], "builds": ["server:<id>", "client:<id>"], "releases": ["x.y.z"], "commit": "<7-40 hex>"}',
+        f"    subjects: {', '.join(SUBJECTS)}; commit is required for the native subject",
+        "links (JSON lists):",
+        "  supersedes: IDs of the same type; resolves: U-N, SL-N or RP-N; refs: IDs",
+        '  cites: M-N, M-N/ev_<12 hex>, M-N/unk_<12 hex>; verified_on: [{"build": "server:<id>", "cites": ["M-N"]}]; notes: --note TEXT',
+    ]
+    return "\n".join(lines)
+
+
 def register(subparsers: Subcommands) -> None:
     """Add the bank commands; each runs through ``run``."""
     propose_parser = subparsers.add_parser("propose", help="propose a new record")
+    propose_parser.epilog, propose_parser.formatter_class = fields_epilog(), argparse.RawDescriptionHelpFormatter
     _ = propose_parser.add_argument("type", choices=sorted(TYPES))
     _field_flags(propose_parser)
     revise_parser = subparsers.add_parser("revise", help="revise a record in place (revisable fields only)")
