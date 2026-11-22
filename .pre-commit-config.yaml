@@ -163,7 +163,8 @@ repos:
         entry: python3 -m unittest discover -s tools/tests -v
         language: system
         pass_filenames: false
-        files: ^tools/.*\.py$
+        # The runbook too: tools/tests/test_memory_runbook_quotes.py pins the salvage text it quotes.
+        files: ^(tools/.*\.py|docs/runbooks/memory-service\.md)$
       - id: memory-check
         name: Check the memory journal, citations and forks (memory check --ci)
         entry: python3 -m tools.memory check --ci
