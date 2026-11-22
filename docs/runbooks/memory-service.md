@@ -96,83 +96,75 @@ stops being protected as soon as its `evidence/` leaves the working tree.
 
 1. In the old worktree, commit every legacy row it holds (salvage reads
    commits, not the working tree). Do not merge `main` yet.
-2. From an up-to-date checkout of `main` in the same repository, list and
-   convert the rows of the branch's pre-merge tip:
-   `memory salvage <branch> --check`, then
-   `memory salvage <branch> --out work/<case>/salvage-<n>`. `--out` names a
-   directory that does not exist yet (`<out> exists: --out must name a new
-   directory` otherwise); salvage creates it, writes the proposals under
-   `<out>/memory/journal/` and each pending document's body under
-   `<out>/documents/<path>`, and removes it if the run fails. Salvage
-   resolves `origin/main` (`--main REF` names another); REF, CP and RP
-   numbers in the report are `origin/main`'s. A tip that already merged the
-   cut-over is refused with the pre-merge tip to use.
-   `memory salvage: internal error, nothing written: …` is a defect in salvage
-   itself: report it and do not work around it.
-3. Act on each line of the report (exit 4 means some row needs a hand):
+2. From an up-to-date checkout of `main` in the same repository, run on the
+   branch's pre-merge tip `memory salvage <branch> --check`, then
+   `memory salvage <branch> --out work/<case>/salvage-<n>`, a path that does
+   not exist (`<out> exists: --out must name a new directory` otherwise).
+   Salvage creates it with the proposals under `<out>/memory/journal/` and
+   each listed document's body under `<out>/documents/<path>`. A non-zero
+   exit for conflicts or held rows leaves that output usable; a write failure
+   or an interrupt removes the directory. Salvage resolves `origin/main`
+   (`--main REF` names another), and REF, CP and RP numbers in the report are
+   `origin/main`'s. A tip that already merged the cut-over is refused with the
+   pre-merge tip to use. `memory salvage: internal error, nothing written: …`
+   is a defect in salvage: report it, do not work around it.
+3. Act on each line (exit 4 means some row needs a hand). Rows:
    - a proposal (`new`, or a revision of `origin/main`'s record): kept in the
      output segments;
    - `needs a superseding record: …`: `memory propose` the branch's content as
      a new record, then `memory supersede <old> --by <new>`;
    - `needs a decision by hand: …`: settle it with the record's owner. One
      that says `it cites the new document <path> (REF-N, a provisional
-     number), whose record must be accepted first` (or a new CP/RP row) waits:
-     get that record accepted, then run salvage again, which then proposes
-     the row with the accepted ID. Rows that say `one of N records sharing
-     the …`, `which the accepted journal holds N times` or `a rename needs a
-     superseding record; decide by hand` are settled by hand, as is any row
-     citing one;
+     number), whose record must be accepted first` (or a new CP/RP row) waits
+     until that record is accepted; then run salvage again. `one of N records
+     sharing the …`, `which the accepted journal holds N times` and `a rename
+     needs a superseding record; decide by hand` are settled by hand, as is
+     any row citing one;
    - `conflict: …: origin/main holds other content under this ID`: when both
-     sides allocated the number (as M-1623 to M-1625 on one existing branch), add the
-     branch's record under a new ID (`memory evidence add`, `memory propose`)
-     and rewrite the branch's citations; when `main` took an earlier draft,
-     reconcile by hand with `memory revise` or a superseding record;
-   - a pending document: `--out` prints the commands that use the body it
-     wrote. A changed document whose text names the same builds, releases and
-     commits as REF-N's scope: `memory revise REF-N --body
-     <out>/documents/<path>`, run as printed. One whose text names others
-     (`changed document; its text names: …, REF-N's scope is …: a body
-     revision cannot change scope; propose it as a new reference and
-     supersede REF-N`) and a new document: `memory propose reference --set
-     'title=…' --set-json 'scope=<STATE THE SCOPE>' --note 'salvaged document:
-     <path>' --body <out>/documents/<path>`, refused until you replace
-     `<STATE THE SCOPE>` with a JSON scope you state (the line `the scope must
-     be stated by whoever proposes it: … the text names: …` lists the text's
-     tokens, which salvage neither keeps nor upgrades); for the changed one,
-     then `memory supersede REF-N --by <the new REF>`. Keep the note: it is how
-     salvage recognises that REF; without it the document and the rows citing
-     it stay listed. A path `main` holds twice (`the accepted journal holds
-     REF-A, REF-B for this path: decide by hand (no command)`) is settled by
-     hand.
+     sides allocated the number (as M-1623 to M-1625 on one existing
+     branch), add the branch's record under a new ID (`memory evidence add`,
+     `memory propose`) and rewrite its citations; when `main` took an earlier
+     draft, reconcile by hand with `memory revise` or a superseding record.
+
+   Documents: one line each; `--out` adds the commands, which use the body it
+   wrote. A new REF's command carries `--set-json 'scope=<STATE THE SCOPE>'`,
+   refused until you state a JSON scope (the line `the scope must be stated by
+   whoever proposes it: … the text names: …` lists the text's tokens, which
+   salvage neither keeps nor upgrades), and `--note 'salvaged document:
+   <path>'`: keep it, salvage finds the REF by it.
+
+   | The line says | Do |
+   | --- | --- |
+   | `changed document; revise REF-N with the body salvage --out writes` | `memory revise REF-N --body <out>/documents/<path>` as printed |
+   | `changed document; its text names: …; REF-N's scope is …; a body revision cannot change scope` | the printed `memory propose reference …`, then `memory supersede REF-N --by <the new REF>` |
+   | `changed document; its body newly names …; REF-N's scope is …; a body revision keeps that scope: decide by hand` | the printed `if REF-N's scope still holds for the new text: memory revise …`, or the `otherwise:` propose and supersede |
+   | `… main added or changed REF-N since this branch's base, so check that the branch's body carries main's text` | first make `<out>/documents/<path>` carry main's text, then the printed `if this body carries main's changes …` command |
+   | `new document; …` or `…; no accepted REF in force names this path` | the printed `memory propose reference …` |
+   | `…; the accepted journal holds REF-A, REF-B for this path; REF-B holds this body` | the printed `memory supersede REF-A --by REF-B`, or decide by hand |
+   | `…; the accepted journal holds REF-A (scope: …), REF-B (scope: …) for this path: decide by hand (no command)` | settle by hand |
+   | `unchanged document cited by … as this branch has it; REF-N holds other text: settle the document first` | decide whether the citing rows apply to REF-N's text, or propose this text as a new REF; the rows stay held until then |
+
 4. On a new branch from `main`, copy every segment of `<out>/memory/journal/`
    into `memory/journal/`, add the records from step 3, run
    `memory check --ci`, commit and open the pull request. After it merges, the
-   lead runs `memory sync`; salvage then counts those rows as accepted, never as
-   conflicts.
+   lead runs `memory sync`; salvage then counts those rows as accepted.
 5. Only then merge `main` into the old branch (deleting the legacy files in
    the modify/delete conflicts and citing any new IDs), or retire the branch.
    Keep its worktree until its evidence records are accepted on `origin/main`:
-   until then its legacy shards are what protects its branch-only artifacts.
+   until then its legacy shards protect its branch-only artifacts.
 6. Confirm it is done, from the up-to-date checkout of `main`:
-   `memory salvage <branch>` on the merged tip exits 0 when nothing is left.
-   While anything is left it exits 5 and names the pre-merge parent;
-   `memory salvage <parent> --check` lists what is left, the rows and the
-   pending documents (each with the REF to revise), and exits non-zero while
-   either remains. A document is done once exactly one accepted REF in force
-   names its path (by legacy path, or by the `salvaged document: <path>`
-   note) and holds the branch's body. A superseding REF therefore clears it
-   only once both the new REF and the supersession are accepted; until then
-   it stays listed as `changed document; the accepted journal holds REF-N,
-   REF-M for this path, REF-M with this body: supersede REF-N by it (memory
-   supersede REF-N --by REF-M) or decide by hand`. A row
-   resolved by hand in step 3 (a superseding record, a conflict added again
-   under a new ID, a decision by hand) never becomes accepted under its old
-   ID, and a body merged by hand into other text never equals the file, so
-   both stay listed and the exit stays non-zero. That is expected for those
-   only: the branch is done when everything still listed is one you resolved
-   by hand and its superseding record, new record, recorded decision or REF
-   revision is accepted on `origin/main`. Anything else still listed is not
-   salvaged yet: go back to step 2.
+   `memory salvage <branch>` on the merged tip exits 0 when nothing is left;
+   otherwise it exits 5 and names the pre-merge parent, whose `--check` lists
+   the rows and documents still open (lines as above) and exits non-zero
+   while any remains. A document is done once exactly one accepted REF in
+   force names its path (by legacy path or note) and holds the branch's body,
+   so a superseding REF counts only once the supersession is accepted too. A
+   row resolved by hand never becomes accepted under its old ID, and a body
+   merged by hand into other text never equals the branch's, so both stay
+   listed: the branch is done when everything still listed is one you
+   resolved by hand and its record, decision or REF revision is accepted on
+   `origin/main`. Anything else still listed is not salvaged yet: go back to
+   step 2.
 
 ## When the service is down
 
