@@ -106,6 +106,8 @@ EXIT_SUPERSEDE = 4
 # The note a REF proposed for a salvaged document carries: the legacy document it stands for (its identity).
 DOCUMENT_NOTE = "salvaged document: {}"
 DOCUMENT_NOTED = re.compile(r"salvaged document: (.+)")
+# A held row's reason ends by its action; this one: a document the run lists as pending, settled, clears it.
+SETTLE = ": settle the document first"
 # The note a status revision carries: the row's new status cell, verbatim, and nothing about the run.
 STATUS_NOTE = "status cell (salvaged legacy row): {}"
 EXIT_PREMERGE = 5
@@ -586,9 +588,21 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
+                    # The old row's action follows the successor's: a successor this run holds (any held class) is on its
+                    # way, so the old row waits for it, or settles the same document when that is the successor's action;
+                    # only a successor that cannot carry the link whatever is accepted (an accepted record whose revision
+                    # fails replay, or a record that exists nowhere) leaves the old row to a decision by hand.
                     why = (unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted")
-                    why = why.removesuffix(": decide by hand")  # the cause alone; this reason ends by its own action
-                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}): decide by hand")
+                    why = why.removesuffix(": decide by hand")
+                    held = target not in unlinkable and result.kinds.get(target) in ("undecided", "supersede", "conflict")
+                    if held and result.undecided.get(target, "").endswith(SETTLE):
+                        ending = SETTLE
+                        for citing in result.cited.values():
+                            if target in citing and old not in citing and old not in stuck:
+                                citing.append(old)
+                    else:
+                        ending = f"; {target} must be accepted first" if held else ": decide by hand"
+                    _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}){ending}")
         if stuck:
             for old, reason in stuck.items():
                 hold(old, "undecided", reason)
@@ -900,7 +914,7 @@ def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, 
                         if in_force else "no reference stands for it")
             return None, f"it cites {through}, which no longer stands for {path}; {standing}, and a revision cannot change the row's citations: decide by hand"
         if held.body != branch[path]:
-            return path, f"it cites {through}, which holds other text of {path} than this branch's: settle the document first"
+            return path, f"it cites {through}, which holds other text of {path} than this branch's{SETTLE}"
     return None
 
 
@@ -1001,15 +1015,17 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             hold(identifier, "undecided", f"it is {unmapped[identifier]} ({identifier}, a provisional number), which cannot be told apart: decide by hand")
             continue
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
-            # Each group ends by its action, and the reason by the strongest: a new record cited waits for its acceptance
-            # ("accepted first"); a document cited as the branch has it waits for the document ("settle the document
-            # first"); a record that cannot be told apart is decided by hand ("decide by hand").
+            # Each group ends by its action, and the reason by the strongest: a new row cited (held here, to be proposed
+            # alone) waits for its acceptance ("accepted first"); a document cited as the branch has it, or one no accepted
+            # REF names, waits for the document, listed as pending ("settle the document first"); a record that cannot be
+            # told apart is decided by hand ("decide by hand").
             standing = {name: sorted((other for other_name, other in accepted.items() if other_name not in on_accepted.retired
                                       and identity(other) == identity(after[name])), key=lambda other: id_key(other.id))
                         for name in cited if name in after and after[name].type == "reference" and identity(after[name]) is not None}
             settle_first = [name for name in cited if standing.get(name)]
             clauses: list[str] = []
-            if waiting := [name for name in cited if name not in settle_first and name not in shared]:
+            new_documents = [name for name in cited if name not in settle_first and name not in shared and name in after and after[name].type == "reference"]
+            if waiting := [name for name in cited if name not in settle_first and name not in shared and name not in new_documents]:
                 clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
                                + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
             for name in settle_first:
@@ -1020,7 +1036,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 else:
                     state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
                              + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
-                clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}: settle the document first")
+                clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}{SETTLE}")
+            if new_documents:
+                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in new_documents) + SETTLE)
             if ambiguous := [name for name in cited if name not in settle_first and name in shared]:
                 clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
                                + ", which cannot be told apart: decide by hand")

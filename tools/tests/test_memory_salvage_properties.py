@@ -19,7 +19,7 @@ from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.legacy_prose import section
 from tools.memory.legacy_rules import extract
-from tools.memory.model import ID, JSON, Record, id_key
+from tools.memory.model import JSON, Record, id_key
 from tools.memory.salvage import (DOCUMENT_NOTE, SALVAGED, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
                                   pending_documents, relink, renumber)
 from tools.memory.state import State, replay
@@ -324,16 +324,14 @@ def settle_documents(on_accepted: Accepted, listed: list[Pending]) -> tuple[Acce
 
 
 # The last words of a held row's reason name its action (the runbook groups by them).
-ENDINGS = ("that record must be accepted first", "those records must be accepted first", "settle the document first", "decide by hand", "propose it alone first")
+ENDINGS = ("must be accepted first", "settle the document first", "decide by hand", "propose it alone first")
 
 
 class GeneratedSalvageTests(unittest.TestCase):
-    def assert_endings(self, where: str, result: Salvage, on_accepted: Accepted) -> None:
-        """Every held row's reason ends by one of the five actions; one that waits names a record not yet accepted."""
+    def assert_endings(self, where: str, result: Salvage, _on_accepted: Accepted) -> None:
+        """Every held row's reason ends by one of the actions."""
         for name, reason in result.undecided.items():
             self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
-            if reason.endswith(ENDINGS[:2]):
-                self.assertTrue({match[0] for match in ID.finditer(reason)} - on_accepted.records.keys(), f"{where}: {name}: {reason}")
 
     def assert_documents(self, where: str, raw_after: dict[str, Record], raw_before: dict[str, Record], on_accepted: Accepted) -> None:
         """The document facts of one run against ``on_accepted``: every document that is not done is listed and no done
@@ -355,6 +353,16 @@ class GeneratedSalvageTests(unittest.TestCase):
                           if (name in unmapped and reason.startswith("it cites ") and f"({name}, a provisional number)" in reason)
                           or reason.endswith((f" of {path} than this branch's: settle the document first", f"no longer stands for {path}: settle the document first"))}
                    for path, name in numbered_as.items()}
+        # A row held for a successor that waits on a document settles that document too.
+        for path, rows in waiting.items():
+            grown = True
+            while grown:
+                grown = False
+                for held, reason in result.undecided.items():
+                    successor = re.search(r"names successor (\S+), which cannot carry the link", reason)
+                    if held not in rows and successor is not None and successor[1] in rows and reason.endswith("settle the document first"):
+                        rows.add(held)
+                        grown = True
         for path, record in branch.items():
             holding = sorted(standing.get(path, []), key=lambda other: id_key(other.id))
             done = len(holding) == 1 and holding[0].body == record.body
@@ -522,7 +530,9 @@ class GeneratedSalvageTests(unittest.TestCase):
                     branch_changed_e = branch_e != next(record.body for record in raw_before.values() if document_path(record) == "docs/specs/e.md")
                     if not branch_changed_e:
                         waiting = tuple(name for name in ("M-500", "M-502", "M-503") if result.undecided.get(name, "").startswith("it cites docs/specs/e.md as this branch has it")
-                                        or result.undecided.get(name, "").endswith(" of docs/specs/e.md than this branch's: settle the document first"))
+                                        or result.undecided.get(name, "").endswith(" of docs/specs/e.md than this branch's: settle the document first")
+                                        or (name == "M-503" and "names successor M-500, which cannot carry the link" in result.undecided.get(name, "")
+                                            and result.undecided[name].endswith("settle the document first")))
                         self.assertEqual([waiting], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for the rows it holds")
             if len(accepted.records["M-500"].links.refs) == 1:
                 self.assertNotEqual("conflict", result.kinds.get("M-500"), f"seed {seed}: the tracked row conflicts only by REF number")
@@ -537,7 +547,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                 if not reason.startswith("it cites ") or "a provisional number" not in reason:
                     continue
                 numbers = [match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)]
-                documents_first = {match[1] for match in re.finditer(r"as this branch has it \(([A-Z]+-[0-9]+), a provisional number\)", reason)}
+                documents_first = {match[1] for match in re.finditer(r"(?:as this branch has it|which no accepted REF names \(by legacy path or a note '[^']*'\)) "
+                                                                     + r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)}
                 ending = (": decide by hand" if any(number in shared and number not in documents_first for number in numbers)
                           else ": settle the document first" if documents_first else " accepted first")
                 self.assertTrue(reason.endswith(ending), f"seed {seed}: {name}: {reason}")

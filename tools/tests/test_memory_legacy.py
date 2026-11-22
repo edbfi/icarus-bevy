@@ -979,7 +979,7 @@ class SalvageTests(LegacyRepository):
         result = self.forced("pair", "F-111")
         self.assertEqual([], result.proposals)
         self.assertEqual("undecided", result.kinds["F-107"])
-        self.assertIn("names successor F-111, which cannot carry the link (invented failure): decide by hand", result.undecided["F-107"])
+        self.assertIn("names successor F-111, which cannot carry the link (invented failure); F-111 must be accepted first", result.undecided["F-107"])
         self.assertIn("F-107", result.unsalvaged)
 
     def test_a_row_held_for_its_second_successor_leaves_no_link_on_its_first(self) -> None:
@@ -1645,6 +1645,26 @@ class SalvageTests(LegacyRepository):
                          result.undecided["M-102"])
         self.assertEqual(({}, []), (result.cited, result.documents))
 
+    def test_a_successor_held_for_its_document_passes_that_action_to_the_old_row(self) -> None:
+        # M-102 is superseded by the new tracked row M-105 on a new spec no accepted REF names: M-105 waits on the
+        # document, and so does M-102, listed with it as rows the document holds.
+        _ = run_git(self.root, "checkout", "-q", "-b", "chain")
+        _ = (self.root / "docs/specs/net/third.md").write_text("# Third\n", encoding="utf-8")
+        shard = self.root / "evidence/widgets/001.jsonl"
+        added = json.dumps({"id": "M-105", "path": "docs/specs/net/third.md", "sha256": "d" * 64, "class": "tracked", "kind": "report", "date": "2026-01-07",
+                            "label": "A new spec", "status": "active"}, separators=(",", ":"))
+        _ = shard.write_text(shard.read_text().replace('"status":"active","legacy":true}', '"status":"retired","superseded_by":"M-105","legacy":true}')
+                             + added + "\n", encoding="utf-8")
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "chain")
+        _ = self.journal_on_main(remove_legacy=True)
+        result = salvage(self.root, "chain")
+        self.assertTrue(result.undecided["M-105"].endswith(": settle the document first"), result.undecided)
+        self.assertTrue(result.undecided["M-102"].startswith("its row on chain names successor M-105, which cannot carry the link (it cites the document"))
+        self.assertTrue(result.undecided["M-102"].endswith("): settle the document first"), result.undecided["M-102"])
+        (document,) = result.documents
+        self.assertEqual(("docs/specs/net/third.md", ("M-105", "M-102")), (document.path, document.citing))
+
     def test_a_carrier_citing_a_retired_ref_of_a_settled_document_is_decided_by_hand(self) -> None:
         # The branch retires M-102 as superseded by M-104, which cites the widget spec's REF; main retired that REF and
         # accepted REF-900 (by note, no supersession) holding the branch's text. The document is done; only M-104's stored
@@ -1733,7 +1753,7 @@ class SalvageTests(LegacyRepository):
         first = salvage(self.root, "new-doc")
         self.assertEqual("undecided", first.kinds["M-105"])
         self.assertRegex(first.undecided["M-105"], r"^it cites the document docs/specs/net/third\.md, which no accepted REF names \(by legacy path or a note "
-                         + r"'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\); that record must be accepted first$")
+                         + r"'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\): settle the document first$")
         status, stdout, _stderr = self.run_salvage("new-doc", check=True)
         self.assertEqual(1, status)
         facts = ["no accepted reference names this path", "this branch changed it since its base: yes", "the exporter reads as its scope, from its Status and Scope sections: server:29990001", "its body also names: any:29990009",
