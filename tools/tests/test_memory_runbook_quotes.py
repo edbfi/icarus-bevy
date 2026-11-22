@@ -4,7 +4,9 @@ The runbook ("Worktrees that predate the cut-over") says what each line ``memory
 apart in several review rounds. Each quoted fragment must occur in the runbook (whitespace-normalised) and in what
 salvage prints: facts produced by ``Pending.facts``, refusals and held-row reasons matched in its source. A held row
 prints ``needs a decision by hand: <ID>: <reason>; not proposed`` and the runbook reads the action from the words the
-reason ends with, so fixture runs check one held row per ending. A wording changed on either side fails here.
+reason ends with: fixture runs check one held row for each of three endings; the fourth, ``propose it alone first``,
+is checked against the run's own result by ``assert_endings`` in ``test_memory_salvage_properties.py``. A wording
+changed on either side fails here.
 """
 
 from __future__ import annotations
@@ -27,7 +29,9 @@ FACTS = ("body written to", "in force:", "no accepted reference names this path"
 # The runbook groups held-row reasons by the words they end with; each names its action.
 ENDINGS = ("must be accepted first", "propose it alone first", "settle the document first", "decide by hand")
 SOURCE = ("--out must name a new directory", "could not remove", "remove it by hand", "internal error, nothing written",
-          "needs a superseding record", "needs a decision by hand", "holds other content under this ID", *ENDINGS)
+          "needs a superseding record", "needs a decision by hand", "holds other content under this ID", *ENDINGS,
+          "main withdrew the document it cites", "and main has since changed it", "its content will be recorded under a new ID",
+          "this row's link must name that ID")
 
 
 def flat(text: str) -> str:

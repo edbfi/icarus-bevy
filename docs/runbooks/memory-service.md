@@ -118,31 +118,40 @@ in its conflicts loses the rows and unprotects the branch's evidence.
    - `needs a decision by hand: <ID>: <reason>; not proposed`: the reason is
      one or more clauses, each naming an action by the words it ends with.
      `must be accepted first` (`that record`, `those records` or a named
-     record) or `propose it alone first`: wait until that record is accepted.
-     `settle the document first`: settle the document by the rules below (one
-     that no reference names is settled by rule 2). `decide by hand`: decide
-     with the record's owner (a rename, records that cannot be told apart, a
-     replay failure, a citation a revision cannot change). Clauses come in the
-     order wait, settle, decide, so the reason ends with the strongest; do
-     every one, then run salvage again, which reports what is left.
+     record): wait until that record is accepted. `propose it alone first`:
+     the row is itself a new record that other rows cite by its provisional
+     number; propose it by itself, and once it is accepted the next run
+     proposes the rows citing it. `settle the document first`: settle the
+     document by the rules below (one that no reference names is settled by
+     rule 2). `decide by hand`: decide with the record's owner (a rename,
+     records that cannot be told apart, a replay failure, a citation a
+     revision cannot change, a document main withdrew or only main changed,
+     a record held as a superseding record or a conflict: `its content will be
+     recorded under a new ID, and this row's link must name that ID`). Clauses
+     come in the order wait, settle, decide, so the reason ends with the
+     strongest; do every one, then run salvage again, which reports what is
+     left.
 
    Documents: salvage prints facts, never a command. Apply the first rule
    whose facts fit; `<file>` is the `body written to` path:
 
    1. `this branch changed it since its base: no` (listed only for `rows held
-      because they cite it`): never propose a reference. With exactly one
-      reference in force, decide with each row's owner whether its claim holds
-      for that reference's current text; with none or several there is no
-      single text to judge, so the row stays held, the end state unless its
-      owner rewrites the claim as a new record.
+      because they cite it`, which end `this branch did not change <path>, and
+      main has since changed it: decide by hand`): never propose a reference.
+      With exactly one reference in force, decide with each row's owner whether
+      its claim holds for that reference's current text; with none or several
+      there is no single text to judge, so the row stays held, the end state
+      unless its owner rewrites the claim as a new record.
    2. `no accepted reference names this path`: if `references that named this
       path and are no longer in force` lists any, or `at this branch's base its
       reference was REF-N: retired` (or `superseded by …`, or `none the
-      accepted journal holds`), main withdrew or replaced it: propose nothing,
-      and rows citing it stay held; bringing it back is the owner's decision,
-      stated in the pull request. Only with that history `none` and `none (the
-      document is new on this branch)` is it new: propose it as in rule 5,
-      without a supersession; rows citing it are proposed once it is accepted.
+      accepted journal holds`), main withdrew or replaced it: propose nothing;
+      rows citing it end `main withdrew the document it cites: decide by hand`
+      and stay held unless their owners decide otherwise; bringing the document
+      back is the owner's decision, stated in the pull request. Only with that
+      history `none` and `none (the document is new on this branch)` is it
+      new: propose it as in rule 5, without a supersession; rows citing it are
+      proposed once it is accepted.
    3. Several in `in force:`: decide by hand which stands, supersede the
       others if so decided, run salvage again and apply these rules to the new
       facts. Nothing else.
