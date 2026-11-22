@@ -132,11 +132,17 @@ class Salvage:
 
 @dataclass(frozen=True)
 class InForce:
-    """An accepted REF in force for a document's path: its ID, scope tokens, and whether it holds the branch's text."""
+    """An accepted REF in force for a document's path: its ID, scope tokens, whether it holds the branch's text, and
+    (when it does not) the tokens the branch's whole text names that this REF's whole text does not (``body_tokens``)."""
 
     id: str
     scope: tuple[str, ...]
     holds: bool
+    newly: tuple[str, ...] = ()
+
+    def fact(self) -> str:
+        text = "this text" if self.holds else f"other text; this text newly names: {', '.join(self.newly) or 'nothing'}"
+        return f"{self.id} (scope: {', '.join(self.scope) or 'none'}; {text})"
 
 
 @dataclass(frozen=True)
@@ -157,7 +163,7 @@ class Pending:
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
-        held = ", ".join(f"{ref.id} (scope: {', '.join(ref.scope) or 'none'}; {'this text' if ref.holds else 'other text'})" for ref in self.in_force)
+        held = ", ".join(ref.fact() for ref in self.in_force)
         return [*([f"body written to {shlex.quote(file)}"] if file is not None else []),
                 f"in force: {held}" if held else "no accepted reference names this path",
                 f"its Status and Scope sections name: {', '.join(self.names) or 'nothing'}",
@@ -208,11 +214,13 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         if not (changed or path in cited) or (len(on_main) == 1 and on_main[0].body == record.body):
             continue
         names = record.scope.tokens if record.scope is not None else ()
+        text = body_tokens(record.body or "")
         # Main changed it since the merge base when what stands for the path is not the very record the base's document
         # maps to: another ID, or the same ID at another revision (body, supersession, note), or none at all.
         main_changed = [exported(base)] != [exported(other) for other in on_main] if base is not None else bool(on_main)
-        found.append(Pending(path, record.body or "", names, tuple(sorted(body_tokens(record.body or "") - set(names), key=id_key)),
-                             tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body)
+        found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)),
+                             tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
+                                           () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
                                    for other in on_main), main_changed, tuple(cited.get(path, ()))))
     return found
 

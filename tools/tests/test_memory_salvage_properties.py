@@ -316,8 +316,10 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertIn(path, by_path, f"{where}: {path} is not done ({[other.id for other in holding]} in force) and is not listed")
             pending = by_path[path]
             names = record.scope.tokens if record.scope is not None else ()
-            self.assertEqual([(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body) for other in holding],
-                             [(held.id, held.scope, held.holds) for held in pending.in_force], f"{where}: {path}, the REFs in force")
+            text = body_tokens(record.body or "")
+            self.assertEqual([(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
+                               set() if other.body == record.body else text - body_tokens(other.body or "")) for other in holding],
+                             [(held.id, held.scope, held.holds, set(held.newly)) for held in pending.in_force], f"{where}: {path}, the REFs in force")
             self.assertEqual((names, set(body_tokens(record.body or "")) - set(names)), (pending.names, set(pending.more)), f"{where}: {path}, tokens")
             self.assertEqual(path not in based and bool(holding) or path in based and [based[path]] != holding, pending.main_changed,
                              f"{where}: {path}, main changed it")
