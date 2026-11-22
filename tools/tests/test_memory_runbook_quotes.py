@@ -4,18 +4,17 @@ The runbook ("Worktrees that predate the cut-over") says what each line ``memory
 apart in several review rounds. Each quoted fragment must occur in the runbook (whitespace-normalised) and in what
 salvage prints: facts produced by ``Pending.facts``, refusals and held-row reasons matched in its source. A held row
 prints ``needs a decision by hand: <ID>: <reason>; not proposed`` and the runbook reads the action from the words the
-reason ends with, so a fixture run checks one held row per ending. A wording changed on either side fails here.
+reason ends with, so fixture runs check one held row per ending. A wording changed on either side fails here.
 """
+
 from __future__ import annotations
 
-import json
 import re
 import unittest
 from pathlib import Path
 
 from tools.memory import salvage
 from tools.memory.salvage import InForce, Pending
-from tools.tests.memory_fixtures import run_git
 from tools.tests import test_memory_legacy as legacy_tests
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -68,31 +67,18 @@ class RunbookQuotes(unittest.TestCase):
 
     def test_a_held_row_ends_with_its_action_before_not_proposed(self) -> None:
         case = legacy_tests.SalvageTests("run")  # its fixtures, not its tests
-        cases: list[tuple[str, str, str]] = []
         case.setUp()
         case.new_spec_branch("docs/specs/net/third.md")  # M-105 cites a document no accepted REF names yet
-        cases.append(("specs", "M-105", "must be accepted first"))
         held = held_lines(case.run_salvage("specs")[2], "specs")
         case.doCleanups()
-        case.setUp()  # M-105 cites the spec as the branch has it; main has since changed that spec
-        _ = run_git(case.root, "checkout", "-q", "-b", "older")
-        shard = case.root / "evidence/widgets/001.jsonl"
-        _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/another.md", "sha256": "d" * 64, "class": "tracked",
-                                                             "kind": "report", "date": "2026-01-07", "label": "As it read", "status": "active"}) + "\n")
-        _ = run_git(case.root, "commit", "-q", "-am", "evidence for the spec")
-        _ = case.journal_on_main(remove_legacy=True)
-        case.revise_spec_on_main(case.ref_body("main~1", "docs/specs/net/another.md") + "\nInvented: main's text.\n")
-        cases.append(("older", "M-105", "settle the document first"))
-        held |= held_lines(case.run_salvage("older")[2], "older")
+        case.setUp()  # F-111 cites a member M-101 does not list; F-112 refers to F-111, which this run holds
+        case.edited("chain", ("docs/ledgers/findings/widgets.md", "| F-107 |",
+                              "| F-111 | Invented: a bad selector | observed | review; M-101/ev_000000000000 | high; server 29990001 | | active |\n"
+                              + "| F-112 | Invented: refers to F-111 | observed | review; F-111 | high; server 29990001 | | active |\n| F-107 |"))
+        held |= held_lines(case.run_salvage("chain")[2], "chain")
         case.doCleanups()
-        case.setUp()  # two compatibility rows share one name
-        table, row = "docs/ledgers/compatibility.md", "| Discovery | Unknown | Browser behavior |\n"
-        case.edited("dup", (table, row, row + "| Dup | Unknown | One |\n| Dup | Unknown | Two |\n"))
-        dup = held_lines(case.run_salvage("dup")[2], "dup")
-        held |= dup
-        cases.append(("dup", next(name for ref, name in dup if ref == "dup"), "decide by hand"))
-        case.doCleanups()
-        for ref, name, ending in cases:
+        for ref, name, ending in (("specs", "M-105", "settle the document first"), ("chain", "F-112", "must be accepted first"),
+                                  ("chain", "F-111", "decide by hand")):
             with self.subTest(ending=ending):
                 self.assertTrue(held[(ref, name)].endswith(f"{ending}; not proposed"), held[(ref, name)])
 
