@@ -1629,6 +1629,26 @@ class SalvageTests(LegacyRepository):
                           "F-112": "it would not replay cleanly: F-112: refs: no record F-111; it refers to F-111, which this run does not propose:"
                                    + " that record must be accepted first"}, result.undecided)
 
+    def test_a_carrier_citing_a_retired_ref_of_a_settled_document_is_decided_by_hand(self) -> None:
+        # The branch retires M-102 as superseded by M-104, which cites the widget spec's REF; main retired that REF and
+        # accepted REF-900 (by note, no supersession) holding the branch's text. The document is done; only M-104's stored
+        # citation is stale, and no document action can change it.
+        self.edited("carrier", ("evidence/widgets/001.jsonl", '"status":"active","legacy":true}', '"status":"retired","superseded_by":"M-104","legacy":true}'))
+        _ = run_git(self.root, "checkout", "-q", "main")
+        entry = next(entry for entry in replay(read_tree(self.root)).entries.values() if salvage_command.document_path(entry.record) == "docs/specs/net/widget.md")
+        retired = Record.from_json({**entry.record.to_json(), "status": "retired"}, entry.record.body)
+        _ = write_change_set(self.root, datetime(2026, 4, 8, tzinfo=UTC), [Revision.of(retired, entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main retires the widget REF")
+        self.publish()
+        self.accept_reference(online.Changes({"title": "Widget", "scope": {"basis": "explicit"}}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/widget.md"),
+                                             self.ref_body("carrier", "docs/specs/net/widget.md")), "REF-900")
+        result = salvage(self.root, "carrier")
+        self.assertEqual(f"its row on carrier names successor M-104, which would carry the link, but M-104 cites {entry.record.id}, which no longer stands"
+                         + " for docs/specs/net/widget.md; REF-900 stands for it with this branch's text, and a revision cannot change the row's citations:"
+                         + " decide by hand", result.undecided["M-102"])
+        self.assertEqual(({}, []), (result.cited, result.documents))
+
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
         old = next(record.id for record in (entry.record for entry in replay(read_tree(self.root)).entries.values())

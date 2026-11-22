@@ -548,7 +548,7 @@ class SalvageError(RuntimeError):
 
 def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[str, list[str]], edits: Mapping[str, Edit],
            on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None],
-           stale: Callable[[Record], tuple[str, str] | None] = lambda _record: None, branch: Collection[str] = ()) -> tuple[list[Revision], dict[str, str]]:
+           stale: Callable[[Record], tuple[str | None, str] | None] = lambda _record: None, branch: Collection[str] = ()) -> tuple[list[Revision], dict[str, str]]:
     """The proposal set, rebuilt from scratch until nothing more is held: each row's own proposal, then every
     ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
     revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
@@ -581,7 +581,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         path, reason = found
                         if old not in stuck:
                             stuck[old] = f"its row on {ref} names successor {target}, which would carry the link, but {target} " + reason.removeprefix("it ")
-                            if old not in (citing := result.cited.setdefault(path, [])):
+                            if path is not None and old not in (citing := result.cited.setdefault(path, [])):
                                 citing.append(old)
                         continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
@@ -879,9 +879,11 @@ def successors_in_force(accepted: Mapping[str, Record]) -> dict[str, str]:
 
 
 def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, str],
-                   branch: Mapping[str, str | None]) -> tuple[str, str] | None:
+                   branch: Mapping[str, str | None]) -> tuple[str | None, str] | None:
     """The document ``record`` may not cite as stored, and why: a cited REF that, resolved in force (``current``), does
-    not hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may."""
+    not hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may.
+    The path is ``None`` when the document itself is settled (one REF in force holds the branch's text): only the row's
+    stored citation is stale, which no document action can change, so it is decided by hand."""
     for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
         cited = on_accepted.records.get(target)
         if cited is None or cited.type != "reference" or (path := document_path(cited)) is None or path not in branch:
@@ -890,6 +892,10 @@ def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, 
         held = on_accepted.records[resolved]
         through = f"{target}, in force as {resolved}" if resolved != target else target
         if resolved in on_accepted.retired:
+            in_force = [other for name, other in on_accepted.records.items() if name not in on_accepted.retired and document_path(other) == path]
+            if len(in_force) == 1 and in_force[0].body == branch[path]:
+                return None, (f"it cites {through}, which no longer stands for {path}; {in_force[0].id} stands for it with this branch's text, and"
+                              + " a revision cannot change the row's citations: decide by hand")
             return path, f"it cites {through}, which no longer stands for {path}: settle the document first"
         if held.body != branch[path]:
             return path, f"it cites {through}, which holds other text of {path} than this branch's: settle the document first"
@@ -1062,7 +1068,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 linked = without_supersedes(linked, old)
         if on_main is None and (stale := stale_citation(record, on_accepted, current, branch_documents)) is not None:
             hold(identifier, "undecided", stale[1])
-            result.cited.setdefault(stale[0], []).append(identifier)
+            if stale[0] is not None:
+                result.cited.setdefault(stale[0], []).append(identifier)
         elif on_main is None:
             result.kinds[identifier] = "new"
             if record.type in ("compatibility", "report"):
@@ -1097,7 +1104,8 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             result.conflicts.append((on_main, record))
         elif revision is not None and (stale := stale_citation(revision, on_accepted, current, branch_documents)) is not None:
             hold(identifier, "undecided", stale[1])
-            result.cited.setdefault(stale[0], []).append(identifier)
+            if stale[0] is not None:
+                result.cited.setdefault(stale[0], []).append(identifier)
         else:
             result.kinds[identifier] = "revision" if revision is not None else "superseded"
             if revision is not None:
