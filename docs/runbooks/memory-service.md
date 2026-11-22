@@ -94,61 +94,76 @@ in its conflicts loses the rows and unprotects the branch's evidence.
    not merge `main` yet.
 2. From an up-to-date checkout of `main`, run on the branch's pre-merge tip
    `memory salvage <branch> --check`, then `memory salvage <branch> --out
-   work/<case>/salvage-<n>`, a path that does not exist (`<out> exists: --out
-   must name a new directory` otherwise). It writes the proposals under
+   work/<case>/salvage-<n>`, a path that does not exist (`--out must name a
+   new directory` otherwise). It writes the proposals under
    `<out>/memory/journal/` and each listed document's body under
    `<out>/documents/<path>`; a non-zero exit for conflicts or held rows leaves
-   that output usable. After a write failure or an interrupt it removes the
-   directory when it can and says so when it cannot (`could not remove
-   <out>: …; remove it by hand`). It reads `origin/main` (`--main REF` names
-   another), and its REF, CP and RP numbers are `origin/main`'s; a tip that
-   merged the cut-over is refused with the pre-merge tip to use. `internal
-   error, nothing written` is a defect in salvage: report it.
+   that output usable. A write failure or an interrupt removes the directory
+   when it can and says so when it cannot (`could not remove <out>: …; remove
+   it by hand`); an interrupt in the instant after the directory is created
+   leaves it empty, and the next run refuses it by name. It reads
+   `origin/main` (`--main REF` names another), its REF, CP and RP numbers are
+   `origin/main`'s, and a tip that merged the cut-over is refused with the
+   pre-merge tip to use. `internal error, nothing written` is a defect in
+   salvage: report it.
 3. Rows (exit 4 means some row needs a hand):
    - a proposal (`new`, or a revision of `origin/main`'s record): kept;
    - `needs a superseding record: …`: `memory propose` the branch's content
      as a new record, then `memory supersede <old> --by <new>`;
-   - `needs a decision by hand: …`: settle it with the record's owner. `it
-     cites the new document <path> (REF-N, a provisional number), whose
-     record must be accepted first` (or a new CP/RP row) waits for that
-     record, then salvage runs again; `one of N records sharing the …`,
-     `which the accepted journal holds N times` and `a rename needs a
-     superseding record` are settled by hand, as is any row citing one;
    - `conflict: …: origin/main holds other content under this ID`: when both
      sides allocated the number (as M-1623 to M-1625 on one branch), add the
      branch's record under a new ID and rewrite its citations; when `main`
      took an earlier draft, reconcile with `memory revise` or a superseding
-     record.
+     record;
+   - `needs a decision by hand: …`, by its reason. Wait for that record, then
+     run salvage again: `which no accepted REF names (by legacy path or a
+     note`, `it cites the new …`, `that record must be accepted first`, `propose
+     it alone first`. Settle the document first (below), then run again:
+     `as this branch has it`, `which holds other text of`, `which no longer
+     stands for`, `several REFs in force name` (each ending `: settle the
+     document first`). Decide with the record's owner: `which the accepted
+     journal holds N times`, `one of N records sharing the`, `a rename needs a
+     superseding record`, `which would carry the link`.
 
-   Documents: salvage prints facts, never a command: `body written to
-   <file>`; `in force: REF-N (scope: …; other text; this text newly names:
-   …)` for each reference in force, or `no accepted reference names this
-   path`; what `its Status and Scope sections name` and `its body also
-   names`; `main changed or replaced its reference since this branch's base:
-   yes|no`; the `--note` a new reference carries; `rows held because they
-   cite it`. Apply the first rule that fits:
+   Documents: salvage prints facts, never a command. Apply the first rule
+   whose facts fit; `<file>` is the `body written to` path:
 
-   a. `main changed or replaced …: yes`: make `<file>` carry main's current
-      text (`memory get REF-N`) with the branch's change, then apply b to e.
-   b. Several references in force: decide by hand which stands; if one holds
-      this text and the others should give way, `memory supersede REF-OLD
-      --by REF-NEW` for each. Nothing else is automatic.
-   c. One in force, its scope equals what the sections name, and this text
-      newly names nothing: `memory revise REF-N --body <file>`.
-   d. One in force, and the section tokens differ from its scope or this
-      text newly names something: a body revision cannot change scope.
-      `memory propose reference --set 'title=…' --set-json 'scope={"basis":
-      "explicit", …}' --note 'salvaged document: <path>' --body <file>`, with
-      a scope YOU state from what the text supports (the tool's lists are what
-      the text names, not a scope) and the note as printed; then `memory
-      supersede REF-N --by <the new REF>`. If you judge the old scope still
-      covers the new tokens, say so in the pull request and use c: a person
-      records that judgement, never the tool.
-   e. None in force: propose as in d, without a supersession.
+   1. `this branch changed it since its base: no` (listed only for `rows held
+      because they cite it`): do nothing to it and propose no reference; for
+      each held row, decide with its owner whether the claim holds for the
+      reference's current text. The row stays listed (step 6).
+   2. `no accepted reference names this path`: if `at this branch's base its
+      reference was REF-N: retired` (or `superseded by …`, or `none the
+      accepted journal holds`), main withdrew or replaced it: propose nothing;
+      bringing it back is the owner's decision, stated in the pull request. If
+      `none (the document is new on this branch)`: propose it as in rule 5,
+      without a supersession.
+   3. Several in `in force:`: decide by hand which stands, supersede the
+      others if so decided, run salvage again and apply these rules to the new
+      facts. Nothing else.
+   4. One in force and `main changed or replaced its reference since this
+      branch's base: yes`: make `<file>` carry main's current text (`memory get
+      REF-N`) with the branch's change. The facts describe the branch's text,
+      not this file: use `memory revise` only if you can show that what the
+      exporter would read as its scope (its Status and Scope sections for a
+      spec, its whole text otherwise) names exactly REF-N's scope tokens and
+      that it names no build, release or commit REF-N's current text does not;
+      otherwise, and whenever unsure, rule 5's superseding reference.
+   5. One in force, main unchanged: if its `scope tokens` equal what `the
+      exporter reads as its scope` and `this text newly names: nothing`,
+      `memory revise REF-N --body <file>`. Otherwise a body revision cannot
+      change scope: `memory propose reference --set 'title=…' --set-json
+      'scope={"basis": "explicit", …}' --note 'salvaged document: <path>'
+      --body <file>` with a scope YOU state from what the text supports (the
+      tool's lists are what the text names, not a scope) and the note as
+      printed, then `memory supersede REF-N --by <the new REF>`. If you judge
+      the old scope still covers the newly named tokens, say so in the pull
+      request and revise instead: a person records that, never the tool.
 
    Rows held because they cite a document are proposed on the next run once
-   it is done. Example: REF-016 and REF-010 c; REF-008 d (newly names
-   `any:26635895`); REF-036 and REF-001 a then c; REF-013 a then d.
+   it is done. Example: REF-016, REF-010: 5, revise; REF-008: 5, supersede;
+   REF-036, REF-001: 4, then revise if the re-assessment allows; REF-013: 4,
+   then supersede.
 4. On a new branch from `main`, copy every segment of `<out>/memory/journal/`
    into `memory/journal/`, add the records from step 3, run `memory check
    --ci`, commit and open the pull request. After it merges and the lead runs
