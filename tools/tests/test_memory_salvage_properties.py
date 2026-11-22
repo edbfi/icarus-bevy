@@ -328,37 +328,62 @@ ENDINGS = ("must be accepted first", "settle the document first", "decide by han
 
 
 class GeneratedSalvageTests(unittest.TestCase):
-    def waits_for(self, reason: str) -> set[str]:
-        """The records a waiting reason waits for, by its form."""
-        if (successor := re.search(r"names successor (\S+), which cannot carry the link", reason)) is not None:
+    def clauses_of(self, reason: str) -> list[str]:
+        """A reason's clauses: split at "; " outside parentheses wherever the text so far ends by an action."""
+        found: list[str] = []
+        depth = start = 0
+        index = 0
+        while index < len(reason):
+            if reason[index] == "(":
+                depth += 1
+            elif reason[index] == ")":
+                depth -= 1
+            elif depth == 0 and reason.startswith("; ", index) and reason[start:index].endswith(ENDINGS):
+                found.append(reason[start:index])
+                start = index + 2
+            index += 1
+        return [*found, reason[start:]]
+
+    def waits_for(self, clause: str) -> set[str]:
+        """The records a waiting clause ("must be accepted first") waits for, by its form."""
+        if (successor := re.search(r"names successor (\S+), which cannot carry the link", clause)) is not None:
             return {successor[1]}
-        if (refers := re.search(r"it refers to (.+?), which this run does not propose", reason)) is not None:
+        if (refers := re.search(r"it refers to (.+?), which this run does not propose", clause)) is not None:
             return {match[0] for match in ID.finditer(refers[1])}
-        if (citing := re.search(r"its provisional number is cited by (.+?); propose it alone first", reason)) is not None:
-            return {match[0] for match in ID.finditer(citing[1])}
-        return {match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", reason)}
+        return {match[1] for match in re.finditer(r"\(([A-Z]+-[0-9]+), a provisional number\)", clause)}
 
     def assert_endings(self, where: str, result: Salvage, on_accepted: Accepted, after: dict[str, Record], before: dict[str, Record]) -> None:
-        """Every held row's ending names the action that clears it: "settle the document first" names a document this run
-        lists as pending, with the row among those citing it; a waiting ending ("must be accepted first", "propose it alone
-        first") waits only for records this run proposes or holds; "decide by hand" otherwise, and never on a row whose
-        successor this run holds (it waits for it, or settles its document)."""
+        """Every clause of every held row's reason ends by the action that clears it.
+
+        "settle the document first": it names a document this run lists as pending, with the row among those citing it,
+        and that document's facts are a combination the rules settle (this branch changed it; and not withdrawn by main:
+        some reference in force, or none that named it retired or superseded). "must be accepted first": it waits only for
+        records that keep their ID (proposed here, or held undecided). "propose it alone first": the row is a provisional
+        record other branch rows cite. "decide by hand": anything else, but never for a successor this run holds undecided
+        unless that successor cannot carry the link whatever is accepted."""
         listed = {pending.path: pending for pending in pending_documents(after, before, on_accepted, result.cited)}
         proposed = {revision.record.id for revision in result.proposals}
         held = {name for name, kind in result.kinds.items() if kind == "undecided"}
         for name, reason in result.undecided.items():
             self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
-            if reason.endswith("settle the document first"):
-                self.assertTrue([path for path, pending in listed.items() if path in reason and name in pending.citing], f"{where}: {name}: {reason}")
-            elif reason.endswith(("must be accepted first", "propose it alone first")):
-                waited = self.waits_for(reason)
-                self.assertTrue(waited, f"{where}: {name}: {reason}")
-                self.assertEqual(set[str](), waited - proposed - held, f"{where}: {name} waits for records this run neither proposes nor holds: {reason}")
-            elif (successor := re.search(r"names successor (\S+), which cannot carry the link", reason)) is not None:
-                # Decided by hand only when the successor cannot carry the link whatever is accepted: it exists nowhere, or
-                # its revision carrying the link fails replay (it is reported as not revised to carry links).
-                unlinkable = any(notice.startswith(f"{successor[1]}: not revised to carry supersedes links") for notice in result.notices)
-                self.assertTrue(unlinkable or successor[1] not in held, f"{where}: {name} is decided by hand though its successor is held here: {reason}")
+            for clause in self.clauses_of(reason):
+                self.assertTrue(clause.endswith(ENDINGS), f"{where}: {name}: a clause ending by no action: {clause!r} in {reason}")
+                if clause.endswith("settle the document first"):
+                    named = [pending for path, pending in listed.items() if path in clause and name in pending.citing]
+                    self.assertTrue(named, f"{where}: {name}: {clause}")
+                    for pending in named:
+                        withdrawn = not pending.in_force and (bool(pending.withdrawn) or any(fate != "now in force" for _id, fate in pending.based_on or ()))
+                        self.assertTrue(pending.branch_changed and not withdrawn, f"{where}: {name}: {pending.path} is not the operator's to settle: {clause}")
+                elif clause.endswith("must be accepted first"):
+                    waited = self.waits_for(clause)
+                    self.assertTrue(waited, f"{where}: {name}: {clause}")
+                    self.assertEqual(set[str](), waited - proposed - held, f"{where}: {name} waits for records that do not keep their ID here: {clause}")
+                elif clause.endswith("propose it alone first"):
+                    citing = [other for other, record in after.items() if other != name and name in record.links.targets()]
+                    self.assertTrue(name not in on_accepted.records and citing, f"{where}: {name}: {clause}")
+                elif (successor := re.search(r"names successor (\S+), which cannot carry the link", clause)) is not None:
+                    unlinkable = any(notice.startswith(f"{successor[1]}: not revised to carry supersedes links") for notice in result.notices)
+                    self.assertTrue(unlinkable or successor[1] not in held, f"{where}: {name} is decided by hand though its successor is held here: {clause}")
 
     def assert_documents(self, where: str, raw_after: dict[str, Record], raw_before: dict[str, Record], on_accepted: Accepted) -> None:
         """The document facts of one run against ``on_accepted``: every document that is not done is listed and no done
@@ -586,13 +611,14 @@ class GeneratedSalvageTests(unittest.TestCase):
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
             self.assert_endings(f"seed {seed}, run 2", again, now, after_again, before_again)
-            # A row that waited in run 1 for records whose proposals run 2 has accepted does not wait for the same records again.
+            # A row whose run-1 reason only waited, for records whose proposals run 2 has accepted, is not held in run 2 for
+            # a cause it already had in run 1.
             accepted_by_run_2 = {revision.record.id for revision in result.proposals}
             for name, reason in result.undecided.items():
-                if reason.endswith(("must be accepted first", "propose it alone first")) and (waited := self.waits_for(reason)) <= accepted_by_run_2:
-                    later_reason = again.undecided.get(name, "")
-                    self.assertFalse(later_reason.endswith(("must be accepted first", "propose it alone first")) and self.waits_for(later_reason) == waited,
-                                     f"seed {seed}: {name} waits again for {sorted(waited)}: {later_reason}")
+                first = self.clauses_of(reason)
+                if all(clause.endswith("must be accepted first") for clause in first) and set().union(*map(self.waits_for, first)) <= accepted_by_run_2:
+                    self.assertEqual(set[str](), set(first) & set(self.clauses_of(again.undecided.get(name, ""))),
+                                     f"seed {seed}: {name} is held again for {reason}")
             self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
             # Held rows keep their class; a provisional number may move once other records are accepted, so those compare by identity.
             held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict") and name not in unmapped}
