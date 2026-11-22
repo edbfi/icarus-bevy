@@ -314,7 +314,8 @@ class GeneratedSalvageTests(unittest.TestCase):
             merged = (*accepted.segments, Segment("memory/journal/accepted-proposals.jsonl", "", tuple(result.proposals)))
             state = replay(merged)
             now = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                           {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", merged)
+                           {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", merged,
+                           frozenset(identifier for identifier in state.entries if state.retired(identifier)))
             again = Salvage("generated", "e" * 40, "b" * 40, "c" * 40)
             (after_again, before_again), unmapped_again, shared_again = renumber((raw_after, raw_before), now.records, now.retired)
             try:
@@ -344,7 +345,8 @@ class GeneratedSalvageTests(unittest.TestCase):
                 with_hand = (*merged, Segment("memory/journal/hand.jsonl", "", (hand,)))
                 state = replay(with_hand)
                 later = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
-                                 {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", with_hand)
+                                 {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", with_hand,
+                                 frozenset(identifier for identifier in state.entries if state.retired(identifier)))
                 (after_hand, before_hand), unmapped_hand, shared_hand = renumber((raw_after, raw_before), later.records, later.retired)
                 third = Salvage("generated", "f" * 40, "b" * 40, "c" * 40)
                 _ = classify(third, after_hand, before_hand, later, unmapped_hand, shared_hand)
