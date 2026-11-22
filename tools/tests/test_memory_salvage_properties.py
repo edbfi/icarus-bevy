@@ -17,7 +17,7 @@ from tools.memory.check import revision_problems
 from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.model import JSON, Record
-from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, document_path, identity, pending_documents, renumber
+from tools.memory.salvage import DOCUMENT_NOTE, SALVAGED, Accepted, Salvage, SalvageError, classify, document_path, identity, pending_documents, relink, renumber
 from tools.memory.state import State, replay
 from tools.tests.memory_fixtures import evidence, finding
 
@@ -129,6 +129,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     branch_paths = ["docs/specs/a.md", *main_paths] if rng.random() < 0.5 else main_paths
     retoken, rewrite_c, two_holders = rng.random() < 0.3, rng.random() < 0.3, rng.random() < 0.2
     renewed = not retoken and rng.random() < 0.3  # e.md's body newly names a build outside its (unchanged) scope sections
+    main_e = rng.random() < 0.3  # main changes e.md since the merge base
     # Documents sharing one body: two new ones on the branch; an unrelated REF of that body on main (no identity).
     same_body = rng.random() < 0.3
     if same_body and "docs/specs/a.md" in branch_paths:
@@ -169,6 +170,9 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         export[base_ids[0]] = Record.from_json(cited)
     if "docs/specs/a.md" in branch_paths and rng.random() < 0.5:
         after["M-501"] = tracked("M-501", "docs/specs/a.md", numbered(branch_paths, branch_names)[0]["docs/specs/a.md"])
+    if rng.random() < 0.5:
+        # A new tracked row citing e.md as the branch has it (main's text may differ).
+        after["M-502"] = tracked("M-502", "docs/specs/e.md", numbered(branch_paths, branch_names)[0]["docs/specs/e.md"])
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
@@ -177,6 +181,9 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
         # Main changed c.md too since the merge base: a body revision would drop its edit.
         main_c = numbered(main_paths, main_names)[0]["docs/specs/c.md"]
         main_edits.append(Revision.of(document(main_c, "docs/specs/c.md", "# c.md, main's edit\n"), [revisions[main_c].rev]))
+    if main_e:
+        main_e_ref = numbered(main_paths, main_names)[0]["docs/specs/e.md"]
+        main_edits.append(Revision.of(document(main_e_ref, "docs/specs/e.md", "# e.md, main's edit\n"), [revisions[main_e_ref].rev]))
     if two_holders:
         # A second accepted REF naming c.md by note, maybe with the branch's new body (a superseding REF accepted), and
         # maybe superseding the first (the supersession accepted too: then it alone is in force).
@@ -228,7 +235,10 @@ class GeneratedSalvageTests(unittest.TestCase):
             # Another spelling of the ref and another tip (an unrelated commit): byte-identical proposals, same classes.
             # No record is lost: the translated export holds every record, and every changed one is reported.
             self.assertEqual(len(raw_after), len(after), f"seed {seed}: renumbering lost a record")
-            changed = {name for name, record in after.items() if record.type in SALVAGED and before.get(name) != record}
+            # A branch REF whose text differs from main's is numbered provisionally; for an unchanged row it is main's REF.
+            standins = {name: other for name, reason in unmapped.items() if "as this branch has it" in reason
+                        for other, base in before.items() if identity(base) == identity(after[name])}
+            changed = {name for name, record in after.items() if record.type in SALVAGED and before.get(name) != relink(record, standins)}
             self.assertEqual(set[str](), changed - set(result.kinds), f"seed {seed}: changed rows not reported")
             for name in shared:
                 if name in changed:
@@ -280,6 +290,20 @@ class GeneratedSalvageTests(unittest.TestCase):
                 self.assertEqual("undecided", result.kinds[base_ids(raw_before)[0]], f"seed {seed}: a row citing a shared name")
             if "M-501" in after:
                 self.assertEqual("undecided", result.kinds["M-501"], f"seed {seed}: a row citing a new document")
+            if "M-502" in raw_after:
+                # A citation of e.md is of e.md as the branch has it: proposed citing main's REF only when main holds that text.
+                branch_e = next(record.body for record in raw_after.values() if record.legacy is not None and record.legacy.path == "docs/specs/e.md")
+                main_e = next(record.body for record in accepted.records.values() if document_path(record) == "docs/specs/e.md")
+                e_listed = [(pending.kind, pending.holders) for pending in pending_documents(after, before, accepted, result.cited)
+                            if pending.path == "docs/specs/e.md"]
+                if branch_e == main_e:
+                    self.assertEqual("new", result.kinds["M-502"], f"seed {seed}: a row citing e.md as main holds it")
+                else:
+                    self.assertEqual("undecided", result.kinds["M-502"], f"seed {seed}: a row citing e.md as main does not hold it")
+                    self.assertIn("docs/specs/e.md as this branch has it", result.undecided["M-502"], f"seed {seed}")
+                    branch_changed_e = branch_e != next(record.body for record in raw_before.values() if document_path(record) == "docs/specs/e.md")
+                    if not branch_changed_e:
+                        self.assertEqual([("cited", ("M-502",))], e_listed, f"seed {seed}: e.md, unchanged on the branch, listed for M-502")
             if "F-299" in after:
                 self.assertEqual("undecided", result.kinds["F-299"], f"seed {seed}: a row citing a new compatibility row")
             other = Salvage("spelled-otherwise", "d" * 40, "b" * 40, "c" * 40)

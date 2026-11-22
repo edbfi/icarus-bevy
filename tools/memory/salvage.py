@@ -126,8 +126,10 @@ class Salvage:
     notices: list[str] = field(default_factory=list[str])
     premerge: str | None = None
     merge: str | None = None
-    # Pending documents: (path, the REF whose body to revise, or None for a new document).
+    # Pending documents: what each changed, added or cited document needs (``Pending``).
     documents: list[Pending] = field(default_factory=list["Pending"])
+    # Documents (by path) that held rows cite as the branch has them, with those rows.
+    cited: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,8 @@ class Pending:
             return [f"memory supersede {other} --by {self.target}" for other in self.holders if other != self.target] if self.target is not None else []
         propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                    + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
+        if self.kind == "cited":
+            return []
         if self.kind == "decide":
             conditions = [*([f"{self.target}'s scope still holds for the new text"] if self.newly else []),
                           *([f"this body carries main's changes to {self.target} since this branch's base"] if self.main_changed else [])]
@@ -186,6 +190,9 @@ class Pending:
             return (f"changed document; {spoken(self.names, 'its text names')}; {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
                     + (f"; {self.main_note()}" if self.main_changed else "") + " (salvage --out writes its body and the commands)")
+        if self.kind == "cited":
+            return (f"cited by {', '.join(self.holders)} as this branch has it; {self.target} holds other text: settle the document first"
+                    + f" (decide whether those rows apply to {self.target}'s text, or propose this text as a new REF)")
         if self.kind == "decide":
             reasons = [*([f"its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
                           + " a body revision keeps that scope"] if self.newly else []),
@@ -216,12 +223,14 @@ def spoken(tokens: Sequence[str], subject: str) -> str:
     return f"{subject}: {', '.join(tokens)}" if tokens else f"{subject} no build, release or commit"
 
 
-def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted) -> list[Pending]:
+def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
+                      cited: Mapping[str, Sequence[str]] | None = None) -> list[Pending]:
     """The documents the branch changed or added, matched by identity only (``document_path``; never by body) against
     the accepted REFs still in force (not superseded or retired). More than one: ambiguous, listed with their IDs
     (and, when one holds the branch's body, the supersession that would leave it alone). Exactly one: done when it
     holds the branch's body, else a body revision when the text's tokens equal its scope tokens, else a superseding
-    REF. None: a new document."""
+    REF. None: a new document. A document the branch did not change but held rows cite (``cited``) while the in-force
+    REF holds other text is listed too: those rows wait for it to be settled."""
     holders: dict[str, list[Record]] = {}
     for record in on_accepted.records.values():
         if (path := document_path(record)) is not None and record.id not in on_accepted.retired:
@@ -233,7 +242,10 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         names = record.scope.tokens if record.scope is not None else ()
         on_main = holders.get(path, [])
         if record.body == base_bodies.get(path):
-            continue  # the branch did not change it
+            # The branch did not change it; listed only when held rows cite it as the branch has it and main's differs.
+            if cited and path in cited and len(on_main) == 1 and on_main[0].body != record.body:
+                found.append(Pending(path, "cited", body, title, names, target=on_main[0].id, holders=tuple(cited[path])))
+            continue
         if not on_main:
             found.append(Pending(path, "new", body, title, names))
         elif len(on_main) > 1:
@@ -623,6 +635,10 @@ def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, a
             if after is not None and target in after and target in accepted and target.split("-", 1)[0] in ASSIGNED \
                     and identity(after[target]) != identity(accepted[target]):
                 raise SalvageError(f"{identifier}: cites {target}, which on main is {identity(accepted[target])}, not the branch's {identity(after[target])}")
+            # A citation of a document is of the document as the branch has it: the accepted REF must hold that body.
+            if after is not None and target in after and target in accepted and after[target].type == "reference" \
+                    and after[target].body != accepted[target].body:
+                raise SalvageError(f"{identifier}: cites {target}, whose text on main differs from the branch's document")
     # (d) A notice about a link agrees with the links of the proposal it names.
     for notice in result.notices:
         claim = re.fullmatch(r"([A-Z]+-[0-9]+): ([A-Z]+-[0-9]+) would supersede it, but .*; \2 (is proposed without that link|is not revised"
@@ -662,7 +678,7 @@ def salvage(root: Path, ref: str, main: str = ACCEPTANCE_REF) -> Salvage:
     raw = (after, before)
     (after, before), unmapped, shared = renumber((after, before), on_accepted.records, on_accepted.retired)
     superseding = classify(result, after, before, on_accepted, unmapped, shared, raw)
-    result.documents = pending_documents(after, before, on_accepted)
+    result.documents = pending_documents(after, before, on_accepted, result.cited)
     result.notices.extend(f"{document.path}: {document.line()}" for document in result.documents)
     journal = {(revision.record.id, revision.sha256) for segment in read_git(root, head) for revision in segment.revisions}
     result.unsalvaged = [revision.record.id for revision in [*result.proposals, *superseding] if (revision.record.id, revision.sha256) not in journal]
@@ -751,7 +767,7 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
     unmapped: dict[str, str] = {}
     shared: set[str] = set()
     result: list[dict[str, Record]] = []
-    for export in exports:
+    for position, export in enumerate(exports):
         seen: dict[str, int] = {}
         for record in export.values():
             if (key := identity(record)) is not None:
@@ -762,8 +778,19 @@ def renumber(exports: Sequence[Mapping[str, Record]], accepted: Mapping[str, Rec
             key = identity(record)
             if key is None or record.id.split("-", 1)[0] not in ASSIGNED:
                 continue
-            if key in known and seen[key] == 1:
+            # A citation of a document means the document as the branch has it: the branch's REF takes the accepted ID
+            # only when the in-force REF holds the same body; otherwise its number is provisional and rows citing it wait.
+            elsewhere = (position == 0 and record.type == "reference" and key in known and seen[key] == 1
+                         and standing[known[key]].body != record.body)
+            if key in known and seen[key] == 1 and not elsewhere:
                 target = known[key]
+            elif elsewhere:
+                place = (f"{key} as the branch has it", -1)
+                if place not in provisional:
+                    top["REF"] += 1
+                    provisional[place] = f"REF-{top['REF']:03d}"
+                    unmapped[provisional[place]] = f"{document_path(record)} as this branch has it; {known[key]} holds other text: settle the document first"
+                target = provisional[place]
             else:
                 # Ambiguity on either side is ambiguity: the export or the accepted journal holding the identity twice.
                 ambiguous = seen[key] > 1 or counts.get(key, 0) > 1
@@ -855,6 +882,10 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         for name in gained:
             renamed[name] = (f"it is a new {kind} row {name_of(after[name])!r}, and {', '.join(lost)} is gone from the branch: "
                              + "a rename needs a superseding record; decide by hand")
+    # A branch REF numbered provisionally only because its text differs from the in-force REF's (``renumber``) stands,
+    # for a row the branch did not change, for the accepted REF the merge base's export cited: such a row is unchanged.
+    standins = {name: other for name in unmapped if name in after and name not in before and after[name].type == "reference"
+                for other, base in before.items() if other in accepted and identity(base) == identity(after[name])}
     changed: list[str] = []
     for name in sorted(set(renamed) - set(after), key=id_key):
         hold(name, "undecided", renamed[name])
@@ -864,7 +895,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             changed.append(identifier)
             hold(identifier, "undecided", renamed[identifier])
             continue
-        if record.type not in SALVAGED or before.get(identifier) == record:
+        if record.type not in SALVAGED or before.get(identifier) in (record, relink(record, standins)):
             continue
         changed.append(identifier)
         on_main, origin = accepted.get(identifier), before.get(identifier)
@@ -875,6 +906,9 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         if cited := sorted((named - {identifier}) & unmapped.keys(), key=id_key):
             hold(identifier, "undecided", "it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in cited)
                  + ", whose record must be accepted first")
+            for name in cited:
+                if name in after and (path := document_path(after[name])) is not None:
+                    result.cited.setdefault(path, []).append(identifier)
             continue
         if identifier in unmapped and (citing := sorted((name for name, other in after.items() if name != identifier and identifier in {
                 *other.links.targets(), *(other.legacy.superseded_by if other.legacy is not None else ())}), key=id_key)):
@@ -1096,7 +1130,7 @@ def run(options: argparse.Namespace) -> int:
                     print(f"memory salvage: {document.path}: {command}", file=sys.stderr)
                 if document.kind in ("new", "supersede", "decide"):
                     print(f"memory salvage: {document.path}: {document.scope_line()}", file=sys.stderr)
-                elif document.kind == "ambiguous":
+                elif document.kind in ("ambiguous", "cited"):
                     print(f"memory salvage: {document.path}: {document.line()}", file=sys.stderr)
             if segments:
                 print(f"memory salvage: wrote {len(segments)} segment(s) under {out}", file=sys.stderr)

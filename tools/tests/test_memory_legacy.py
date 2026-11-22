@@ -1363,6 +1363,27 @@ class SalvageTests(LegacyRepository):
         self.assertIn("otherwise: memory propose reference", commands[1])
         self.assertEqual(f"otherwise, then: memory supersede {document.target} --by <the new REF>", commands[2])
 
+    def test_a_row_citing_a_document_main_has_since_changed_waits_for_it(self) -> None:
+        # An older branch adds tracked evidence for the spec as it then read; main later holds other text for that path.
+        _ = run_git(self.root, "checkout", "-q", "-b", "older")
+        shard = self.root / "evidence/widgets/001.jsonl"
+        _ = shard.write_text(shard.read_text() + json.dumps({"id": "M-105", "path": "docs/specs/net/another.md", "sha256": "d" * 64, "class": "tracked",
+                                                             "kind": "report", "date": "2026-01-07", "label": "The spec as it read", "status": "active"},
+                                                            separators=(",", ":")) + "\n")
+        _ = run_git(self.root, "commit", "-q", "-am", "evidence for the spec")
+        _ = self.journal_on_main(remove_legacy=True)
+        self.revise_spec_on_main(self.ref_body("main~1", "docs/specs/net/another.md") + "\nInvented: main's successor text.\n")
+        result = salvage(self.root, "older")
+        # Not proposed citing main's text: held, and the document it cites listed although the branch never changed it.
+        self.assertEqual("undecided", result.kinds["M-105"])
+        self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
+        self.assertIn("docs/specs/net/another.md as this branch has it; REF-", result.undecided["M-105"])
+        (document,) = result.documents
+        self.assertEqual(("cited", ("M-105",), []), (document.kind, document.holders, document.commands("FILE")))
+        self.assertIn(f"cited by M-105 as this branch has it; {document.target} holds other text: settle the document first", document.line())
+        status, stdout, _stderr = self.run_salvage("older", check=True)
+        self.assertEqual((1, True), (status, "1 unsalvaged row(s), 1 pending document(s)" in stdout), stdout)
+
     def test_a_document_main_also_changed_needs_a_decision(self) -> None:
         _ = run_git(self.root, "checkout", "-q", "-b", "both-edit")
         spec = self.root / "docs/specs/net/another.md"
