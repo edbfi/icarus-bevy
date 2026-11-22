@@ -1363,6 +1363,19 @@ class SalvageTests(LegacyRepository):
         self.assertIn("otherwise: memory propose reference", commands[1])
         self.assertEqual(f"otherwise, then: memory supersede {document.target} --by <the new REF>", commands[2])
 
+    def test_a_document_main_also_changed_needs_a_decision(self) -> None:
+        _ = run_git(self.root, "checkout", "-q", "-b", "both-edit")
+        spec = self.root / "docs/specs/net/another.md"
+        _ = spec.write_text(spec.read_text() + "\nInvented: the branch's line.\n", encoding="utf-8")
+        _ = run_git(self.root, "commit", "-q", "-am", "branch edits the spec")
+        _ = self.journal_on_main(remove_legacy=True)
+        self.revise_spec_on_main(self.ref_body("main~1", "docs/specs/net/another.md") + "\nInvented: main's line.\n")
+        (document,) = salvage(self.root, "both-edit").documents
+        self.assertEqual(("decide", True, ()), (document.kind, document.main_changed, document.newly))
+        self.assertIn(f"main changed {document.target} since this branch's base, so check that the branch's body carries those changes", document.line())
+        self.assertEqual([f"if this body carries main's changes to {document.target} since this branch's base: memory revise {document.target} --body FILE"],
+                         document.commands("FILE"))
+
     def test_a_superseding_ref_is_done_only_once_the_supersession_is_accepted(self) -> None:
         self.edited("retoken", ("docs/specs/net/widget.md", "Candidate; observed with client build 29990002 only.",
                                 "Candidate; observed with client build 29990003 only."))

@@ -172,6 +172,11 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
     if "Beta" in branch_names and rng.random() < 0.5:
         after["F-299"] = Record.from_json(row("F-299", "active").to_json() | {"refs": [numbered(branch_paths, branch_names)[1]["Beta"]]})
     revisions = {identifier: Revision.of(record) for identifier, record in before.items()}
+    main_edits: list[Revision] = []
+    if rewrite_c and not two_holders and rng.random() < 0.4:
+        # Main changed c.md too since the merge base: a body revision would drop its edit.
+        main_c = numbered(main_paths, main_names)[0]["docs/specs/c.md"]
+        main_edits.append(Revision.of(document(main_c, "docs/specs/c.md", "# c.md, main's edit\n"), [revisions[main_c].rev]))
     if two_holders:
         # A second accepted REF naming c.md by note, maybe with the branch's new body (a superseding REF accepted), and
         # maybe superseding the first (the supersession accepted too: then it alone is in force).
@@ -198,7 +203,7 @@ def case(seed: int) -> tuple[dict[str, Record], dict[str, Record], Accepted]:
                                  [revisions[changed].rev]))
     if rng.random() < 0.3:
         _ = revisions.pop(rng.choice(base_ids[1:]))
-    segments = (Segment("memory/journal/generated.jsonl", "", (*revisions.values(), *later)),)
+    segments = (Segment("memory/journal/generated.jsonl", "", (*revisions.values(), *later, *main_edits)),)
     state = replay(segments)
     accepted = Accepted({identifier: entry.record for identifier, entry in state.entries.items()},
                         {identifier: entry.heads for identifier, entry in state.entries.items()}, "journal", segments,
@@ -248,6 +253,8 @@ class GeneratedSalvageTests(unittest.TestCase):
             c_listed = [pending for pending in pending_documents(after, before, accepted) if pending.path == "docs/specs/c.md"]
             if len(in_force) > 1 and rewrite_case(raw_after):
                 self.assertEqual(["ambiguous"], [pending.kind for pending in c_listed], f"seed {seed}: c.md with {in_force} in force")
+            if len(in_force) == 1 and rewrite_case(raw_after) and accepted.records[in_force[0]].body == "# c.md, main's edit\n":
+                self.assertEqual([("decide", True)], [(pending.kind, pending.main_changed) for pending in c_listed], f"seed {seed}: main changed c.md too")
             if len(in_force) == 1 and rewrite_case(raw_after) and accepted.records[in_force[0]].body == "# c.md, rewritten\n":
                 self.assertEqual([], c_listed, f"seed {seed}: c.md done once the superseding REF alone is in force")
             self.assertEqual([], [name for name, reason in result.undecided.items() if "cannot carry the link (cosmetic)" in reason],

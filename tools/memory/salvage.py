@@ -147,6 +147,7 @@ class Pending:
     scope: tuple[str, ...] = ()
     scopes: tuple[str, ...] = ()
     newly: tuple[str, ...] = ()
+    main_changed: bool = False
 
     def commands(self, file: str) -> list[str]:
         """What the operator runs once ``--out`` wrote the body to ``file`` (nothing for an ambiguous path). A new REF's
@@ -159,9 +160,17 @@ class Pending:
         propose = (f"memory propose reference --set {shlex.quote('title=' + self.title)} --set-json {shlex.quote('scope=' + SCOPE_PLACEHOLDER)}"
                    + f" --note {shlex.quote(DOCUMENT_NOTE.format(self.path))} --body {shlex.quote(file)}")
         if self.kind == "decide":
-            return [f"if {self.target}'s scope still holds for the new text: memory revise {self.target} --body {shlex.quote(file)}",
-                    f"otherwise: {propose}", f"otherwise, then: memory supersede {self.target} --by <the new REF>"]
+            conditions = [*([f"{self.target}'s scope still holds for the new text"] if self.newly else []),
+                          *([f"this body carries main's changes to {self.target} since this branch's base"] if self.main_changed else [])]
+            revise = f"if {' and '.join(conditions)}: memory revise {self.target} --body {shlex.quote(file)}"
+            if not self.newly:
+                return [revise]
+            return [revise, f"otherwise: {propose}", f"otherwise, then: memory supersede {self.target} --by <the new REF>"]
         return [propose, *([f"memory supersede {self.target} --by <the new REF>"] if self.kind == "supersede" else [])]
+
+    def main_note(self) -> str:
+        return (f"main changed {self.target} since this branch's base, so check that the branch's body carries those changes"
+                + " before it replaces them")
 
     def scope_line(self) -> str:
         """For a new REF: who states the scope, and the build, release and commit tokens its text names."""
@@ -174,12 +183,14 @@ class Pending:
             return (f"changed document; revise {self.target} with the body salvage --out writes (listed until the accepted body equals the"
                     + " branch's; a body merged by hand into other text stays listed)")
         if self.kind == "supersede":
-            return (f"changed document; {spoken(self.names, 'its text names')}, {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
+            return (f"changed document; {spoken(self.names, 'its text names')}; {self.target}'s scope is {', '.join(self.scope) or 'empty'}: "
                     + f"a body revision cannot change scope; propose it as a new reference and supersede {self.target}"
-                    + " (salvage --out writes its body and the commands)")
+                    + (f"; {self.main_note()}" if self.main_changed else "") + " (salvage --out writes its body and the commands)")
         if self.kind == "decide":
-            return (f"changed document; its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
-                    + " a body revision keeps that scope: decide by hand (salvage --out writes the body and both commands)")
+            reasons = [*([f"its body newly names {', '.join(self.newly)}; {self.target}'s scope is {', '.join(self.scope) or 'empty'};"
+                          + " a body revision keeps that scope"] if self.newly else []),
+                       *([self.main_note()] if self.main_changed else [])]
+            return f"changed document; {'; '.join(reasons)}: decide by hand (salvage --out writes the body and the commands, labelled)"
         if self.kind == "ambiguous":
             if self.target is not None:
                 others = ", ".join(other for other in self.holders if other != self.target)
@@ -238,8 +249,10 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
             held = on_main[0].scope.tokens if on_main[0].scope is not None else ()
             # The scope reads Status and Scope only (the exporter's rule); the whole body may name more.
             newly = tuple(sorted(body_tokens(body) - body_tokens(on_main[0].body or ""), key=id_key))
-            kind = "supersede" if sorted(names) != sorted(held) else "decide" if newly else "revise"
-            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held, newly=newly))
+            # Main changed the document too since the merge base: a body revision would drop its edits (no three-way merge).
+            main_changed = path in base_bodies and on_main[0].body != base_bodies[path]
+            kind = "supersede" if sorted(names) != sorted(held) else "decide" if newly or main_changed else "revise"
+            found.append(Pending(path, kind, body, title, names, target=on_main[0].id, scope=held, newly=newly, main_changed=main_changed))
     return found
 
 
