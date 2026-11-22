@@ -85,7 +85,7 @@ import shlex
 import shutil
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
@@ -695,7 +695,8 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
             final_minted = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "conflict")}
             for identifier, found in sorted(replayed.items(), key=lambda item: id_key(item[0])):
                 if result.kinds.get(identifier) == "undecided" and identifier in own:
-                    alone = {identifier: edits[identifier]} if identifier in edits else {}
+                    # Without its successors: holding the row dropped their links, and a real successor failure is in ``found``.
+                    alone = {identifier: replace(edits[identifier], successors=())} if identifier in edits else {}
                     later = replay_failures(on_accepted, [*everything, own[identifier]], alone, final_play, final_minted).get(identifier, [])
                     structured[identifier] = [*found, *later]
                     result.undecided[identifier] = joined(structured[identifier])

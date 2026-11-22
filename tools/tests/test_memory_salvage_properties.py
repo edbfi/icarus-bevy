@@ -531,6 +531,18 @@ class GeneratedSalvageTests(unittest.TestCase):
         _ = classify(result, after, before, accepted)
         self.assertEqual("it would not replay cleanly: F-200: legacy.superseded_by: no record F-100: decide by hand", result.undecided["F-200"])
 
+    def test_a_row_held_waiting_is_not_also_blamed_for_the_successor_link_its_hold_dropped(self) -> None:
+        # F-100 newly supersedes F-300 (a new row held for a decision) and is newly superseded by F-101. Held waiting for
+        # F-300, its link to F-101 is dropped with it; that is no failure of its own.
+        before = {"F-100": row("F-100", "active"), "F-101": row("F-101", "active")}
+        edited = Record.from_json(row("F-100", "superseded-by F-101", successors=("F-101",)).to_json() | {"supersedes": ["F-300"]})
+        after = {**before, "F-100": edited, "F-300": row("F-300", "superseded-by F-999", successors=("F-999",))}
+        accepted = accepted_of((Segment("memory/journal/generated.jsonl", "", tuple(Revision.of(record) for record in before.values())),))
+        result = Salvage("fixture", "a" * 40, "b" * 40, "c" * 40)
+        _ = classify(result, after, before, accepted)
+        self.assertEqual("it would not replay cleanly: F-100: supersedes: no record F-300; it refers to F-300, which this run does not propose: that record"
+                         + " must be accepted first", result.undecided["F-100"])
+
     def test_every_generated_case_keeps_the_invariants_and_replays_cleanly(self) -> None:
         for seed in SEEDS:
             raw_after, raw_before, accepted = case(seed)
