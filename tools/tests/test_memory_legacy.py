@@ -795,16 +795,16 @@ class SalvageTests(LegacyRepository):
 
     def forced(self, branch: str, identifier: str) -> Salvage:
         """Salvage ``branch`` with the first replay check also failing ``identifier``; the final set must replay cleanly."""
-        real = salvage_command.honoured
+        real = salvage_command.replay_failures
         calls: list[int] = []
 
         def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit],
-                    branch: Collection[str] = ()) -> dict[str, str]:
-            found = real(on_accepted, proposals, edits, branch)
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
+            found = real(on_accepted, proposals, edits, branch, minted)
             calls.append(len(calls))
-            return {**found, identifier: "invented failure: decide by hand"} if len(calls) == 1 else found
+            return {**found, identifier: [(2, "invented failure: decide by hand")]} if len(calls) == 1 else found
 
-        with mock.patch.object(salvage_command, "honoured", failing):
+        with mock.patch.object(salvage_command, "replay_failures", failing):
             result = salvage(self.root, branch)
         _ = self.legal(result)
         return result
@@ -1275,6 +1275,24 @@ class SalvageTests(LegacyRepository):
                               + f" are no longer in force: REF-900 ({withdrawal}); main changed or replaced its reference since this branch's base: yes;",
                               document.line())
 
+    def test_a_row_citing_a_document_main_withdrew_is_the_owner_s(self) -> None:
+        # The branch adds third.md and a tracked row on it; main accepted a REF for third.md and retired it: proposing the
+        # document again would restore what main withdrew, so the row is the owner's to decide, not waiting on the document.
+        self.new_spec_branch("docs/specs/net/third.md")
+        self.accept_reference(online.Changes({"title": "Third", "scope": {"basis": "explicit"}}, salvage_command.DOCUMENT_NOTE.format("docs/specs/net/third.md"),
+                                             "# Third, on main\n"), "REF-900")
+        entry = replay(read_tree(self.root)).entries["REF-900"]
+        _ = write_change_set(self.root, datetime(2026, 4, 7, tzinfo=UTC), [Revision.of(Record.from_json({**entry.record.to_json(), "status": "retired"},
+                                                                                                          entry.record.body), entry.heads)])
+        _ = run_git(self.root, "add", "-A")
+        _ = run_git(self.root, "commit", "-q", "-m", "main retires REF-900")
+        self.publish()
+        result = salvage(self.root, "specs")
+        self.assertRegex(result.undecided["M-105"], r"^it cites the document docs/specs/net/third\.md, which no accepted REF names \(by legacy path or a note "
+                         + r"'salvaged document: <path>'\) \(REF-[0-9]+, a provisional number\); main withdrew the document it cites: decide by hand$")
+        (document,) = result.documents
+        self.assertEqual((("REF-900", "retired"),), document.withdrawn)
+
     def test_a_digest_s_scope_is_read_from_its_whole_text(self) -> None:
         # A digest has no Status or Scope sections the exporter reads: its scope comes from its whole text, and nothing lies beyond it.
         self.edited("digest", ("docs/research/net/widgets.md", "Frames take 42.5 ms", "Frames take 42.5 ms on server build 29990004"))
@@ -1284,7 +1302,7 @@ class SalvageTests(LegacyRepository):
         self.assertNotIn("its body also names", document.line())
         self.assertNotIn("Status and Scope", document.line())
 
-    def test_a_row_citing_a_document_main_has_since_changed_waits_for_it(self) -> None:
+    def test_a_row_citing_a_document_main_has_since_changed_is_the_owner_s(self) -> None:
         # An older branch adds tracked evidence for the spec as it then read; main later holds other text for that path.
         _ = run_git(self.root, "checkout", "-q", "-b", "older")
         shard = self.root / "evidence/widgets/001.jsonl"
@@ -1300,7 +1318,8 @@ class SalvageTests(LegacyRepository):
         self.assertNotIn("M-105", [revision.record.id for revision in result.proposals])
         (document,) = result.documents
         self.assertRegex(result.undecided["M-105"], r"^it cites docs/specs/net/another\.md as this branch has it \(REF-[0-9]+, a provisional number\); "
-                         + rf"{document.in_force[0].id} holds other text: settle the document first$")
+                         + rf"{document.in_force[0].id} holds other text; this branch did not change docs/specs/net/another\.md, and main has since changed it:"
+                         + r" decide by hand$")
         self.assertEqual((("M-105",), True, False, False), (document.citing, document.main_changed, document.in_force[0].holds, document.branch_changed))
         self.assertIn("; this branch changed it since its base: no;", document.line())
         self.assertIn("main changed or replaced its reference since this branch's base: yes; rows held because they cite it: M-105;", document.line())
@@ -1488,7 +1507,8 @@ class SalvageTests(LegacyRepository):
         result = salvage(self.root, "carrier")
         self.assertEqual("undecided", result.kinds["M-102"])
         self.assertEqual(f"its row on carrier names successor M-104, which would carry the link, but M-104 cites {entry.record.id}, which holds other"
-                         + " text of docs/specs/net/widget.md than this branch's: settle the document first", result.undecided["M-102"])
+                         + " text of docs/specs/net/widget.md than this branch's; this branch did not change docs/specs/net/widget.md, and main has since"
+                         + " changed it: decide by hand", result.undecided["M-102"])
         self.assertEqual(["M-105"], [revision.record.id for revision in result.proposals], "the unrelated row is still proposed")
         # The document M-102 waits on is listed, though the branch never changed it, with M-102 as a row it holds.
         (document,) = result.documents
@@ -1565,6 +1585,26 @@ class SalvageTests(LegacyRepository):
                          + " for docs/specs/net/widget.md; REF-900 stands for it with this branch's text, and a revision cannot change the row's citations:"
                          + " decide by hand", result.undecided["M-102"])
         self.assertEqual(({}, []), (result.cited, result.documents))
+
+    def test_every_replay_failure_of_a_row_is_in_its_reason(self) -> None:
+        # F-112 refers to F-111 (held here) and to F-999 (absent everywhere): once F-111 is accepted, F-999 still needs a decision.
+        self.edited("chain", ("docs/ledgers/findings/widgets.md", "| F-107 |",
+                              "| F-111 | Invented: a bad selector | observed | review; M-101/ev_000000000000 | high; server 29990001 | | active |\n"
+                              + "| F-112 | Invented: refers to F-111 and F-999 | observed | review; F-111, F-999 | high; server 29990001 | | active |\n| F-107 |"))
+        result = salvage(self.root, "chain")
+        self.assertEqual("it would not replay cleanly: F-112: refs: no record F-111; it refers to F-111, which this run does not propose: that record must be"
+                         + " accepted first; it would not replay cleanly: F-112: refs: no record F-999: decide by hand", result.undecided["F-112"])
+
+    def test_a_row_superseded_by_a_row_needing_a_superseding_record_is_decided_by_hand(self) -> None:
+        # The branch edits F-107's claim (it needs a superseding record, under a new ID) and marks F-108 superseded by F-107:
+        # waiting for F-107 never clears, since F-108's link must name the new ID.
+        ledger = "docs/ledgers/findings/widgets.md"
+        self.edited("minted", (ledger, "| F-107 | Decision text", "| F-107 | Edited decision text"),
+                    (ledger, "medium; loopback |  | active |", "medium; loopback |  | superseded-by F-107 |"))
+        result = salvage(self.root, "minted")
+        self.assertEqual("supersede", result.kinds["F-107"])
+        self.assertEqual("its row on minted names successor F-107, which cannot carry the link (supersede); F-107 needs a superseding record: its content"
+                         + " will be recorded under a new ID, and this row's link must name that ID: decide by hand", result.undecided["F-108"])
 
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))

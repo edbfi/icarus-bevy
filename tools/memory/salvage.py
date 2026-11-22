@@ -221,6 +221,18 @@ def exported(record: Record) -> JSON:
     return data
 
 
+def owner_cause(pending: Pending) -> str | None:
+    """Why a row citing ``pending`` is the owner's to decide rather than waiting for the document to be settled, from the
+    facts its block prints (the runbook's rules): main withdrew or replaced it (none in force, and a reference that named
+    it is retired or superseded), or this branch did not change it (listed only because held rows cite it, while main
+    has changed it). ``None``: settling the document, as the rules allow, can clear the row."""
+    if not pending.in_force and (pending.withdrawn or any(fate != "now in force" for _name, fate in pending.based_on or ())):
+        return "main withdrew the document it cites"
+    if not pending.branch_changed:
+        return f"this branch did not change {pending.path}, and main has since changed it"
+    return None
+
+
 def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record], on_accepted: Accepted,
                       cited: Mapping[str, Sequence[str]] | None = None) -> list[Pending]:
     """The documents the branch changed or added, and those held rows cite as the branch has it (``cited``), that are
@@ -483,17 +495,40 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
     return None
 
 
-def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit], branch: Collection[str] = ()) -> dict[str, str]:
+def new_id_cause(identifier: str, kind: str | None) -> str | None:
+    """Why a wait for ``identifier`` would never clear: held as ``supersede`` or ``conflict``, its content is recorded
+    under a new ID (a superseding record, or the branch's record re-added), so a link to it must be rewritten by hand.
+    ``None``: it keeps its ID (proposed here, or held ``undecided``)."""
+    if kind == "supersede":
+        return f"{identifier} needs a superseding record: its content will be recorded under a new ID, and this row's link must name that ID"
+    if kind == "conflict":
+        return f"{identifier} is in conflict: its content will be recorded under a new ID, and this row's link must name that ID"
+    return None
+
+
+def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit], branch: Collection[str] = (),
+             minted: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``replay_failures`` as reasons: each row's clauses, ordered wait then decide."""
+    return {identifier: joined(clauses) for identifier, clauses in replay_failures(on_accepted, proposals, edits, branch, minted).items()}
+
+
+def joined(clauses: Sequence[tuple[int, str]]) -> str:
+    """A reason from its clauses (rank 0 wait, 1 settle, 2 decide), ordered so that it ends by the strongest."""
+    return "; ".join(clause for _rank, clause in sorted(dict.fromkeys(clauses), key=lambda item: item[0]))
+
+
+def replay_failures(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit],
+                    branch: Collection[str] = (), minted: Mapping[str, str] | None = None) -> dict[str, list[tuple[int, str]]]:
     """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly and every edit
     must show. Any replay, revision, link or cycle problem the accepted journal alone does not have (``check
     --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
     derive its status, an edit naming successors must derive ``superseded``, and every proposal must change its
     record's head. Returns the IDs that fail, with why; ``salvage`` repeats it until nothing fails. A problem naming a
-    record this run holds (``branch``: the records it proposes or holds, in any held class) ends by waiting for that
-    record; every other failure is decided by hand, a record the run neither proposes nor holds included."""
+    record that keeps its ID when its hold is resolved (``branch``: proposed here, or held ``undecided``) ends by waiting
+    for that record; one naming a record held as ``supersede`` or ``conflict`` (``minted``: its content is recorded
+    under a new ID) is decided by hand, with that cause; so is every other failure."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
-    found: dict[str, str] = {}
     ids = {revision.record.id for revision in proposals}
 
     def problems(state: State) -> list[str]:
@@ -501,30 +536,44 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
                 *(f"supersession cycle {cycle}" for cycle in state.supersession_cycles())]
 
     known = set(problems(accepted_state))
+    # Every failure of a row is kept, each as a clause ending by its action, ordered wait, then decide: the reason ends by
+    # the strongest, and nothing is hidden behind the first failure found.
+    clauses: dict[str, list[tuple[int, str]]] = {}
+
+    def add(identifier: str, rank: int, clause: str) -> None:
+        if (rank, clause) not in (bucket := clauses.setdefault(identifier, [])):
+            bucket.append((rank, clause))
+
     for problem in problems(proposed):
         if problem in known:
             continue
         mentioned = {match[0] for match in ID.finditer(problem)}
         named = sorted(mentioned & ids, key=id_key)
         missing = sorted((mentioned & set(branch)) - ids - on_accepted.records.keys(), key=id_key)  # ``branch``: proposed or held here
-        ending = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
-                  + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")) if missing else ": decide by hand"
+        renamed = [cause for name in sorted(mentioned - ids, key=id_key) if (cause := new_id_cause(name, (minted or {}).get(name))) is not None]
+        if renamed:
+            ending, rank = f"; {'; '.join(renamed)}: decide by hand", 2
+        elif missing:
+            ending, rank = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
+                            + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")), 0
+        else:
+            ending, rank = ": decide by hand", 2
         for identifier in named or sorted(ids, key=id_key):
-            _ = found.setdefault(identifier, f"it would not replay cleanly: {problem}{ending}")
+            add(identifier, rank, f"it would not replay cleanly: {problem}{ending}")
     for revision in proposals:
         identifier = revision.record.id
         before = accepted_state.entries.get(identifier)
         if before is not None and before.record == proposed.entries[identifier].record:
-            found[identifier] = "its revision would replay to no change: decide by hand"
+            add(identifier, 2, "its revision would replay to no change: decide by hand")
     for identifier, edit in edits.items():
         if identifier not in proposed.entries:
             continue
         shown = proposed.status(identifier)
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
-            found[identifier] = f"its status {edit.status} would replay as {shown}: decide by hand"
+            add(identifier, 2, f"its status {edit.status} would replay as {shown}: decide by hand")
         if edit.successors and shown != "superseded":
-            found[identifier] = f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand"
-    return found
+            add(identifier, 2, f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand")
+    return clauses
 
 
 def without_supersedes(record: Record, old: str) -> Record:
@@ -553,6 +602,7 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
     link. Returns the proposals and the accepted records that could not carry links, with why."""
     accepted = on_accepted.records
     unlinkable: dict[str, str] = {}
+    replayed: dict[str, list[tuple[int, str]]] = {}
     playing = ("revision", "superseded")
     while True:
         proposals = {identifier: revision for identifier, revision in own.items() if result.kinds.get(identifier) not in ("supersede", "undecided")}
@@ -587,12 +637,14 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                     # fails replay, or a record that exists nowhere) leaves the old row to a decision by hand.
                     why = (unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted")
                     why = why.removesuffix(": decide by hand")
-                    held = target not in unlinkable and result.kinds.get(target) in ("undecided", "supersede", "conflict")
+                    held = target not in unlinkable and result.kinds.get(target) == "undecided"
                     if held and result.undecided.get(target, "").endswith(SETTLE):
                         ending = SETTLE
                         for citing in result.cited.values():
                             if target in citing and old not in citing and old not in stuck:
                                 citing.append(old)
+                    elif target not in unlinkable and (cause := new_id_cause(target, result.kinds.get(target))) is not None:
+                        ending = f"; {cause}: decide by hand"
                     else:
                         ending = f"; {target} must be accepted first" if held else ": decide by hand"
                     _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}){ending}")
@@ -601,19 +653,31 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                 hold(old, "undecided", reason)
             continue
         everything = [*proposals.values(), *carriers.values()]
-        in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic")} & set(branch)
-        failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
-                           in_play)
+        in_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic", "supersede", "conflict")} & set(branch)
+        minted = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "conflict")}
+        failures = replay_failures(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
+                                   in_play, minted)
+        failing = {identifier: joined(clauses) for identifier, clauses in failures.items()}
         if not failing:
             for target in carriers:
                 if result.kinds.get(target) in (None, "accepted", "cosmetic", "superseded"):
                     result.kinds[target] = "revision"
+            # A row held on replay was held for the failures found while others were still in play: its reason is every
+            # failure of its proposal against the final set (records held since then included).
+            final_play = {name for name, kind in result.kinds.items() if kind not in ("accepted", "cosmetic", "supersede", "conflict")} & set(branch)
+            final_minted = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "conflict")}
+            for identifier, found in sorted(replayed.items(), key=lambda item: id_key(item[0])):
+                if result.kinds.get(identifier) == "undecided" and identifier in own:
+                    alone = {identifier: edits[identifier]} if identifier in edits else {}
+                    later = replay_failures(on_accepted, [*everything, own[identifier]], alone, final_play, final_minted).get(identifier, [])
+                    result.undecided[identifier] = joined([*found, *later])
             return everything, unlinkable
         for identifier, reason in failing.items():
             if identifier in carriers:
                 unlinkable[identifier] = reason
             else:
                 hold(identifier, "undecided", reason)
+                replayed[identifier] = failures[identifier]
 
 
 def invariants(result: Salvage, changed: Sequence[str], on_accepted: Accepted, after: Mapping[str, Record] | None = None) -> None:
@@ -890,7 +954,7 @@ def stale_citation(record: Record, on_accepted: Accepted, current: Mapping[str, 
                    branch: Mapping[str, str | None]) -> tuple[str | None, str] | None:
     """The document ``record`` may not cite as stored, and why: a cited REF that, resolved in force (``current``), does
     not hold the branch's text of its path (``branch``: path to body), or no longer stands for it; ``None`` when it may.
-    The path is ``None`` when the document itself is settled (one REF in force holds the branch's text): only the row's
+    The path is ``None`` whenever the cited REF is retired with no same-document successor in force: only the row's
     stored citation is stale, which no document action can change, so it is decided by hand."""
     for target in (*record.links.refs, *(cite.split("/", 1)[0] for cite in record.links.cites)):
         cited = on_accepted.records.get(target)
@@ -977,6 +1041,21 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
     # today's journal, cites the successor while main's record still cites the old one.
     current = successors_in_force(accepted)
     branch_documents = {path: other.body for other in after.values() if (path := document_path(other)) is not None}
+    owners: dict[str, str | None] = {}
+
+    def owner(path: str) -> str | None:
+        """``owner_cause`` of the document at ``path``, from the facts its block would print."""
+        if path not in owners:
+            listed = [pending for pending in pending_documents(after, before, on_accepted, {path: ()}) if pending.path == path]
+            owners[path] = owner_cause(listed[0]) if listed else None
+        return owners[path]
+
+    def stale_here(record: Record) -> tuple[str | None, str] | None:
+        """``stale_citation``, its settling ending replaced by the owner's decision where the document's facts say so."""
+        found = stale_citation(record, on_accepted, current, branch_documents)
+        if found is None or found[0] is None or not found[1].endswith(SETTLE) or (cause := owner(found[0])) is None:
+            return found
+        return found[0], f"{found[1].removesuffix(SETTLE)}; {cause}: decide by hand"
 
     def same(one: Record | None, other: Record | None) -> bool:
         """Equal, or equal once each cited REF is the one superseding it (``current``). A record that cannot be read so
@@ -1016,25 +1095,35 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                                       and identity(other) == identity(after[name])), key=lambda other: id_key(other.id))
                         for name in cited if name in after and after[name].type == "reference" and identity(after[name]) is not None}
             settle_first = [name for name in cited if standing.get(name)]
-            clauses: list[str] = []
             new_documents = [name for name in cited if name not in settle_first and name not in shared and name in after and after[name].type == "reference"]
+            waits: list[str] = []
+            settles: list[str] = []
+            decides: list[str] = []
             if waiting := [name for name in cited if name not in settle_first and name not in shared and name not in new_documents]:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
-                               + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
-            for name in settle_first:
-                path, held = document_path(after[name]), standing[name]
-                holding = [other.id for other in held if other.body == after[name].body]
-                if len(held) == 1:
-                    state = f"{held[0].id} holds {'this' if holding else 'other'} text"
+                waits.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in waiting)
+                             + ("; that record must be accepted first" if len(waiting) == 1 else "; those records must be accepted first"))
+            for name in [*settle_first, *new_documents]:
+                path = document_path(after[name]) or ""
+                if name in settle_first:
+                    held = standing[name]
+                    holding = [other.id for other in held if other.body == after[name].body]
+                    if len(held) == 1:
+                        state = f"{held[0].id} holds {'this' if holding else 'other'} text"
+                    else:
+                        state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
+                                 + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
+                    clause = f"it cites {path} as this branch has it ({name}, a provisional number); {state}"
                 else:
-                    state = (f"several REFs in force name {path}: {', '.join(other.id for other in held)}"
-                             + (f" ({', '.join(holding)} {'holds' if len(holding) == 1 else 'hold'} this text)" if holding else ""))
-                clauses.append(f"it cites {path} as this branch has it ({name}, a provisional number); {state}{SETTLE}")
-            if new_documents:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in new_documents) + SETTLE)
+                    clause = f"it cites {unmapped[name]} ({name}, a provisional number)"
+                # The document's facts decide: settling it clears the row, or only the owner can (runbook rules 1 and 2).
+                if (cause := owner(path)) is None:
+                    settles.append(clause + SETTLE)
+                else:
+                    decides.append(f"{clause}; {cause}: decide by hand")
             if ambiguous := [name for name in cited if name not in settle_first and name in shared]:
-                clauses.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
+                decides.append("it cites " + ", ".join(f"{unmapped[name]} ({name}, a provisional number)" for name in ambiguous)
                                + ", which cannot be told apart: decide by hand")
+            clauses = [*waits, *settles, *decides]
             hold(identifier, "undecided", "; ".join(clauses))
             for name in cited:
                 if name in after and (path := document_path(after[name])) is not None:
@@ -1079,7 +1168,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         for old in links.get(identifier, ()):
             if linked is not None and old in linked.links.supersedes and old not in record.links.supersedes:
                 linked = without_supersedes(linked, old)
-        if on_main is None and (stale := stale_citation(record, on_accepted, current, branch_documents)) is not None:
+        if on_main is None and (stale := stale_here(record)) is not None:
             hold(identifier, "undecided", stale[1])
             if stale[0] is not None:
                 result.cited.setdefault(stale[0], []).append(identifier)
@@ -1115,7 +1204,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         elif not same(on_main, origin) and not same(on_main, apply(edit, origin)):
             result.kinds[identifier] = "conflict"
             result.conflicts.append((on_main, record))
-        elif revision is not None and (stale := stale_citation(revision, on_accepted, current, branch_documents)) is not None:
+        elif revision is not None and (stale := stale_here(revision)) is not None:
             hold(identifier, "undecided", stale[1])
             if stale[0] is not None:
                 result.cited.setdefault(stale[0], []).append(identifier)
@@ -1127,7 +1216,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 pending_links[identifier] = pending
     own = {revision.record.id: revision for revision in result.proposals}
     result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold,
-                                          lambda record: stale_citation(record, on_accepted, current, branch_documents), after.keys())
+                                          stale_here, after.keys())
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):
