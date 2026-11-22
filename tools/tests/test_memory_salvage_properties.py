@@ -324,6 +324,7 @@ class GeneratedSalvageTests(unittest.TestCase):
             self.assertEqual(path not in based and bool(holding) or path in based and [based[path]] != holding, pending.main_changed,
                              f"{where}: {path}, main changed it")
             self.assertEqual(sorted(waiting.get(path, set())), sorted(pending.citing), f"{where}: {path}, the rows citing it")
+            self.assertEqual(changed, pending.branch_changed, f"{where}: {path}, the branch changed it")
             for fact in [*pending.facts("FILE"), pending.line()]:
                 self.assertFalse(fact.startswith("memory "), f"{where}: {path}: {fact}")
         settled_state, settled = settle_documents(on_accepted, listed)

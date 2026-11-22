@@ -153,7 +153,8 @@ class Pending:
     facts only; what each combination asks of the operator is the runbook's. ``names``: the tokens its Status and
     Scope sections name (the exporter's scope); ``more``: those the rest of its body also names; ``main_changed``:
     the REFs in force for its path are not the very record the merge base's document maps to; ``citing``: the held
-    rows that cite it as the branch has it."""
+    rows that cite it as the branch has it; ``branch_changed``: the branch's text differs from the merge base's (or the
+    base had no such document)."""
 
     path: str
     body: str
@@ -162,12 +163,14 @@ class Pending:
     in_force: tuple[InForce, ...]
     main_changed: bool
     citing: tuple[str, ...] = ()
+    branch_changed: bool = True
 
     def facts(self, file: str | None = None) -> list[str]:
         """One fact per line; ``file``: where ``--out`` wrote the body."""
         held = ", ".join(ref.fact() for ref in self.in_force)
         return [*([f"body written to {shlex.quote(file)}"] if file is not None else []),
                 f"in force: {held}" if held else "no accepted reference names this path",
+                f"this branch changed it since its base: {'yes' if self.branch_changed else 'no'}",
                 f"its Status and Scope sections name: {', '.join(self.names) or 'nothing'}",
                 f"its body also names: {', '.join(self.more) or 'nothing'}",
                 f"main changed or replaced its reference since this branch's base: {'yes' if self.main_changed else 'no'}",
@@ -223,7 +226,7 @@ def pending_documents(after: Mapping[str, Record], before: Mapping[str, Record],
         found.append(Pending(path, record.body or "", names, tuple(sorted(text - set(names), key=id_key)),
                              tuple(InForce(other.id, other.scope.tokens if other.scope is not None else (), other.body == record.body,
                                            () if other.body == record.body else tuple(sorted(text - body_tokens(other.body or ""), key=id_key)))
-                                   for other in on_main), main_changed, tuple(cited.get(path, ()))))
+                                   for other in on_main), main_changed, tuple(cited.get(path, ())), changed))
     return found
 
 
