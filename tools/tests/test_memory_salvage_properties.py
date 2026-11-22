@@ -19,7 +19,7 @@ from tools.memory.journal import Revision, Segment
 from tools.memory.legacy import TRACKED_NOTE
 from tools.memory.legacy_prose import section
 from tools.memory.legacy_rules import extract
-from tools.memory.model import JSON, Record, id_key
+from tools.memory.model import ID, JSON, Record, id_key
 from tools.memory.salvage import (DOCUMENT_NOTE, SALVAGED, Accepted, Pending, Salvage, SalvageError, body_tokens, classify, document_path, identity,
                                   pending_documents, relink, renumber)
 from tools.memory.state import State, replay
@@ -323,7 +323,18 @@ def settle_documents(on_accepted: Accepted, listed: list[Pending]) -> tuple[Acce
     return accepted_of((*on_accepted.segments, Segment("memory/journal/settled-documents.jsonl", "", tuple(revisions)))), {pending.path for pending in listed}
 
 
+# The last words of a held row's reason name its action (the runbook groups by them).
+ENDINGS = ("that record must be accepted first", "those records must be accepted first", "settle the document first", "decide by hand", "propose it alone first")
+
+
 class GeneratedSalvageTests(unittest.TestCase):
+    def assert_endings(self, where: str, result: Salvage, on_accepted: Accepted) -> None:
+        """Every held row's reason ends by one of the five actions; one that waits names a record not yet accepted."""
+        for name, reason in result.undecided.items():
+            self.assertTrue(reason.endswith(ENDINGS), f"{where}: {name}: {reason}")
+            if reason.endswith(ENDINGS[:2]):
+                self.assertTrue({match[0] for match in ID.finditer(reason)} - on_accepted.records.keys(), f"{where}: {name}: {reason}")
+
     def assert_documents(self, where: str, raw_after: dict[str, Record], raw_before: dict[str, Record], on_accepted: Accepted) -> None:
         """The document facts of one run against ``on_accepted``: every document that is not done is listed and no done
         one; each printed fact is true of the accepted state and the branch; nothing printed is a command; and once a
@@ -409,6 +420,7 @@ class GeneratedSalvageTests(unittest.TestCase):
             except SalvageError as error:
                 self.fail(f"seed {seed}: {error}")
             base = replay(accepted.segments)
+            self.assert_endings(f"seed {seed}, run 1", result, accepted)
             proposed = replay([*accepted.segments, Segment("memory/journal/proposals.jsonl", "", tuple(result.proposals))])
             self.assertEqual(set[str](), problems(proposed) - problems(base), f"seed {seed}")
             # Another spelling of the ref and another tip (an unrelated commit): byte-identical proposals, same classes.
@@ -513,6 +525,7 @@ class GeneratedSalvageTests(unittest.TestCase):
                 _ = classify(again, after_again, before_again, now, unmapped_again, shared_again)
             except SalvageError as error:
                 self.fail(f"seed {seed}, second run: {error}")
+            self.assert_endings(f"seed {seed}, run 2", again, now)
             self.assertEqual([], [revision.record.id for revision in again.proposals], f"seed {seed}: second run proposes again")
             # Held rows keep their class; a provisional number may move once other records are accepted, so those compare by identity.
             held = {name: kind for name, kind in result.kinds.items() if kind in ("supersede", "undecided", "conflict") and name not in unmapped}

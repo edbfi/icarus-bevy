@@ -412,21 +412,22 @@ def plan(origin: Record, record: Record, ref: str) -> Edit:
         if implied in ("superseded", "resolved") and implied == was:
             pass  # the same legacy status in other words
         elif implied == "superseded":
-            return Edit(undecided=f"its status cell on {ref} says superseded but names no new successor: {cell!r}")
+            return Edit(undecided=f"its status cell on {ref} says superseded but names no new successor ({cell!r}): decide by hand")
         elif implied == "resolved":
-            return Edit(undecided=f"its status cell on {ref} says resolved; resolving needs a finding that states resolves, and the row does not say which")
+            return Edit(undecided=f"its status cell on {ref} says resolved; resolving needs a finding that states resolves, and the row does not say"
+                        + " which: decide by hand")
         elif implied == "retired" and "retired" in statuses:
             status = "retired"
         elif record.status in statuses:
             status = record.status
         else:
-            return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary: {cell!r}")
+            return Edit(undecided=f"its status cell on {ref} is outside the {record.type} vocabulary ({cell!r}): decide by hand")
         if status is not None:
             notes.append(STATUS_NOTE.format(cell))
     # A legacy edge holds while the stored status is the migrated one (``Entry.legacy_holds``): only a new stored status withdraws it.
     if withdrawn and (status is None or status == origin.status):
         return Edit(undecided=f"its row on {ref} withdraws the legacy successor {', '.join(withdrawn)}; it has no new stored status, "
-                    + "and a revision cannot withdraw a legacy edge")
+                    + "and a revision cannot withdraw a legacy edge: decide by hand")
     return Edit(status, tuple(notes), probe, record.text("next_probe") if probe else None, tuple(appended), successors)
 
 
@@ -487,12 +488,14 @@ def cut_over_merge(root: Path, head: str, base: str, main: str) -> tuple[str, st
     return None
 
 
-def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit]) -> dict[str, str]:
+def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mapping[str, Edit], branch: Collection[str] = ()) -> dict[str, str]:
     """Replay the accepted journal with and without ``proposals``: the proposals must replay cleanly and every edit
     must show. Any replay, revision, link or cycle problem the accepted journal alone does not have (``check
     --ci``'s tests) fails the proposals whose IDs it names, and all of them when it names none. A status edit must
     derive its status, an edit naming successors must derive ``superseded``, and every proposal must change its
-    record's head. Returns the IDs that fail, with why; ``salvage`` repeats it until nothing fails."""
+    record's head. Returns the IDs that fail, with why; ``salvage`` repeats it until nothing fails. A problem naming a
+    record the branch has (``branch``) that is neither accepted nor proposed here ends by waiting for that record; every
+    other failure is decided by hand."""
     accepted_state = replay(on_accepted.segments)
     proposed = replay([*on_accepted.segments, Segment("memory/journal/salvage-proposals.jsonl", "", tuple(proposals))])
     found: dict[str, str] = {}
@@ -506,22 +509,26 @@ def honoured(on_accepted: Accepted, proposals: Sequence[Revision], edits: Mappin
     for problem in problems(proposed):
         if problem in known:
             continue
-        named = sorted({match[0] for match in ID.finditer(problem)} & ids, key=id_key)
+        mentioned = {match[0] for match in ID.finditer(problem)}
+        named = sorted(mentioned & ids, key=id_key)
+        missing = sorted((mentioned & set(branch)) - ids - on_accepted.records.keys(), key=id_key)
+        ending = (f"; it refers to {', '.join(missing)}, which this run does not propose: "
+                  + ("that record must be accepted first" if len(missing) == 1 else "those records must be accepted first")) if missing else ": decide by hand"
         for identifier in named or sorted(ids, key=id_key):
-            _ = found.setdefault(identifier, f"it would not replay cleanly: {problem}")
+            _ = found.setdefault(identifier, f"it would not replay cleanly: {problem}{ending}")
     for revision in proposals:
         identifier = revision.record.id
         before = accepted_state.entries.get(identifier)
         if before is not None and before.record == proposed.entries[identifier].record:
-            found[identifier] = "its revision would replay to no change"
+            found[identifier] = "its revision would replay to no change: decide by hand"
     for identifier, edit in edits.items():
         if identifier not in proposed.entries:
             continue
         shown = proposed.status(identifier)
         if edit.status is not None and shown not in (edit.status, "superseded", "resolved"):
-            found[identifier] = f"its status {edit.status} would replay as {shown}"
+            found[identifier] = f"its status {edit.status} would replay as {shown}: decide by hand"
         if edit.successors and shown != "superseded":
-            found[identifier] = f"on replay it would not be superseded by its successors {', '.join(edit.successors)}"
+            found[identifier] = f"on replay it would not be superseded by its successors {', '.join(edit.successors)}: decide by hand"
     return found
 
 
@@ -541,7 +548,7 @@ class SalvageError(RuntimeError):
 
 def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[str, list[str]], edits: Mapping[str, Edit],
            on_accepted: Accepted, ref: str, hold: Callable[[str, str, str], None],
-           stale: Callable[[Record], tuple[str, str] | None] = lambda _record: None) -> tuple[list[Revision], dict[str, str]]:
+           stale: Callable[[Record], tuple[str, str] | None] = lambda _record: None, branch: Collection[str] = ()) -> tuple[list[Revision], dict[str, str]]:
     """The proposal set, rebuilt from scratch until nothing more is held: each row's own proposal, then every
     ``supersedes`` link an edit still in play (``revision``/``superseded``) names, on its successor's proposal or a
     revision of its accepted record; a link to a successor held, in conflict or unable to carry it holds the old row;
@@ -578,14 +585,16 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                         continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
-                    why = unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted"
+                    why = (unlinkable.get(target) or result.undecided.get(target) or result.kinds.get(target) or "not proposable here nor accepted")
+                    why = why.removesuffix(": decide by hand")  # the cause alone; this reason ends by its own action
                     _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which cannot carry the link ({why}): decide by hand")
         if stuck:
             for old, reason in stuck.items():
                 hold(old, "undecided", reason)
             continue
         everything = [*proposals.values(), *carriers.values()]
-        failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing})
+        failing = honoured(on_accepted, everything, {identifier: edit for identifier, edit in edits.items() if result.kinds.get(identifier) in playing},
+                           branch)
         if not failing:
             for target in carriers:
                 if result.kinds.get(target) in (None, "accepted", "cosmetic", "superseded"):
@@ -1025,7 +1034,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
             try:
                 edit = plan(origin, record, ref)
             except RecordError as error:
-                hold(identifier, "undecided", f"its edit on {ref} cannot be read: {error}")
+                hold(identifier, "undecided", f"its edit on {ref} cannot be read ({error}): decide by hand")
                 continue
             if (edit.blocked or edit.undecided is not None) and on_main is not None and not same(on_main, origin):
                 # Main changed the row since the merge base too: reconcile by hand before anything else.
@@ -1069,12 +1078,12 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
         record, origin, on_main = after[identifier], before[identifier], accepted.get(identifier)
         if on_main is None:
             # A revision must name a head the accepted journal holds; with no record there is nothing to revise.
-            hold(identifier, "undecided", f"the accepted journal has no record {identifier} to revise (main removed or never journalled it)")
+            hold(identifier, "undecided", f"the accepted journal has no record {identifier} to revise (main removed or never journalled it): decide by hand")
             continue
         try:
             revision = apply(edit, on_main)
         except RecordError as error:
-            hold(identifier, "undecided", f"its edit on {ref} does not make a valid revision: {error}")
+            hold(identifier, "undecided", f"its edit on {ref} does not make a valid revision ({error}): decide by hand")
             continue
         pending = [target for target in edit.successors
                    if (held := accepted.get(target)) is None or identifier not in held.links.supersedes]
@@ -1096,7 +1105,7 @@ def classify(result: Salvage, after: Mapping[str, Record], before: Mapping[str, 
                 pending_links[identifier] = pending
     own = {revision.record.id: revision for revision in result.proposals}
     result.proposals, unlinkable = settle(result, own, pending_links, edits, on_accepted, ref, hold,
-                                          lambda record: stale_citation(record, on_accepted, current, branch_documents))
+                                          lambda record: stale_citation(record, on_accepted, current, branch_documents), after.keys())
     for target, olds in sorted(links.items()):
         for old in olds:
             if result.kinds.get(old) in ("conflict", "supersede", "undecided"):

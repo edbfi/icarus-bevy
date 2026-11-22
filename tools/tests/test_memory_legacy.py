@@ -25,7 +25,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
@@ -756,7 +756,7 @@ class SalvageTests(LegacyRepository):
     def test_a_status_cell_outside_the_vocabulary_or_without_a_known_successor_is_undecided(self) -> None:
         self.status_branch("odd", "parked for later")
         odd = salvage(self.root, "odd")
-        self.assertEqual(([], {"F-107": "its status cell on odd is outside the finding vocabulary: 'parked for later'"}), (odd.proposals, odd.undecided))
+        self.assertEqual(([], {"F-107": "its status cell on odd is outside the finding vocabulary ('parked for later'): decide by hand"}), (odd.proposals, odd.undecided))
         status, _stdout, stderr = self.run_salvage("odd")
         self.assertEqual(salvage_command.EXIT_SUPERSEDE, status)
         self.assertIn("needs a decision by hand: F-107:", stderr)
@@ -897,7 +897,7 @@ class SalvageTests(LegacyRepository):
         self.publish()
         result = salvage(self.root, "retire")
         self.assertEqual(([], "undecided"), (result.proposals, result.kinds["F-107"]))
-        self.assertIn("the accepted journal has no record F-107 to revise", result.undecided["F-107"])
+        self.assertEqual("the accepted journal has no record F-107 to revise (main removed or never journalled it): decide by hand", result.undecided["F-107"])
 
     def test_a_proposal_that_does_not_replay_cleanly_is_never_returned(self) -> None:
         self.status_branch("dangling", "retired: dropped")
@@ -917,10 +917,11 @@ class SalvageTests(LegacyRepository):
         real = salvage_command.honoured
         calls: list[int] = []
 
-        def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit]) -> dict[str, str]:
-            found = real(on_accepted, proposals, edits)
+        def failing(on_accepted: salvage_command.Accepted, proposals: Sequence[Revision], edits: Mapping[str, salvage_command.Edit],
+                    branch: Collection[str] = ()) -> dict[str, str]:
+            found = real(on_accepted, proposals, edits, branch)
             calls.append(len(calls))
-            return {**found, identifier: "invented failure"} if len(calls) == 1 else found
+            return {**found, identifier: "invented failure: decide by hand"} if len(calls) == 1 else found
 
         with mock.patch.object(salvage_command, "honoured", failing):
             result = salvage(self.root, branch)
@@ -970,7 +971,7 @@ class SalvageTests(LegacyRepository):
         self.superseded_by_new_row()
         result = self.forced("pair", "F-107")
         self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
-        self.assertEqual(("undecided", "invented failure"), (result.kinds["F-107"], result.undecided["F-107"]))
+        self.assertEqual(("undecided", "invented failure: decide by hand"), (result.kinds["F-107"], result.undecided["F-107"]))
         self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
 
     def test_a_dropped_successor_holds_the_old_row(self) -> None:
@@ -978,7 +979,7 @@ class SalvageTests(LegacyRepository):
         result = self.forced("pair", "F-111")
         self.assertEqual([], result.proposals)
         self.assertEqual("undecided", result.kinds["F-107"])
-        self.assertIn("names successor F-111, which cannot carry the link (invented failure)", result.undecided["F-107"])
+        self.assertIn("names successor F-111, which cannot carry the link (invented failure): decide by hand", result.undecided["F-107"])
         self.assertIn("F-107", result.unsalvaged)
 
     def test_a_row_held_for_its_second_successor_leaves_no_link_on_its_first(self) -> None:
@@ -989,7 +990,7 @@ class SalvageTests(LegacyRepository):
         result = self.forced("two", "F-105")
         self.assertEqual([("F-111", ())], [(item.record.id, item.record.links.supersedes) for item in result.proposals])
         self.assertEqual("undecided", result.kinds["F-107"])
-        self.assertIn("names successor F-105, which cannot carry the link (invented failure)", result.undecided["F-107"])
+        self.assertIn("names successor F-105, which cannot carry the link (invented failure): decide by hand", result.undecided["F-107"])
         self.assertIn("F-107: F-111 would supersede it, but F-107 is undecided; F-111 is proposed without that link", result.notices)
         self.assertIn("F-107: F-105 would supersede it, but F-107 is undecided; F-105 is not revised", result.notices)
 
@@ -1139,6 +1140,7 @@ class SalvageTests(LegacyRepository):
             result = salvage(self.root, "two")
         self.assertEqual(["F-111"], [item.record.id for item in result.proposals])
         self.assertIn("invented failure", result.undecided["F-107"])
+        self.assertTrue(result.undecided["F-107"].endswith("): decide by hand"), result.undecided["F-107"])
 
     def test_the_accepted_ref_is_origin_main_whatever_local_main_says(self) -> None:
         self.branch_and_main()
@@ -1614,6 +1616,18 @@ class SalvageTests(LegacyRepository):
         status, _stdout, stderr = self.run_salvage("carrier")
         self.assertEqual(salvage_command.EXIT_SUPERSEDE, status, stderr)
         self.assertNotIn("internal error", stderr)
+
+    def test_a_replay_failure_ends_by_its_action(self) -> None:
+        # F-111 cites a member M-101 does not list: decided by hand. F-112 refers to F-111, which this run therefore does not
+        # propose: it waits for F-111 to be accepted.
+        self.edited("chain", ("docs/ledgers/findings/widgets.md", "| F-107 |",
+                              "| F-111 | Invented: a bad selector | observed | review; M-101/ev_000000000000 | high; server 29990001 | | active |\n"
+                              + "| F-112 | Invented: refers to F-111 | observed | review; F-111 | high; server 29990001 | | active |\n| F-107 |"))
+        result = salvage(self.root, "chain")
+        self.assertEqual({"F-111": "it would not replay cleanly: F-111: cites: M-101/ev_000000000000: ev_000000000000 matches 0 listed members of M-101:"
+                                   + " decide by hand",
+                          "F-112": "it would not replay cleanly: F-112: refs: no record F-111; it refers to F-111, which this run does not propose:"
+                                   + " that record must be accepted first"}, result.undecided)
 
     def test_a_record_citing_a_ref_and_its_successor_is_a_conflict_not_a_crash(self) -> None:
         self.edited("retire-m104", ("evidence/widgets/001.jsonl", '"label":"Second bundle","status":"active"', '"label":"Second bundle","status":"retired"'))
