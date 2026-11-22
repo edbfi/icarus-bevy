@@ -408,6 +408,28 @@ class GeneratedSalvageTests(unittest.TestCase):
         again = [pending.path for pending in pending_documents(after_settled, before_settled, settled_state, next_run.cited) if pending.path in settled]
         self.assertEqual([], again, f"{where}: listed again once settled")
 
+    def test_a_row_held_for_its_first_successor_is_not_listed_under_its_second_s_document(self) -> None:
+        # M-503 names two successors: M-400, which nothing can be, then M-500, which cites e.md as main holds it while the
+        # branch holds other text. It is held for the first; e.md does not list it as a row citing it.
+        refs = {"docs/specs/c.md": "REF-001", "docs/specs/e.md": "REF-002"}
+        before = {name: document(name, path) for path, name in refs.items()}
+        before["M-500"] = tracked("M-500", "docs/specs/e.md", "REF-002")
+        before["M-503"] = Record.from_json(evidence("M-503", "work/x/report.md", legacy={"path": "evidence/x.jsonl", "cells": {"row": '{"status":"active"}'}}))
+        after = dict(before)
+        after["M-503"] = Record.from_json(evidence("M-503", "work/x/report.md", legacy={
+            "path": "evidence/x.jsonl", "cells": {"row": '{"status":"retired","superseded_by":"M-400 M-500"}'}, "superseded_by": ["M-400", "M-500"],
+            "implied_status": "superseded"}))
+        revisions = {name: Revision.of(record) for name, record in before.items()}
+        edited = Revision.of(document("REF-002", "docs/specs/e.md", "# e.md, main's edit\n"), [revisions["REF-002"].rev])
+        accepted = accepted_of((Segment("memory/journal/generated.jsonl", "", (*revisions.values(), edited)),))
+        (after_numbered, before_numbered), unmapped, shared = renumber((after, before), accepted.records, accepted.retired)
+        result = Salvage("fixture", "a" * 40, "b" * 40, "c" * 40)
+        _ = classify(result, after_numbered, before_numbered, accepted, unmapped, shared)
+        self.assertEqual("undecided", result.kinds["M-503"])
+        self.assertIn("names successor M-400, which cannot carry the link", result.undecided["M-503"])
+        self.assertEqual({}, result.cited)
+        self.assertEqual([], pending_documents(after_numbered, before_numbered, accepted, result.cited))
+
     def test_every_generated_case_keeps_the_invariants_and_replays_cleanly(self) -> None:
         for seed in SEEDS:
             raw_after, raw_before, accepted = case(seed)

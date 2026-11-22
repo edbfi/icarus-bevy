@@ -577,11 +577,12 @@ def settle(result: Salvage, own: Mapping[str, Revision], pending_links: Mapping[
                 elif target in accepted and target not in unlinkable and result.kinds.get(target) in (None, "accepted", "cosmetic", "revision", "superseded"):
                     if (found := stale(accepted[target])) is not None:
                         # Its cause is the stale citation: the old row waits on that document, listed with it as citing it.
+                        # Recorded as citing it only when this is the reason the old row is held (the first one found).
                         path, reason = found
-                        _ = stuck.setdefault(old, f"its row on {ref} names successor {target}, which would carry the link, but {target} "
-                                             + reason.removeprefix("it "))
-                        if old not in (citing := result.cited.setdefault(path, [])):
-                            citing.append(old)
+                        if old not in stuck:
+                            stuck[old] = f"its row on {ref} names successor {target}, which would carry the link, but {target} " + reason.removeprefix("it ")
+                            if old not in (citing := result.cited.setdefault(path, [])):
+                                citing.append(old)
                         continue
                     carriers[target] = Revision.of(with_supersedes(accepted[target], old), on_accepted.heads[target])
                 else:
