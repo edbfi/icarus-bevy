@@ -1,9 +1,9 @@
 ---
 name: bevy
 description: Build, debug, test, and migrate Rust games and applications using the Bevy engine (the bevy Cargo crate). Use for Bevy ECS, scheduling, messages and observers, input, assets, scenes, rendering, shaders, UI, animation, audio, physics integration, and native or browser builds.
-license: AGPL-3.0
+license: AGPL-3.0-or-later
 metadata:
-  author: engels74
+  author: edbfi
   version: "1.1.0"
   vendor: bevy
 ---
