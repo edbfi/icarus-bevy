@@ -21,7 +21,7 @@ The upstream repositories declare Apache-2.0, CC-BY-SA-4.0, MIT, and MIT respect
 This package contains newly written instructions and examples based on independently
 checked engine behavior; it does not vendor their skill bodies, reference files,
 or extraction scripts. Links retain research provenance. The new material uses
-this repository's AGPL-3.0 license; upstream material retains its own license.
+this repository's AGPL-3.0-or-later license; upstream material retains its own license.
 
 In particular, the synthesis does not carry forward these misleading shortcuts:
 

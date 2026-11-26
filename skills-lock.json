@@ -1,11 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
     "bevy": {
       "source": "edbfi/skills",
       "sourceType": "github",
       "skillPath": "bevy/bevy/SKILL.md",
-      "computedHash": "96b0f6a8edef1f8d28058bd4bbb6bfa6781ba64af974be5e5cd0adc52c415c20"
+      "computedHash": "2bac8852e44d9ce91200a785acae31bee1ebeba75c25d318af17b3fdde7df197",
+      "commit": "08b82606d91cf86fd21f44e8e184146bcc49dcac"
     }
   }
 }
