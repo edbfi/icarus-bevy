@@ -133,7 +133,7 @@ class CargoGuardTests(unittest.TestCase):
         ready = self.root / "ready"
         release = self.root / "release"
         child_code = f"""import os,pathlib,time
-pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))
+tmp=pathlib.Path({str(ready)!r} + ".tmp"); tmp.write_text(str(os.getpid())); tmp.replace(pathlib.Path({str(ready)!r}))
 p=pathlib.Path({str(release)!r})
 while not p.exists():
     time.sleep(0.01)
