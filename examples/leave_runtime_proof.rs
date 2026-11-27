@@ -8,7 +8,7 @@ use icarus_bevy::leave_runtime_proof::{
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[path = "../src/main/private_leave_proof_config.rs"]
+#[path = "../src/cli/private_leave_proof_config.rs"]
 mod private_leave_proof_config;
 
 #[derive(Parser)]
