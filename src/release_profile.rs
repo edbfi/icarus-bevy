@@ -4,4 +4,4 @@
 //! qualification is still experimental. The re-export gives callers a stable
 //! place to find profile types without changing the existing path.
 
-pub use crate::experimental::release::*;
+pub use crate::experimental::release as profile;

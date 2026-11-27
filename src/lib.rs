@@ -31,7 +31,8 @@ pub mod native_replication;
 pub mod native_runtime;
 pub mod native_scalar_owners;
 
-// Keep the CLI's shared library module usable from both the binary and tests.
+// `cli` and the test fixtures spell crate paths as `icarus_bevy::…`; the
+// self-alias makes them resolve inside this crate in test and non-test builds.
 extern crate self as icarus_bevy;
 pub mod native_world;
 pub mod network;
