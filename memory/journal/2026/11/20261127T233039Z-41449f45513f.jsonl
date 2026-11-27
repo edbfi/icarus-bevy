@@ -1,0 +1,2 @@
+{"created":"2026-11-27T23:30:39Z","format":"icarus-memory-journal","revisions":1,"version":1}
+{"prev":[],"record":{"class":"local-private","date":"2026-11-27","id":"M-1647","kind":"report","label":"Gameplay tag replay and build 26860960 derivation","path":"work/release-26860960-20261127/result/tags.json","sha256":"401b6177b1eb7930e7cc7fb964b4a9ccc2939e5248d9be299768dfa8dd62a46c","size":2191,"status":"active","type":"evidence"},"rev":"714062d6116ba6d01e2c8899b8806077c4506693d46e85474e42c06c318e7219","sha256":"390877863aea273d87013fc562a2d5e4dabfb3982ab7ddb9bc9fe100f70d63e6"}

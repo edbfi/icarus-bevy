@@ -1,0 +1,2 @@
+{"created":"2026-11-27T23:30:24Z","format":"icarus-memory-journal","revisions":1,"version":1}
+{"prev":[],"record":{"class":"local-private","date":"2026-11-27","id":"M-1645","kind":"receipt","label":"Steam public build 26860960 release-watch check","path":"work/release-26860960-20261127/live-check.json","sha256":"94d10d43f771d8d5e10fc6ee9b7894bfc29a83085ad233a6a09bf172b1879b8d","size":86,"status":"active","type":"evidence"},"rev":"8c578ba13e34fee7c3ed393276e39cb77046c794568098c0a1c2a9e8ebd79b75","sha256":"a43d29f961832af604dd70694ecd277b8bbff747d0d2f60c8f03b227d4ed4c2d"}
