@@ -1,6 +1,8 @@
 //! Native, headless Bevy foundation. ICARUS interoperability remains unverified.
 pub mod actor_uids;
 pub mod authored_world_bootstrap;
+#[doc(hidden)]
+pub mod cli;
 pub mod config;
 pub mod data_pak;
 pub mod experimental;
@@ -10,6 +12,7 @@ pub mod import_plan;
 mod json;
 pub mod leave_runtime_proof;
 pub mod metrics;
+pub mod native;
 pub mod native_c001_inventory_owners;
 pub mod native_c001_owners;
 pub mod native_c001_scalar_owners;
@@ -28,8 +31,7 @@ pub mod native_replication;
 pub mod native_runtime;
 pub mod native_scalar_owners;
 
-// Reuse the complete authored source fixture in storage crash-model unit tests.
-#[cfg(test)]
+// Keep the CLI's shared library module usable from both the binary and tests.
 extern crate self as icarus_bevy;
 pub mod native_world;
 pub mod network;
@@ -39,7 +41,10 @@ pub mod player_inventory_projection;
 pub mod preservation;
 pub mod preserved_session;
 pub mod prospect;
+pub mod protocol;
+pub mod release_profile;
 pub mod replication;
+pub mod save_format;
 #[cfg(test)]
 #[path = "../tests/common/c001_scalar_owners.rs"]
 mod scalar_owner_fixture;
