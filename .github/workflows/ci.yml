@@ -8,20 +8,63 @@ on:
   schedule: [{ cron: "22 5 * * 0" }]   # weekly main revalidation; minute unique per repo
 permissions: {}
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('ci-{0}', github.sha) }}
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}', github.workflow, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  checks:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: { contents: read }
+    outputs:
+      run_rust: ${{ steps.classify.outputs.run_rust }}
+      run_release: ${{ steps.classify.outputs.run_release }}
+      classification: ${{ steps.classify.outputs.classification }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Collect the pull-request diff
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          changed="$RUNNER_TEMP/changed-files"
+          : > "$changed"
+          available=true
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if ! git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+              available=false
+            elif ! git diff --name-only --no-renames -z HEAD^1 HEAD > "$changed"; then
+              available=false
+            fi
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+      - name: Classify the validation path
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DIFF_AVAILABLE: ${{ steps.diff.outputs.available }}
+        run: |
+          set -euo pipefail
+          python3 tools/ci_changes.py \
+            --event "$EVENT_NAME" \
+            --changed-files "$RUNNER_TEMP/changed-files" \
+            --diff-available "$DIFF_AVAILABLE" | tee "$RUNNER_TEMP/ci-decision"
+          while IFS='=' read -r key value; do
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done < "$RUNNER_TEMP/ci-decision"
+
+  static:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      ICARUS_CARGO_GUARD_POLICY: ci
     permissions: { contents: read }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # memory check --ci reads the journal at its merge base with origin/main: full history on every event.
+          # memory check --ci reads the journal at its merge base with origin/main.
           fetch-depth: 0
       - name: Set up Python typing tools
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
@@ -36,28 +79,119 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: python3 -m tools.memory check --ci --base "$PR_BASE"
       - name: Install pinned stable toolchain
-        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt
       - uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
-        with: { extra-args: "--all-files --hook-stage manual" }
+        with:
+          cache: true
+          extra-args: "--all-files --hook-stage manual --skip cargo-clippy --skip cargo-test"
+
+  rust-test:
+    if: needs.plan.outputs.run_rust == 'true'
+    needs: [plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ICARUS_CARGO_GUARD_POLICY: ci
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python typing tools
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.15.2"
+          activate-environment: true
+          no-project: true
+          enable-cache: false
+      - name: Install pinned stable toolchain
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+      - name: Cache Cargo registry dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+      - uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
+        with:
+          cache: true
+          extra-args: "--all-files --hook-stage manual cargo-clippy cargo-test"
+
+  release:
+    if: needs.plan.outputs.run_release == 'true'
+    needs: [plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ICARUS_CARGO_GUARD_POLICY: ci
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python typing tools
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: "3.15.2"
+          activate-environment: true
+          no-project: true
+          enable-cache: false
+      - name: Install pinned stable toolchain
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal
+      - name: Cache Cargo registry dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
       - name: Build native release
         run: python3 tools/cargo_guard.py build --release --locked
       - name: Smoke test without game files
         run: |
           python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server check-config --config config/server.example.toml
           python3 tools/cargo_guard.py --hold-target -- target/release/icarus-server run --data-dir work/ci-smoke --max-ticks 3
+
   ci-ok:
     if: always()
-    needs: [checks]
+    needs: [plan, static, rust-test, release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
+    env:
+      NEEDS: ${{ toJSON(needs) }}
+      RUN_RUST: ${{ needs.plan.outputs.run_rust }}
+      RUN_RELEASE: ${{ needs.plan.outputs.run_release }}
     steps:
-      - env:
-          NEEDS: ${{ toJSON(needs) }}
-          ALLOWED_SKIPS: ""
+      - name: Validate every required CI result
         run: |
-          jq -e --arg skips "$ALLOWED_SKIPS" '
-            ($skips | split(",") | map(select(. != ""))) as $allowed
-            | length > 0 and all(to_entries[]; .value.result == "success"
-                or (.value.result == "skipped" and (.key | IN($allowed[]))))
-          ' <<<"$NEEDS" >/dev/null || { echo "::error::ci-ok failed: $(jq -c 'map_values(.result)' <<<"$NEEDS")"; exit 1; }
+          jq -e --arg run_rust "$RUN_RUST" --arg run_release "$RUN_RELEASE" '
+            (.plan.result == "success")
+            and (.static.result == "success")
+            and (
+              .["rust-test"].result == "success"
+              or ($run_rust == "false" and .["rust-test"].result == "skipped")
+            )
+            and (
+              .release.result == "success"
+              or ($run_release == "false" and .release.result == "skipped")
+            )
+          ' <<<"$NEEDS" >/dev/null || {
+            echo "::error::ci-ok failed: $(jq -c 'map_values(.result)' <<<"$NEEDS")"
+            exit 1
+          }
