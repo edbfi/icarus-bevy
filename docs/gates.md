@@ -59,8 +59,8 @@ Last reconciled: 2026-11-19
   are bound in `experimental` (F-688, F-710 to F-714, F-729, F-757; U-014, U-037,
   U-044, U-051 resolved); connected sessions need their own case (U-038, U-052).
 - Older server build 25621760 and client build 25793767 remain distinct;
-  addresses and assumptions do not transfer automatically. For 3.0.37,
-  F-1277 to F-1279 qualify tags, selected classes and the row registry.
+  addresses and assumptions do not transfer automatically. For 3.0.38,
+  F-1287 to F-1289 qualify tags, selected classes and the row registry.
   Connected behavior and visibility still need qualification.
 - Matched receive/CharacterProfile guards F-1046 to F-1048, friends-query
   path F-1051, record reads F-1072 to F-1076 and streaming reads F-1078 to
