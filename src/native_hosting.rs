@@ -519,7 +519,11 @@ mod tests {
         owner.deadline = Instant::now();
         assert!(owner.stopped());
         assert!(
-            owner.membership(Default::default()).is_err(),
+            owner
+                .membership(
+                    crate::steam_presence::MasterMembership::from_authenticated([44]).unwrap(),
+                )
+                .is_err(),
             "expired hosting must reject presence updates"
         );
         assert_eq!(owner.presence.advert.lock().unwrap().occupancy, Some(0));
