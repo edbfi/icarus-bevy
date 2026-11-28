@@ -62,7 +62,7 @@ A complete profile carries protocol values; its build id selects none.
   production refusal and the [visibility gate](gates.md#before-enabling-visibility-dispatch-or-effects).
   Inbound `fixed_component_bounds_v1` on 3.0.32/3.0.34 keeps complete identity/
   framing checks and bounds 149/27/8 (F-1015, F-1016, M-1197); output is metadata
-  only, unknown components opaque. The 3.0.37 profile omits these capabilities.
+  only, unknown components opaque. The 3.0.38 profile omits these capabilities.
 - Controller `selected_controller_v1` binds identity/pin/versions/bounds.
   F-1197 qualifies the 3.0.36 codec only. The
   [default-off leave experiment](runbooks/authored-survival.md#checkpoint-leave)
@@ -79,6 +79,10 @@ A complete profile carries protocol values; its build id selects none.
   both builds; pin-only reads remain possible. Clearing it does not transfer
   capabilities: their bindings must also validate. Other sections still depend
   on review of hand edits without the marker.
+- The active 3.0.38.160489 profile (Steam build 26860960) retains the class
+  bounds and row-width index sets after static package comparison. Its tag
+  dictionary is 130 cooked rows plus 1,974 INI declarations, 2,403 expanded
+  nodes and hash `0xb029f816` (F-1287, F-1288, F-1289).
 - A weekly bump requires deriving and qualifying each retained section from
   allowed inputs, updating or removing capability declarations, clearing the
   marker and rerunning compatibility scenarios. No Rust change is needed

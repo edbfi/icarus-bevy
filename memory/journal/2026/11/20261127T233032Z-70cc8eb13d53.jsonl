@@ -1,0 +1,2 @@
+{"created":"2026-11-27T23:30:32Z","format":"icarus-memory-journal","revisions":1,"version":1}
+{"prev":[],"record":{"class":"local-private","date":"2026-11-27","id":"M-1646","kind":"receipt","label":"Release 26635895 to 26860960 intake diff","path":"work/release-26860960-20261127/intake-diff.json","sha256":"f42d0c7f0f0af0c1bdac8db33e3ea8cd4f3aee31c9b585d48c0fe4c75cf418c4","size":601,"status":"active","type":"evidence"},"rev":"aff1bce9c29f274551d522cb122fc2a55ab3820d6cd7b1cee3f030ace2aeef35","sha256":"22528e4dfa0b192114aeb5ea50210821a475ac4e0124360c2c666896c3c5aef8"}

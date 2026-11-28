@@ -9,25 +9,27 @@
 # the file until they are qualified and that key is removed. The checksum is
 # derived and checked.
 
-# Build and checksum qualified in F-1277.
+# Build and checksum qualified in F-1289.
+# The release profile is derived from the public 26860960 install recorded in
+# M-1646 and M-1650.
 [release]
 app_id = 2089300
-build_id = 26635895
-project_version = "3.0.37.160033-rel-DangerousHorizons"
-network_checksum = 1753516313
+build_id = 26860960
+project_version = "3.0.38.160489-rel-DangerousHorizons"
+network_checksum = 3837876518
 
-# `UGameplayTagsManager` net-index metadata (F-702, F-1277).
+# `UGameplayTagsManager` net-index metadata (F-702, F-1289).
 [tags]
 data_table_tag_count = 130
-ini_tag_count = 1931
-unique_node_count = 2345
+ini_tag_count = 1974
+unique_node_count = 2403
 total_bits = 12
 configured_first_segment = 16
 effective_first_segment = 0
 container_bits = 6
-net_index_hash = 0x02f5e3c9
+net_index_hash = 0xb029f816
 
-# `FClassNetCache` field-index bounds (F-644, F-705, F-708, F-1278).
+# `FClassNetCache` field-index bounds (F-644, F-705, F-708, F-1278, F-1287).
 [class_net_cache]
 stat_container = 5
 inventory = 11
@@ -38,7 +40,7 @@ bp_mount_horse = 85
 bp_tame_base = 86
 bp_icarus_player_controller_survival = 183
 
-# `FRowHandle` registry and row widths (F-1279).
+# `FRowHandle` registry and row widths (F-1279, F-1288).
 [row_handles]
 table_count = 297
 zero_row_tables = [63, 165, 167, 184]
