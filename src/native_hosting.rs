@@ -221,6 +221,7 @@ impl NativeHosting {
             .advert
             .lock()
             .map_err(|_| anyhow::anyhow!("hosting advert unavailable"))?;
+        ensure!(!self.stopped(), "hosting backend stopped");
         let joined = u8::try_from(membership.len()).context("hosting occupancy overflow")?;
         ensure!(
             joined <= advert.max_players,
@@ -517,6 +518,15 @@ mod tests {
         }
         owner.deadline = Instant::now();
         assert!(owner.stopped());
+        assert!(
+            owner
+                .membership(
+                    crate::steam_presence::MasterMembership::from_authenticated([44]).unwrap(),
+                )
+                .is_err(),
+            "expired hosting must reject presence updates"
+        );
+        assert_eq!(owner.presence.advert.lock().unwrap().occupancy, Some(0));
         owner.stop_and_join().unwrap();
         UdpSocket::bind(address).unwrap();
     }
