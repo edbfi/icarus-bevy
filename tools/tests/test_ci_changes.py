@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
-from tools.ci_changes import Decision, classify, read_paths
+from tools.ci_changes import Decision, classify, main, read_paths
 
 
 class ClassifyTests(unittest.TestCase):
@@ -43,6 +46,18 @@ class ReadPathsTests(unittest.TestCase):
             path = Path(directory) / "changed"
             _ = path.write_bytes(b"docs/a.md\0src/main.rs\0")
             self.assertEqual(("docs/a.md", "src/main.rs"), read_paths(path))
+
+    def test_main_fails_closed_when_diff_cannot_be_read(self) -> None:
+        output = StringIO()
+        with patch(
+            "sys.argv",
+            ["ci_changes.py", "--event", "pull_request", "--changed-files", "/missing/changed-files"],
+        ), redirect_stdout(output):
+            self.assertEqual(0, main())
+        self.assertEqual(
+            "run_rust=true\nrun_release=true\nclassification=diff-unavailable\n",
+            output.getvalue(),
+        )
 
 
 if __name__ == "__main__":

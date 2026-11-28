@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 2
       - name: Collect the pull-request diff
         id: diff
         env:
@@ -72,7 +72,7 @@ jobs:
           python-version: "3.15.2"
           activate-environment: true
           no-project: true
-          enable-cache: true
+          enable-cache: false
       - name: Check the memory journal against the pull request base
         if: github.event_name == 'pull_request'
         env:
@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           channel="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
           test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          rustup toolchain install "$channel" --profile minimal --component rustfmt
       - uses: j178/prek-action@7b101f8338a08d2bd6fdb3625e4e7692428763a3 # v3.1.1
         with:
           cache: true
@@ -108,7 +108,7 @@ jobs:
           python-version: "3.15.2"
           activate-environment: true
           no-project: true
-          enable-cache: true
+          enable-cache: false
       - name: Install pinned stable toolchain
         run: |
           set -euo pipefail
@@ -146,13 +146,13 @@ jobs:
           python-version: "3.15.2"
           activate-environment: true
           no-project: true
-          enable-cache: true
+          enable-cache: false
       - name: Install pinned stable toolchain
         run: |
           set -euo pipefail
           channel="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
           test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+          rustup toolchain install "$channel" --profile minimal
       - name: Cache Cargo registry dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
